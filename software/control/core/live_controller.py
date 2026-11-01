@@ -432,24 +432,36 @@ class LiveController(QObject):
                 self._log.warning(f"Not setting emission filter position: {e}")
 
     def start_live(self):
+        """Start live view. If any step fails, live is left off as stop_live() leaves it (the live channel released)
+        and the error is raised: a camera that will not stream must not leave is_live set, which would make snap()
+        and the next start_live() treat live as running."""
         self._check_laser_engine_warn_only()
         self.hold_current_channel("live")
         self.is_live = True
-        self.camera.start_streaming()
-        if self.trigger_mode == TriggerMode.SOFTWARE or (
-            self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
-        ):
-            self.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
-            self._start_triggerred_acquisition()
-        elif self.trigger_mode == TriggerMode.CONTINUOUS:
-            # Continuous mode has no trigger_acquisition() loop to turn on the
-            # illumination, so do it here. stop_live() already turns it off
-            # symmetrically.
-            if self.control_illumination and not self.illumination_on:
-                self.turn_on_illumination()
-        # if controlling the laser displacement measurement camera
-        if self.for_displacement_measurement:
-            self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
+        try:
+            self.camera.start_streaming()
+            if self.trigger_mode == TriggerMode.SOFTWARE or (
+                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+            ):
+                self.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
+                self._start_triggerred_acquisition()
+            elif self.trigger_mode == TriggerMode.CONTINUOUS:
+                # Continuous mode has no trigger_acquisition() loop to turn on the
+                # illumination, so do it here. stop_live() already turns it off
+                # symmetrically.
+                if self.control_illumination and not self.illumination_on:
+                    self.turn_on_illumination()
+            # if controlling the laser displacement measurement camera
+            if self.for_displacement_measurement:
+                self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
+        except Exception as start_error:
+            try:
+                self.stop_live()
+            except Exception as undo_error:
+                self._log.error(
+                    f"Could not undo a live view that failed to start: {undo_error}. Original: {start_error}"
+                )
+            raise start_error
 
     def stop_live(self):
         self._confocal_scan_failed = False
