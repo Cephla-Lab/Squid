@@ -212,8 +212,10 @@ class PriorStage(AbstractStage):
 
     def set_max_speed(self, speed=1000):
         """Set the maximum speed of the stage. Range is 1 to the stage's max_speed_limit (at most 1000). Raises
-        SquidError, leaving self.speed as it was, when the controller doesn't report the new value back."""
+        SquidError when the controller doesn't report the new value back, leaving self.speed None: the controller may
+        have taken it all the same, so its speed is unknown and the next one sent isn't skipped as already there."""
         if PriorStage.MOTION_SETTING_MIN <= speed <= self.max_speed_limit:
+            self.speed = None  # until the controller reports the new value back
             self.speed = self._send_motion_setting("SMS", speed, "max speed")
         else:
             raise ValueError(f"Speed must be between 1 and {self.max_speed_limit}")
@@ -244,8 +246,10 @@ class PriorStage(AbstractStage):
 
     def set_acceleration(self, acceleration=1000):
         """Set the acceleration of the stage. Range is 1 to the stage's acceleration_limit (at most 1000). Raises
-        SquidError, leaving self.acceleration as it was, when the controller doesn't report the new value back."""
+        SquidError when the controller doesn't report the new value back, leaving self.acceleration None (unknown), as
+        set_max_speed does."""
         if PriorStage.MOTION_SETTING_MIN <= acceleration <= self.acceleration_limit:
+            self.acceleration = None  # until the controller reports the new value back
             self.acceleration = self._send_motion_setting("SAS", acceleration, "acceleration")
         else:
             raise ValueError(f"Acceleration must be between 1 and {self.acceleration_limit}")

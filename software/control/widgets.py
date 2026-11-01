@@ -2409,6 +2409,7 @@ class PreferencesDialog(QDialog):
             self._log.info(f"Configuration saved to {self.config_filepath}")
         except OSError as e:
             self._log.exception("Failed to save configuration")
+            put_back = self._put_back_prior_motion()  # it may have taken its new speed/acceleration already
             QMessageBox.warning(
                 self,
                 "Error",
@@ -2420,6 +2421,11 @@ class PreferencesDialog(QDialog):
                     "- The file is not open in another application.\n"
                     "- The disk is not full or write-protected.\n\n"
                     f"System error: {e}"
+                    + (
+                        ""
+                        if put_back
+                        else "\n\nThe Prior stage could not be put back to its earlier speed/acceleration."
+                    )
                 ),
             )
             return False
@@ -2523,42 +2529,60 @@ class PreferencesDialog(QDialog):
             control._def.PRIOR_STAGE_MAX_SPEED = self.prior_speed_spinbox.value()
             control._def.PRIOR_STAGE_ACCELERATION = self.prior_accel_spinbox.value()
 
-    def _send_prior_motion_settings(self) -> bool:
-        """Send the Prior stage the speed and acceleration it doesn't have yet. Runs before anything is saved, so when
-        the stage doesn't take them the ini and the running values stay as they were and the change stays pending,
-        ready to retry. Returns False, after putting back a setting it did take and telling the user, in that case."""
+    def _prior_stage_settings(self):
+        """(setter, the stage's attribute for its value, spin box, running value, name) of the Prior max speed and
+        acceleration; empty without a Prior stage. The running value is control._def's, within 1 to the rig's ceiling
+        as the stage lowered it at startup."""
         stage = self._stage
         if self.prior_speed_spinbox is None or not hasattr(stage, "set_max_speed"):
-            return True
-        taken = []  # (setter, value before) of each setting the stage took this time
-        for setter, attr, spinbox, name in (
-            (stage.set_max_speed, "speed", self.prior_speed_spinbox, "max speed"),
-            (stage.set_acceleration, "acceleration", self.prior_accel_spinbox, "acceleration"),
-        ):
-            before, value = getattr(stage, attr), spinbox.value()
-            if before == value:
-                continue
+            return []
+        speed = min(max(control._def.PRIOR_STAGE_MAX_SPEED, PriorStage.MOTION_SETTING_MIN), self._prior_speed_limit)
+        accel = min(max(control._def.PRIOR_STAGE_ACCELERATION, PriorStage.MOTION_SETTING_MIN), self._prior_accel_limit)
+        return [
+            (stage.set_max_speed, "speed", self.prior_speed_spinbox, speed, "max speed"),
+            (stage.set_acceleration, "acceleration", self.prior_accel_spinbox, accel, "acceleration"),
+        ]
+
+    def _send_prior_motion_settings(self) -> bool:
+        """Send the Prior stage the speed and acceleration about to be saved, when either changes. Runs before anything
+        is saved, so when the stage doesn't take them the ini and the running values stay as they were and the change
+        stays pending, ready to retry. Returns False, after putting the stage back to the running values and telling
+        the user, in that case."""
+        settings = self._prior_stage_settings()
+        if all(spinbox.value() == running for _, _, spinbox, running, _ in settings):
+            return True  # neither changes: leave the stage alone, even one that doesn't answer
+        for setter, attr, spinbox, _, name in settings:
+            value = spinbox.value()
+            if getattr(self._stage, attr) == value:
+                continue  # it has it already
             try:
                 setter(value)
             except Exception as e:
                 self._log.exception(f"Prior stage did not take {name} {value}; nothing saved")
-                still_changed = []
-                for undo, undo_to in reversed(taken):
-                    try:
-                        undo(undo_to)
-                    except Exception:
-                        self._log.exception(f"Could not put the Prior stage back to {undo_to}")
-                        still_changed.append(undo_to)
+                put_back = self._put_back_prior_motion()
                 QMessageBox.warning(
                     self,
                     "Prior Stage Not Updated",
                     f"The Prior stage did not take {name} {value}, so no settings were saved.\n\n{e}\n\n"
                     "Check the stage's connection, then Save again (or set the value back)."
-                    + ("\n\nThe stage could not be put back to its earlier settings." if still_changed else ""),
+                    + ("" if put_back else "\n\nThe stage could not be put back to its earlier settings."),
                 )
                 return False
-            taken.append((setter, before))
         return True
+
+    def _put_back_prior_motion(self) -> bool:
+        """Send the Prior stage its running speed and acceleration wherever it may not have them: a setting it took for a
+        Save that then failed, or one it didn't confirm (its value is then None, unknown, since the controller may have
+        taken it all the same). Returns False when the stage doesn't take them."""
+        put_back = True
+        for setter, attr, _, running, name in self._prior_stage_settings():
+            if getattr(self._stage, attr) != running:
+                try:
+                    setter(running)
+                except Exception:
+                    self._log.exception(f"Could not put the Prior stage back to {name} {running}")
+                    put_back = False
+        return put_back
 
     def _get_changes(self):
         """Get list of settings that have changed from current config.

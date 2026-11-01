@@ -367,7 +367,7 @@ def test_an_unanswered_setting_the_controller_did_not_take_raises_and_is_not_rem
     _unanswered(ser, f"{command} ", applied=False)
     with pytest.raises(squid.exceptions.SquidError, match=name):
         getattr(stage, setter)(400)
-    assert getattr(stage, attr) == 100  # so the next Save sends 400 again
+    assert getattr(stage, attr) is None  # unknown, so the next Save sends 400 again
 
 
 @pytest.mark.parametrize("setter, attr, command, name", SETTINGS)
@@ -379,12 +379,16 @@ def test_a_setting_taken_despite_a_lost_reply_is_remembered(fake, setter, attr, 
 
 
 @pytest.mark.parametrize("setter, attr, command, name", SETTINGS)
-def test_a_setting_raises_when_the_controller_cannot_be_read_back(fake, setter, attr, command, name):
+@pytest.mark.parametrize("applied", [False, True], ids=["not-taken", "taken"])
+def test_a_setting_raises_when_the_controller_cannot_be_read_back(fake, setter, attr, command, name, applied):
     stage, ser = make_stage(fake)
-    _unanswered(ser, command, applied=False)  # the setting and the read-back query
+    _unanswered(ser, command, applied=applied)  # the setting and the read-back query
     with pytest.raises(squid.exceptions.SquidError, match=name):
         getattr(stage, setter)(400)
-    assert getattr(stage, attr) == 100
+    assert getattr(ser, command.lower()) == (400 if applied else 100)
+    # Whether the controller has 400 or 100 is unknown here, so the stage doesn't claim 100: putting 100 back, or
+    # sending it next, isn't skipped as already there.
+    assert getattr(stage, attr) is None
 
 
 def test_startup_fails_when_the_controller_does_not_take_the_acceleration(fake, monkeypatch):
