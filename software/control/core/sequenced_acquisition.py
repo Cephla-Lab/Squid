@@ -16,7 +16,7 @@ Design: AI-docs Squid/to-do/2026-09-20-firmware-v2-hardware-sequencer-v1-shim-de
 
 import dataclasses
 import enum
-from typing import Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -144,6 +144,29 @@ def camera_record(*, use_ready_line: bool, strobe_delay_ms: float, readout_ms: f
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class BurstPlan:
+    """One SEQ_RUN: which of the selected channels it images, in program order (indices into the
+    selected channels, so the frames can carry their configuration index)."""
+
+    channel_indices: Tuple[int, ...]
+
+
+def burst_plans(z_stack_order: str, n_channels: int) -> List[BurstPlan]:
+    """How one FOV's stack is split into bursts.
+
+    CHANNEL FIRST: one burst, every channel at each z level (the engine's channels-inner order).
+    Z FIRST: one single-channel burst per channel, in channel order; the host does between the
+    bursts what the software Z FIRST loop does between channels (that channel's exposure, gain and
+    emission filter, laser AF per stack). The engine's z-inner order is not used: nothing can move
+    a serial filter wheel inside a burst, and on a stepper the jump back to the first plane at a
+    channel boundary would be an uncompensated reversal (Hongquan, 2026-11-01: one burst per channel).
+    """
+    if z_stack_order == "Z FIRST":
+        return [BurstPlan((index,)) for index in range(n_channels)]
+    return [BurstPlan(tuple(range(n_channels)))]
+
+
 def build_program(
     channels: Sequence[ChannelPlan],
     *,
@@ -199,6 +222,16 @@ def build_program(
     return program
 
 
+def build_bursts(
+    channels: Sequence[ChannelPlan], z_stack_order: str, **program_kwargs
+) -> List[Tuple[BurstPlan, SequencerProgram]]:
+    """The bursts of one FOV's stack with their programs (burst_plans + build_program)."""
+    return [
+        (plan, build_program([channels[index] for index in plan.channel_indices], **program_kwargs))
+        for plan in burst_plans(z_stack_order, len(channels))
+    ]
+
+
 def ineligibility_reason(
     *,
     firmware_supports_sequencer: bool,
@@ -241,14 +274,11 @@ def ineligibility_reason(
         return "the camera is not in hardware trigger mode"
     if not use_piezo:
         return "the z-stack does not use the piezo (stepper z-stacks are not sequenced yet)"
-    if nz > 1 and z_stack_order != "CHANNEL FIRST":
-        # The program runs every channel at each z level. A Z FIRST acquisition would write the same
-        # files, but acquiring them in another physical order is a different experiment (bleaching,
-        # drift and the timing between channels differ), so the order asked for is honoured instead.
-        return (
-            f"the z-stack order is '{z_stack_order}' (the sequencer runs every channel at each z level, CHANNEL FIRST)"
-        )
-    if emission_filter_unit is not None:
+    # Z FIRST runs one single-channel burst per channel (burst_plans): the host applies each channel's
+    # own gain, emission filter and iris values before its burst, so those need not agree between
+    # channels. In CHANNEL FIRST every channel shares one burst, and a burst cannot change them.
+    one_burst_for_all_channels = z_stack_order != "Z FIRST"
+    if emission_filter_unit is not None and one_burst_for_all_channels:
         # The software path moves the unit at every channel switch. A burst cannot, so every channel
         # has to image through the same filter: the one position the channels share is set before the
         # burst. A channel without a position leaves the wheel where it is in the software path too.
@@ -290,7 +320,7 @@ def ineligibility_reason(
             return f"channel '{channel.name}' has a z offset ({channel.z_offset_um} um), which is not sequenced yet"
         if channel.source_code not in SOURCE_CODE_TO_PORT:
             return f"channel '{channel.name}' is not strobed from an MCU TTL port (source code {channel.source_code})"
-    if len(set(camera_gains)) > 1:
+    if one_burst_for_all_channels and len(set(camera_gains)) > 1:
         return f"the channels use different camera gain values ({sorted(set(camera_gains))}); gain is a camera register write"
     if byte_budget is not None and 2 * burst_bytes > byte_budget:
         return (
