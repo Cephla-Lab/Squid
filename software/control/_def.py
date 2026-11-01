@@ -1270,6 +1270,7 @@ SQUID_FILTERWHEEL_CONFIGS = {
 USE_PRIOR_STAGE = False
 PRIOR_STAGE_SN = ""
 # ProScan SMS / SAS values, 1-1000. On an H117(1MM) stage 100 = 6 mm/s and 28.6 mm/s^2; 1000 = 60 mm/s, 285.5 mm/s^2.
+# Editable in Preferences > Advanced > Prior Stage, which also sends them to the connected stage.
 PRIOR_STAGE_MAX_SPEED = 100
 PRIOR_STAGE_ACCELERATION = 100
 

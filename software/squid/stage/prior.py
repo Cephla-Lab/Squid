@@ -19,6 +19,10 @@ class PriorStage(AbstractStage):
     # so long moves are fine; this catches a controller that stopped answering while its port stays open (each
     # unanswered poll costs the 0.1 s read timeout).
     STATUS_REPLY_TIMEOUT_S = 1.0
+    # SMS (max speed) and SAS (acceleration) take 1-1000; the controller clamps a larger value to 1000 without an
+    # error. 1000 is the most the controller allows for the fitted stage.
+    MOTION_SETTING_MIN = 1
+    MOTION_SETTING_MAX = 1000
 
     def __init__(
         self,
@@ -189,8 +193,9 @@ class PriorStage(AbstractStage):
 
     def set_max_speed(self, speed=1000):
         """Set the maximum speed of the stage. Range is 1 to 1000."""
-        if 1 <= speed <= 1000:
+        if PriorStage.MOTION_SETTING_MIN <= speed <= PriorStage.MOTION_SETTING_MAX:
             response = self._send_command(f"SMS {speed}")
+            self.speed = speed
             print(f"Maximum speed set to {speed}. Response: {response}")
         else:
             raise ValueError("Speed must be between 1 and 1000")
@@ -203,7 +208,7 @@ class PriorStage(AbstractStage):
 
     def set_acceleration(self, acceleration=1000):
         """Set the acceleration of the stage. Range is 1 to 1000."""
-        if 1 <= acceleration <= 1000:
+        if PriorStage.MOTION_SETTING_MIN <= acceleration <= PriorStage.MOTION_SETTING_MAX:
             response = self._send_command(f"SAS {acceleration}")
             self.acceleration = acceleration
             print(f"Acceleration set to {acceleration}. Response: {response}")
@@ -223,6 +228,22 @@ class PriorStage(AbstractStage):
         response = self._send_command("SAS")
         print(f"Current acceleration: {response}")
         return int(response)
+
+    def get_max_speed_mm_s(self) -> Optional[float]:
+        """The current max speed in mm/s, as the controller reports it for the fitted stage. None if it can't say."""
+        return self._query_in_physical_units("SMS,u")
+
+    def get_acceleration_mm_s2(self) -> Optional[float]:
+        """The current acceleration in mm/s^2, as the controller reports it for the fitted stage. None if it can't say."""
+        return self._query_in_physical_units("SAS,u")
+
+    def _query_in_physical_units(self, command: str) -> Optional[float]:
+        # "SMS,u" / "SAS,u" reply in um/s and um/s^2 (e.g. "6000.00" for SMS 100 on an H117(1MM)).
+        try:
+            return float(self._send_command(command)) / 1000
+        except Exception as e:
+            self._log.debug(f"Prior stage gave no usable reply to {command!r}: {e}")
+            return None
 
     def _mm_to_steps(self, mm: float):
         return int(mm * self.user_unit)

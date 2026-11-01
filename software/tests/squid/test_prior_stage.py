@@ -87,6 +87,11 @@ class FakeProScan:
             self.y += dy
             self.busy_polls = 2
             return b"R\r"
+        # Physical units as an H117(1MM) reports them: 60 um/s and 285.5 um/s^2 per SMS/SAS step.
+        if cmd == "SMS,u":
+            return f"{self.sms * 60:.2f}\r".encode()
+        if cmd == "SAS,u":
+            return f"{self.sas * 285.5:.2f}\r".encode()
         if cmd.startswith("SMS "):
             self.sms = int(cmd.split()[1])
         if cmd.startswith("SAS "):
@@ -256,3 +261,37 @@ def test_missing_stage_model_fails_startup_clearly(fake, monkeypatch):
     monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"" if cmd == "STAGE" else normal(self, cmd))
     with pytest.raises(squid.exceptions.SquidError, match="STAGE"):
         make_stage(fake)
+
+
+def test_set_speed_and_acceleration_are_remembered(fake):
+    stage, ser = make_stage(fake)
+    stage.set_max_speed(400)
+    stage.set_acceleration(300)
+    assert (ser.sms, ser.sas) == (400, 300)
+    assert (stage.speed, stage.acceleration) == (400, 300)
+
+
+@pytest.mark.parametrize("value", [0, 1001])
+def test_speed_and_acceleration_outside_1_to_1000_are_refused(fake, value):
+    stage, ser = make_stage(fake)
+    with pytest.raises(ValueError):
+        stage.set_max_speed(value)
+    with pytest.raises(ValueError):
+        stage.set_acceleration(value)
+    assert (ser.sms, ser.sas) == (100, 100)
+
+
+def test_speed_and_acceleration_in_physical_units(fake):
+    stage, ser = make_stage(fake)
+    assert stage.get_max_speed_mm_s() == pytest.approx(6.0)
+    assert stage.get_acceleration_mm_s2() == pytest.approx(28.55)
+    stage.set_max_speed(1000)
+    assert stage.get_max_speed_mm_s() == pytest.approx(60.0)
+
+
+def test_physical_units_are_none_when_the_controller_cannot_say(fake, monkeypatch):
+    normal = FakeProScan._reply
+    monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"E,1\r" if cmd.endswith(",u") else normal(self, cmd))
+    stage, ser = make_stage(fake)
+    assert stage.get_max_speed_mm_s() is None
+    assert stage.get_acceleration_mm_s2() is None

@@ -1029,3 +1029,108 @@ class TestFilterWheelCompletionWindow:
     def test_the_range_stops_at_ten_degrees(self, preferences_dialog):
         preferences_dialog.wheel_window_spinbox.setValue(45.0)  # a whole slot: never a sensible window
         assert preferences_dialog.wheel_window_spinbox.value() == 10.0
+
+
+class _FakePriorStage:
+    """What the dialog uses of PriorStage: the SMS/SAS values, their physical units, and the setters."""
+
+    def __init__(self, speed=100, acceleration=100):
+        self.speed = speed
+        self.acceleration = acceleration
+        self.sent = []
+
+    def get_max_speed_mm_s(self):
+        return self.speed * 0.06  # H117(1MM): 60 um/s per step
+
+    def get_acceleration_mm_s2(self):
+        return self.acceleration * 0.2855  # H117(1MM): 285.5 um/s^2 per step
+
+    def set_max_speed(self, value):
+        self.sent.append(("SMS", value))
+        self.speed = value
+
+    def set_acceleration(self, value):
+        self.sent.append(("SAS", value))
+        self.acceleration = value
+
+
+class TestPriorStageSettings:
+    """Preferences > Advanced > Prior Stage: SMS/SAS 1-1000, saved to the ini and sent to the stage on Save."""
+
+    @pytest.fixture
+    def prior_rig(self, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_PRIOR_STAGE", True)
+        # Restored after the test: Save writes the new values into control._def.
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED", 100)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION", 100)
+
+    def _dialog(self, qtbot, config, path, stage=None):
+        dialog = control.widgets.PreferencesDialog(config, path, stage=stage)
+        qtbot.addWidget(dialog)
+        return dialog
+
+    def test_hidden_and_not_written_without_a_prior_stage(self, qtbot, sample_config, temp_config_file, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_PRIOR_STAGE", False)
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.prior_speed_spinbox is None
+        assert dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert not saved.has_option("GENERAL", "prior_stage_max_speed")
+
+    def test_shows_the_ini_values_and_their_physical_units(self, qtbot, sample_config, temp_config_file, prior_rig):
+        sample_config.set("GENERAL", "prior_stage_max_speed", "500")
+        sample_config.set("GENERAL", "prior_stage_acceleration", "400")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=_FakePriorStage(500, 400))
+        assert dialog.prior_speed_spinbox.value() == 500
+        assert dialog.prior_accel_spinbox.value() == 400
+        assert dialog.prior_speed_physical_label.text() == "≈ 30.0 mm/s"
+        assert dialog.prior_accel_physical_label.text() == "≈ 114.2 mm/s²"
+        dialog.prior_speed_spinbox.setValue(1000)
+        assert dialog.prior_speed_physical_label.text() == "≈ 60.0 mm/s"
+        assert not [c for c in dialog._get_changes() if c[0] == "Prior Stage Acceleration"]
+
+    def test_range_is_1_to_1000(self, qtbot, sample_config, temp_config_file, prior_rig):
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        for spinbox in (dialog.prior_speed_spinbox, dialog.prior_accel_spinbox):
+            assert (spinbox.minimum(), spinbox.maximum()) == (1, 1000)
+
+    def test_an_out_of_range_ini_value_is_not_reported_as_a_change(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        sample_config.set("GENERAL", "prior_stage_max_speed", "5000")  # the controller would clamp it to 1000
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.prior_speed_spinbox.value() == 1000
+        assert not [c for c in dialog._get_changes() if c[0].startswith("Prior Stage")]
+
+    def test_save_writes_the_ini_and_sends_only_what_changed_to_the_stage(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        import control._def
+
+        stage = _FakePriorStage()
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.prior_speed_spinbox.setValue(500)
+        assert [c for c in dialog._get_changes() if c[0].startswith("Prior Stage")] == [
+            ("Prior Stage Max Speed", "100", "500", False)
+        ]
+        assert dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "prior_stage_max_speed") == "500"
+        assert saved.get("GENERAL", "prior_stage_acceleration") == "100"
+        assert control._def.PRIOR_STAGE_MAX_SPEED == 500
+        assert stage.sent == [("SMS", 500)]
+
+    def test_save_without_a_stage_still_saves(self, qtbot, sample_config, temp_config_file, prior_rig):
+        import control._def
+
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.prior_speed_physical_label.text() == ""
+        dialog.prior_accel_spinbox.setValue(250)
+        assert dialog._apply_settings()
+        assert control._def.PRIOR_STAGE_ACCELERATION == 250
