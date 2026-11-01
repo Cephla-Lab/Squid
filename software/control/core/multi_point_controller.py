@@ -1076,23 +1076,32 @@ class MultiPointController:
 
     def _on_acquisition_completed(self):
         self._log.debug("MultiPointController._on_acquisition_completed called")
+        worker = self.multiPointWorker
+        self.last_end_reason = getattr(worker, "end_reason", None) or "completed"
+        self.last_image_count = int(getattr(worker, "image_count", 0) or 0)
+        # Each group runs even when the other one fails, and the end of the run is reported either way: otherwise the
+        # GUI stays in "acquiring" with no acquisition left to abort (e.g. after the stage stopped answering).
+        for restore in (self._restore_software_state_after_acquisition, self._restore_hardware_after_acquisition):
+            try:
+                restore()
+            except Exception:
+                self._log.exception(f"Restoring after the acquisition failed in {restore.__name__}")
+        # emit the acquisition finished signal to enable the UI
+        self.callbacks.signal_acquisition_finished()
+
+    def _restore_software_state_after_acquisition(self):
+        """The steps that talk to no device, so a dead controller cannot stop them."""
         # Note: Plate views are saved per timepoint in the worker's run_single_time_point method
 
-        # restore the previous selected mode
+        # restore the previous focus map
         if self.gen_focus_map:
             self.autofocusController.clear_focus_map()
             for x, y, z in self.focus_map_storage:
                 self.autofocusController.focus_map_coords.append((x, y, z))
             self.autofocusController.use_focus_map = self.already_using_fmap
-        self.callbacks.signal_current_configuration(self.configuration_before_running_multipoint)
-        self.liveController.set_microscope_mode(self.configuration_before_running_multipoint)
 
         # Restore callbacks to pre-acquisition state
         self.camera.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
-
-        # re-enable live if it's previously on
-        if self.liveController_was_live_before_multipoint and control._def.RESUME_LIVE_AFTER_ACQUISITION:
-            self.liveController.start_live()
 
         # Stop memory monitoring and log final report (in background to not delay acquisition finish)
         if self._memory_monitor is not None:
@@ -1109,15 +1118,21 @@ class MultiPointController:
 
             Thread(target=_stop_monitor_background, daemon=True).start()
 
-        # emit the acquisition finished signal to enable the UI
         self._log.info(f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}")
         utils.create_done_file(os.path.join(self.base_path, self.experiment_ID))
-        worker = self.multiPointWorker
-        self.last_end_reason = getattr(worker, "end_reason", None) or "completed"
-        self.last_image_count = int(getattr(worker, "image_count", 0) or 0)
 
         if self.run_acquisition_current_fov:
             self.run_acquisition_current_fov = False
+
+    def _restore_hardware_after_acquisition(self):
+        """In order, stopping at the first failure: the rest would only wait out timeouts on the same dead device."""
+        # restore the previous selected mode
+        self.callbacks.signal_current_configuration(self.configuration_before_running_multipoint)
+        self.liveController.set_microscope_mode(self.configuration_before_running_multipoint)
+
+        # re-enable live if it's previously on
+        if self.liveController_was_live_before_multipoint and control._def.RESUME_LIVE_AFTER_ACQUISITION:
+            self.liveController.start_live()
 
         if self._start_position:
             x_mm = self._start_position.x_mm
@@ -1131,8 +1146,6 @@ class MultiPointController:
 
         ending_pos = self.stage.get_pos()
         self.callbacks.signal_current_fov(ending_pos.x_mm, ending_pos.y_mm)
-
-        self.callbacks.signal_acquisition_finished()
 
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True

@@ -740,6 +740,61 @@ def test_start_blocker_refuses_an_acquisition_before_anything_moves():
         scope.close()
 
 
+def test_finish_is_reported_when_the_stage_stops_answering_mid_run():
+    """A dead stage controller fails the worker's next move and then the move back to the start position. The run
+    must still report its end, or the GUI stays in "acquiring" with no acquisition left to abort."""
+    import squid.exceptions
+
+    scope, tt, mpc = _controller_with_tracker()
+    real_move_x_to = scope.stage.move_x_to
+    calls = []
+
+    def move_x_to(x_mm, *args, **kwargs):
+        calls.append(x_mm)
+        if len(calls) > 2:
+            raise squid.exceptions.SquidTimeout("stage stopped answering")
+        return real_move_x_to(x_mm, *args, **kwargs)
+
+    with patch.object(scope.stage, "move_x_to", side_effect=move_x_to):
+        mpc.run_acquisition()
+        assert tt.finished_event.wait(30)
+        mpc.thread.join(10)
+
+    assert len(calls) > 3, "the move back to the start position was not attempted"
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "error"
+    assert not mpc.acquisition_in_progress()
+
+
+def test_a_failed_hardware_restore_does_not_skip_the_software_state(tmp_path):
+    """Restoring the mode fails (e.g. the controller is gone). The steps that touch no device - the .done file, the
+    camera's callback flag - must still happen, and the end of the run must still be reported."""
+    import squid.exceptions
+
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.scanCoordinates.remove_region("region_grid")
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("acquisition", add_timestamp=False)
+    scope.camera.enable_callbacks(False)  # run_acquisition() turns them on; the restore must turn them back off
+
+    real_set_mode = mpc.liveController.set_microscope_mode
+
+    def set_mode(*args, **kwargs):
+        if mpc.multiPointWorker is not None and mpc.multiPointWorker.end_reason is not None:
+            raise squid.exceptions.SquidTimeout("controller stopped answering")  # only the post-run restore
+        return real_set_mode(*args, **kwargs)
+
+    with patch.object(mpc.liveController, "set_microscope_mode", side_effect=set_mode):
+        mpc.run_acquisition()
+        assert tt.finished_event.wait(30)
+        mpc.thread.join(10)
+
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "completed"
+    assert (tmp_path / "acquisition" / ".done").exists()
+    assert scope.camera.get_callbacks_enabled() is False
+
+
 @pytest.mark.parametrize("name", ["FROM BOTTOM", "FROM CENTER", "FROM TOP"])
 def test_set_z_stacking_config_takes_the_config_name(name):
     from control.core.multi_point_controller import MultiPointController
