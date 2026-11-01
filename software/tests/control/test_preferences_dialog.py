@@ -5,9 +5,17 @@ from configparser import ConfigParser
 from unittest.mock import patch, MagicMock
 
 import pytest
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QMessageBox
 
 import control.widgets
+
+
+def select_file_saving_option(dialog, option_name):
+    """Choose a File Saving Format by the FileSavingOption name the config stores, not by its label."""
+    index = dialog.file_saving_combo.findData(option_name)
+    assert index >= 0, f"no {option_name} item"
+    dialog.file_saving_combo.setCurrentIndex(index)
 
 
 @pytest.fixture
@@ -234,7 +242,7 @@ class TestIniValuesWithInlineComments:
         dialog = self._dialog(qtbot, sample_config, temp_config_file)
         assert dialog.binning_spinbox.value() == 2
         assert dialog.flexible_multipoint_checkbox.isChecked()
-        assert dialog.file_saving_combo.currentText() == "OME_TIFF"
+        assert dialog.file_saving_combo.currentData() == "OME_TIFF"
 
     def test_saving_does_not_reset_a_commented_value_to_the_default(self, qtbot, sample_config, temp_config_file):
         import control._def
@@ -334,7 +342,7 @@ class TestChangeDetection:
         assert len(changes) == 0
 
     def test_detect_string_change(self, preferences_dialog):
-        preferences_dialog.file_saving_combo.setCurrentText("MULTI_PAGE_TIFF")
+        select_file_saving_option(preferences_dialog, "MULTI_PAGE_TIFF")
         changes = preferences_dialog._get_changes()
         assert any(c[0] == "File Saving Format" for c in changes)
 
@@ -361,7 +369,7 @@ class TestChangeDetection:
         assert binning_change[3] is True  # requires_restart
 
     def test_live_setting_no_restart(self, preferences_dialog):
-        preferences_dialog.file_saving_combo.setCurrentText("MULTI_PAGE_TIFF")
+        select_file_saving_option(preferences_dialog, "MULTI_PAGE_TIFF")
         changes = preferences_dialog._get_changes()
         file_change = next(c for c in changes if c[0] == "File Saving Format")
         assert file_change[3] is False  # does not require restart
@@ -393,7 +401,7 @@ class TestApplySettings:
     """Test settings application."""
 
     def test_apply_settings_saves_to_file(self, preferences_dialog, temp_config_file):
-        preferences_dialog.file_saving_combo.setCurrentText("INDIVIDUAL_IMAGES")
+        select_file_saving_option(preferences_dialog, "INDIVIDUAL_IMAGES")
         preferences_dialog._apply_settings()
 
         # Read back the file
@@ -446,7 +454,7 @@ class TestSaveAndCloseWorkflow:
 
     def test_save_and_close_single_change_no_restart(self, qtbot, preferences_dialog, temp_config_file):
         """Single change that doesn't require restart should save silently."""
-        preferences_dialog.file_saving_combo.setCurrentText("MULTI_PAGE_TIFF")
+        select_file_saving_option(preferences_dialog, "MULTI_PAGE_TIFF")
 
         # Mock accept to track if dialog closes
         preferences_dialog.accept = MagicMock()
@@ -475,7 +483,7 @@ class TestSaveAndCloseWorkflow:
 
     def test_save_and_close_multiple_changes_accepted(self, qtbot, preferences_dialog, temp_config_file):
         """Multiple changes should show confirmation dialog."""
-        preferences_dialog.file_saving_combo.setCurrentText("MULTI_PAGE_TIFF")
+        select_file_saving_option(preferences_dialog, "MULTI_PAGE_TIFF")
         preferences_dialog.binning_spinbox.setValue(4)
 
         # Mock the confirmation dialog to return Accepted
@@ -494,7 +502,7 @@ class TestSaveAndCloseWorkflow:
 
     def test_save_and_close_multiple_changes_cancelled(self, qtbot, preferences_dialog, temp_config_file):
         """When user cancels confirmation dialog, settings should not be saved."""
-        preferences_dialog.file_saving_combo.setCurrentText("MULTI_PAGE_TIFF")
+        select_file_saving_option(preferences_dialog, "MULTI_PAGE_TIFF")
         preferences_dialog.binning_spinbox.setValue(4)
 
         # Mock the confirmation dialog to return Rejected (cancelled)
@@ -516,7 +524,7 @@ class TestUIInitialization:
     """Test UI is properly initialized from config."""
 
     def test_file_saving_combo_initialized(self, preferences_dialog):
-        assert preferences_dialog.file_saving_combo.currentText() == "OME_TIFF"
+        assert preferences_dialog.file_saving_combo.currentData() == "OME_TIFF"
 
     def test_saving_path_initialized(self, preferences_dialog):
         assert preferences_dialog.saving_path_edit.text() == "/test/path"
@@ -532,6 +540,78 @@ class TestUIInitialization:
 
     def test_af_threshold_initialized(self, preferences_dialog):
         assert preferences_dialog.af_stop_threshold.value() == 0.85
+
+
+class TestFileSavingLabels:
+    """Each format shows a readable label but is still stored by its FileSavingOption name
+    (ZARR_V3 shows as "OME-Zarr 0.5"), so existing config files keep working."""
+
+    def test_each_format_shows_a_label_and_keeps_its_stored_name(self, preferences_dialog):
+        combo = preferences_dialog.file_saving_combo
+
+        assert [(combo.itemText(i), combo.itemData(i)) for i in range(combo.count())] == [
+            ("Individual images", "INDIVIDUAL_IMAGES"),
+            ("Multi-page TIFF", "MULTI_PAGE_TIFF"),
+            ("OME-TIFF", "OME_TIFF"),
+            ("OME-Zarr 0.5", "ZARR_V3"),
+        ]
+
+    def test_zarr_v3_in_config_is_shown_as_ome_zarr(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "file_saving_option", "ZARR_V3")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        assert dialog.file_saving_combo.currentText() == "OME-Zarr 0.5"
+        assert not [c for c in dialog._get_changes() if c[0] == "File Saving Format"]
+
+    def test_choosing_ome_zarr_saves_and_applies_zarr_v3(self, qtbot, preferences_dialog, temp_config_file):
+        import control._def
+
+        original = control._def.FILE_SAVING_OPTION
+        try:
+            select_file_saving_option(preferences_dialog, "ZARR_V3")
+            preferences_dialog.accept = MagicMock()
+            preferences_dialog._save_and_close()
+
+            saved = ConfigParser()
+            saved.read(temp_config_file)
+            assert saved.get("GENERAL", "file_saving_option") == "ZARR_V3"
+            assert control._def.FILE_SAVING_OPTION is control._def.FileSavingOption.ZARR_V3
+        finally:
+            control._def.FILE_SAVING_OPTION = original
+
+    def test_ome_zarr_shows_the_zarr_compression_option(self, preferences_dialog):
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
+
+        assert preferences_dialog.zarr_compression_combo.isVisibleTo(preferences_dialog)
+
+    def test_ome_zarr_tooltip_names_the_spec_and_zarr_versions(self, preferences_dialog):
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
+
+        assert "OME-Zarr 0.5 (Zarr v3)" in preferences_dialog.file_saving_combo.toolTip()
+
+    def test_tooltip_clears_when_a_tiff_format_is_chosen(self, preferences_dialog):
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
+        select_file_saving_option(preferences_dialog, "OME_TIFF")
+
+        assert preferences_dialog.file_saving_combo.toolTip() == ""
+
+    def test_tooltip_says_6d_output_is_not_ome_zarr(self, preferences_dialog):
+        combo = preferences_dialog.file_saving_combo
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
+
+        preferences_dialog.zarr_6d_fov_checkbox.setChecked(True)
+        assert "not OME-Zarr" in combo.toolTip()
+        assert "not OME-Zarr" in combo.itemData(combo.findData("ZARR_V3"), Qt.ToolTipRole)
+
+        preferences_dialog.zarr_6d_fov_checkbox.setChecked(False)
+        assert "not OME-Zarr" not in combo.toolTip()
+
+    def test_change_list_shows_the_labels(self, preferences_dialog):
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
+
+        change = next(c for c in preferences_dialog._get_changes() if c[0] == "File Saving Format")
+        assert change[1:3] == ("OME-TIFF", "OME-Zarr 0.5")
 
 
 class TestFileSavingOptionFallback:
@@ -558,7 +638,7 @@ class TestFileSavingOptionFallback:
             dialog = control.widgets.PreferencesDialog(config_without_file_saving_option, temp_config_file)
             qtbot.addWidget(dialog)
 
-            assert dialog.file_saving_combo.currentText() == "MULTI_PAGE_TIFF"
+            assert dialog.file_saving_combo.currentData() == "MULTI_PAGE_TIFF"
             assert not dialog._get_changes(), "Untouched dialog must not report a format change"
         finally:
             control._def.FILE_SAVING_OPTION = original
@@ -594,7 +674,7 @@ class TestFileSavingOptionFallback:
             dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
             qtbot.addWidget(dialog)
 
-            assert dialog.file_saving_combo.currentText() == "OME_TIFF"
+            assert dialog.file_saving_combo.currentData() == "OME_TIFF"
         finally:
             control._def.FILE_SAVING_OPTION = original
 
@@ -899,13 +979,14 @@ class TestTiffCompressionSetting:
         assert not [c for c in dialog._get_changes() if c[0] == "TIFF Compression Level"]
 
     def test_only_shown_for_the_formats_that_support_it(self, preferences_dialog):
-        for file_saving_option, visible in (
-            ("INDIVIDUAL_IMAGES", True),
-            ("MULTI_PAGE_TIFF", True),
-            ("OME_TIFF", False),  # written through a memmap, which can't be compressed
-            ("ZARR_V3", False),
+        for file_saving_label, visible in (
+            ("Individual images", True),
+            ("Multi-page TIFF", True),
+            ("OME-TIFF", False),  # written through a memmap, which can't be compressed
+            ("OME-Zarr 0.5", False),
         ):
-            preferences_dialog.file_saving_combo.setCurrentText(file_saving_option)
+            preferences_dialog.file_saving_combo.setCurrentText(file_saving_label)
+            assert preferences_dialog.file_saving_combo.currentText() == file_saving_label
             assert preferences_dialog.tiff_compression_spinbox.isVisibleTo(preferences_dialog) is visible
             assert preferences_dialog.tiff_compression_label.isVisibleTo(preferences_dialog) is visible
 
