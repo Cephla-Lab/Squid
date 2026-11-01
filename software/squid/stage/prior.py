@@ -4,18 +4,34 @@ import threading
 import time
 import re
 
+import squid.ftdi
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
 
 
 class PriorStage(AbstractStage):
     POS_POLLING_PERIOD = 0.25
+    # How often wait_for_stop() asks the controller whether the move is done. With replies read up to their CR
+    # terminator a "$,S" round trip is a few ms, so polling this fast costs nothing and cuts dead time after a move.
+    MOVE_POLLING_PERIOD = 0.01
 
-    def __init__(self, sn: str, baudrate: int = 115200, stage_config: StageConfig = None):
+    def __init__(
+        self,
+        sn: str,
+        baudrate: int = 115200,
+        stage_config: StageConfig = None,
+        max_speed: int = 100,
+        acceleration: int = 100,
+    ):
+        """max_speed (SMS) and acceleration (SAS) are in the controller's 1-1000 scale. On the H117(1MM) stage
+        100 is 6 mm/s and 28.6 mm/s^2, 1000 is 60 mm/s and 285.5 mm/s^2 (read back with "SMS,u" / "SAS,u")."""
         # We are not using StageConfig for Prior stage now. Waiting for further update/clarification of this part
         super().__init__(stage_config)
 
         port = [p.device for p in serial.tools.list_ports.comports() if sn == p.serial_number]
+        # Every move is several short request/reply exchanges, so the FTDI latency timer sets their cost
+        # (16 ms default vs ~2 ms at 1 ms).
+        squid.ftdi.warn_if_latency_timer_high(port[0], "Prior stage", self._log)
         self.serial = serial.Serial(port[0], baudrate=baudrate, timeout=0.1)
         self.current_baudrate = baudrate
 
@@ -40,8 +56,8 @@ class PriorStage(AbstractStage):
         self.resolution = 0.1
         self.x_direction = 1  # 1 or -1
         self.y_direction = 1  # 1 or -1
-        self.speed = 100
-        self.acceleration = 100
+        self.speed = max_speed
+        self.acceleration = acceleration
 
         self.serial_lock = threading.Lock()
         self.is_busy = False
@@ -125,16 +141,41 @@ class PriorStage(AbstractStage):
         self._get_pos_poll_stage()
         self._ensure_pos_polling_thread()
 
+    def _read_reply_line(self) -> str:
+        # The ProScan terminates every reply with a bare CR. readline() waits for LF, which never comes, so it
+        # always ran out the full serial timeout (~110 ms per command, several commands per axis move).
+        return self.serial.read_until(b"\r").decode(errors="replace").strip()
+
     def _send_command(self, command: str) -> str:
         with self.serial_lock:
+            # Drop anything stale (e.g. a reply that arrived after an earlier read timed out) so it can't be taken
+            # as this command's answer.
+            self.serial.reset_input_buffer()
             self.serial.write(f"{command}\r".encode())
-            response = self.serial.readline().decode().strip()
+            response = self._read_reply_line()
             if response.startswith("E"):
                 raise Exception(f"Error from controller: {response}")
             return response
 
+    def _send_multiline_command(self, command: str) -> list:
+        """For commands like STAGE whose reply is several CR-terminated lines closed by an END line."""
+        with self.serial_lock:
+            self.serial.reset_input_buffer()
+            self.serial.write(f"{command}\r".encode())
+            lines = []
+            while True:
+                line = self._read_reply_line()
+                if not line:
+                    break
+                if line.startswith("E") and not lines:
+                    raise Exception(f"Error from controller: {line}")
+                lines.append(line)
+                if line == "END":
+                    break
+            return lines
+
     def get_stage_info(self):
-        stage_info = self._send_command("STAGE")
+        stage_info = "\n".join(self._send_multiline_command("STAGE"))
         self.stage_model = re.search(r"STAGE\s*=\s*(\S+)", stage_info).group(1)
         print("Stage model: ", self.stage_model)
 
@@ -278,13 +319,14 @@ class PriorStage(AbstractStage):
     def wait_for_stop(self):
         self.is_busy = True
         while True:
-            status = int(self._send_command("$,S"))
-            if status == 0:
+            status = self._send_command("$,S")
+            # A non-numeric reply is a stray line (not a status), so just ask again.
+            if status.isdigit() and int(status) == 0:
                 self._get_pos_poll_stage()
                 # print("xy position: ", self.x_pos, self.y_pos)
                 self.is_busy = False
                 break
-            time.sleep(0.05)
+            time.sleep(PriorStage.MOVE_POLLING_PERIOD)
 
     def set_limits(
         self,
