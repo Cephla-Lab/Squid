@@ -1,3 +1,6 @@
+import errno
+import glob
+import io
 import os
 import sys
 import tempfile
@@ -437,6 +440,28 @@ class TestApplySettings:
                 mock_warning.assert_called_once()
         finally:
             os.chmod(temp_config_file, 0o644)
+
+    def test_a_write_that_fails_part_way_leaves_the_file_as_it_was(
+        self, preferences_dialog, temp_config_file, monkeypatch
+    ):
+        with open(temp_config_file) as f:
+            before = f.read()
+        write = ConfigParser.write
+
+        def disk_full_part_way(config, fp, *args, **kwargs):
+            if isinstance(fp, io.StringIO):  # the dialog's copy of the config, kept in case the save fails
+                return write(config, fp, *args, **kwargs)
+            fp.write("[GENERAL]\n")
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(ConfigParser, "write", disk_full_part_way)
+        select_file_saving_option(preferences_dialog, "INDIVIDUAL_IMAGES")
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not preferences_dialog._apply_settings()
+        mock_warning.assert_called_once()
+        with open(temp_config_file) as f:
+            assert f.read() == before
+        assert not glob.glob(glob.escape(temp_config_file) + ".*.tmp")
 
     def test_apply_settings_emits_signal(self, qtbot, preferences_dialog):
         """Verify signal_config_changed is emitted when settings are saved."""

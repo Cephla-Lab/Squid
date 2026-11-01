@@ -272,16 +272,29 @@ class AndorCamera(AbstractCamera):
         return self._strobe_delay_us / 1000.0  # Convert to ms
 
     def _calculate_strobe_delay(self):
-        try:
-            self._line_rate_us = 1 / self._camera.LineScanSpeed * 1000000
-            self._log.info(f"Line rate: {self._line_rate_us} us")
-        except Exception as e:
-            self._log.error(f"Could not determine line rate: {e}")
-            self._line_rate_us = None
+        """The rolling shutter's sweep over the AOI. In hardware trigger mode the light waits this long after the
+        trigger, until every row is exposing, and the camera's exposure is this much longer than the light's."""
+        sweep_us = self._readout_sweep_us()
+        if sweep_us is not None:
+            self._strobe_delay_us = int(sweep_us)
+            self._log.info(f"Readout sweep (strobe delay): {self._strobe_delay_us} us")
 
-        if self._line_rate_us is not None:
-            # Rolling shutter: the readout spans the rows of the current AOI
-            self._strobe_delay_us = int(self._line_rate_us * int(self._camera.AOIHeight))
+    def _readout_sweep_us(self) -> Optional[float]:
+        try:
+            # The default readout modes ("Centre Out Simultaneous" on a Zyla) read the two sensor halves at once,
+            # so the sweep is half the rows' worth, not all of them. ReadoutTime follows the AOI and the readout
+            # rate (Zyla 4.2 PLUS, full frame: 24.6 ms at 100 MHz, 9.8 ms at 270 MHz).
+            if "Simultaneous" in self._camera.SensorReadoutMode:
+                return self._camera.ReadoutTime * 1e6
+        except Exception as e:
+            self._log.debug(f"Readout mode or time unavailable ({e}); counting the sweep row by row")
+        try:
+            # A sequential readout sweeps the AOI's rows one after another. ReadoutTime still reports the
+            # simultaneous time in these modes (the frame rate halves, ReadoutTime stays), so count rows instead.
+            return 1e6 / self._camera.LineScanSpeed * int(self._camera.AOIHeight)
+        except Exception as e:
+            self._log.error(f"Could not determine the readout time: {e}")
+            return None
 
     def set_frame_format(self, frame_format: CameraFrameFormat):
         if frame_format != CameraFrameFormat.RAW:
