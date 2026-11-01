@@ -135,6 +135,46 @@ def test_acquisition_finished_flushes_napari_multichannel_viewer(qtbot, monkeypa
     assert calls == [win.napariMultiChannelWidget] * 3
 
 
+def _gui_with_live_started_from_the_button(qtbot):
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    win.liveControlWidget.btn_live.click()
+    assert win.liveController.is_live and win.liveControlWidget.btn_live.isChecked()
+    return win
+
+
+def test_live_button_shows_live_off_when_an_acquisition_stops_it(qtbot, confirm_exit_yes):
+    """MultiPointController stops live itself, for GUI, TCP and fluidics runs alike: the button must follow."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    button = win.liveControlWidget.btn_live
+
+    win.liveController.stop_live()  # what run_acquisition does before the worker starts
+    win.multipointController.signal_acquisition_start.emit()
+
+    assert not button.isChecked()
+    assert button.text() == "Live"
+
+
+def test_live_button_follows_live_at_the_end_of_an_acquisition(qtbot, confirm_exit_yes):
+    """A run that fails to start reports only the finish; an INI-enabled resume turns live back on before it."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    button = win.liveControlWidget.btn_live
+
+    win.liveController.stop_live()
+    win.multipointController.acquisition_finished.emit()
+    assert not button.isChecked()
+    assert button.text() == "Live"
+
+    win.liveController.start_live()  # resume_live_after_acquisition = True
+    try:
+        win.multipointController.acquisition_finished.emit()
+        assert button.isChecked()
+        assert button.text() == "Stop"
+    finally:
+        win.liveController.stop_live()
+
+
 def test_image_display_signals_connected_once(qtbot, monkeypatch, confirm_exit_yes):
     """Regression: make_connections and makeNapariConnections both used to wire the
     non-Napari image-display signals, causing slots to fire twice per click/scroll."""

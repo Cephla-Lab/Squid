@@ -961,7 +961,9 @@ USE_OVERLAP_FOR_FLEXIBLE = True
 ENABLE_WELLPLATE_MULTIPOINT = True
 ENABLE_RECORDING = False
 
-RESUME_LIVE_AFTER_ACQUISITION = True
+# Live is off after an acquisition, whatever it was before. Set resume_live_after_acquisition = True
+# in the [GENERAL] section of the machine INI to turn live back on when it was on before the run.
+RESUME_LIVE_AFTER_ACQUISITION = False
 
 # When enabled, each multipoint acquisition will write a second log file scoped to that acquisition at:
 #   <base_path>/<experiment_ID>/acquisition.log

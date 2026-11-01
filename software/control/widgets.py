@@ -5299,6 +5299,10 @@ class LiveControlWidget(QFrame):
             # sample is already being exposed.
             _sync_live_button(self, "Stop", "Live", self.btn_snap)
 
+    def sync_live_button(self):
+        """Show the live state after something other than this button changed it (an acquisition)."""
+        _sync_live_button(self, "Stop", "Live", self.btn_snap)
+
     def snap(self):
         """Acquire and display one frame with the current live configuration."""
         if self.liveController.is_live:
