@@ -20,6 +20,8 @@ def test_acquisition_parameters_has_region_offsets_field():
 
 
 class _BuildParamsStub:
+    laser_af_per_stack = False  # read by the params build like the other flags
+
     """MultiPointController-shaped stub exercising build_params' offset threading in isolation."""
 
     def __init__(self):
@@ -67,6 +69,8 @@ def test_region_offsets_default_factory_is_empty_dict():
 
 
 class _AFStub:
+    _laser_af_anchor = MultiPointWorker._laser_af_anchor  # perform_autofocus delegates to it
+
     """MultiPointWorker-ish object with just what perform_autofocus's laser-AF branch reads."""
 
     def __init__(self, offsets, move_result=True):
