@@ -19,7 +19,7 @@ exclude-newer makes uv ignore releases after that date, so the packages these
 two pull in do not change from run to run; move it forward with the pins.
 
 Exits non-zero if either library fails to open a sample or reads it differently
-from expected.json.
+from expected.json, including the value of one known pixel.
 """
 
 import json
@@ -47,6 +47,12 @@ def check_ngff_zarr_image(path: str, expected: dict) -> None:
     image = multiscales.images[0]
     assert list(image.dims) == ["t", "c", "z", "y", "x"], image.dims
     assert list(image.data.shape) == expected["shape"], image.data.shape
+    check_pixel(image.data[tuple(expected["pixel"]["index"])].compute(), expected)
+
+
+def check_pixel(value, expected: dict) -> None:
+    """The pixel read back is the one written, so the reader decoded the image chunks, not just the metadata."""
+    assert int(value) == expected["pixel"]["value"], (int(value), expected["pixel"])
 
 
 def check_iohub(expected: dict) -> None:
@@ -57,10 +63,12 @@ def check_iohub(expected: dict) -> None:
         assert plate.channel_names == expected["channels"], plate.channel_names
         for _, position in plate.positions():
             assert list(position["0"].shape) == expected["shape"], position["0"].shape
+            check_pixel(position["0"][tuple(expected["pixel"]["index"])], expected)
     for image in expected["images"]:
         with open_ome_zarr(image, mode="r", layout="fov") as position:
             assert position.channel_names == expected["channels"], position.channel_names
             assert list(position["0"].shape) == expected["shape"], position["0"].shape
+            check_pixel(position["0"][tuple(expected["pixel"]["index"])], expected)
 
 
 def main(out_dir: str) -> int:

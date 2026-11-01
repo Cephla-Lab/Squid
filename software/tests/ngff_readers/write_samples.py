@@ -23,6 +23,11 @@ CHANNELS = ["BF LED matrix full", "Fluorescence 488 nm Ex"]
 T_SIZE, Z_SIZE, IMAGE_SHAPE = 1, 3, (64, 64)
 
 
+def pixel_value(c: int, z: int) -> int:
+    """Every pixel of a plane holds this, so a reader that returns the wrong chunk reads a different value."""
+    return 100 * c + z
+
+
 def capture_info(region_id: str, fov: int, z_index: int, config_idx: int) -> CaptureInfo:
     return CaptureInfo(
         position=squid.abc.Pos(x_mm=0.0, y_mm=0.0, z_mm=0.0, theta_rad=None),
@@ -62,7 +67,7 @@ def write_acquisition(base_path: str, is_hcs: bool, region_fov_counts: dict) -> 
                 for z in range(Z_SIZE):
                     job = SaveZarrJob(
                         capture_info=capture_info(region_id, fov, z, c),
-                        capture_image=JobImage(image_array=np.full(IMAGE_SHAPE, 100 * c + z, dtype=np.uint16)),
+                        capture_image=JobImage(image_array=np.full(IMAGE_SHAPE, pixel_value(c, z), dtype=np.uint16)),
                     )
                     job.zarr_writer_info = info
                     job.run()
@@ -82,6 +87,8 @@ def main(out_dir: str) -> None:
         "images": [os.path.join(per_fov_base, "zarr", "region_0", "fov_0.ome.zarr")],
         "channels": CHANNELS,
         "shape": [T_SIZE, len(CHANNELS), Z_SIZE, *IMAGE_SHAPE],
+        # (t, c, z, y, x) of a pixel to read back: channel 1, z 1
+        "pixel": {"index": [0, 1, 1, 0, 0], "value": pixel_value(1, 1)},
     }
     with open(os.path.join(out_dir, "expected.json"), "w") as f:
         json.dump(expected, f, indent=2)
