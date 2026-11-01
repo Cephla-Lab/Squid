@@ -1020,8 +1020,10 @@ class JobRunner(multiprocessing.Process):
             with self._bp_pending_bytes.get_lock():
                 self._bp_pending_bytes.value += image_bytes
 
-        queued_job = self._job_for_queue(job)
+        queued_job = job
         try:
+            # Inside the try so that a failure here (e.g. MemoryError copying the frame) also rolls the counters back.
+            queued_job = self._job_for_queue(job)
             self._input_queue.put_nowait(queued_job)
         except Exception as original_exc:
             self._release_shared_frame(queued_job)
@@ -1048,15 +1050,15 @@ class JobRunner(multiprocessing.Process):
         image = job.capture_image.image_array if job.capture_image is not None else None
         if not isinstance(image, np.ndarray):
             return job
+        # Copy the job before claiming a slot, so that nothing after a successful put() can fail and leak the slot.
+        queued_job = copy.copy(job)
         ref = self._frame_pool.put(image) if self._frame_pool is not None else None
         if ref is not None:
-            queued_image = JobImage(image_array=None, shared_frame=ref)
+            queued_job.capture_image = JobImage(image_array=None, shared_frame=ref)
         elif not image.flags.c_contiguous:
-            queued_image = JobImage(image_array=np.ascontiguousarray(image))
+            queued_job.capture_image = JobImage(image_array=np.ascontiguousarray(image))
         else:
             return job
-        queued_job = copy.copy(job)
-        queued_job.capture_image = queued_image
         return queued_job
 
     def _release_shared_frame(self, job: Job) -> None:

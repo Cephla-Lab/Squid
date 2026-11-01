@@ -6,6 +6,7 @@ dispatch() used to put the frame itself on the multiprocessing queue. Pickling i
 
 import dataclasses
 import pickle
+import queue
 import time
 from dataclasses import dataclass
 from multiprocessing import shared_memory
@@ -270,3 +271,40 @@ def test_close_in_a_process_that_did_not_create_the_memory_does_not_unlink_it():
     finally:
         keep.close()
         keep.unlink()
+
+
+def test_failure_preparing_the_frame_rolls_the_counters_back(monkeypatch):
+    # Pool off, so the frame takes the contiguous-copy path, and that copy runs out of memory.
+    monkeypatch.setattr(_def.Acquisition, "USE_SHARED_MEMORY_FRAME_HANDOFF", False)
+    bp_jobs, bp_bytes, bp_event = create_backpressure_values()
+    runner = JobRunner(bp_pending_jobs=bp_jobs, bp_pending_bytes=bp_bytes, bp_capacity_event=bp_event)
+
+    def out_of_memory(*args, **kwargs):
+        raise MemoryError("simulated")
+
+    monkeypatch.setattr(np, "ascontiguousarray", out_of_memory)
+
+    with pytest.raises(MemoryError):
+        runner.dispatch(make_job(camera_like_frame(seed=10)))
+
+    assert not runner.has_pending()
+    assert bp_jobs.value == 0
+    assert bp_bytes.value == 0
+
+
+def test_failure_after_claiming_a_slot_frees_it(monkeypatch):
+    runner = JobRunner()
+    try:
+
+        def queue_full(job):
+            raise queue.Full
+
+        monkeypatch.setattr(runner._input_queue, "put_nowait", queue_full)
+
+        with pytest.raises(queue.Full):
+            runner.dispatch(make_job(camera_like_frame(seed=11)))
+
+        assert not runner.has_pending()
+        assert runner._frame_pool.free_slot_count() == SHARED_FRAME_POOL_SLOTS
+    finally:
+        runner._frame_pool.close()
