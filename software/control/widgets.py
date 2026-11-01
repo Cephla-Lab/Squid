@@ -1099,7 +1099,13 @@ class AcquisitionYAMLDropMixin:
                 e,
             )
 
-        validation = validate_hardware(yaml_data, self.objectiveStore.current_objective, current_binning)
+        piezo = self.multipointController.piezo
+        validation = validate_hardware(
+            yaml_data,
+            self.objectiveStore.current_objective,
+            current_binning,
+            piezo_travel_um=piezo.range_um if piezo is not None else None,
+        )
 
         if not validation.is_valid:
             dialog = AcquisitionYAMLMismatchDialog(validation, self)
@@ -1114,6 +1120,47 @@ class AcquisitionYAMLDropMixin:
     def _apply_yaml_settings(self, yaml_data):
         """Apply parsed YAML settings to widget controls. Override in subclass."""
         raise NotImplementedError("Subclass must implement _apply_yaml_settings()")
+
+
+class _ZRangeMixin:
+    """Set Z-range entries in the motor the z-stack runs on.
+
+    With "Piezo Z-Stack" checked (always, on a piezo-only scope) the Z-min/Z-max entries are piezo
+    positions in µm and the stepper holds where it is; unchecked, they are stepper z in µm. Host widgets
+    have ``stage``, ``multipointController``, ``checkbox_usePiezo``, ``entry_minZ`` and ``entry_maxZ``.
+    """
+
+    def _stack_z_um(self) -> float:
+        if self.checkbox_usePiezo.isChecked():
+            return self.multipointController.piezo.position
+        return self.stage.get_pos().z_mm * 1000
+
+    def _move_stack_z_to_um(self, z_um: float):
+        if self.checkbox_usePiezo.isChecked():
+            self.multipointController.piezo.move_to(z_um)
+        else:
+            self.stage.move_z_to(z_um / 1000)
+
+    def _reset_z_range_entries(self):
+        """Limit both entries to the stack motor's travel and start them at its current position."""
+        if self.checkbox_usePiezo.isChecked():
+            low_um, high_um = 0.0, self.multipointController.piezo.range_um
+        else:
+            low_um, high_um = SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000, SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
+        z_um = self._stack_z_um()
+        for entry in (self.entry_minZ, self.entry_maxZ):
+            entry.setRange(low_um, high_um)
+            entry.setValue(z_um)
+
+    def _push_set_z_range(self):
+        """Hand the Set Z-range entries to the controller (a piezo range holds the stepper where it is)."""
+        if self.checkbox_usePiezo.isChecked():
+            z_mm = self.stage.get_pos().z_mm
+            self.multipointController.set_z_range(z_mm, z_mm)
+            self.multipointController.set_piezo_z_range_um((self.entry_minZ.value(), self.entry_maxZ.value()))
+        else:
+            self.multipointController.set_z_range(self.entry_minZ.value() / 1000, self.entry_maxZ.value() / 1000)
+            self.multipointController.set_piezo_z_range_um(None)
 
 
 class _LaserAfPerStackMixin:
@@ -7055,32 +7102,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_skipSaving = QCheckBox("Skip Saving")
         self.checkbox_skipSaving.setChecked(False)
 
-        self.checkbox_set_z_range = QCheckBox("Set Z-range")
-        self.checkbox_set_z_range.toggled.connect(self.toggle_z_range_controls)
-
-        # Add new components for Z-range
-        self.entry_minZ = QDoubleSpinBox()
-        self.entry_minZ.setKeyboardTracking(False)
-        self.entry_minZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_minZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
-        self.entry_minZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_minZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to current position
-        self.entry_minZ.setSuffix(" μm")
-        # self.entry_minZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.set_minZ_button = QPushButton("Set")
-        self.set_minZ_button.clicked.connect(self.set_z_min)
-
-        self.entry_maxZ = QDoubleSpinBox()
-        self.entry_maxZ.setKeyboardTracking(False)
-        self.entry_maxZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_maxZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
-        self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_maxZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to current position
-        self.entry_maxZ.setSuffix(" μm")
-        # self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.set_maxZ_button = QPushButton("Set")
-        self.set_maxZ_button.clicked.connect(self.set_z_max)
-
         self.combobox_z_stack = QComboBox()
         for label, z_stacking_config in _Z_STACKING_CHOICES:
             self.combobox_z_stack.addItem(label, z_stacking_config)
@@ -7214,21 +7235,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.grid_acquisition.addLayout(dz_half, 4, 0, 1, 4)
         self.grid_acquisition.addLayout(dt_half, 4, 4, 1, 4)
 
-        self.z_min_layout = QHBoxLayout()
-        self.z_min_layout.addWidget(self.set_minZ_button)
-        self.z_min_layout.addWidget(QLabel("Z-min"), Qt.AlignRight)
-        self.z_min_layout.addWidget(self.entry_minZ)
-        self.z_min_layout.addSpacing(EDGE_SPACING)
-
-        self.z_max_layout = QHBoxLayout()
-        self.z_max_layout.addSpacing(EDGE_SPACING)
-        self.z_max_layout.addWidget(self.set_maxZ_button)
-        self.z_max_layout.addWidget(QLabel("Z-max"), Qt.AlignRight)
-        self.z_max_layout.addWidget(self.entry_maxZ)
-
-        self.grid_acquisition.addLayout(self.z_min_layout, 5, 0, 1, 4)  # hide this in toggle
-        self.grid_acquisition.addLayout(self.z_max_layout, 5, 4, 1, 4)  # hide this in toggle
-
         grid_af = QVBoxLayout()
         grid_af.addWidget(self.checkbox_withAutofocus)
         if SUPPORT_LASER_AUTOFOCUS:
@@ -7242,7 +7248,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             if IS_PIEZO_ONLY:
                 self.checkbox_usePiezo.setChecked(True)
                 self.checkbox_usePiezo.setVisible(False)
-        grid_af.addWidget(self.checkbox_set_z_range)
         grid_af.addWidget(self.checkbox_skipSaving)
 
         grid_config = QHBoxLayout()
@@ -7347,7 +7352,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.shortcut = QShortcut(QKeySequence(";"), self)
         self.shortcut.activated.connect(self.btn_add.click)
 
-        self.toggle_z_range_controls(False)
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
 
@@ -7367,97 +7371,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)
         self._update_laser_af_per_stack_state()
 
-    def toggle_z_range_controls(self, state):
-        is_visible = bool(state)
-
-        # Hide/show widgets in z_min_layout
-        for i in range(self.z_min_layout.count()):
-            widget = self.z_min_layout.itemAt(i).widget()
-            if widget is not None:
-                widget.setVisible(is_visible)
-            widget = self.z_max_layout.itemAt(i).widget()
-            if widget is not None:
-                widget.setVisible(is_visible)
-
-        # Disable reflection autofocus checkbox if Z-range is visible
-        self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
-        # Enable/disable NZ entry based on the inverse of is_visible
-        self.entry_NZ.setEnabled(not is_visible)
-        # An explicit range runs from Z-min up, so the From Bottom/Center/Top choice does not apply.
-        self.combobox_z_stack.setEnabled(not is_visible)
-        current_z = self.stage.get_pos().z_mm * 1000
-        self.entry_minZ.setValue(current_z)
-        if is_visible:
-            self._reset_reflection_af_reference()
-        self.entry_maxZ.setValue(current_z)
-
-        if not is_visible:
-            try:
-                self.entry_minZ.valueChanged.disconnect(self.update_z_max)
-                self.entry_maxZ.valueChanged.disconnect(self.update_z_min)
-                self.entry_minZ.valueChanged.disconnect(self.update_Nz)
-                self.entry_maxZ.valueChanged.disconnect(self.update_Nz)
-                self.entry_deltaZ.valueChanged.disconnect(self.update_Nz)
-            except:
-                pass
-            # When Z-range is not specified, set Z-min and Z-max to current Z position
-            current_z = self.stage.get_pos().z_mm * 1000
-            self.entry_minZ.setValue(current_z)
-            self.entry_maxZ.setValue(current_z)
-        else:
-            self.entry_minZ.valueChanged.connect(self.update_z_max)
-            self.entry_maxZ.valueChanged.connect(self.update_z_min)
-            self.entry_minZ.valueChanged.connect(self.update_Nz)
-            self.entry_maxZ.valueChanged.connect(self.update_Nz)
-            self.entry_deltaZ.valueChanged.connect(self.update_Nz)
-
-        # Update the layout
-        self.grid.update()
-        self.updateGeometry()
-        self.update()
-
-    def init_z(self, z_pos_mm=None):
-        if z_pos_mm is None:
-            z_pos_mm = self.stage.get_pos().z_mm
-
-        # block entry update signals
-        self.entry_minZ.blockSignals(True)
-        self.entry_maxZ.blockSignals(True)
-
-        # set entry range values bith to current z pos
-        self.entry_minZ.setValue(z_pos_mm * 1000)
-        self.entry_maxZ.setValue(z_pos_mm * 1000)
-        print("init z-level flexible:", self.entry_minZ.value())
-
-        # reallow updates from entry sinals (signal enforces min <= max when we update either entry)
-        self.entry_minZ.blockSignals(False)
-        self.entry_maxZ.blockSignals(False)
-
-    def set_z_min(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
-        self.entry_minZ.setValue(z_value)
-        self._reset_reflection_af_reference()
-
-    def set_z_max(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
-        self.entry_maxZ.setValue(z_value)
-
-    def update_z_min(self, z_pos_um):
-        if z_pos_um < self.entry_minZ.value():
-            self.entry_minZ.setValue(z_pos_um)
-            self._reset_reflection_af_reference()
-
-    def update_z_max(self, z_pos_um):
-        if z_pos_um > self.entry_maxZ.value():
-            self.entry_maxZ.setValue(z_pos_um)
-
-    def _reset_reflection_af_reference(self):
-        if (
-            self.checkbox_withReflectionAutofocus.isChecked()
-            and not self.multipointController.laserAutoFocusController.set_reference()
-        ):
-            error_dialog("Failed to set reference for reflection autofocus. Is the laser autofocus initialized?")
-
     def update_z(self):
         z_mm = self.stage.get_pos().z_mm
         index = self.dropdown_location_list.currentIndex()
@@ -7469,13 +7382,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         ]
         location_str = f"x:{round(self.location_list[index,0],3)} mm  y:{round(self.location_list[index,1],3)} mm  z:{round(z_mm * 1000.0,3)} μm"
         self.dropdown_location_list.setItemText(index, location_str)
-
-    def update_Nz(self):
-        z_min = self.entry_minZ.value()
-        z_max = self.entry_maxZ.value()
-        dz = self.entry_deltaZ.value()
-        nz = math.ceil((z_max - z_min) / dz) + 1
-        self.entry_NZ.setValue(nz)
 
     def update_region_progress(self, current_fov, num_fovs):
         self._log.debug(f"Updating region progress for {current_fov=}, {num_fovs=}")
@@ -7620,16 +7526,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         No dialogs, no start_new_experiment, no run - the Start button and the fluidics protocol's
         "Apply current settings" share this. Returns None, or a reason nothing further should happen.
         """
-        if self.checkbox_set_z_range.isChecked():
-            # Set Z-range (convert from μm to mm)
-            minZ = self.entry_minZ.value() / 1000
-            maxZ = self.entry_maxZ.value() / 1000
-            self.multipointController.set_z_range(minZ, maxZ)
-        else:
-            z = self.stage.get_pos().z_mm
-            dz = self.entry_deltaZ.value()
-            Nz = self.entry_NZ.value()
-            self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
+        # No Set Z-range in this tab: locations keep their own z, the stack is dz & Nz from the current z
+        # (Hongquan, 2026-10-31). A piezo range left by the Wellplate tab must not leak into this run.
+        z = self.stage.get_pos().z_mm
+        dz = self.entry_deltaZ.value()
+        Nz = self.entry_NZ.value()
+        self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))  # dz is in um, z in mm
+        self.multipointController.set_piezo_z_range_um(None)
 
         if self.checkbox_useFocusMap.isChecked():
             self.focusMapWidget.fit_surface()
@@ -7640,9 +7543,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         # Set acquisition parameters
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
-        self.multipointController.set_z_stacking_config(
-            "FROM BOTTOM" if self.checkbox_set_z_range.isChecked() else self.combobox_z_stack.currentData()
-        )
+        self.multipointController.set_z_stacking_config(self.combobox_z_stack.currentData())
         self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
@@ -8110,6 +8011,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
+        self.multipointController.set_piezo_z_range_um(None)
 
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
@@ -8189,7 +8091,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withAutofocus.setEnabled(enabled)
         self.checkbox_withReflectionAutofocus.setEnabled(enabled)
         self.checkbox_stitchOutput.setEnabled(enabled)
-        self.checkbox_set_z_range.setEnabled(enabled)
 
         if exclude_btn_startAcquisition is not True:
             self.btn_startAcquisition.setEnabled(enabled)
@@ -8387,7 +8288,9 @@ def _warn_if_coordinates_stale(widget, stamp):
         QMessageBox.warning(widget, "Coordinates may be stale", stale)
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, QFrame):
+class WellplateMultiPointWidget(
+    AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, _ZRangeMixin, QFrame
+):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
@@ -8522,10 +8425,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # Add z-min and z-max entries
         self.entry_minZ = QDoubleSpinBox()
         self.entry_minZ.setKeyboardTracking(False)
-        self.entry_minZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_minZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_minZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_minZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to minimum
         self.entry_minZ.setSuffix(" μm")
         # self.entry_minZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -8538,10 +8438,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.entry_maxZ = QDoubleSpinBox()
         self.entry_maxZ.setKeyboardTracking(False)
-        self.entry_maxZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_maxZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_maxZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to maximum
         self.entry_maxZ.setSuffix(" μm")
         # self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -8635,6 +8532,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
         self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
+        self._reset_z_range_entries()  # the entries above follow the motor the stack runs on
 
         self.checkbox_stitchOutput = QCheckBox("Stitch Scans")
         self.checkbox_stitchOutput.setChecked(False)
@@ -8953,6 +8851,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_useFocusMap.toggled.connect(self.multipointController.set_manual_focus_map_flag)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
+        self.checkbox_usePiezo.toggled.connect(self._on_stack_motor_changed)
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
@@ -9555,6 +9454,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.stored_z_params["z_max"] = self.entry_maxZ.value()
         self.stored_z_params["z_mode"] = self.combobox_z_mode.currentText()
 
+    def _on_stack_motor_changed(self):
+        """A range recorded on one motor means nothing on the other: restart it at the new motor's position."""
+        self.stored_z_params["z_min"] = self.stored_z_params["z_max"] = None
+        self._reset_z_range_entries()
+
     def restore_z_parameters(self):
         """Restore stored Z parameters when showing controls"""
         if self.stored_z_params["dz"] is not None:
@@ -9584,7 +9488,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                     widget.setVisible(False)
 
         # Set single-slice parameters
-        current_z = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        current_z = self._stack_z_um()
         self.entry_NZ.setValue(1)
         self.entry_minZ.setValue(current_z)
         self.entry_maxZ.setValue(current_z)
@@ -9779,7 +9683,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
-        current_z = self.stage.get_pos().z_mm * 1000
+        current_z = self._stack_z_um()
         self.entry_minZ.setValue(current_z)
         if is_visible:
             self._reset_reflection_af_reference()
@@ -9926,21 +9830,19 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_NZ.setValue(nz)
 
     def set_z_min(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        z_value = self._stack_z_um()
         self.entry_minZ.setValue(z_value)
         self._reset_reflection_af_reference()
 
     def set_z_max(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        z_value = self._stack_z_um()
         self.entry_maxZ.setValue(z_value)
 
     def goto_z_min(self):
-        z_value_mm = self.entry_minZ.value() / 1000  # Convert from μm to mm
-        self.stage.move_z_to(z_value_mm)
+        self._move_stack_z_to_um(self.entry_minZ.value())
 
     def goto_z_max(self):
-        z_value_mm = self.entry_maxZ.value() / 1000  # Convert from μm to mm
-        self.stage.move_z_to(z_value_mm)
+        self._move_stack_z_to_um(self.entry_maxZ.value())
 
     def update_z_min(self, z_pos_um):
         if z_pos_um < self.entry_minZ.value():
@@ -9961,18 +9863,17 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             if was_live:
                 self.liveController.start_live()
 
-    def init_z(self, z_pos_mm=None):
+    def init_z(self):
         # sets initial z range form the current z position used after startup of the GUI
-        if z_pos_mm is None:
-            z_pos_mm = self.stage.get_pos().z_mm
+        z_um = self._stack_z_um()
 
         # block entry update signals
         self.entry_minZ.blockSignals(True)
         self.entry_maxZ.blockSignals(True)
 
         # set entry range values bith to current z pos
-        self.entry_minZ.setValue(z_pos_mm * 1000)
-        self.entry_maxZ.setValue(z_pos_mm * 1000)
+        self.entry_minZ.setValue(z_um)
+        self.entry_maxZ.setValue(z_um)
         self._log.debug(f"Init z-level wellplate: {self.entry_minZ.value()}")
 
         # reallow updates from entry sinals (signal enforces min <= max when we update either entry)
@@ -10089,17 +9990,16 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.scanCoordinates.sort_coordinates()
 
-        if self.combobox_z_mode.currentText() == "Set Range":
-            # Set Z-range (convert from μm to mm)
-            minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
-            maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
-            self.multipointController.set_z_range(minZ, maxZ)
-            self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
+        # Unchecking Z leaves the Z mode as it was (Nz = 1), so a "Set Range" there only counts with Z checked
+        if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() == "Set Range":
+            self._push_set_z_range()
+            self._log.debug(f"Set z-range: ({self.entry_minZ.value()}, {self.entry_maxZ.value()}) µm")
         else:
             z = self.stage.get_pos().z_mm
             dz = self.entry_deltaZ.value()
             Nz = self.entry_NZ.value()
             self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))  # dz is in um, z in mm
+            self.multipointController.set_piezo_z_range_um(None)
 
         if self.checkbox_useFocusMap.isChecked():
             # Try to fit the surface; on success set the surface fitter in the controller
@@ -10273,8 +10173,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             # Restore Z controls based on Z mode
             if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() == "Set Range":
-                # In Set Range mode, Nz should be disabled
+                # In Set Range mode, Nz comes from the range, and laser AF stays off (see toggle_z_range_controls)
                 self.entry_NZ.setEnabled(False)
+                self.checkbox_withReflectionAutofocus.setEnabled(False)
 
             # Restore coverage based on XY mode
             if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position":
@@ -10317,6 +10218,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
+        self.multipointController.set_piezo_z_range_um(None)
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
         self.multipointController.run_acquisition(acquire_current_fov=True)
@@ -10508,6 +10410,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         for widget in widgets_to_block:
             widget.blockSignals(True)
 
+        # Only a piezo range marks Set Range in the YAML: z_range_mm is written for every z mode.
+        piezo_z_range_um = yaml_data.piezo_z_range_um if yaml_data.use_piezo else None
+
         try:
             # Z-stack settings
             self.checkbox_z.setChecked(yaml_data.nz > 1)
@@ -10515,8 +10420,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
             self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
 
-            # Z mode - the YAML's z-stacking config as the dropdown shows it
-            self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(yaml_data.z_stacking_config))
+            # Z mode - Set Range for a saved piezo range, otherwise the YAML's z-stacking config as the dropdown shows it
+            if piezo_z_range_um is not None:
+                self.combobox_z_mode.setCurrentText("Set Range")
+            else:
+                self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(yaml_data.z_stacking_config))
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
@@ -10563,6 +10471,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 widget.blockSignals(False)
             self._update_laser_af_per_stack_state()  # the loaded checkbox state, under the rule
 
+            # The Piezo Z-Stack checkbox changed with its signals blocked: give the Z-min/Z-max entries
+            # the loaded motor's travel limits (its toggled handler does this on a click).
+            self._on_stack_motor_changed()
+
             # Enable/disable mode dropdowns based on checkbox states
             self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
             self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
@@ -10572,6 +10484,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.update_control_visibility()
             self.update_tab_styles()
             self.update_coordinates()
+
+            # After update_control_visibility, which starts both entries at the current position
+            if piezo_z_range_um is not None:
+                self.entry_minZ.setValue(piezo_z_range_um[0])
+                self.entry_maxZ.setValue(piezo_z_range_um[1])
 
     def _load_well_regions(self, regions):
         """Load well regions from YAML and select them in the well selector."""

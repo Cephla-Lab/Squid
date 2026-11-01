@@ -192,6 +192,7 @@ class MultiPointWorker:
         # Z First only: laser AF before each later channel's stack (the first channel keeps the per-FOV AF).
         self.laser_af_per_stack = acquisition_parameters.laser_af_per_stack
         self.z_range = acquisition_parameters.z_range
+        self.piezo_z_range_um = acquisition_parameters.piezo_z_range_um
 
         self.crop = SEGMENTATION_CROP
 
@@ -821,6 +822,12 @@ class MultiPointWorker:
             self.move_to_z_level(self.z_range[1])
         else:
             self.move_to_z_level(self.z_range[0])
+
+        # A piezo range is swept by the piezo from its first plane; each FOV's stack returns it there.
+        if self.piezo_z_range_um is not None:
+            piezo_min_um, piezo_max_um = self.piezo_z_range_um
+            self.piezo.move_to(piezo_max_um if self.z_stacking_config == "FROM TOP" else piezo_min_um)
+            self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
         self.z_pos = self.stage.get_pos().z_mm  # zpos at the beginning of the scan
 

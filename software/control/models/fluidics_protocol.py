@@ -41,6 +41,7 @@ class ZStackSettings(BaseModel):
     order: str = "CHANNEL FIRST"  # "CHANNEL FIRST" or "Z FIRST"
     use_piezo: bool = False
     z_range_mm: Optional[List[float]] = None
+    piezo_z_range_um: Optional[List[float]] = None
 
     @field_validator("order", mode="before")
     @classmethod
