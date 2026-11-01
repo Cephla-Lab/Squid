@@ -171,8 +171,25 @@ def test_live_button_follows_live_at_the_end_of_an_acquisition(qtbot, confirm_ex
         win.multipointController.acquisition_finished.emit()
         assert button.isChecked()
         assert button.text() == "Stop"
+        assert button.isEnabled()
+        assert not win.liveControlWidget.btn_snap.isEnabled()  # no snapping while live
     finally:
         win.liveController.stop_live()
+
+
+def test_live_and_snap_are_locked_while_an_acquisition_runs(qtbot, confirm_exit_yes):
+    """The acquisition owns the camera and the light: neither button may start live or snap until it finishes."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    live_widget = win.liveControlWidget
+
+    win.liveController.stop_live()
+    win.multipointController.signal_acquisition_start.emit()
+    assert not live_widget.btn_live.isEnabled()
+    assert not live_widget.btn_snap.isEnabled()
+
+    win.multipointController.acquisition_finished.emit()
+    assert live_widget.btn_live.isEnabled()
+    assert live_widget.btn_snap.isEnabled()
 
 
 def test_image_display_signals_connected_once(qtbot, monkeypatch, confirm_exit_yes):

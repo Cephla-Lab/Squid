@@ -785,7 +785,7 @@ class MultiPointController:
             if self.liveController.is_live:
                 self.liveController_was_live_before_multipoint = True
                 try:
-                    self.liveController.stop_live()  # the GUI's Live button follows on signal_acquisition_start
+                    self.liveController.stop_live()  # the GUI's Live button follows (and locks) on signal_acquisition_start
                 except TimeoutError:
                     # Live is already stopped and its trigger timer cancelled by this
                     # point; the idle wait below is the recovery, so don't abort here.
