@@ -25,10 +25,10 @@ class PriorStage(AbstractStage):
         sn: str,
         baudrate: int = 115200,
         stage_config: StageConfig = None,
-        *,
-        use_encoders: Optional[bool] = None,
         max_speed: int = 100,
         acceleration: int = 100,
+        *,
+        use_encoders: Optional[bool] = None,
     ):
         """max_speed (SMS) and acceleration (SAS) are in the controller's 1-1000 scale. On the H117(1MM) stage
         100 is 6 mm/s and 28.6 mm/s^2, 1000 is 60 mm/s and 285.5 mm/s^2 (read back with "SMS,u" / "SAS,u")."""
@@ -256,27 +256,31 @@ class PriorStage(AbstractStage):
         made 0.2 mm moves ~3x slower (0.55 s vs 0.17 s), and a stall still ended a move short (9 mm) rather than being
         recovered. SENCODER, unlike ENCODER, makes the step and encoder counts equal when switching, so the position
         doesn't jump. With the encoders off they still count: "P,e" reads where the stage really is. The controller
-        keeps the switched state until it is power-cycled. The result is read back and checked for X and Y (ENCODER
-        reports the axes under encoder control: 3 after power-up with X/Y encoders, 0 after SENCODER,0)."""
+        keeps the switched state until it is power-cycled.
+
+        X and Y are switched one at a time ("SENCODER,X,b"): the plain "SENCODER,b" switches every encoder, including
+        an encoded focus drive's on the same controller. The result is read back (ENCODER reports the axes under
+        encoder control, X=1, Y=2, Z=4) and must have both X and Y as asked; one axis on and one off is reported."""
         if self.use_encoders is None:
             return
         wanted = "on" if self.use_encoders else "off"
-        try:
-            reply = self._send_command(f"SENCODER,{1 if self.use_encoders else 0}")
-        except Exception as e:
-            reply = str(e)
-        if reply != "0":
-            self._log.warning(f"Prior stage: switching the encoders {wanted} was answered {reply!r}")
+        for axis in ("X", "Y"):
+            try:
+                reply = self._send_command(f"SENCODER,{axis},{1 if self.use_encoders else 0}")
+            except Exception as e:
+                reply = str(e)
+            if reply != "0":
+                self._log.warning(f"Prior stage: switching the {axis} encoder {wanted} was answered {reply!r}")
         self.encoder_axes = self.get_encoder_axes()
         if self.encoder_axes is None:
             self._log.warning(f"Prior stage: could not read back the encoders after switching them {wanted}")
             return
-        xy = self.encoder_axes & 0b11  # X=1, Y=2; the stage has no other axes (Z=4 would be a focus drive)
-        axes = "+".join(name for bit, name in ((1, "X"), (2, "Y")) if xy & bit)
-        if bool(xy) != self.use_encoders:
-            self._log.warning(f"Prior stage encoders: asked for {wanted}, but X/Y read back {axes or 'off'}")
+        x_on, y_on = bool(self.encoder_axes & 1), bool(self.encoder_axes & 2)
+        if x_on == y_on == self.use_encoders:
+            self._log.info(f"Prior stage encoders: {'X+Y (closed loop)' if self.use_encoders else 'off (open loop)'}")
         else:
-            self._log.info(f"Prior stage encoders: {axes + ' (closed loop)' if xy else 'off (open loop)'}")
+            state = f"X {'on' if x_on else 'off'}, Y {'on' if y_on else 'off'}"
+            self._log.warning(f"Prior stage encoders: asked for X and Y {wanted}, but they read back {state}")
 
     def get_acceleration(self):
         """Get the current acceleration setting."""
