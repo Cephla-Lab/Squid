@@ -99,6 +99,7 @@ def _save_acquisition_yaml(
         "autofocus": {
             "contrast_af": params.do_autofocus,
             "laser_af": params.do_reflection_autofocus,
+            "laser_af_per_stack": params.laser_af_per_stack,
         },
         "channels": [_serialize_for_yaml(ch) for ch in params.selected_configurations],
     }
@@ -229,6 +230,7 @@ class MultiPointController:
         # direct-constructor contract for TCP/MCP callers that build AcquisitionParameters
         # without going through this controller.
         self.apply_channel_offset = False
+        self.laser_af_per_stack = False
         self.display_resolution_scaling = control._def.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.use_piezo = control._def.MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
         self.experiment_ID = None
@@ -438,6 +440,10 @@ class MultiPointController:
 
     def set_apply_channel_offset(self, flag: bool):
         self.apply_channel_offset = flag
+
+    def set_laser_af_per_stack(self, flag: bool):
+        """Z First only: re-run laser AF before each later channel's stack (opt-in, default off)."""
+        self.laser_af_per_stack = flag
 
     def set_manual_focus_map_flag(self, flag):
         self.use_manual_focus_map = flag
@@ -1062,6 +1068,7 @@ class MultiPointController:
             do_autofocus=self.do_autofocus,
             do_reflection_autofocus=self.do_reflection_af,
             apply_channel_offset=self.apply_channel_offset,
+            laser_af_per_stack=self.laser_af_per_stack,
             use_piezo=self.use_piezo,
             display_resolution_scaling=self.display_resolution_scaling,
             z_stacking_config=self.z_stacking_config,
