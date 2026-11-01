@@ -36,6 +36,9 @@ class _Stub:
 
     _Z_OFFSET_EPS_UM = MultiPointWorker._Z_OFFSET_EPS_UM
     _reset_channel_z_offset = MultiPointWorker._reset_channel_z_offset
+    # perform_autofocus delegates its reflection branch to these
+    _laser_af_anchor = MultiPointWorker._laser_af_anchor
+    _save_laser_af_diagnostic = MultiPointWorker._save_laser_af_diagnostic
     _move_z_for_offset = MultiPointWorker._move_z_for_offset
 
     def _apply_channel_z_offset(self, config, af_succeeded: bool = True):
