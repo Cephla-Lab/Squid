@@ -226,6 +226,16 @@ class PriorStage(AbstractStage):
         else:
             raise ValueError(f"Speed must be between 1 and {self.max_speed_limit}")
 
+    def apply_motion_settings(self, max_speed: int, acceleration: int) -> None:
+        """Send the max speed and acceleration, each only if it differs from what the stage has (or what it has isn't
+        known, after a setting the controller didn't confirm), lowered to this stage's ceilings."""
+        max_speed = self._within_ceiling(max_speed, self.max_speed_limit, "max speed")
+        acceleration = self._within_ceiling(acceleration, self.acceleration_limit, "acceleration")
+        if max_speed != self.speed:
+            self.set_max_speed(max_speed)
+        if acceleration != self.acceleration:
+            self.set_acceleration(acceleration)
+
     def _send_motion_setting(self, command: str, value: int, name: str) -> int:
         """Send "<command> <value>" (SMS or SAS) and return value once the controller reports it back. The reply to
         the setting can be lost (an empty read once the serial timeout runs out) whether or not the controller took

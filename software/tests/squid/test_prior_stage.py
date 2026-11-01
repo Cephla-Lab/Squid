@@ -508,6 +508,58 @@ def test_microscope_build_passes_the_ini_ceilings_to_prior_stage(fake, monkeypat
         scope.close()
 
 
+def test_apply_motion_settings_sends_only_what_changed(fake):
+    stage, ser = make_stage(fake, max_speed_limit=200)
+    ser.commands.clear()
+    stage.apply_motion_settings(100, 300)
+    assert [c for c in ser.commands if c.startswith(("SMS ", "SAS "))] == ["SAS 300"]
+    stage.apply_motion_settings(5000, 300)  # above the ceiling: lowered to it
+    assert (ser.sms, stage.speed) == (200, 200)
+
+
+def _prior_scope(monkeypatch):
+    """A simulated Microscope with a Prior stage on the fake controller: general max speed/acceleration 200/250,
+    immersion 80/150. Returns (scope, a dry objective, an immersion objective)."""
+    import control._def
+    import control.microscope
+    from control.core.objective_store import ObjectiveStore
+
+    for name, value in {
+        "USE_PRIOR_STAGE": True,
+        "PRIOR_STAGE_SN": "FAKE_SN",
+        "PRIOR_STAGE_MAX_SPEED": 200,
+        "PRIOR_STAGE_ACCELERATION": 250,
+        "PRIOR_STAGE_MAX_SPEED_LIMIT": 1000,
+        "PRIOR_STAGE_ACCELERATION_LIMIT": 1000,
+        "PRIOR_STAGE_IMMERSION_MAX_SPEED": 80,
+        "PRIOR_STAGE_IMMERSION_ACCELERATION": 150,
+    }.items():
+        monkeypatch.setattr(control._def, name, value)
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True)
+    objectives = scope.objective_store.objectives_dict
+    dry = next(name for name, o in objectives.items() if not ObjectiveStore.is_immersion(o))
+    immersion = next(name for name, o in objectives.items() if ObjectiveStore.is_immersion(o))
+    return scope, dry, immersion
+
+
+def test_immersion_objectives_get_the_immersion_limits(fake, monkeypatch):
+    import control._def
+
+    scope, dry, immersion = _prior_scope(monkeypatch)
+    try:
+        ser = fake["fake"]
+        scope.set_objective(immersion)
+        assert (ser.sms, ser.sas) == (80, 150)
+        scope.set_objective(dry)
+        assert (ser.sms, ser.sas) == (200, 250)
+        # The immersion values only ever lower the general ones.
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_IMMERSION_MAX_SPEED", 900)
+        scope.set_objective(immersion)
+        assert (ser.sms, ser.sas) == (200, 150)
+    finally:
+        scope.close()
+
+
 def _unanswered(ser, prefix, applied):
     """Never answer commands starting with `prefix` (pyserial runs out its timeout and returns b""); the value in a
     setting command is taken by the controller only if `applied` (a lost reply doesn't mean a lost command)."""
@@ -563,3 +615,53 @@ def test_startup_fails_when_the_controller_does_not_take_the_acceleration(fake, 
     monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"" if cmd.startswith("SAS ") else normal(self, cmd))
     with pytest.raises(squid.exceptions.SquidError, match="acceleration"):
         make_stage(fake)
+
+
+def test_motion_limits_take_the_settings_given_over_the_running_ones(fake, monkeypatch):
+    # What Preferences does before saving: the settings it is about to save, for the current objective.
+    scope, dry, immersion = _prior_scope(monkeypatch)
+    try:
+        ser = fake["fake"]
+        scope.set_objective(dry)
+        scope.apply_stage_motion_limits(max_speed=300)
+        assert (ser.sms, ser.sas) == (300, 250)
+        scope.set_objective(immersion)
+        scope.apply_stage_motion_limits(max_speed=300, immersion_max_speed=60)
+        assert (ser.sms, ser.sas) == (60, 150)
+    finally:
+        scope.close()
+
+
+def test_a_refused_motion_change_is_put_back_by_applying_the_running_values(fake, monkeypatch):
+    scope, dry, immersion = _prior_scope(monkeypatch)
+    try:
+        ser = fake["fake"]
+        scope.set_objective(dry)
+        _unanswered(ser, "SAS ", applied=False)
+        with pytest.raises(squid.exceptions.SquidError, match="acceleration"):
+            scope.apply_stage_motion_limits(max_speed=300, acceleration=400)
+        assert (ser.sms, ser.sas) == (300, 250)  # the speed went through
+        del ser._reply  # the controller answers again
+        ser.commands.clear()
+        scope.apply_stage_motion_limits()
+        assert (ser.sms, ser.sas) == (200, 250)
+        # The speed it took, and the acceleration it didn't confirm (unknown, so sent again).
+        assert [c for c in ser.commands if c.startswith(("SMS ", "SAS "))] == ["SMS 200", "SAS 250"]
+    finally:
+        scope.close()
+
+
+def test_a_motion_change_taken_despite_a_lost_read_back_is_put_back(fake, monkeypatch):
+    scope, dry, immersion = _prior_scope(monkeypatch)
+    try:
+        ser = fake["fake"]
+        scope.set_objective(dry)
+        _unanswered(ser, "SMS", applied=True)  # takes SMS 300, but neither it nor the read-back query answers
+        with pytest.raises(squid.exceptions.SquidError, match="max speed"):
+            scope.apply_stage_motion_limits(max_speed=300)
+        assert ser.sms == 300
+        del ser._reply
+        scope.apply_stage_motion_limits()  # back to the running 200: not skipped as already there
+        assert ser.sms == 200
+    finally:
+        scope.close()

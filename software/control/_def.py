@@ -1284,6 +1284,11 @@ PRIOR_STAGE_ACCELERATION = 100
 # or 150 with any acceleration up to 1000.
 PRIOR_STAGE_MAX_SPEED_LIMIT = 1000
 PRIOR_STAGE_ACCELERATION_LIMIT = 1000
+# Used instead, when lower, while the current objective has NA >= 1.0 (oil, water or silicone immersion): fast moves
+# drag the immersion liquid, which can tear its film or pull the sample. 100 keeps such objectives at the long-standing
+# default when the general settings are raised for dry objectives.
+PRIOR_STAGE_IMMERSION_MAX_SPEED = 100
+PRIOR_STAGE_IMMERSION_ACCELERATION = 100
 
 # PI V-308 / C-414 focus drive used as the main Z (wraps the configured XY stage)
 USE_PI_FOCUS_STAGE = False

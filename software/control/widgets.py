@@ -1332,13 +1332,15 @@ class PreferencesDialog(QDialog):
         "non-HCS acquisitions are saved as one 6D Zarr per region, which is not OME-Zarr."
     )
 
-    def __init__(self, config, config_filepath, parent=None, on_restart=None, stage=None):
+    def __init__(self, config, config_filepath, parent=None, on_restart=None, stage=None, apply_prior_motion=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
         self.config_filepath = config_filepath
         self._on_restart = on_restart  # Optional callback for application restart
-        self._stage = stage  # Optional; settings the stage can take live (Prior speed/acceleration) are sent to it
+        self._stage = stage  # Optional; a Prior stage's controller gives the physical units of its speed/acceleration
+        # Optional; Microscope.apply_stage_motion_limits, which gives the Prior stage the settings about to be saved
+        self._apply_prior_motion = apply_prior_motion
         self.setWindowTitle("Preferences")
         self.setMinimumWidth(500)
         self.setMinimumHeight(600)
@@ -1662,10 +1664,46 @@ class PreferencesDialog(QDialog):
             )
             prior_layout.addRow(f"Acceleration (1-{self._prior_accel_limit}):", row)
 
+            immersion_tooltip = (
+                "Used instead of the {} above while the current objective has NA >= 1.0 (oil, water or\n"
+                "silicone immersion), if lower: fast moves drag the immersion liquid, which can tear its film\n"
+                "or pull the sample."
+            )
+            self.prior_immersion_speed_spinbox, self.prior_immersion_speed_physical_label, row = (
+                self._make_prior_motion_row(
+                    self._get_prior_motion_setting(
+                        "prior_stage_immersion_max_speed",
+                        control._def.PRIOR_STAGE_IMMERSION_MAX_SPEED,
+                        self._prior_speed_limit,
+                    ),
+                    self._prior_speed_limit,
+                    speed_per_step,
+                    "mm/s",
+                    immersion_tooltip.format("Max Speed"),
+                )
+            )
+            prior_layout.addRow(f"Immersion Max Speed (1-{self._prior_speed_limit}):", row)
+
+            self.prior_immersion_accel_spinbox, self.prior_immersion_accel_physical_label, row = (
+                self._make_prior_motion_row(
+                    self._get_prior_motion_setting(
+                        "prior_stage_immersion_acceleration",
+                        control._def.PRIOR_STAGE_IMMERSION_ACCELERATION,
+                        self._prior_accel_limit,
+                    ),
+                    self._prior_accel_limit,
+                    accel_per_step,
+                    "mm/s²",
+                    immersion_tooltip.format("Acceleration"),
+                )
+            )
+            prior_layout.addRow(f"Immersion Acceleration (1-{self._prior_accel_limit}):", row)
+
             prior_note = QLabel(
-                "Applied to the stage when you click Save. Faster moves can lose steps or leave the stage still "
-                "settling when an exposure starts: after raising these, check that the stage returns to the same "
-                "spot and that images are sharp."
+                "Applied to the stage when you click Save, and on every objective change: objectives with NA of "
+                "1.0 or more (immersion) use the Immersion values where they are lower. Faster moves can lose steps "
+                "or leave the stage still settling when an exposure starts: after raising these, check that the "
+                "stage returns to the same spot and that images are sharp."
             )
             prior_note.setWordWrap(True)
             prior_note.setStyleSheet("color: #666; font-style: italic;")
@@ -2239,6 +2277,43 @@ class PreferencesDialog(QDialog):
         spinbox = self.tiff_compression_spinbox
         return min(max(level, spinbox.minimum()), spinbox.maximum())
 
+    def _prior_motion_settings(self):
+        """(change name, ini option, control._def name, ceiling, spin box) of each Prior stage setting shown; none
+        without a Prior stage."""
+        if self.prior_speed_spinbox is None:
+            return []
+        speed, accel = self._prior_speed_limit, self._prior_accel_limit
+        return [
+            (
+                "Prior Stage Max Speed",
+                "prior_stage_max_speed",
+                "PRIOR_STAGE_MAX_SPEED",
+                speed,
+                self.prior_speed_spinbox,
+            ),
+            (
+                "Prior Stage Acceleration",
+                "prior_stage_acceleration",
+                "PRIOR_STAGE_ACCELERATION",
+                accel,
+                self.prior_accel_spinbox,
+            ),
+            (
+                "Prior Stage Immersion Max Speed",
+                "prior_stage_immersion_max_speed",
+                "PRIOR_STAGE_IMMERSION_MAX_SPEED",
+                speed,
+                self.prior_immersion_speed_spinbox,
+            ),
+            (
+                "Prior Stage Immersion Acceleration",
+                "prior_stage_immersion_acceleration",
+                "PRIOR_STAGE_IMMERSION_ACCELERATION",
+                accel,
+                self.prior_immersion_accel_spinbox,
+            ),
+        ]
+
     def _get_prior_motion_setting(self, option, running_value, limit):
         """A Prior SMS/SAS setting from the config, falling back to the running value, limited to what the spin box
         can show (1 to the rig's ceiling) so that an out of range value in the config file isn't reported as a
@@ -2399,9 +2474,8 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "scan_stabilization_time_ms_z", str(self.scan_stab_z.value()))
 
         # Advanced - Prior Stage
-        if self.prior_speed_spinbox is not None:
-            self.config.set("GENERAL", "prior_stage_max_speed", str(self.prior_speed_spinbox.value()))
-            self.config.set("GENERAL", "prior_stage_acceleration", str(self.prior_accel_spinbox.value()))
+        for _, option, _, _, spinbox in self._prior_motion_settings():
+            self.config.set("GENERAL", option, str(spinbox.value()))
 
         # Advanced - Autofocus
         self.config.set("AF", "stop_threshold", str(self.af_stop_threshold.value()))
@@ -2625,64 +2699,53 @@ class PreferencesDialog(QDialog):
         control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
 
         # Prior stage speed and acceleration (the stage already has them: _send_prior_motion_settings)
-        if self.prior_speed_spinbox is not None:
-            control._def.PRIOR_STAGE_MAX_SPEED = self.prior_speed_spinbox.value()
-            control._def.PRIOR_STAGE_ACCELERATION = self.prior_accel_spinbox.value()
-
-    def _prior_stage_settings(self):
-        """(setter, the stage's attribute for its value, spin box, running value, name) of the Prior max speed and
-        acceleration; empty without a Prior stage. The running value is control._def's, within 1 to the rig's ceiling
-        as the stage lowered it at startup."""
-        stage = self._stage
-        if self.prior_speed_spinbox is None or not hasattr(stage, "set_max_speed"):
-            return []
-        speed = min(max(control._def.PRIOR_STAGE_MAX_SPEED, PriorStage.MOTION_SETTING_MIN), self._prior_speed_limit)
-        accel = min(max(control._def.PRIOR_STAGE_ACCELERATION, PriorStage.MOTION_SETTING_MIN), self._prior_accel_limit)
-        return [
-            (stage.set_max_speed, "speed", self.prior_speed_spinbox, speed, "max speed"),
-            (stage.set_acceleration, "acceleration", self.prior_accel_spinbox, accel, "acceleration"),
-        ]
+        for _, _, def_name, _, spinbox in self._prior_motion_settings():
+            setattr(control._def, def_name, spinbox.value())
 
     def _send_prior_motion_settings(self) -> bool:
-        """Send the Prior stage the speed and acceleration about to be saved, when either changes. Runs before anything
-        is saved, so when the stage doesn't take them the ini and the running values stay as they were and the change
-        stays pending, ready to retry. Returns False, after putting the stage back to the running values and telling
-        the user, in that case."""
-        settings = self._prior_stage_settings()
-        if all(spinbox.value() == running for _, _, spinbox, running, _ in settings):
-            return True  # neither changes: leave the stage alone, even one that doesn't answer
-        for setter, attr, spinbox, _, name in settings:
-            value = spinbox.value()
-            if getattr(self._stage, attr) == value:
-                continue  # it has it already
-            try:
-                setter(value)
-            except Exception as e:
-                self._log.exception(f"Prior stage did not take {name} {value}; nothing saved")
-                put_back = self._put_back_prior_motion()
-                QMessageBox.warning(
-                    self,
-                    "Prior Stage Not Updated",
-                    f"The Prior stage did not take {name} {value}, so no settings were saved.\n\n{e}\n\n"
-                    "Check the stage's connection, then Save again (or set the value back)."
-                    + ("" if put_back else "\n\nThe stage could not be put back to its earlier settings."),
-                )
-                return False
+        """Give the Prior stage the speed/acceleration settings about to be saved (for the current objective, via
+        apply_prior_motion). Runs before anything is saved, so when the stage doesn't take them the ini and the running
+        values stay as they were and the change stays pending, ready to retry. Returns False, after putting the stage
+        back to the running values and telling the user, in that case."""
+        if self._apply_prior_motion is None:
+            return True
+        # Only the settings that change, each under its apply_prior_motion keyword
+        # (PRIOR_STAGE_IMMERSION_MAX_SPEED -> immersion_max_speed); the others stay at their running values.
+        changed = {
+            def_name.removeprefix("PRIOR_STAGE_").lower(): spinbox.value()
+            for _, _, def_name, _, spinbox in self._prior_motion_settings()
+            if spinbox.value() != getattr(control._def, def_name)
+        }
+        if not changed:
+            return True
+        try:
+            self._apply_prior_motion(**changed)
+        except Exception as e:
+            self._log.exception(f"Prior stage did not take {changed}; nothing saved")
+            put_back = self._put_back_prior_motion()
+            QMessageBox.warning(
+                self,
+                "Prior Stage Not Updated",
+                f"The Prior stage did not take the new speed/acceleration, so no settings were saved.\n\n{e}\n\n"
+                "Check the stage's connection, then Save again (or set the value back)."
+                + ("" if put_back else "\n\nThe stage could not be put back to its earlier settings."),
+            )
+            return False
         return True
 
     def _put_back_prior_motion(self) -> bool:
-        """Send the Prior stage its running speed and acceleration wherever it may not have them: a setting it took for a
-        Save that then failed, or one it didn't confirm (its value is then None, unknown, since the controller may have
-        taken it all the same). Returns False when the stage doesn't take them."""
-        put_back = True
-        for setter, attr, _, running, name in self._prior_stage_settings():
-            if getattr(self._stage, attr) != running:
-                try:
-                    setter(running)
-                except Exception:
-                    self._log.exception(f"Could not put the Prior stage back to {name} {running}")
-                    put_back = False
-        return put_back
+        """Put the Prior stage back to the running speed/acceleration for the current objective (apply_prior_motion with
+        no settings), resending whatever it may not have: a setting it took for a Save that then failed, or one it
+        didn't confirm (unknown then, since the controller may have taken it all the same). Returns False when the
+        stage doesn't take them."""
+        if self._apply_prior_motion is None:
+            return True
+        try:
+            self._apply_prior_motion()
+        except Exception:
+            self._log.exception("Could not put the Prior stage back to its running speed/acceleration")
+            return False
+        return True
 
     def _get_changes(self):
         """Get list of settings that have changed from current config.
@@ -2834,20 +2897,11 @@ class PreferencesDialog(QDialog):
             changes.append(("Scan Stabilization Z", f"{old_val} ms", f"{new_val} ms", True))
 
         # Advanced - Prior Stage (live update: sent to the stage on Save)
-        if self.prior_speed_spinbox is not None:
-            old_val = self._get_prior_motion_setting(
-                "prior_stage_max_speed", control._def.PRIOR_STAGE_MAX_SPEED, self._prior_speed_limit
-            )
-            new_val = self.prior_speed_spinbox.value()
+        for name, option, def_name, limit, spinbox in self._prior_motion_settings():
+            old_val = self._get_prior_motion_setting(option, getattr(control._def, def_name), limit)
+            new_val = spinbox.value()
             if old_val != new_val:
-                changes.append(("Prior Stage Max Speed", str(old_val), str(new_val), False))
-
-            old_val = self._get_prior_motion_setting(
-                "prior_stage_acceleration", control._def.PRIOR_STAGE_ACCELERATION, self._prior_accel_limit
-            )
-            new_val = self.prior_accel_spinbox.value()
-            if old_val != new_val:
-                changes.append(("Prior Stage Acceleration", str(old_val), str(new_val), False))
+                changes.append((name, str(old_val), str(new_val), False))
 
         # Advanced - Autofocus (live update)
         old_val = self._get_config_float("AF", "stop_threshold", 0.85)

@@ -2,6 +2,9 @@ import control._def
 
 
 class ObjectiveStore:
+    # Dry objectives reach NA 0.95 at most; from 1.0 an objective images through oil, water or silicone.
+    IMMERSION_MIN_NA = 1.0
+
     def __init__(self, objectives_dict=control._def.OBJECTIVES, default_objective=control._def.DEFAULT_OBJECTIVE):
         self.objectives_dict = objectives_dict
         self.default_objective = default_objective
@@ -30,3 +33,11 @@ class ObjectiveStore:
 
     def get_current_objective_info(self):
         return self.objectives_dict[self.current_objective]
+
+    @staticmethod
+    def is_immersion(objective) -> bool:
+        """True for an objective that images through an immersion liquid (oil, water or silicone): NA >= 1.0."""
+        try:
+            return float(objective.get("NA", 0)) >= ObjectiveStore.IMMERSION_MIN_NA
+        except (AttributeError, TypeError, ValueError):
+            return False
