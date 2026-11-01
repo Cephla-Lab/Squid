@@ -211,13 +211,30 @@ class PriorStage(AbstractStage):
         return value
 
     def set_max_speed(self, speed=1000):
-        """Set the maximum speed of the stage. Range is 1 to the stage's max_speed_limit (at most 1000)."""
+        """Set the maximum speed of the stage. Range is 1 to the stage's max_speed_limit (at most 1000). Raises
+        SquidError, leaving self.speed as it was, when the controller doesn't report the new value back."""
         if PriorStage.MOTION_SETTING_MIN <= speed <= self.max_speed_limit:
-            response = self._send_command(f"SMS {speed}")
-            self.speed = speed
-            print(f"Maximum speed set to {speed}. Response: {response}")
+            self.speed = self._send_motion_setting("SMS", speed, "max speed")
         else:
             raise ValueError(f"Speed must be between 1 and {self.max_speed_limit}")
+
+    def _send_motion_setting(self, command: str, value: int, name: str) -> int:
+        """Send "<command> <value>" (SMS or SAS) and return value once the controller reports it back. The reply to
+        the setting can be lost (an empty read once the serial timeout runs out) whether or not the controller took
+        it, so only the read-back says whether it did."""
+        reply = self._send_command(f"{command} {value}")
+        read_back = self._send_command(command)
+        try:
+            taken = int(read_back) == value
+        except ValueError:  # "" when the query went unanswered too
+            taken = False
+        if not taken:
+            raise SquidError(
+                f"Prior stage did not take {name} {value}: '{command} {value}' got {reply!r}, "
+                f"and '{command}' reads back {read_back!r}"
+            )
+        self._log.info(f"Prior stage {name} set to {value}.")
+        return value
 
     def get_max_speed(self):
         """Get the current maximum speed setting."""
@@ -226,11 +243,10 @@ class PriorStage(AbstractStage):
         return int(response)
 
     def set_acceleration(self, acceleration=1000):
-        """Set the acceleration of the stage. Range is 1 to the stage's acceleration_limit (at most 1000)."""
+        """Set the acceleration of the stage. Range is 1 to the stage's acceleration_limit (at most 1000). Raises
+        SquidError, leaving self.acceleration as it was, when the controller doesn't report the new value back."""
         if PriorStage.MOTION_SETTING_MIN <= acceleration <= self.acceleration_limit:
-            response = self._send_command(f"SAS {acceleration}")
-            self.acceleration = acceleration
-            print(f"Acceleration set to {acceleration}. Response: {response}")
+            self.acceleration = self._send_motion_setting("SAS", acceleration, "acceleration")
         else:
             raise ValueError(f"Acceleration must be between 1 and {self.acceleration_limit}")
 

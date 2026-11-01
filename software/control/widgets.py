@@ -2179,6 +2179,10 @@ class PreferencesDialog(QDialog):
 
     def _apply_settings(self) -> bool:
         """Apply settings to config file. Returns True on success, False on failure."""
+        # The Prior stage first: when it doesn't take its new speed/acceleration, nothing is saved.
+        if not self._send_prior_motion_settings():
+            return False
+
         # Ensure all required sections exist
         for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING", "VIEWS"]:
             self._ensure_section(section)
@@ -2456,16 +2460,47 @@ class PreferencesDialog(QDialog):
         control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
         control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
 
-        # Prior stage speed and acceleration: sent to the controller now (last, so a failure here skips nothing above)
+        # Prior stage speed and acceleration (the stage already has them: _send_prior_motion_settings)
         if self.prior_speed_spinbox is not None:
             control._def.PRIOR_STAGE_MAX_SPEED = self.prior_speed_spinbox.value()
             control._def.PRIOR_STAGE_ACCELERATION = self.prior_accel_spinbox.value()
-            stage = self._stage
-            if stage is not None and hasattr(stage, "set_max_speed") and hasattr(stage, "set_acceleration"):
-                if getattr(stage, "speed", None) != control._def.PRIOR_STAGE_MAX_SPEED:
-                    stage.set_max_speed(control._def.PRIOR_STAGE_MAX_SPEED)
-                if getattr(stage, "acceleration", None) != control._def.PRIOR_STAGE_ACCELERATION:
-                    stage.set_acceleration(control._def.PRIOR_STAGE_ACCELERATION)
+
+    def _send_prior_motion_settings(self) -> bool:
+        """Send the Prior stage the speed and acceleration it doesn't have yet. Runs before anything is saved, so when
+        the stage doesn't take them the ini and the running values stay as they were and the change stays pending,
+        ready to retry. Returns False, after putting back a setting it did take and telling the user, in that case."""
+        stage = self._stage
+        if self.prior_speed_spinbox is None or not hasattr(stage, "set_max_speed"):
+            return True
+        taken = []  # (setter, value before) of each setting the stage took this time
+        for setter, attr, spinbox, name in (
+            (stage.set_max_speed, "speed", self.prior_speed_spinbox, "max speed"),
+            (stage.set_acceleration, "acceleration", self.prior_accel_spinbox, "acceleration"),
+        ):
+            before, value = getattr(stage, attr), spinbox.value()
+            if before == value:
+                continue
+            try:
+                setter(value)
+            except Exception as e:
+                self._log.exception(f"Prior stage did not take {name} {value}; nothing saved")
+                still_changed = []
+                for undo, undo_to in reversed(taken):
+                    try:
+                        undo(undo_to)
+                    except Exception:
+                        self._log.exception(f"Could not put the Prior stage back to {undo_to}")
+                        still_changed.append(undo_to)
+                QMessageBox.warning(
+                    self,
+                    "Prior Stage Not Updated",
+                    f"The Prior stage did not take {name} {value}, so no settings were saved.\n\n{e}\n\n"
+                    "Check the stage's connection, then Save again (or set the value back)."
+                    + ("\n\nThe stage could not be put back to its earlier settings." if still_changed else ""),
+                )
+                return False
+            taken.append((setter, before))
+        return True
 
     def _get_changes(self):
         """Get list of settings that have changed from current config.

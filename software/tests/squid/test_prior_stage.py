@@ -92,6 +92,10 @@ class FakeProScan:
             return f"{self.sms * 60:.2f}\r".encode()
         if cmd == "SAS,u":
             return f"{self.sas * 285.5:.2f}\r".encode()
+        if cmd == "SMS":
+            return f"{self.sms}\r".encode()
+        if cmd == "SAS":
+            return f"{self.sas}\r".encode()
         if cmd.startswith("SMS "):
             self.sms = int(cmd.split()[1])
         if cmd.startswith("SAS "):
@@ -335,3 +339,56 @@ def test_microscope_build_passes_the_ini_ceilings_to_prior_stage(fake, monkeypat
         assert (fake["fake"].sms, fake["fake"].sas) == (200, 250)
     finally:
         scope.close()
+
+
+def _unanswered(ser, prefix, applied):
+    """Never answer commands starting with `prefix` (pyserial runs out its timeout and returns b""); the value in a
+    setting command is taken by the controller only if `applied` (a lost reply doesn't mean a lost command)."""
+    normal = ser._reply
+
+    def reply(cmd):
+        if cmd.startswith(prefix):
+            if applied:
+                normal(cmd)
+            return b""
+        return normal(cmd)
+
+    ser._reply = reply
+
+
+SETTINGS = [("set_max_speed", "speed", "SMS", "max speed"), ("set_acceleration", "acceleration", "SAS", "acceleration")]
+
+
+@pytest.mark.parametrize("setter, attr, command, name", SETTINGS)
+def test_an_unanswered_setting_the_controller_did_not_take_raises_and_is_not_remembered(
+    fake, setter, attr, command, name
+):
+    stage, ser = make_stage(fake)
+    _unanswered(ser, f"{command} ", applied=False)
+    with pytest.raises(squid.exceptions.SquidError, match=name):
+        getattr(stage, setter)(400)
+    assert getattr(stage, attr) == 100  # so the next Save sends 400 again
+
+
+@pytest.mark.parametrize("setter, attr, command, name", SETTINGS)
+def test_a_setting_taken_despite_a_lost_reply_is_remembered(fake, setter, attr, command, name):
+    stage, ser = make_stage(fake)
+    _unanswered(ser, f"{command} ", applied=True)
+    getattr(stage, setter)(400)
+    assert getattr(stage, attr) == 400
+
+
+@pytest.mark.parametrize("setter, attr, command, name", SETTINGS)
+def test_a_setting_raises_when_the_controller_cannot_be_read_back(fake, setter, attr, command, name):
+    stage, ser = make_stage(fake)
+    _unanswered(ser, command, applied=False)  # the setting and the read-back query
+    with pytest.raises(squid.exceptions.SquidError, match=name):
+        getattr(stage, setter)(400)
+    assert getattr(stage, attr) == 100
+
+
+def test_startup_fails_when_the_controller_does_not_take_the_acceleration(fake, monkeypatch):
+    normal = FakeProScan._reply
+    monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"" if cmd.startswith("SAS ") else normal(self, cmd))
+    with pytest.raises(squid.exceptions.SquidError, match="acceleration"):
+        make_stage(fake)
