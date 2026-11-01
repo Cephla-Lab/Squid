@@ -228,6 +228,11 @@ class SquidLaserEngineBase(QObject):
 
     # ── Public API ──────────────────────────────────────────────────────────
 
+    def is_ready_to_image(self, channel_keys: List[str]) -> bool:
+        """The last status has these channels ready (laser engine v2 also checks its 560 shutter)."""
+        status = self.get_latest_status()
+        return status is not None and status.is_ready_for(channel_keys)
+
     def get_latest_status(self) -> Optional[SquidLaserEngineStatus]:
         with self._status_lock:
             return self._latest_status
@@ -260,6 +265,10 @@ class SquidLaserEngineBase(QObject):
     def sleep_all(self) -> None:
         for k in _CHANNEL_DISPLAY_ORDER:
             self.put_to_sleep(k)
+
+    def on_startup(self) -> None:
+        """Called once from MicroscopeAddons.prepare_for_use. Laser engine v1: wake every channel (TEC warm-up)."""
+        self.wake_up_all()
 
     def wait_until_ready(
         self,

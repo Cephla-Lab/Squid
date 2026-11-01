@@ -89,6 +89,7 @@ from scipy.spatial import Delaunay
 import shutil
 from control._def import *
 from control.lighting import LightSourceType
+from control.widgets_homing import confirm_nosepiece_lowered
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -2809,28 +2810,6 @@ class PreferencesDialog(QDialog):
             # If save failed, dialog stays open (error already shown)
 
 
-def _objective_lowered_box(parent) -> Tuple[QMessageBox, QPushButton]:
-    """The piezo-only 'objective lowered' prompt and its Home button. Enter is Cancel."""
-    from control.startup_homing import OBJECTIVE_LOWERED_PROMPT
-
-    box = QMessageBox(parent)
-    box.setIcon(QMessageBox.Warning)
-    box.setWindowTitle("Lower the objective")
-    box.setText(OBJECTIVE_LOWERED_PROMPT)
-    home_btn = box.addButton("Objective lowered \u2013 Home", QMessageBox.AcceptRole)
-    cancel_btn = box.addButton("Cancel \u2013 don't home", QMessageBox.RejectRole)
-    box.setDefaultButton(cancel_btn)
-    box.setEscapeButton(cancel_btn)
-    return box, home_btn
-
-
-def ask_objective_lowered(parent) -> bool:
-    """Ask a person to confirm the objective is lowered. True only if they click Home."""
-    box, home_btn = _objective_lowered_box(parent)
-    box.exec_()
-    return box.clickedButton() is home_btn
-
-
 def show_homing_failure(parent, title: str, error: str, still_homing: bool) -> None:
     """A home that raised (Home stage, Home X/Y). still_homing: its claim is still held, as the stage has not
     reported that it stopped."""
@@ -2852,7 +2831,6 @@ class StageUtils(QDialog):
     signal_loading_position_reached = Signal()
     signal_scanning_position_reached = Signal()
     signal_home_stage_requested = Signal()  # the Home Stage button: the main window runs it (Microscope.home_stage)
-    signal_axes_homed = Signal(object)  # the set of axes ("x", "y", "z") a Home X / Y / Z just homed
 
     def __init__(self, stage: AbstractStage, live_controller: LiveController, is_wellplate: bool, parent=None):
         super().__init__(parent)
@@ -2980,18 +2958,17 @@ class StageUtils(QDialog):
         """Home Z axis with confirmation dialog."""
         if self._confirm_homing():
             self.stage.home(x=False, y=False, z=True, theta=False)
-            self.signal_axes_homed.emit({"z"})
         move_z_axis_to_safety_position(self.stage)
 
     def _home_xy_axis(self, axis: str):
-        """Home X or Y: refused while something else drives the stage; on a piezo-only system the lower-the-objective
-        prompt replaces the generic confirmation; the home holds the Microscope's homing claim (live paused, other
+        """Home X or Y: refused while something else drives the stage; on a piezo-only system the stop sign (lower the
+        nosepiece) replaces the generic confirmation; the home holds the Microscope's homing claim (live paused, other
         motion refused), released once the stage reports it stopped. A failure is shown, as Home stage shows it."""
         operation = f"Home {axis.upper()}"
         if self._homing_refused():
             return
         if control._def.IS_PIEZO_ONLY:
-            objective_lowered = ask_objective_lowered(self)
+            objective_lowered = confirm_nosepiece_lowered(self, decline_text="Cancel")
             confirmed = objective_lowered
         else:
             objective_lowered = False
@@ -3014,8 +2991,6 @@ class StageUtils(QDialog):
             claim.release_when_stopped()
         if error is not None:
             show_homing_failure(self, "Homing", error, still_homing=not claim.released)
-            return
-        self.signal_axes_homed.emit({axis})
 
     def _homing_refused(self) -> bool:
         reason = self._homing_blocker()
@@ -7048,7 +7023,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         # Create spacer items
         EDGE_SPACING = 4  # Adjust this value as needed
-        edge_spacer = QSpacerItem(EDGE_SPACING, 0, QSizePolicy.Fixed, QSizePolicy.Minimum)
 
         # Create first row layouts
         if self.use_overlap:
@@ -7058,10 +7032,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             xy_half.addStretch(1)
             xy_half.addWidget(QLabel("Ny"))
             xy_half.addWidget(self.entry_NY)
-            xy_half.addSpacerItem(edge_spacer)
+            xy_half.addSpacing(EDGE_SPACING)
 
             overlap_half = QHBoxLayout()
-            overlap_half.addSpacerItem(edge_spacer)
+            overlap_half.addSpacing(EDGE_SPACING)
             overlap_half.addWidget(QLabel("FOV Overlap"), alignment=Qt.AlignRight)
             overlap_half.addWidget(self.entry_overlap)
         else:
@@ -7072,10 +7046,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             x_half.addStretch(1)
             x_half.addWidget(QLabel("Nx"))
             x_half.addWidget(self.entry_NX)
-            x_half.addSpacerItem(edge_spacer)
+            x_half.addSpacing(EDGE_SPACING)
 
             y_half = QHBoxLayout()
-            y_half.addSpacerItem(edge_spacer)
+            y_half.addSpacing(EDGE_SPACING)
             y_half.addWidget(QLabel("dy"))
             y_half.addWidget(self.entry_deltaY)
             y_half.addStretch(1)
@@ -7090,10 +7064,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         dz_half.addWidget(QLabel("Nz"))
         dz_half.addWidget(self.entry_NZ)
         dz_half.addWidget(self.combobox_z_order)
-        dz_half.addSpacerItem(edge_spacer)
+        dz_half.addSpacing(EDGE_SPACING)
 
         dt_half = QHBoxLayout()
-        dt_half.addSpacerItem(edge_spacer)
+        dt_half.addSpacing(EDGE_SPACING)
         dt_half.addWidget(QLabel("dt"))
         dt_half.addWidget(self.entry_dt)
         dt_half.addStretch(1)
@@ -7115,10 +7089,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.z_min_layout.addWidget(self.set_minZ_button)
         self.z_min_layout.addWidget(QLabel("Z-min"), Qt.AlignRight)
         self.z_min_layout.addWidget(self.entry_minZ)
-        self.z_min_layout.addSpacerItem(edge_spacer)
+        self.z_min_layout.addSpacing(EDGE_SPACING)
 
         self.z_max_layout = QHBoxLayout()
-        self.z_max_layout.addSpacerItem(edge_spacer)
+        self.z_max_layout.addSpacing(EDGE_SPACING)
         self.z_max_layout.addWidget(self.set_maxZ_button)
         self.z_max_layout.addWidget(QLabel("Z-max"), Qt.AlignRight)
         self.z_max_layout.addWidget(self.entry_maxZ)
@@ -7143,14 +7117,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         grid_config = QHBoxLayout()
         grid_config.addWidget(self.list_configurations)
-        grid_config.addSpacerItem(edge_spacer)
+        grid_config.addSpacing(EDGE_SPACING)
 
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
 
         grid_acquisition = QHBoxLayout()
-        grid_acquisition.addSpacerItem(edge_spacer)
+        grid_acquisition.addSpacing(EDGE_SPACING)
         grid_acquisition.addLayout(grid_af)
         grid_acquisition.addLayout(button_layout)
 
@@ -9452,7 +9426,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # Show dz/Nz widgets
         for i in range(self.dz_layout.count()):
             widget = self.dz_layout.itemAt(i).widget()
-            if widget:
+            if widget is self.combobox_z_order:
+                # Opt-in choice (ENABLE_Z_STACK_ORDER_SELECTION): off, it stays hidden with the row shown, since
+                # the start path (_z_stack_order_to_start) ignores it and would silently run Channel First.
+                widget.setVisible(visible and control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+            elif widget:
                 widget.setVisible(visible)
 
         # Show/hide Z-min/Z-max based on dropdown selection AND visibility

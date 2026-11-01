@@ -64,6 +64,8 @@ def _worker(order, nz=3, channels=("A", "B"), use_piezo=False, offsets=None, z_s
     w.apply_channel_offset = True
     w.Nt = 1
     w.laser_auto_focus_controller = None
+    w._laser_engine = None  # no laser engine: acquire_at_position notes engine use per FOV
+    w._laser_channels_needed = []
     w._current_z_offset_um = 0.0
     w._last_time_point_z_pos = {}
     w.af_fov_count = 0

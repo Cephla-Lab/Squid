@@ -16,7 +16,9 @@ from control.startup_homing import (
     StageHomingInProgressError,
     StageHomingRefused,
     StartupHoming,
+    StartupHomingDeclined,
     home_stage_confirmation_text,
+    startup_needs_objective_prompt,
 )
 from tests.control.test_microcontroller import get_test_micro
 
@@ -344,13 +346,46 @@ def test_piezo_only_startup_with_no_one_to_ask_refuses(piezo_only):
         control.microscope.Microscope.build_from_global_config(True)
 
 
-def test_piezo_only_cancel_declines_and_homes_nothing(piezo_only, monkeypatch):
+@pytest.mark.parametrize(
+    "piezo_only, homing_x, homing_y, expected",
+    [
+        (True, True, True, True),
+        (False, True, True, False),  # the software lowers the objective itself
+        (True, False, True, False),  # startup moves XY only when both axes home
+        (True, True, False, False),
+    ],
+)
+def test_startup_asks_only_when_a_piezo_only_system_homes_xy(monkeypatch, piezo_only, homing_x, homing_y, expected):
+    monkeypatch.setattr(control._def, "IS_PIEZO_ONLY", piezo_only)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", homing_x)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", homing_y)
+    assert startup_needs_objective_prompt() is expected
+
+
+def test_piezo_only_decline_closes_the_hardware_and_raises(piezo_only, monkeypatch):
+    """Declining quits Squid: the Microscope releases what it opened and is never handed out."""
     home = MagicMock()
     monkeypatch.setattr(control.microscope.Microscope, "home_xyz", home)
-    scope = control.microscope.Microscope.build_from_global_config(True, confirm_objective_lowered=lambda: False)
-    assert scope.startup_homing is StartupHoming.DECLINED
+    closed = []
+    close = control.microscope.Microscope.close
+    monkeypatch.setattr(control.microscope.Microscope, "close", lambda self: closed.append(self) or close(self))
+    with pytest.raises(StartupHomingDeclined):
+        control.microscope.Microscope.build_from_global_config(True, confirm_objective_lowered=lambda: False)
     home.assert_not_called()
-    scope.close()
+    assert len(closed) == 1
+
+
+def test_piezo_only_decline_stops_before_the_objective_changer_moves(piezo_only):
+    """Startup homes and rotates an objective changer after the stage: with the nosepiece still up, that must not run
+    either."""
+    scope = _scope()
+    changer = MagicMock()
+    scope.addons.objective_changer = changer
+    scope._confirm_objective_lowered = lambda: False
+    with pytest.raises(StartupHomingDeclined):
+        scope._prepare_for_use(skip_init=False)
+    changer.home.assert_not_called()
+    changer.move_to_objective.assert_not_called()
 
 
 def test_piezo_only_confirm_asks_once_and_homes(piezo_only):

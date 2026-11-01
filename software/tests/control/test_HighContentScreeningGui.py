@@ -9,6 +9,7 @@ import control._def
 import control.gui_hcs
 import control.utils
 import control.widgets
+from qtpy.QtCore import QCoreApplication, QEvent
 from qtpy.QtGui import QCloseEvent
 from qtpy.QtWidgets import QMessageBox
 
@@ -42,6 +43,23 @@ def test_create_simulated_hcs_with_or_without_piezo(qtbot, confirm_exit_yes):
     scope_without = control.microscope.Microscope.build_from_global_config(True)
     without_piezo = control.gui_hcs.HighContentScreeningGui(microscope=scope_without, is_simulation=True)
     qtbot.add_widget(without_piezo)
+
+
+def test_destroying_the_gui_neither_crashes_nor_leaves_timers_firing_at_deleted_widgets(qtbot, confirm_exit_yes):
+    """Regression: FlexibleMultiPointWidget added one QSpacerItem to several layouts, so the
+    layouts freed it once each (a segfault when Qt ran the window's DeferredDelete), and
+    ImageDisplayWindow's unparented update timer kept firing at the deleted QLabels."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+
+    win.close()
+    win.deleteLater()
+    # Run the pending delete now, rather than whenever a later event loop happens to service it.
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    # The update timer fires every 100 ms; a RuntimeError ("wrapped C/C++ object ... has been
+    # deleted") in its slot is reported by pytest-qt as a failure of this test.
+    qtbot.wait(500)
 
 
 def test_tab_change_to_simple_recording_does_not_raise(qtbot, monkeypatch, confirm_exit_yes):
@@ -340,17 +358,7 @@ def test_there_is_one_utils_menu_with_every_utility(qtbot, monkeypatch, confirm_
     assert items[:3] == ["Stage Utils", "Reset Objective Turret", "Workflow Runner..."]
 
 
-def test_objective_prompt_defaults_to_cancel(qtbot):
-    import control.widgets
-    from control.startup_homing import OBJECTIVE_LOWERED_PROMPT
-
-    box, home_btn = control.widgets._objective_lowered_box(None)
-    assert box.text() == OBJECTIVE_LOWERED_PROMPT
-    assert home_btn.text() == "Objective lowered – Home"
-    assert box.defaultButton() is not home_btn and box.defaultButton().text() == "Cancel – don't home"
-
-
-# --- Home stage, Home X/Y, the homing lock and the not-homed warning ---
+# --- Home stage, Home X/Y and the homing lock ---
 
 
 @pytest.fixture
@@ -369,7 +377,7 @@ def _auto_confirm(monkeypatch):
     """Accept every homing confirmation (the generic OK/Cancel box and the piezo-only prompt). A refusal would open a
     modal information box and hang the test: it raises instead."""
     monkeypatch.setattr(QMessageBox, "exec_", lambda self: QMessageBox.Ok)
-    monkeypatch.setattr(control.widgets, "ask_objective_lowered", lambda parent: True)
+    monkeypatch.setattr(control.widgets, "confirm_nosepiece_lowered", lambda parent, decline_text: True)
 
     def refused(parent, title, text, *args, **kwargs):
         raise AssertionError(f"Unexpected refusal: {title} - {text}")
@@ -525,10 +533,28 @@ def test_home_x_on_piezo_only_asks_and_passes_the_confirmation(qtbot, confirm_ex
     gui.stageUtils.home_x()
     assert homes == [dict(x=True, y=False, z=False, theta=False, objective_lowered=True)]
 
-    # Cancel: nothing moves
-    monkeypatch.setattr(control.widgets, "ask_objective_lowered", lambda parent: False)
+    # Cancel at the stop sign: nothing moves
+    asked = []
+    monkeypatch.setattr(
+        control.widgets, "confirm_nosepiece_lowered", lambda parent, decline_text: asked.append(decline_text) or False
+    )
     gui.stageUtils.home_y()
-    assert len(homes) == 1
+    assert asked == ["Cancel"] and len(homes) == 1
+
+
+def test_home_stage_on_piezo_only_asks_at_the_stop_sign(qtbot, confirm_exit_yes, monkeypatch, piezo_only):
+    gui = _gui(qtbot, confirm_objective_lowered=lambda: True)
+    _auto_confirm(monkeypatch)
+    asked = []
+    monkeypatch.setattr(
+        control.widgets, "confirm_nosepiece_lowered", lambda parent, decline_text: asked.append(decline_text) or False
+    )
+    home_stage = unittest.mock.MagicMock()
+    monkeypatch.setattr(gui.microscope, "home_stage", home_stage)
+    gui._on_home_stage_requested()
+    assert asked == ["Cancel"]
+    home_stage.assert_not_called()
+    assert not gui.microscope.stage_homing_in_progress
 
 
 def test_tcp_home_locks_the_gui(qtbot, confirm_exit_yes):
@@ -557,37 +583,6 @@ def test_homing_claimed_off_the_gui_thread_locks_the_gui_before_the_claim_return
     qtbot.waitUntil(lambda: "done" in seen, timeout=5000)
     assert seen["locked_when_claimed"]
     qtbot.waitUntil(lambda: gui.navigationWidget.isEnabled(), timeout=2000)
-
-
-def test_declined_startup_moves_nothing_and_warns(qtbot, confirm_exit_yes, monkeypatch, piezo_only):
-    # A piezo-only system has no stepper Z to home: X and Y are the axes startup homes.
-    _set_z_flags(monkeypatch, homing_z=False, pi_focus=False)
-    # A cached position the startup restore would move to, were the declined startup not special-cased
-    cached = squid.abc.Pos(x_mm=23.0, y_mm=31.0, z_mm=1.5, theta_rad=None)
-    monkeypatch.setattr(squid.stage.utils, "get_cached_position", lambda *args, **kwargs: cached)
-    scope = control.microscope.Microscope.build_from_global_config(True, confirm_objective_lowered=lambda: False)
-    before = scope.stage.get_pos()
-    assert (before.x_mm, before.y_mm) != (cached.x_mm, cached.y_mm)
-    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
-    qtbot.add_widget(gui)
-    assert scope.stage.get_pos() == before
-    # The window is never shown in these tests: isVisibleTo(gui) is "visible once the window is", status bar included.
-    assert gui._not_homed_label.isVisibleTo(gui)
-    gui.stageUtils.signal_axes_homed.emit({"x"})
-    assert gui._not_homed_label.isVisibleTo(gui)
-    gui.stageUtils.signal_axes_homed.emit({"y"})
-    assert not gui._not_homed_label.isVisibleTo(gui)
-
-
-def test_declined_startup_with_z_homing_warns_until_z_is_homed_too(qtbot, confirm_exit_yes, monkeypatch, piezo_only):
-    _set_z_flags(monkeypatch, homing_z=True, pi_focus=False)
-    scope = control.microscope.Microscope.build_from_global_config(True, confirm_objective_lowered=lambda: False)
-    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
-    qtbot.add_widget(gui)
-    gui.stageUtils.signal_axes_homed.emit({"x", "y"})
-    assert gui._not_homed_label.isVisibleTo(gui)
-    gui.stageUtils.signal_axes_homed.emit({"z"})
-    assert not gui._not_homed_label.isVisibleTo(gui)
 
 
 # --- One exclusion for every claim, failures shown, close refused while homing ---
@@ -666,8 +661,6 @@ def test_home_y_failure_after_release_says_homing_failed(qtbot, confirm_exit_yes
     gui = _gui(qtbot)
     _auto_confirm(monkeypatch)
     warnings = _capture_warnings(monkeypatch)
-    homed = []
-    gui.stageUtils.signal_axes_homed.connect(homed.append)
 
     def link_lost(**kwargs):
         raise ConnectionError("link lost")  # before anything was sent: the stage still reports stopped
@@ -675,7 +668,7 @@ def test_home_y_failure_after_release_says_homing_failed(qtbot, confirm_exit_yes
     monkeypatch.setattr(gui.stage, "home", link_lost)
     gui.stageUtils.home_y()
     assert warnings == ["Homing failed: link lost"]
-    assert homed == [] and not gui.microscope.stage_homing_in_progress
+    assert not gui.microscope.stage_homing_in_progress
 
 
 def test_close_while_homing_is_refused_and_moves_nothing(qtbot, confirm_exit_yes, monkeypatch):

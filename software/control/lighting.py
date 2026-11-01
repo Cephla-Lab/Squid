@@ -2,11 +2,12 @@ from enum import Enum
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from control.microcontroller import Microcontroller
 from control.core.config import ConfigRepository
 from control._def import ILLUMINATION_CODE
+from squid.abc import LightSourceHold
 
 # Number of illumination ports supported (matches firmware)
 NUM_ILLUMINATION_PORTS = 16
@@ -21,6 +22,7 @@ _DEFAULT_CHANNEL_MAPPINGS_TTL = {
     545: ILLUMINATION_CODE.ILLUMINATION_D3,
     550: ILLUMINATION_CODE.ILLUMINATION_D3,
     555: ILLUMINATION_CODE.ILLUMINATION_D3,
+    560: ILLUMINATION_CODE.ILLUMINATION_D3,
     561: ILLUMINATION_CODE.ILLUMINATION_D3,
     638: ILLUMINATION_CODE.ILLUMINATION_D4,
     640: ILLUMINATION_CODE.ILLUMINATION_D4,
@@ -28,6 +30,28 @@ _DEFAULT_CHANNEL_MAPPINGS_TTL = {
     735: ILLUMINATION_CODE.ILLUMINATION_D5,
     750: ILLUMINATION_CODE.ILLUMINATION_D5,
 }
+
+
+# Channel groups shared by the software-controlled light sources (VersaLase, Andor HLE, ...): every
+# Squid channel in a group is served by the same laser line.
+CHANNEL_GROUPS = [
+    [405],
+    [470, 488],
+    [545, 550, 555, 561],
+    [638, 640],
+    [730, 735, 750],
+]
+# A line serves a group when its nominal wavelength is this close to one of the group's
+# wavelengths (e.g. a 639 nm line serves the 638/640 channels).
+WAVELENGTH_MATCH_TOLERANCE_NM = 5
+
+
+def channel_group_for(wavelength_nm: float) -> Optional[List[int]]:
+    """The channel group a laser line of this wavelength serves, or None if it matches none."""
+    return next(
+        (g for g in CHANNEL_GROUPS if any(abs(wavelength_nm - wl) <= WAVELENGTH_MATCH_TOLERANCE_NM for wl in g)),
+        None,
+    )
 
 
 class LightSourceType(Enum):
@@ -38,6 +62,7 @@ class LightSourceType(Enum):
     VersaLase = 4
     SCI = 5
     AndorLaser = 6
+    CephlaLaserEngineV2 = 7
 
 
 class IntensityControlMode(Enum):
@@ -120,6 +145,7 @@ class IlluminationController:
         self.channel_mappings_software = {}
         self.is_on = {}
         self.intensity_settings = {}
+        self._intensity_lines = {}  # channel -> the line its intensity was last sent on (see set_intensity)
         self.current_channel = None
         self.intensity_luts = {}  # Store LUTs for each wavelength
         self.max_power = {}  # Store max power for each wavelength
@@ -255,16 +281,26 @@ class IlluminationController:
         if channel not in self.intensity_settings:
             self.intensity_settings[channel] = -1
         if self.intensity_control_mode == IntensityControlMode.Software:
-            if intensity != self.intensity_settings[channel]:
-                line = self.channel_mappings_software[channel]
+            line = self.channel_mappings_software[channel]
+            # Every time, not only when the power changes below: which line is armed is not part of the power cache.
+            # Optional on the light source, like use(): duck-typed sources (and test fakes) need not have it.
+            select = getattr(self.light_source, "select", None)
+            if select is not None:
+                select(line)
+            # A light source whose channel map follows the port map (laser engine v2) moves a channel to another line
+            # when the port map is edited, and that line has not had this channel's intensity yet.
+            moved = line != self._intensity_lines.get(channel, line)
+            if intensity != self.intensity_settings[channel] or moved:
                 self.light_source.set_intensity(line, intensity)
                 self.intensity_settings[channel] = intensity
+                self._intensity_lines[channel] = line
                 # Channels served by the same line (e.g. 470 and 488 on one laser) share its power, so a
                 # later switch to one of them must not skip setting its own intensity.
                 if line is not None:
                     for other, other_line in self.channel_mappings_software.items():
                         if other_line == line:
                             self.intensity_settings[other] = intensity
+                            self._intensity_lines[other] = other_line
             if self.shutter_control_mode == ShutterControlMode.TTL:
                 # This is needed, because we select the channel in microcontroller set_illumination().
                 # Otherwise, the wrong channel will be opened when turn_on_illumination() is called.
@@ -280,6 +316,19 @@ class IlluminationController:
 
     def get_shutter_state(self):
         return self.is_on
+
+    def use(self, name: str, wavelengths: Iterable[int]) -> "IlluminationHold":
+        """`name` images with these wavelengths until the returned hold is released (or its `with` ends). The light source
+        acts on it: e.g. laser engine v2 switches the lines on, keeps the 560 from idling off and opens its mechanical
+        shutter. Wavelengths with no light source channel are ignored."""
+        hold = IlluminationHold(self)
+        if self.light_source is not None:
+            hold._hold = self.light_source.use(name, self._light_source_channels(wavelengths))
+        return hold
+
+    def _light_source_channels(self, wavelengths: Iterable[int]) -> list:
+        mappings = self.channel_mappings_software
+        return [mappings[w] for w in wavelengths if w in mappings]
 
     # Multi-port illumination methods (firmware v1.0+)
     # These allow multiple ports to be ON simultaneously with independent intensities
@@ -393,3 +442,20 @@ class IlluminationController:
         if self.light_source is not None and not self._light_source_closed:
             self._light_source_closed = True
             self.light_source.shut_down()
+
+
+class IlluminationHold(LightSourceHold):
+    """IlluminationController.use(): a light source hold that takes wavelengths."""
+
+    def __init__(self, controller: IlluminationController):
+        self._controller = controller
+        self._hold = LightSourceHold()  # the light source's own hold (does nothing without a light source)
+
+    def update(self, wavelengths: Iterable[int]) -> None:
+        self._hold.update(self._controller._light_source_channels(wavelengths))
+
+    def release(self) -> None:
+        self._hold.release()
+
+    def wait_until_ready(self, timeout_s: Optional[float] = None, cancel_fn=lambda: False) -> bool:
+        return self._hold.wait_until_ready(timeout_s, cancel_fn)

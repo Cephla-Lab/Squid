@@ -3054,3 +3054,44 @@ def test_z_stack_order_choice_is_opt_in(monkeypatch):
     fake = _wellplate_ui_fake()
     control.widgets.WellplateMultiPointWidget.configure_controller_from_ui(fake)
     fake.multipointController.set_z_stack_order.assert_called_once_with("Z FIRST")
+
+
+def _wellplate_dz_row(qtbot):
+    """The Wellplate tab's dz/Nz row as the widget builds it: a layout on a parent, the Z-order dropdown
+    explicitly hidden when the choice is off (the real widget calls setVisible(ENABLE_Z_STACK_ORDER_SELECTION))."""
+    from qtpy.QtWidgets import QHBoxLayout, QSpinBox, QWidget
+
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    layout = QHBoxLayout(parent)
+    entry_nz = QSpinBox()
+    combobox_z_order = QComboBox()
+    combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+    layout.addWidget(entry_nz)
+    layout.addWidget(combobox_z_order)
+    return SimpleNamespace(
+        parent=parent,  # qtbot keeps only a weak reference; the layout dies with the parent
+        dz_layout=layout,
+        entry_NZ=entry_nz,
+        combobox_z_order=combobox_z_order,
+        combobox_z_mode=MagicMock(currentText=MagicMock(return_value="From Bottom")),
+        toggle_z_range_controls=MagicMock(),
+    )
+
+
+def test_wellplate_z_checkbox_keeps_the_hidden_z_order_dropdown_hidden(qtbot, monkeypatch):
+    # Off: checking Z shows dz/Nz but must not reveal the dropdown, because the start path ignores it
+    # (test_z_stack_order_choice_is_opt_in) - a visible choice that does nothing is worse than none.
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", False)
+    fake = _wellplate_dz_row(qtbot)
+    control.widgets.WellplateMultiPointWidget.show_z_controls(fake, True)
+    assert not fake.entry_NZ.isHidden()
+    assert fake.combobox_z_order.isHidden()
+
+    # On: the dropdown follows the rest of the row
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", True)
+    fake = _wellplate_dz_row(qtbot)
+    control.widgets.WellplateMultiPointWidget.show_z_controls(fake, False)
+    assert fake.combobox_z_order.isHidden()
+    control.widgets.WellplateMultiPointWidget.show_z_controls(fake, True)
+    assert not fake.combobox_z_order.isHidden()
