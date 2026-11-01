@@ -19,6 +19,10 @@ class PriorStage(AbstractStage):
     # so long moves are fine; this catches a controller that stopped answering while its port stays open (each
     # unanswered poll costs the 0.1 s read timeout).
     STATUS_REPLY_TIMEOUT_S = 1.0
+    # SMS (max speed) and SAS (acceleration) take 1-1000; the controller clamps a larger value to 1000 without an
+    # error. 1000 is the most the controller allows for the fitted stage.
+    MOTION_SETTING_MIN = 1
+    MOTION_SETTING_MAX = 1000
 
     def __init__(
         self,
@@ -27,11 +31,17 @@ class PriorStage(AbstractStage):
         stage_config: StageConfig = None,
         max_speed: int = 100,
         acceleration: int = 100,
+        max_speed_limit: int = MOTION_SETTING_MAX,
+        acceleration_limit: int = MOTION_SETTING_MAX,
         *,
         use_encoders: Optional[bool] = None,
     ):
         """max_speed (SMS) and acceleration (SAS) are in the controller's 1-1000 scale. On the H117(1MM) stage
-        100 is 6 mm/s and 28.6 mm/s^2, 1000 is 60 mm/s and 285.5 mm/s^2 (read back with "SMS,u" / "SAS,u")."""
+        100 is 6 mm/s and 28.6 mm/s^2, 1000 is 60 mm/s and 285.5 mm/s^2 (read back with "SMS,u" / "SAS,u").
+
+        max_speed_limit / acceleration_limit are this stage's ceilings: the most it takes without losing steps (it
+        runs open loop, so a lost step goes unnoticed until the stage is homed again). A larger max_speed or
+        acceleration is lowered to the ceiling with a warning; set_max_speed() / set_acceleration() refuse it."""
         # We are not using StageConfig for Prior stage now. Waiting for further update/clarification of this part
         super().__init__(stage_config)
 
@@ -63,8 +73,10 @@ class PriorStage(AbstractStage):
         self.resolution = 0.1
         self.x_direction = 1  # 1 or -1
         self.y_direction = 1  # 1 or -1
-        self.speed = max_speed
-        self.acceleration = acceleration
+        self.max_speed_limit = PriorStage.within_controller_range(max_speed_limit)
+        self.acceleration_limit = PriorStage.within_controller_range(acceleration_limit)
+        self.speed = self._within_ceiling(max_speed, self.max_speed_limit, "max speed")
+        self.acceleration = self._within_ceiling(acceleration, self.acceleration_limit, "acceleration")
 
         self.serial_lock = threading.Lock()
         self.is_busy = False
@@ -193,13 +205,44 @@ class PriorStage(AbstractStage):
         self.stage_model = match.group(1)
         print("Stage model: ", self.stage_model)
 
+    @staticmethod
+    def within_controller_range(value) -> int:
+        return min(max(int(value), PriorStage.MOTION_SETTING_MIN), PriorStage.MOTION_SETTING_MAX)
+
+    def _within_ceiling(self, value, ceiling, name) -> int:
+        if not PriorStage.MOTION_SETTING_MIN <= value <= ceiling:
+            used = min(max(int(value), PriorStage.MOTION_SETTING_MIN), ceiling)
+            self._log.warning(f"Prior stage {name} {value} is outside 1-{ceiling} for this stage; using {used}.")
+            return used
+        return value
+
     def set_max_speed(self, speed=1000):
-        """Set the maximum speed of the stage. Range is 1 to 1000."""
-        if 1 <= speed <= 1000:
-            response = self._send_command(f"SMS {speed}")
-            print(f"Maximum speed set to {speed}. Response: {response}")
+        """Set the maximum speed of the stage. Range is 1 to the stage's max_speed_limit (at most 1000). Raises
+        SquidError when the controller doesn't report the new value back, leaving self.speed None: the controller may
+        have taken it all the same, so its speed is unknown and the next one sent isn't skipped as already there."""
+        if PriorStage.MOTION_SETTING_MIN <= speed <= self.max_speed_limit:
+            self.speed = None  # until the controller reports the new value back
+            self.speed = self._send_motion_setting("SMS", speed, "max speed")
         else:
-            raise ValueError("Speed must be between 1 and 1000")
+            raise ValueError(f"Speed must be between 1 and {self.max_speed_limit}")
+
+    def _send_motion_setting(self, command: str, value: int, name: str) -> int:
+        """Send "<command> <value>" (SMS or SAS) and return value once the controller reports it back. The reply to
+        the setting can be lost (an empty read once the serial timeout runs out) whether or not the controller took
+        it, so only the read-back says whether it did."""
+        reply = self._send_command(f"{command} {value}")
+        read_back = self._send_command(command)
+        try:
+            taken = int(read_back) == value
+        except ValueError:  # "" when the query went unanswered too
+            taken = False
+        if not taken:
+            raise SquidError(
+                f"Prior stage did not take {name} {value}: '{command} {value}' got {reply!r}, "
+                f"and '{command}' reads back {read_back!r}"
+            )
+        self._log.info(f"Prior stage {name} set to {value}.")
+        return value
 
     def get_max_speed(self):
         """Get the current maximum speed setting."""
@@ -208,13 +251,14 @@ class PriorStage(AbstractStage):
         return int(response)
 
     def set_acceleration(self, acceleration=1000):
-        """Set the acceleration of the stage. Range is 1 to 1000."""
-        if 1 <= acceleration <= 1000:
-            response = self._send_command(f"SAS {acceleration}")
-            self.acceleration = acceleration
-            print(f"Acceleration set to {acceleration}. Response: {response}")
+        """Set the acceleration of the stage. Range is 1 to the stage's acceleration_limit (at most 1000). Raises
+        SquidError when the controller doesn't report the new value back, leaving self.acceleration None (unknown), as
+        set_max_speed does."""
+        if PriorStage.MOTION_SETTING_MIN <= acceleration <= self.acceleration_limit:
+            self.acceleration = None  # until the controller reports the new value back
+            self.acceleration = self._send_motion_setting("SAS", acceleration, "acceleration")
         else:
-            raise ValueError("Acceleration must be between 1 and 1000")
+            raise ValueError(f"Acceleration must be between 1 and {self.acceleration_limit}")
 
     def enable_joystick(self):
         self._send_command("J")
@@ -287,6 +331,22 @@ class PriorStage(AbstractStage):
         response = self._send_command("SAS")
         print(f"Current acceleration: {response}")
         return int(response)
+
+    def get_max_speed_mm_s(self) -> Optional[float]:
+        """The current max speed in mm/s, as the controller reports it for the fitted stage. None if it can't say."""
+        return self._query_in_physical_units("SMS,u")
+
+    def get_acceleration_mm_s2(self) -> Optional[float]:
+        """The current acceleration in mm/s^2, as the controller reports it for the fitted stage. None if it can't say."""
+        return self._query_in_physical_units("SAS,u")
+
+    def _query_in_physical_units(self, command: str) -> Optional[float]:
+        # "SMS,u" / "SAS,u" reply in um/s and um/s^2 (e.g. "6000.00" for SMS 100 on an H117(1MM)).
+        try:
+            return float(self._send_command(command)) / 1000
+        except Exception as e:
+            self._log.debug(f"Prior stage gave no usable reply to {command!r}: {e}")
+            return None
 
     def _mm_to_steps(self, mm: float):
         return int(mm * self.user_unit)
