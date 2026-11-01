@@ -53,6 +53,8 @@ class _FakeLaserAF:
         self.positions_at_call = []
         self.image = np.zeros((4, 4), dtype=np.uint8)
         self.characterization_mode = False
+        # Like the real controller: it holds the piezo when the scope has one, and _move_z then moves it.
+        self.piezo = target if isinstance(target, _FakePiezo) else None
 
     def _position(self):
         return self.target.position if isinstance(self.target, _FakePiezo) else self.target.z_mm
@@ -509,3 +511,60 @@ def test_stage_stacks_re_anchor_with_the_stage(tmp_path):
     w.acquire_at_position("A1", "/tmp", 0)
 
     assert _planes(w) == pytest.approx([1000, 1002, 1004, 1004, 1006, 1008])
+
+
+def _sleep_recorder(w):
+    sleeps = []
+    w._sleep = sleeps.append
+    return sleeps
+
+
+@pytest.mark.parametrize("fail_calls", [(), (2,)])
+def test_a_re_anchored_stack_settles_before_its_first_frame(tmp_path, fail_calls):
+    """Review finding: the per-FOV path always settles after the AF (prepare_z_stack); the re-anchored stack must
+    too, on success and after a restore."""
+    import squid.stage.utils
+
+    piezo = _FakePiezo()
+    af = _FakeLaserAF(piezo, references=[100.0, 104.0], fail_calls=fail_calls)
+    w = _worker("Z FIRST", use_piezo=True, laser_af_per_stack=True, laser_af=af, tmp_path=tmp_path)
+    w.piezo = piezo
+    sleeps = _sleep_recorder(w)
+    sleeps_at_af_call = []
+    real_move_to_target = af.move_to_target
+    af.move_to_target = lambda um: (sleeps_at_af_call.append(len(sleeps)), real_move_to_target(um))[1]
+    sleeps_at_frame = []
+    real_acquire = w.acquire_camera_image
+    w.acquire_camera_image = lambda *a, **k: (sleeps_at_frame.append(len(sleeps)), real_acquire(*a, **k))[1]
+
+    w.acquire_at_position("A1", "/tmp", 0)
+
+    between = sleeps[sleeps_at_af_call[1] : sleeps_at_frame[3]]  # after the re-AF, before B's first frame
+    assert between, "no settle between the re-AF and the first frame of the re-anchored stack"
+    if not fail_calls:
+        assert squid.stage.utils.z_stabilization_time_s() in between  # prepare_z_stack's settle, as per FOV
+
+
+def test_a_failed_re_anchor_restores_the_piezo_the_laser_af_moved_even_for_a_stage_stack(tmp_path):
+    """Review finding: on a stage + piezo system with Piezo Z-Stack unchecked the laser AF still moves the piezo,
+    so the restore must move the piezo back, not the stage."""
+    piezo = _FakePiezo(position=280.0, range_um=300.0)
+    af = _FakeLaserAF(piezo, references=[280.0, 292.0])
+    w = _worker(
+        "Z FIRST",
+        use_piezo=False,
+        offsets={"A": 5.0, "B": 0.0},
+        region_offsets={"A1": 10.0},
+        laser_af_per_stack=True,
+        laser_af=af,
+        tmp_path=tmp_path,
+    )
+    w.piezo = piezo  # present on the scope, not running the stack
+
+    w.acquire_at_position("A1", "/tmp", 0)
+
+    # per-FOV: piezo 280 + 10 = 290; A offset +5 on the stage -> 1005..1009; B: re-AF reaches 292, +10 raises ->
+    # the piezo (not the stage) is restored to 290; B offset 0 -> stage back to 1000..1004.
+    assert _planes(w) == pytest.approx([1005, 1007, 1009, 1000, 1002, 1004])
+    assert piezo.position == pytest.approx(290.0)
+    assert w.stage.z_mm == pytest.approx(1.0)

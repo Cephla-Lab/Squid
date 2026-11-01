@@ -1347,7 +1347,10 @@ class MultiPointWorker:
         (its _move_z). The per-FOV caller re-reads the cache itself in acquire_at_position.
         """
         if restore_on_failure:
-            pre_af = self.piezo.position if self.use_piezo else self.stage.get_pos().z_mm
+            # The controller moves the piezo whenever the scope has one (its _move_z), whichever actuator runs
+            # the stack; so the restore must follow the controller, not use_piezo.
+            af_moves_piezo = getattr(self.laser_auto_focus_controller, "piezo", None) is not None
+            pre_af = self.piezo.position if af_moves_piezo else self.stage.get_pos().z_mm
         try:
             target_um = self.region_laser_af_offsets.get(region_id, 0.0)
             # Anchor closed-loop at the reference (displacement 0), where spot-alignment
@@ -1369,10 +1372,13 @@ class MultiPointWorker:
             af_succeeded = False
         if restore_on_failure:
             if not af_succeeded:
-                if self.use_piezo:
+                if af_moves_piezo:
                     self.piezo.move_to(pre_af)
+                    if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                        self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
                 else:
                     self.stage.move_z_to(pre_af)
+                    self._sleep(squid.stage.utils.z_stabilization_time_s())
             if self.use_piezo:
                 self.z_piezo_um = self.piezo.position
         return af_succeeded
@@ -1390,8 +1396,8 @@ class MultiPointWorker:
             self._current_z_offset_um = 0.0
             self._laser_af_per_stack_successes += 1
             self._log.info(f"laser AF before '{config.name}' stack: anchored")
-            if self.z_stacking_config == "FROM CENTER":
-                self._move_down_half_stack()
+            # Exactly as per FOV: From Center moves down half a stack, and the stack settles before its first frame.
+            self.prepare_z_stack()
             return True
         self._laser_af_per_stack_failures += 1
         self._log.error(f"laser AF before '{config.name}' stack failed; keeping the previous anchor")

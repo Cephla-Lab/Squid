@@ -9068,6 +9068,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.list_configurations.blockSignals(False)
             self.checkbox_withAutofocus.blockSignals(False)
             self.checkbox_withReflectionAutofocus.blockSignals(False)
+            # The restored Z / Z First / Laser AF state came in with signals blocked: re-apply the rule for the
+            # "AF per stack" checkbox (shown / enabled / pushed) from the loaded values.
+            self._update_laser_af_per_stack_state()
 
             # Update UI state based on loaded settings
             self.update_scan_control_ui()

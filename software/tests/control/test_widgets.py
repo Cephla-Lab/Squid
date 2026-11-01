@@ -3483,3 +3483,49 @@ def test_wellplate_cache_restores_laser_af_per_stack(tmp_path, monkeypatch):
     fake.combobox_z_order.findData.return_value = 0  # the loader compares this index with 0 before our line
     control.widgets.WellplateMultiPointWidget.load_multipoint_widget_config_from_cache(fake)
     fake.checkbox_laserAfPerStack.setChecked.assert_called_with(True)
+
+
+def test_wellplate_cache_restore_shows_the_per_stack_checkbox_when_the_rule_says_so(qtbot, monkeypatch, tmp_path):
+    """Review finding: the loader restores Z, Z First and Laser AF with their signals blocked, so nothing re-applied
+    the rule and the checkbox stayed hidden until the user poked a control."""
+    import types
+
+    import yaml
+    from qtpy.QtWidgets import QCheckBox, QWidget
+
+    monkeypatch.setattr(control.widgets, "SUPPORT_LASER_AUTOFOCUS", True)
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", True)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "multipoint_widget_config.yaml").write_text(
+        yaml.safe_dump({"z_enabled": True, "z_order": "Z FIRST", "laser_af": True, "laser_af_per_stack": False})
+    )
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    fake = MagicMock()
+    fake.parent = parent
+    fake.combobox_z_order = QComboBox(parent)
+    for order in control._def.Z_STACK_ORDERS:
+        fake.combobox_z_order.addItem(order.title(), order)
+    fake.checkbox_withReflectionAutofocus = QCheckBox(parent)
+    fake.checkbox_laserAfPerStack = QCheckBox(parent)
+    fake.checkbox_z = QCheckBox(parent)
+    fake.multipointController = MagicMock()
+    cls = control.widgets.WellplateMultiPointWidget
+    for name in (
+        "_update_laser_af_per_stack_state",
+        "_laser_af_per_stack_shown",
+        "laser_af_per_stack_to_start",
+        "_z_row_shown",
+        "load_multipoint_widget_config_from_cache",
+    ):
+        setattr(fake, name, types.MethodType(getattr(cls, name), fake))
+    parent.show()
+    fake._update_laser_af_per_stack_state()  # construction: Z unchecked, Channel First -> hidden
+    assert fake.checkbox_laserAfPerStack.isHidden()
+
+    fake.load_multipoint_widget_config_from_cache()
+
+    assert fake._log.warning.call_args_list == []
+    assert fake.checkbox_z.isChecked() and fake.combobox_z_order.currentData() == "Z FIRST"
+    assert not fake.checkbox_laserAfPerStack.isHidden() and fake.checkbox_laserAfPerStack.isEnabled()
