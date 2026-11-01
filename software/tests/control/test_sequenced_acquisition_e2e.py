@@ -8,13 +8,18 @@ import threading
 import pytest
 
 import control._def
+import control.core.live_controller
 import control.core.multi_point_worker as multi_point_worker
+import control.microcontroller
 import control.microscope
 import control.sequencer_sim
+import squid.config
+import squid.filter_wheel_controller.utils
 import tests.control.test_stubs as ts
 from control.core.multi_point_utils import MultiPointControllerFunctions
 from control.piezo import PiezoStage
 from control.sequencer_program import SeqError, SeqState
+from squid.config import FilterWheelConfig, FilterWheelControllerVariant
 
 FLUORESCENCE = ["Fluorescence 405 nm Ex", "Fluorescence 488 nm Ex"]
 NZ = 3
@@ -54,6 +59,13 @@ def sequencing_setup(monkeypatch):
     monkeypatch.setattr(control.sequencer_sim, "SPEED_UP_FACTOR", 50.0)
 
 
+@pytest.fixture
+def simulated_emission_wheel(monkeypatch):
+    """One emission filter wheel, simulated, as USE_EMISSION_FILTER_WHEEL gives a machine (homed to 1)."""
+    config = FilterWheelConfig(controller_type=FilterWheelControllerVariant.SQUID, indices=[1])
+    monkeypatch.setattr(squid.config, "get_filter_wheel_config", lambda: config)
+
+
 def saved_files(mpc) -> list:
     """Every file the acquisition wrote, relative to its experiment folder, sorted."""
     root = os.path.join(mpc.base_path, mpc.experiment_ID)
@@ -74,6 +86,10 @@ def run_acquisition(
     binning=None,
     z_stacking_config=None,
     z_stack_order=None,
+    filter_positions=None,
+    exposures_ms=None,
+    contrast_af=False,
+    on_controller=None,
 ):
     monkeypatch.setattr(control._def, "USE_HARDWARE_SEQUENCED_ACQUISITION", sequenced)
     scope = control.microscope.Microscope.build_from_global_config(True)
@@ -102,6 +118,15 @@ def run_acquisition(
                 center_z=mpc.stage.get_config().Z_AXIS.MIN_POSITION + 1.0,
             )
         mpc.set_selected_configurations(selected_configurations_name=channels)
+        if filter_positions is not None:
+            for config, position in zip(mpc.selected_configurations, filter_positions):
+                config.filter_position = position
+        if exposures_ms is not None:
+            for config, exposure_ms in zip(mpc.selected_configurations, exposures_ms):
+                config.exposure_time = exposure_ms
+        mpc.set_af_flag(contrast_af)
+        if on_controller is not None:
+            on_controller(mpc)
         mpc.set_use_piezo(True)
         mpc.set_NZ(nz)
         mpc.set_deltaZ(DZ_UM)
@@ -200,6 +225,113 @@ def test_a_z_first_acquisition_runs_software_sequenced_in_the_order_it_asked_for
         [20 + z * DZ_UM for _ in FLUORESCENCE for z in range(NZ)]
     )
     assert status.frames_fired == 0  # the controller's sequencer was never used
+
+
+def test_channels_needing_different_emission_filters_run_software_sequenced(
+    sequencing_setup, simulated_emission_wheel, monkeypatch
+):
+    """The software path moves the emission filter wheel at every channel switch; a burst cannot."""
+    reasons = []
+    decide = multi_point_worker.ineligibility_reason
+
+    def record(**kwargs):
+        reasons.append(decide(**kwargs))
+        return reasons[-1]
+
+    monkeypatch.setattr(multi_point_worker, "ineligibility_reason", record)
+
+    tracker, status, _ = run_acquisition(FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch, filter_positions=[2, 3])
+
+    assert len(reasons) == 1 and "2 emission filter positions" in reasons[0] and "emission filter wheel" in reasons[0]
+    assert [(z, name) for z, name, _, _ in tracker.images] == [(z, name) for z in range(NZ) for name in FLUORESCENCE]
+    assert status.frames_fired == 0  # the controller's sequencer was never used
+
+
+def test_the_emission_filter_position_the_channels_share_is_set_before_the_burst(
+    sequencing_setup, simulated_emission_wheel, monkeypatch
+):
+    """The sequenced path never selects a channel, so nothing else would move the wheel there."""
+    scopes = []
+    wheel_at_run = []
+    seq_run = control.microcontroller.Microcontroller.seq_run
+
+    def record_then_run(self, stack_start):
+        wheel_at_run.append(scopes[0].addons.emission_filter_wheel.get_filter_wheel_position()[1])
+        return seq_run(self, stack_start)
+
+    monkeypatch.setattr(control.microcontroller.Microcontroller, "seq_run", record_then_run)
+
+    tracker, status, _ = run_acquisition(
+        FLUORESCENCE,
+        sequenced=True,
+        monkeypatch=monkeypatch,
+        n_regions=2,
+        filter_positions=[3, 3],
+        on_controller=lambda mpc: scopes.append(mpc.microscope),
+    )
+
+    assert status.frames_fired == NZ * len(FLUORESCENCE)  # the last run's count
+    assert wheel_at_run == [3, 3]  # homed to 1; the burst setup moved it
+
+
+def test_contrast_autofocus_does_not_leave_its_channel_settings_on_the_burst(
+    sequencing_setup, simulated_emission_wheel, monkeypatch
+):
+    """Contrast autofocus selects its own channel per FOV: camera exposure, gain and filter position.
+    The burst runs with the longest channel exposure and the shared filter position, so both are set
+    up again after it."""
+    scopes = []
+    at_run = []  # (camera exposure, wheel position) when each burst starts
+    moves = []
+    seq_run = control.microcontroller.Microcontroller.seq_run
+    move = squid.filter_wheel_controller.utils.SimulatedFilterWheelController.set_filter_wheel_position
+
+    def record_then_run(self, stack_start):
+        scope = scopes[0]
+        at_run.append(
+            (scope.camera.get_exposure_time(), scope.addons.emission_filter_wheel.get_filter_wheel_position()[1])
+        )
+        return seq_run(self, stack_start)
+
+    def record_move(self, positions):
+        moves.append(dict(positions))
+        return move(self, positions)
+
+    monkeypatch.setattr(control.microcontroller.Microcontroller, "seq_run", record_then_run)
+    monkeypatch.setattr(
+        squid.filter_wheel_controller.utils.SimulatedFilterWheelController, "set_filter_wheel_position", record_move
+    )
+
+    # The worker looks the autofocus channel up by name (a fresh merged object each time), so its
+    # settings are given on the way out.
+    get_channel = control.core.live_controller.LiveController.get_channel_by_name
+
+    def af_channel_with_its_own_settings(self, objective, name):
+        channel = get_channel(self, objective, name)
+        if name == control._def.MULTIPOINT_AUTOFOCUS_CHANNEL:
+            channel.filter_position = 5
+            channel.exposure_time = 5.0
+        return channel
+
+    monkeypatch.setattr(
+        control.core.live_controller.LiveController, "get_channel_by_name", af_channel_with_its_own_settings
+    )
+
+    tracker, status, _ = run_acquisition(
+        FLUORESCENCE,
+        sequenced=True,
+        monkeypatch=monkeypatch,
+        nz=1,
+        n_regions=2,
+        filter_positions=[3, 3],
+        exposures_ms=[20.0, 50.0],
+        contrast_af=True,
+        on_controller=lambda mpc: scopes.append(mpc.microscope),
+    )
+
+    assert {1: 5} in moves  # autofocus did select its channel
+    assert status.frames_fired == len(FLUORESCENCE)  # the last run's count
+    assert at_run == [(50.0, 3), (50.0, 3)]
 
 
 def test_differing_channel_gains_do_not_matter_on_a_camera_without_analog_gain(sequencing_setup, monkeypatch):

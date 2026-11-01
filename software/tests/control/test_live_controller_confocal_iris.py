@@ -4,6 +4,7 @@ import pytest
 
 import control.core.live_controller
 from control.core.live_controller import LiveController
+from control.core.sequenced_acquisition import EmissionFilterUnit
 from control.models.acquisition_config import ConfocalSettings
 from control.serial_peripherals import SerialDeviceError, XLight_Simulation
 from tests.control.spinning_disk_test_utils import build_simulated_microscope, enable_spinning_disk, make_channel
@@ -72,3 +73,7 @@ def test_stuck_illumination_iris_does_not_stop_the_emission_iris(scope, live):
     live.update_illumination()
 
     assert scope.addons.xlight.emission_iris == 40
+
+
+def test_the_xlight_is_the_unit_a_channel_switch_moves_and_it_applies_the_iris(live):
+    assert live.emission_filter_unit() == EmissionFilterUnit("XLight", applies_iris=True)

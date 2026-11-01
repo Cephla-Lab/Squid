@@ -1330,6 +1330,7 @@ class MultiPointWorker:
         for config in self.selected_configurations:
             source_code, dac_percent = self.liveController.resolve_mcu_illumination(config)
             z_offset_um = config.z_offset_um
+            iris = config.confocal_hardware_settings
             plans.append(
                 ChannelPlan(
                     name=config.name,
@@ -1337,6 +1338,8 @@ class MultiPointWorker:
                     source_code=source_code,
                     dac_percent=float(dac_percent),
                     z_offset_um=z_offset_um if (z_offset_um is not None and math.isfinite(z_offset_um)) else 0.0,
+                    filter_position=config.filter_position,
+                    iris=(iris.illumination_iris, iris.emission_iris) if iris is not None else (None, None),
                 )
             )
         return plans
@@ -1379,6 +1382,7 @@ class MultiPointWorker:
             camera_drives_ready_line=control._def.CAMERA_TRIGGER_READY_OUTPUT,
             z_stack_order=self.z_stack_order,
             nz=self.NZ,
+            emission_filter_unit=self.liveController.emission_filter_unit(),
         )
         if (
             reason is None
@@ -1392,15 +1396,7 @@ class MultiPointWorker:
             )
             return
 
-        # No camera register write is possible between the frames of a burst: the pulse width
-        # sets each channel's exposure (LEVEL trigger), and the gain is the same for all
-        # channels (an eligibility condition). The longest exposure is set once so the
-        # camera-side timeouts cover every frame.
-        self.camera.set_exposure_time(max(plan.exposure_ms for plan in plans))
-        try:
-            self.camera.set_analog_gain(self.selected_configurations[0].analog_gain)
-        except NotImplementedError:
-            pass
+        self._set_up_for_bursts()
 
         camera_spec = camera_record(
             use_ready_line=control._def.SEQUENCER_USE_CAMERA_READY_LINE,
@@ -1428,6 +1424,30 @@ class MultiPointWorker:
             f"Hardware-sequenced acquisition: {self.NZ} layers x {len(plans)} channels per position "
             f"({len(program.pack())} byte program uploaded)."
         )
+
+    def _set_up_for_bursts(self) -> None:
+        """What a burst runs with and cannot change between its frames: the camera's exposure and
+        gain, and the emission filter.
+
+        No camera register write is possible inside a burst: the pulse width sets each channel's
+        exposure (LEVEL trigger), so the camera gets the longest one and its timeouts cover every
+        frame; the gain is the same for all channels (an eligibility condition). Nothing moves the
+        emission filter inside a burst either, so the one position the channels share (another
+        eligibility condition) is set here, where the software path sets it per channel.
+
+        Runs once per acquisition, and again before a burst whenever a channel was selected since:
+        contrast autofocus selects its own channel per FOV, with its own exposure, gain and filter.
+        """
+        configs = self.selected_configurations
+        self.camera.set_exposure_time(max(config.exposure_time for config in configs))
+        try:
+            self.camera.set_analog_gain(configs[0].analog_gain)
+        except NotImplementedError:
+            pass
+        self.liveController.apply_emission_filter(
+            next((config for config in configs if config.filter_position), configs[0])
+        )
+        self._applied_config = None
 
     def _sequenced_burst_timeout_s(self) -> float:
         """Upper bound for one burst: every step at its worst-case wait, plus the return move."""
@@ -1541,6 +1561,8 @@ class MultiPointWorker:
         self._abort_due_to_error()
 
     def _acquire_sequenced_stack(self, region_id, current_path, fov) -> None:
+        if self._applied_config is not None:  # a channel was selected at this position (contrast autofocus)
+            self._set_up_for_bursts()
         configs = self.selected_configurations
         start_um = self.z_piezo_um
         dz_um = self.deltaZ * 1000

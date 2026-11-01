@@ -71,6 +71,15 @@ def intervention_message(*, region_id, fov, attempts: int, last_reason: str) -> 
 
 
 @dataclasses.dataclass(frozen=True)
+class EmissionFilterUnit:
+    """The emission filter unit a channel switch moves in the software path
+    (LiveController.emission_filter_unit()). Nothing moves it inside a burst."""
+
+    name: str  # "XLight", "Dragonfly", "<type> emission filter wheel" - for the reason given to the user
+    applies_iris: bool  # the X-Light also sets its iris values per channel
+
+
+@dataclasses.dataclass(frozen=True)
 class ChannelPlan:
     """One channel of a burst, already resolved by the caller through the SAME path the
     per-frame loop uses (intensity cap, calibration LUT, wavelength -> source code)."""
@@ -80,6 +89,11 @@ class ChannelPlan:
     source_code: int  # what Microcontroller.set_illumination() would be given
     dac_percent: float  # 0-100, AFTER the calibration LUT
     z_offset_um: float = 0.0
+    # What the emission filter unit would be given for this channel (LiveController.apply_emission_filter):
+    # the wheel position (None: the channel leaves the wheel where it is) and the X-Light's
+    # (illumination, emission) iris values (None: the unit's default).
+    filter_position: Optional[int] = None
+    iris: Tuple[Optional[float], Optional[float]] = (None, None)
 
 
 def intensity_percent_to_dac(dac_percent: float, intensity_factor: float) -> int:
@@ -201,6 +215,7 @@ def ineligibility_reason(
     camera_drives_ready_line: bool,
     z_stack_order: str,
     nz: int,
+    emission_filter_unit: Optional[EmissionFilterUnit],
 ) -> Optional[str]:
     """Why this acquisition cannot be hardware-sequenced, or None when it can.
 
@@ -232,6 +247,21 @@ def ineligibility_reason(
         return (
             f"the z-stack order is '{z_stack_order}' (the sequencer runs every channel at each z level, CHANNEL FIRST)"
         )
+    if emission_filter_unit is not None:
+        # The software path moves the unit at every channel switch. A burst cannot, so every channel
+        # has to image through the same filter: the one position the channels share is set before the
+        # burst. A channel without a position leaves the wheel where it is in the software path too.
+        positions = {channel.filter_position for channel in channels if channel.filter_position}
+        if len(positions) > 1:
+            return (
+                f"the channels need {len(positions)} emission filter positions and the sequencer cannot move "
+                f"the {emission_filter_unit.name} inside a burst"
+            )
+        if emission_filter_unit.applies_iris and len({channel.iris for channel in channels}) > 1:
+            return (
+                f"the channels use different {emission_filter_unit.name} iris values and the sequencer cannot "
+                "change them inside a burst"
+            )
     if not global_reset_active:
         return (
             "LEVEL trigger + global reset is not active (hardware_trigger_mode = LEVEL and "

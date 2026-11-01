@@ -9,6 +9,7 @@ from control.core.sequenced_acquisition import (
     PIEZO_DAC_ID,
     BurstOutcome,
     ChannelPlan,
+    EmissionFilterUnit,
     burst_failure_reason,
     build_program,
     camera_record,
@@ -40,10 +41,29 @@ CAMERA = SeqCameraSpec(
 )
 
 
-def plan(name="Fluorescence 488 nm Ex", exposure_ms=20.0, source_code=12, dac_percent=50.0, z_offset_um=0.0):
+def plan(
+    name="Fluorescence 488 nm Ex",
+    exposure_ms=20.0,
+    source_code=12,
+    dac_percent=50.0,
+    z_offset_um=0.0,
+    filter_position=None,
+    iris=(None, None),
+):
     return ChannelPlan(
-        name=name, exposure_ms=exposure_ms, source_code=source_code, dac_percent=dac_percent, z_offset_um=z_offset_um
+        name=name,
+        exposure_ms=exposure_ms,
+        source_code=source_code,
+        dac_percent=dac_percent,
+        z_offset_um=z_offset_um,
+        filter_position=filter_position,
+        iris=iris,
     )
+
+
+# The units a channel switch moves in the software path (LiveController.emission_filter_unit()).
+XLIGHT = EmissionFilterUnit("XLight", applies_iris=True)
+WHEEL = EmissionFilterUnit("SQUID emission filter wheel", applies_iris=False)
 
 
 # --- the arithmetic must equal what the per-frame commands do today -------------------------------
@@ -186,6 +206,7 @@ def eligible_kwargs(**overrides):
         camera_drives_ready_line=False,
         z_stack_order="CHANNEL FIRST",
         nz=3,
+        emission_filter_unit=None,
     )
     kwargs.update(overrides)
     return kwargs
@@ -214,6 +235,13 @@ def test_a_plain_fluorescence_piezo_stack_is_eligible():
         (dict(channels=[], camera_gains=[]), "no channels"),
         # Z FIRST writes the same files in a different physical order (bleaching, drift and timing differ).
         (dict(z_stack_order="Z FIRST"), "z-stack order"),
+        # The software path moves the emission filter at every channel switch; nothing moves it inside a burst.
+        (
+            dict(
+                emission_filter_unit=WHEEL, channels=[plan(source_code=11, filter_position=1), plan(filter_position=2)]
+            ),
+            "emission filter",
+        ),
     ],
 )
 def test_each_ineligibility_names_its_reason(overrides, fragment):
@@ -227,6 +255,50 @@ def test_no_byte_budget_means_no_memory_limit():
 
 def test_the_z_stack_order_does_not_matter_for_a_single_plane():
     assert ineligibility_reason(**eligible_kwargs(z_stack_order="Z FIRST", nz=1)) is None
+
+
+def test_the_emission_filter_reason_counts_the_positions_and_names_the_unit():
+    channels = [
+        plan(source_code=11, filter_position=1),
+        plan(filter_position=2),
+        plan(name="Fluorescence 638 nm Ex", source_code=13, filter_position=2),
+    ]
+    reason = ineligibility_reason(
+        **eligible_kwargs(emission_filter_unit=WHEEL, channels=channels, camera_gains=[10.0] * 3)
+    )
+    assert reason == (
+        "the channels need 2 emission filter positions and the sequencer cannot move the "
+        "SQUID emission filter wheel inside a burst"
+    )
+
+
+def test_channels_sharing_one_emission_filter_position_are_eligible():
+    channels = [plan(source_code=11, filter_position=3), plan(filter_position=3)]
+    assert ineligibility_reason(**eligible_kwargs(emission_filter_unit=WHEEL, channels=channels)) is None
+
+
+def test_a_channel_without_a_filter_position_does_not_count():
+    # The software path leaves the wheel where it is for such a channel, so it asks for no move either.
+    channels = [plan(source_code=11, filter_position=None), plan(filter_position=3)]
+    assert ineligibility_reason(**eligible_kwargs(emission_filter_unit=WHEEL, channels=channels)) is None
+
+
+def test_without_an_emission_filter_unit_the_positions_are_not_compared():
+    # No unit is configured (or auto filter switching is off): the software path would not move anything.
+    channels = [plan(source_code=11, filter_position=1), plan(filter_position=2)]
+    assert ineligibility_reason(**eligible_kwargs(emission_filter_unit=None, channels=channels)) is None
+
+
+def test_differing_xlight_iris_values_are_ineligible():
+    # The X-Light's iris values are applied per channel too (a channel without its own gets the default).
+    channels = [plan(source_code=11, filter_position=3, iris=(30.0, None)), plan(filter_position=3)]
+    reason = ineligibility_reason(**eligible_kwargs(emission_filter_unit=XLIGHT, channels=channels))
+    assert reason is not None and "iris" in reason and "XLight" in reason
+
+
+def test_iris_values_do_not_matter_on_a_unit_that_does_not_apply_them():
+    channels = [plan(source_code=11, filter_position=3, iris=(30.0, None)), plan(filter_position=3)]
+    assert ineligibility_reason(**eligible_kwargs(emission_filter_unit=WHEEL, channels=channels)) is None
 
 
 def test_old_firmware_is_not_an_ineligibility_but_an_error():
