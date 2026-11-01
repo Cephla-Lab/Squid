@@ -605,7 +605,8 @@ class TestFileSavingOptionFallback:
         dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
         qtbot.addWidget(dialog)
 
-        assert dialog.file_saving_combo.currentText() == "MULTI_PAGE_TIFF"
+        # With no change listed, the combo box shows this format (whatever label it gives it)
+        assert dialog._get_file_saving_option() == "MULTI_PAGE_TIFF"
         assert not [c for c in dialog._get_changes() if c[0] == "File Saving Format"]
 
 
@@ -1038,7 +1039,9 @@ class TestZarrSettings:
         dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
         qtbot.addWidget(dialog)
 
-        assert dialog.file_saving_combo.currentText() == "MULTI_PAGE_TIFF"
+        # With no change listed, the combo box shows this format (whatever label it gives it)
+        assert dialog._get_file_saving_option() == "MULTI_PAGE_TIFF"
+        assert not [c for c in dialog._get_changes() if c[0] == "File Saving Format"]
         assert dialog.zarr_compression_combo.currentText() == "fast"
 
     def test_saving_another_setting_writes_these_in_canonical_form(self, qtbot, sample_config, temp_config_file):
