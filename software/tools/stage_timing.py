@@ -20,21 +20,23 @@ def get_move_fn(scope: Microscope, stage: squid.abc.AbstractStage, axis: str, re
             raise ValueError(f"Unknown axis {axis}")
 
 
-def home(scope: Microscope):
+def home(scope: Microscope, objective_lowered: bool = False):
     scope.stage.home(x=False, y=False, z=True, theta=False)
     scope.stage.move_x(20)
-    scope.stage.home(x=False, y=True, z=False, theta=False)
-    scope.stage.home(x=True, y=False, z=False, theta=False)
+    scope.stage.home(x=False, y=True, z=False, theta=False, objective_lowered=objective_lowered)
+    scope.stage.home(x=True, y=False, z=False, theta=False, objective_lowered=objective_lowered)
 
 
 def main(args):
     if args.verbose:
         squid.logging.set_stdout_log_level(logging.DEBUG)
 
-    scope: Microscope = Microscope.build_from_global_config(False)
+    scope: Microscope = Microscope.build_from_global_config(
+        False, confirm_objective_lowered=(lambda: True) if args.objective_lowered else None
+    )
 
     if args.home:
-        home(scope)
+        home(scope, objective_lowered=args.objective_lowered)
 
     axis_move_fn = get_move_fn(scope, scope.stage, args.axis, args.relative)
     axis_move_fn(args.start)
@@ -75,6 +77,11 @@ if __name__ == "__main__":
         "--step", type=float, default=0.001, help="The step size to use in mm.  This should be small!  EG 0.001"
     )
     ap.add_argument("--no_home", dest="home", action="store_false", help="Do not home zxy before running.")
+    ap.add_argument(
+        "--objective-lowered",
+        action="store_true",
+        help="Confirm the objective has been lowered with the focus knob (required to home X/Y on a piezo-only system).",
+    )
     ap.add_argument("--relative", action="store_true", help="Use relative moves instead of absolute.")
 
     sys.exit(main(ap.parse_args()))

@@ -121,7 +121,9 @@ def main(args):
 
     # NOTE(imo): This will be expanded as we expand upon `Microscope` functionality.  The expectation is that
     # you can use this to test on real hardware (in addition to the existing unit tests)
-    scope: control.microscope.Microscope = control.microscope.Microscope.build_from_global_config(args.simulate)
+    scope: control.microscope.Microscope = control.microscope.Microscope.build_from_global_config(
+        args.simulate, confirm_objective_lowered=(lambda: True) if args.objective_lowered else None
+    )
 
     # NOTE(imo): We will probably put this into __init__.  For now, keep it separate just in case it'd break
     # anything in the gui.
@@ -131,7 +133,7 @@ def main(args):
     # scope.stage.home(x=False, y=False, z=True, theta=False, blocking=True)
     # scope.stage.home(x=True, y=True, z=False, theta=False, blocking=True)
 
-    scope.home_xyz()
+    scope.home_xyz(objective_lowered=args.objective_lowered)
 
     # Do some moves with stage directly, and the stage helpers
     x_max = scope.stage.get_config().X_AXIS.MAX_POSITION
@@ -268,6 +270,11 @@ if __name__ == "__main__":
 
     ap.add_argument("--runtime", type=float, help="Time, in s, to run the test for.", default=60)
     ap.add_argument("--verbose", action="store_true", help="Turn on debug logging")
+    ap.add_argument(
+        "--objective-lowered",
+        action="store_true",
+        help="Confirm the objective has been lowered with the focus knob (required to home X/Y on a piezo-only system).",
+    )
     ap.add_argument("--simulate", action="store_true", help="Run with a simulated microscope")
 
     args = ap.parse_args()

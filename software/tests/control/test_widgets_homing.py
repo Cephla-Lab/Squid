@@ -1,5 +1,5 @@
-"""The stop sign before XY homing on a piezo-only system (control/widgets_homing.py): when it is asked, what each
-button and key does, and Stage Utils' Home X / Home Y going through it."""
+"""The stop sign before XY homing on a piezo-only system (control/widgets_homing.py): what each button and key does,
+and Stage Utils' Home X / Home Y going through it. When startup asks: tests/control/test_startup_homing.py."""
 
 from unittest.mock import MagicMock, patch
 
@@ -9,31 +9,7 @@ from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QApplication, QDialog, QMessageBox
 
 import control._def
-from control.widgets_homing import (
-    NosepieceLoweredDialog,
-    StopSign,
-    confirm_nosepiece_lowered,
-    startup_needs_nosepiece_check,
-)
-
-
-@pytest.mark.parametrize(
-    "piezo_only, homing_x, homing_y, skip_init, expected",
-    [
-        (True, True, True, False, True),
-        (True, True, True, True, False),  # Restart (--skip-init) does not home
-        (False, True, True, False, False),  # the software lowers the objective itself
-        (True, False, True, False, False),  # startup moves XY only when both axes home
-        (True, True, False, False, False),
-    ],
-)
-def test_startup_needs_the_check_only_when_a_piezo_only_system_homes_xy(
-    monkeypatch, piezo_only, homing_x, homing_y, skip_init, expected
-):
-    monkeypatch.setattr(control._def, "IS_PIEZO_ONLY", piezo_only)
-    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", homing_x)
-    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", homing_y)
-    assert startup_needs_nosepiece_check(skip_init) is expected
+from control.widgets_homing import NosepieceLoweredDialog, StopSign, confirm_nosepiece_lowered
 
 
 def _shown_dialog(qtbot, decline_text="Quit Squid"):
@@ -102,6 +78,13 @@ def test_confirm_returns_true_only_for_home(qtbot, accept):
     assert confirm_nosepiece_lowered(None, decline_text="Quit Squid") is accept
 
 
+class _Claim:
+    released = True
+
+    def release_when_stopped(self):
+        pass
+
+
 def _stage_utils(qtbot):
     from control.widgets import StageUtils
 
@@ -109,6 +92,7 @@ def _stage_utils(qtbot):
     live.is_live = False
     stage = MagicMock()
     dialog = StageUtils(stage, live, is_wellplate=False)
+    dialog.set_homing_hooks(blocker=lambda: None, claim=lambda operation: _Claim())
     qtbot.addWidget(dialog)
     return dialog, stage
 
@@ -124,7 +108,7 @@ def test_piezo_only_home_x_y_asks_at_the_stop_sign(qtbot, monkeypatch, button, a
         getattr(dialog, button)()
     confirm.assert_called_once_with(dialog, decline_text="Cancel")
     if confirmed:
-        stage.home.assert_called_once_with(z=False, theta=False, **axes)
+        stage.home.assert_called_once_with(z=False, theta=False, objective_lowered=True, **axes)
     else:
         stage.home.assert_not_called()
 
@@ -137,4 +121,4 @@ def test_other_systems_keep_the_generic_confirmation(qtbot, monkeypatch):
     ):
         dialog.home_x()
     confirm.assert_not_called()
-    stage.home.assert_called_once_with(x=True, y=False, z=False, theta=False)
+    stage.home.assert_called_once_with(x=True, y=False, z=False, theta=False, objective_lowered=False)
