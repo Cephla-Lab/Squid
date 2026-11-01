@@ -76,6 +76,11 @@ class SummarizeResult(NamedTuple):
     had_results: bool  # True if any results were pulled from queue
 
 
+def _z_steps_below_center(nz: int) -> int:
+    """Number of z steps a From Center stack starts below its centre (and climbs back afterwards)."""
+    return round((nz - 1) / 2.0)
+
+
 class MultiPointWorker:
     def __init__(
         self,
@@ -1114,11 +1119,13 @@ class MultiPointWorker:
                 f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={self.stage.get_pos().z_mm} [mm])"
             )
 
+        if self.use_piezo:
+            # Re-read the piezo: laser AF moves it directly, bypassing this cache, and the
+            # From Center move below and every stack step start from the cached value.
+            self.z_piezo_um = self.piezo.position
+
         if self.NZ > 1:
             self.prepare_z_stack()
-
-        if self.use_piezo:
-            self.z_piezo_um = self.piezo.position
 
         if self.z_stack_order == "Z FIRST" and self.NZ > 1:
             z_steps_taken = self._acquire_z_first(region_id, current_path, fov, af_succeeded)
@@ -1338,8 +1345,16 @@ class MultiPointWorker:
     def prepare_z_stack(self):
         # move to bottom of the z stack
         if self.z_stacking_config == "FROM CENTER":
-            self.stage.move_z(-self.deltaZ * round((self.NZ - 1) / 2.0))
-            self._sleep(squid.stage.utils.z_stabilization_time_s())
+            if self.use_piezo:
+                # The piezo takes the whole stack (centring included): on a piezo-only Z the stage
+                # has no z to move, and on a stage + piezo system a stage move here was never undone.
+                self.z_piezo_um -= self.deltaZ * 1000 * _z_steps_below_center(self.NZ)
+                self.piezo.move_to(self.z_piezo_um)
+                if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                    self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+            else:
+                self.stage.move_z(-self.deltaZ * _z_steps_below_center(self.NZ))
+                self._sleep(squid.stage.utils.z_stabilization_time_s())
         self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def _move_z_for_offset(self, delta_um: float) -> float:
@@ -1855,17 +1870,16 @@ class MultiPointWorker:
         """Return Z to where the stack started, undoing steps_taken z steps (default: a full stack)."""
         if steps_taken is None:
             steps_taken = self.NZ - 1
+        # Undo the steps taken; From Center also climbs back to the centre the stack started below.
+        steps_to_start = -steps_taken
+        if self.z_stacking_config == "FROM CENTER":
+            steps_to_start += _z_steps_below_center(self.NZ)
         if self.use_piezo:
-            self.z_piezo_um = self.z_piezo_um - self.deltaZ * 1000 * steps_taken
+            self.z_piezo_um = self.z_piezo_um + self.deltaZ * 1000 * steps_to_start
             self.piezo.move_to(self.z_piezo_um)
             if (
                 self.liveController.trigger_mode == TriggerMode.SOFTWARE
             ):  # for hardware trigger, delay is in waiting for the last row to start exposure
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
         else:
-            if self.z_stacking_config == "FROM CENTER":
-                rel_z_to_start = -self.deltaZ * steps_taken + self.deltaZ * round((self.NZ - 1) / 2)
-            else:
-                rel_z_to_start = -self.deltaZ * steps_taken
-
-            self.stage.move_z(rel_z_to_start)
+            self.stage.move_z(self.deltaZ * steps_to_start)
