@@ -365,6 +365,7 @@ class Microscope:
             stage = PriorStage(
                 sn=control._def.PRIOR_STAGE_SN,
                 stage_config=stage_config,
+                use_encoders=control._def.PRIOR_STAGE_USE_ENCODERS,
                 max_speed=control._def.PRIOR_STAGE_MAX_SPEED,
                 acceleration=control._def.PRIOR_STAGE_ACCELERATION,
             )
