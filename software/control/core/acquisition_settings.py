@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 
 import control._def
 import control.utils
-from control.acquisition_yaml_loader import AcquisitionYAMLData, parse_z_stack_order
+from control.acquisition_yaml_loader import AcquisitionYAMLData, parse_laser_af_per_stack, parse_z_stack_order
 from control.utils import serialize_for_yaml
 
 
@@ -176,6 +176,7 @@ def apply_acquisition_settings(
     controller.set_deltat(data.delta_t_s)
     controller.set_af_flag(data.contrast_af)
     controller.set_reflection_af_flag(data.laser_af)
+    controller.set_laser_af_per_stack(data.laser_af_per_stack)
     controller.set_use_piezo(data.use_piezo)
     controller.z_stacking_config = data.z_stacking_config
     controller.set_z_stack_order(data.z_stack_order)
@@ -229,7 +230,11 @@ def export_acquisition_settings(controller, scan_coordinates, objective_store, c
             "use_piezo": bool(controller.use_piezo),
             "z_range_mm": [float(v) for v in controller.z_range] if controller.z_range else None,
         },
-        "autofocus": {"contrast_af": bool(controller.do_autofocus), "laser_af": bool(controller.do_reflection_af)},
+        "autofocus": {
+            "contrast_af": bool(controller.do_autofocus),
+            "laser_af": bool(controller.do_reflection_af),
+            "laser_af_per_stack": bool(controller.laser_af_per_stack),
+        },
         "widget_type": controller.widget_type,
         "xy_mode": controller.xy_mode,
         "scan_size_mm": float(controller.scan_size_mm),
@@ -261,6 +266,7 @@ def acquisition_data_from_blocks(settings: dict, coordinates: dict) -> Acquisiti
     z_range = z_stack.get("z_range_mm")
     widget_type = settings.get("widget_type", "wellplate")
     regions = [dict(r) for r in (coordinates.get("regions") or [])]
+    z_stack_order = parse_z_stack_order(z_stack.get("order"))
     return AcquisitionYAMLData(
         widget_type=widget_type,
         xy_mode=settings.get("xy_mode", "Load Coordinates"),
@@ -271,13 +277,18 @@ def acquisition_data_from_blocks(settings: dict, coordinates: dict) -> Acquisiti
         nz=int(z_stack.get("nz", 1)),
         delta_z_um=float(z_stack.get("delta_z_um", 1.0)),
         z_stacking_config=str(z_stack.get("config", "FROM CENTER")),
-        z_stack_order=parse_z_stack_order(z_stack.get("order")),
+        z_stack_order=z_stack_order,
         use_piezo=bool(z_stack.get("use_piezo", False)),
         nt=1,
         delta_t_s=0.0,
         channel_names=list(settings.get("channels") or []),
         contrast_af=bool(autofocus.get("contrast_af", False)),
         laser_af=bool(autofocus.get("laser_af", False)),
+        laser_af_per_stack=parse_laser_af_per_stack(
+            autofocus.get("laser_af_per_stack"),
+            laser_af=bool(autofocus.get("laser_af", False)),
+            z_stack_order=z_stack_order,
+        ),
         scan_size_mm=settings.get("scan_size_mm"),
         overlap_percent=float(settings.get("overlap_percent", 10.0)),
         scan_shape=None,
