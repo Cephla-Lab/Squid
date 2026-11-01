@@ -3102,7 +3102,6 @@ def test_wellplate_z_checkbox_keeps_the_hidden_z_order_dropdown_hidden(qtbot, mo
 _WELLPLATE_Z_MODE_CASES = [
     ("From Bottom", "FROM BOTTOM"),
     ("From Center", "FROM CENTER"),
-    ("From Top", "FROM TOP"),
     ("Set Range", "FROM BOTTOM"),  # an explicit range runs from Z-min up
 ]
 
@@ -3158,7 +3157,7 @@ def _flexible_ui_fake(set_z_range=False, z_stacking_config="FROM CENTER"):
     )
 
 
-@pytest.mark.parametrize("z_stacking_config", ["FROM BOTTOM", "FROM CENTER", "FROM TOP"])
+@pytest.mark.parametrize("z_stacking_config", ["FROM BOTTOM", "FROM CENTER"])
 def test_flexible_configure_controller_from_ui_pushes_the_z_stacking_config(z_stacking_config):
     fake = _flexible_ui_fake(z_stacking_config=z_stacking_config)
     control.widgets.FlexibleMultiPointWidget.configure_controller_from_ui(fake)
@@ -3186,7 +3185,11 @@ def test_flexible_set_z_range_disables_the_stacking_dropdown_and_releases_it_aga
 
 @pytest.mark.parametrize(
     "z_stacking_config, z_mode",
-    [("FROM BOTTOM", "From Bottom"), ("FROM CENTER", "From Center"), ("FROM TOP", "From Top")],
+    [
+        ("FROM BOTTOM", "From Bottom"),
+        ("FROM CENTER", "From Center"),
+        ("FROM TOP", "From Bottom"),  # not offered in the GUI (a YAML / the TCP server can still ask for it)
+    ],
 )
 def test_wellplate_yaml_drop_selects_the_z_mode_of_the_stacking_config(z_stacking_config, z_mode):
     fake = MagicMock()
@@ -3226,13 +3229,26 @@ def _yaml_data(**overrides):
 
 def test_flexible_yaml_drop_selects_the_stacking_config():
     fake = MagicMock()
-    yaml_data = _yaml_data(z_stacking_config="FROM TOP")
+    yaml_data = _yaml_data(z_stacking_config="FROM CENTER")
     control.widgets.FlexibleMultiPointWidget._apply_yaml_settings(fake, yaml_data)
-    fake.combobox_z_stack.findData.assert_called_with("FROM TOP")
+    fake.combobox_z_stack.findData.assert_called_with("FROM CENTER")
     fake.combobox_z_stack.setCurrentIndex.assert_called_with(fake.combobox_z_stack.findData.return_value)
 
 
-@pytest.mark.parametrize("z_mode", ["From Bottom", "From Center", "From Top", "Set Range"])
+def test_flexible_yaml_drop_falls_back_to_from_bottom_for_a_config_the_gui_does_not_offer():
+    fake = MagicMock()
+    control.widgets.FlexibleMultiPointWidget._apply_yaml_settings(fake, _yaml_data(z_stacking_config="FROM TOP"))
+    fake.combobox_z_stack.findData.assert_called_with("FROM BOTTOM")
+    fake.combobox_z_stack.setCurrentIndex.assert_called_with(fake.combobox_z_stack.findData.return_value)
+
+
+def test_from_top_is_not_offered_in_the_gui():
+    assert "From Top" not in control.widgets.WELLPLATE_Z_MODES
+    assert control.widgets._z_stacking_config_offered("FROM TOP") == "FROM BOTTOM"
+    assert control.widgets._z_stacking_config_offered("FROM CENTER") == "FROM CENTER"
+
+
+@pytest.mark.parametrize("z_mode", ["From Bottom", "From Center", "Set Range"])
 def test_wellplate_cache_restores_every_z_mode(tmp_path, monkeypatch, z_mode):
     import yaml
 
@@ -3245,9 +3261,9 @@ def test_wellplate_cache_restores_every_z_mode(tmp_path, monkeypatch, z_mode):
 
 
 def test_wellplate_dz_and_nz_mode_pushes_a_z_range_in_mm():
-    """dz is entered in um but the range is in mm, like the stage z; From Top starts the stack at the range's top."""
+    """dz is entered in um but the range is in mm, like the stage z (the range is exported to the acquisition YAML)."""
     fake = _wellplate_ui_fake()
-    fake.combobox_z_mode.currentText.return_value = "From Top"
+    fake.combobox_z_mode.currentText.return_value = "From Center"
     fake.stage.get_pos.return_value.z_mm = 1.0
     fake.entry_deltaZ.value.return_value = 1.5
     fake.entry_NZ.value.return_value = 3

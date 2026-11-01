@@ -3043,8 +3043,9 @@ class StageUtils(QDialog):
         self.signal_scanning_position_reached.emit()
 
 
-# Where a z stack sits relative to each FOV's z, as shown in the acquisition tabs: (label, controller name).
-_Z_STACKING_CHOICES = (("From Bottom", "FROM BOTTOM"), ("From Center", "FROM CENTER"), ("From Top", "FROM TOP"))
+# Where a z stack sits relative to each FOV's z, as offered in the acquisition tabs: (label, controller name).
+# "FROM TOP" is deliberately not offered (Hongquan, 2026-10-31); the worker still runs it for a YAML / TCP request.
+_Z_STACKING_CHOICES = (("From Bottom", "FROM BOTTOM"), ("From Center", "FROM CENTER"))
 # The Wellplate tab's Z mode dropdown: the three stacking choices, or an explicit Z-min..Z-max range.
 WELLPLATE_Z_MODES = tuple(label for label, _ in _Z_STACKING_CHOICES) + ("Set Range",)
 _Z_STACKING_CONFIG_FOR_Z_MODE = dict(_Z_STACKING_CHOICES, **{"Set Range": "FROM BOTTOM"})
@@ -3059,9 +3060,20 @@ def _z_stacking_config_for_z_mode(z_mode: str) -> str:
     return _Z_STACKING_CONFIG_FOR_Z_MODE[z_mode]
 
 
+def _z_stacking_config_offered(z_stacking_config: str) -> str:
+    """The config the tabs can show for a loaded acquisition's z-stacking config: itself when offered, else
+    From Bottom (e.g. "FROM TOP", which the GUI does not offer)."""
+    if z_stacking_config in _Z_MODE_FOR_Z_STACKING_CONFIG:
+        return z_stacking_config
+    squid.logging.get_logger(__name__).warning(
+        f"z-stack config '{z_stacking_config}' is not offered in the GUI; showing From Bottom instead"
+    )
+    return "FROM BOTTOM"
+
+
 def _z_mode_for_z_stacking_config(z_stacking_config: str) -> str:
-    """The Wellplate Z mode to show for a loaded acquisition's z-stacking config (unknown: From Bottom)."""
-    return _Z_MODE_FOR_Z_STACKING_CONFIG.get(z_stacking_config, "From Bottom")
+    """The Wellplate Z mode to show for a loaded acquisition's z-stacking config."""
+    return _Z_MODE_FOR_Z_STACKING_CONFIG[_z_stacking_config_offered(z_stacking_config)]
 
 
 def _z_stack_order_to_start(combobox) -> str:
@@ -6917,7 +6929,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             self.combobox_z_stack.findData(self.multipointController.z_stacking_config)
         )
         self.combobox_z_stack.setToolTip(
-            "Where the z stack sits relative to the current z: starting at it, centred on it, or ending at it.\n"
+            "Where the z stack sits relative to the current z: starting at it, or centred on it.\n"
             "Not used with Set Z-range, which runs from Z-min up."
         )
 
@@ -8093,7 +8105,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
             self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
-            self.combobox_z_stack.setCurrentIndex(self.combobox_z_stack.findData(yaml_data.z_stacking_config))
+            self.combobox_z_stack.setCurrentIndex(
+                self.combobox_z_stack.findData(_z_stacking_config_offered(yaml_data.z_stacking_config))
+            )
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
@@ -8497,7 +8511,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.combobox_z_mode.addItems(list(WELLPLATE_Z_MODES))
         self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(self.multipointController.z_stacking_config))
         self.combobox_z_mode.setToolTip(
-            "Where the z stack sits relative to each position's z: starting at it, centred on it, or ending at it;\n"
+            "Where the z stack sits relative to each position's z: starting at it, or centred on it;\n"
             "or Set Range for an explicit Z-min..Z-max (runs from Z-min up)."
         )
         self.combobox_z_mode.setEnabled(False)  # Initially disabled since Z is unchecked
