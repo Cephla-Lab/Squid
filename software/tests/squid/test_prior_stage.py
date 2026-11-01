@@ -1,5 +1,6 @@
 """PriorStage against a fake ProScan that, like the real controller, ends every reply with a bare CR."""
 
+import inspect
 import logging
 import threading
 import time
@@ -330,8 +331,8 @@ def test_positional_arguments_keep_their_places(fake):
     ser = fake["fake"]
     assert (ser.sms, ser.sas) == (150, 500)
     assert not [c for c in ser.commands if "ENCODER" in c]
-    with pytest.raises(TypeError):  # the encoder setting only by name
-        squid.stage.prior.PriorStage("FAKE_SN", 115200, None, 150, 500, False)
+    use_encoders = inspect.signature(squid.stage.prior.PriorStage).parameters["use_encoders"]
+    assert use_encoders.kind is inspect.Parameter.KEYWORD_ONLY  # the encoder setting only by name
 
 
 def test_microscope_build_passes_the_ini_encoder_setting(fake, monkeypatch):
