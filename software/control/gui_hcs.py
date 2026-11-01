@@ -2003,6 +2003,10 @@ class HighContentScreeningGui(QMainWindow):
             dialog.signal_config_changed.connect(
                 lambda: self.navigationWidget.set_click_to_move(control._def.ENABLE_CLICK_TO_MOVE)
             )
+            # The Z-stack order dropdown preference applies live: the tabs re-read the flag.
+            for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget):
+                if tab is not None:
+                    dialog.signal_config_changed.connect(tab.update_z_order_dropdown_visibility)
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")
