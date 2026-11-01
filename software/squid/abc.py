@@ -320,6 +320,12 @@ class SequencedZStack(abc.ABC):
     #: True when no camera trigger is produced (an in-memory controller): the host must not expect frames.
     simulated: bool = False
 
+    def prepare_light(self) -> bool:
+        """Make sure the light is on before the host arms the camera for the stack. Returns True when
+        switching it on also pulsed the camera trigger: the host must let that one frame pass unarmed,
+        or it would be taken as the first level."""
+        return False
+
     @abc.abstractmethod
     def start(self, step_mm: float, n_levels: int) -> None:
         pass

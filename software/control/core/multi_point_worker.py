@@ -211,6 +211,9 @@ class MultiPointWorker:
         # by the frame callback in order while the controller steps Z and triggers the camera.
         self._burst_capture_infos: Optional[collections.deque] = None
         self._burst_frames_received = 0
+        # Frames the callback dropped because nothing was armed (lets a sequenced stack wait out the
+        # stray frame its light switch-on triggers).
+        self._unarmed_frames_dropped = 0
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
         # A copy of the channel last applied with set_microscope_mode. Within one position, an image whose channel
@@ -1299,6 +1302,19 @@ class MultiPointWorker:
             self._log.error("Frame callback never set _ready_for_next_trigger before the z-stack. Aborting.")
             self._abort_due_to_error()
             return 0
+        # The controller's stack does not switch the light; switching it on may pulse the camera once.
+        # Let that frame arrive while nothing is armed, or it would be saved as level 0.
+        dropped_before = self._unarmed_frames_dropped
+        if seq.prepare_light():
+            frame_time_s = self.camera.get_total_frame_time() / 1e3
+            t_deadline = time.monotonic() + frame_time_s + 1.0
+            while self._unarmed_frames_dropped == dropped_before:
+                if time.monotonic() > t_deadline:
+                    self._log.warning(
+                        "No frame from the light switch-on pulse; if it arrives late it will be taken as level 0."
+                    )
+                    break
+                self._sleep(0.002)
         if self._backpressure.should_throttle():
             if not self._backpressure.wait_for_capacity():
                 self._log.error(
@@ -1635,6 +1651,7 @@ class MultiPointWorker:
     def _image_callback(self, camera_frame: CameraFrame):
         try:
             if self._ready_for_next_trigger.is_set():
+                self._unarmed_frames_dropped += 1
                 self._log.warning(
                     "Got an image in the image callback, but we didn't send a trigger.  Ignoring the image."
                 )
