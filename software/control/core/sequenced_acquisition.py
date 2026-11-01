@@ -216,6 +216,7 @@ def ineligibility_reason(
     z_stack_order: str,
     nz: int,
     emission_filter_unit: Optional[EmissionFilterUnit],
+    nl5_configured: bool,
 ) -> Optional[str]:
     """Why this acquisition cannot be hardware-sequenced, or None when it can.
 
@@ -269,6 +270,11 @@ def ineligibility_reason(
         )
     if not intensity_is_mcu_dac:
         return "the light source's intensity is not set through the controller's DACs"
+    if nl5_configured:
+        # With an NL5 the confocal unit scans and triggers the camera (microscope.py's
+        # acquisition_camera_hw_trigger_fn), and the channel switch gives it the channel and laser power.
+        # A burst triggers the camera from the controller and switches nothing on the unit.
+        return "an NL5 confocal scan unit is configured (it triggers the camera and takes its channel at every channel switch)"
     if not shutter_is_mcu_ttl:
         # The burst switches light with TTL pulses only. A source shuttered by software would stay
         # dark - or stay lit, which under global reset integrates into every row until it is read.

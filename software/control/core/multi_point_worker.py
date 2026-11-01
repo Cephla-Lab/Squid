@@ -1383,6 +1383,7 @@ class MultiPointWorker:
             z_stack_order=self.z_stack_order,
             nz=self.NZ,
             emission_filter_unit=self.liveController.emission_filter_unit(),
+            nl5_configured=self.microscope.addons.nl5 is not None,
         )
         if (
             reason is None

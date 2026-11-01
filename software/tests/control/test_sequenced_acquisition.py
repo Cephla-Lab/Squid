@@ -207,6 +207,7 @@ def eligible_kwargs(**overrides):
         z_stack_order="CHANNEL FIRST",
         nz=3,
         emission_filter_unit=None,
+        nl5_configured=False,
     )
     kwargs.update(overrides)
     return kwargs
@@ -235,6 +236,9 @@ def test_a_plain_fluorescence_piezo_stack_is_eligible():
         (dict(channels=[], camera_gains=[]), "no channels"),
         # Z FIRST writes the same files in a different physical order (bleaching, drift and timing differ).
         (dict(z_stack_order="Z FIRST"), "z-stack order"),
+        # An NL5 scan unit triggers the camera itself and takes its channel and laser power at every channel
+        # switch; a burst does neither.
+        (dict(nl5_configured=True), "NL5"),
         # The software path moves the emission filter at every channel switch; nothing moves it inside a burst.
         (
             dict(
