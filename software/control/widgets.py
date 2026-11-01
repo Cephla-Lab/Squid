@@ -1293,8 +1293,7 @@ class PreferencesDialog(QDialog):
             "balanced: blosc-zstd level 3, ~500 MB/s, ~3-4x compression\n"
             "best: blosc-zstd level 9, slower but best compression"
         )
-        zarr_compression_value = self._get_config_value("GENERAL", "zarr_compression", "fast")
-        self.zarr_compression_combo.setCurrentText(zarr_compression_value)
+        self.zarr_compression_combo.setCurrentText(self._get_zarr_compression())
         self.zarr_compression_label = QLabel("Zarr Compression:")
         layout.addRow(self.zarr_compression_label, self.zarr_compression_combo)
 
@@ -1505,8 +1504,7 @@ class PreferencesDialog(QDialog):
             "tiled_512: 512x512 pixel chunks for tiled visualization\n"
             "tiled_256: 256x256 pixel chunks for fine-grained streaming"
         )
-        zarr_chunk_mode_value = self._get_config_value("GENERAL", "zarr_chunk_mode", "full_frame")
-        self.zarr_chunk_mode_combo.setCurrentText(zarr_chunk_mode_value)
+        self.zarr_chunk_mode_combo.setCurrentText(self._get_zarr_chunk_mode())
         zarr_layout.addRow("Chunk Mode:", self.zarr_chunk_mode_combo)
 
         self.zarr_6d_fov_checkbox = QCheckBox()
@@ -2022,9 +2020,27 @@ class PreferencesDialog(QDialog):
         the software is actually running with (control._def, which the dialog itself updates live)
         rather than a hardcoded format.  Otherwise the combo box displays a format that isn't in
         use, _get_changes() can't detect a change away from it, and _apply_settings() persists that
-        wrong format into the machine config file.
+        wrong format into the machine config file.  Startup reads the value ignoring case, so it is
+        normalized here too; "zarr_v3" would otherwise match no item.
         """
-        return self._get_config_value("GENERAL", "file_saving_option", control._def.FILE_SAVING_OPTION.name)
+        value = self._get_config_value("GENERAL", "file_saving_option", control._def.FILE_SAVING_OPTION.name)
+        return FileSavingOption.convert_to_enum(value).name
+
+    def _get_zarr_compression(self):
+        """The Zarr compression preset currently in effect, as its combo box item ("fast", ...).
+
+        Falls back to the running value and ignores case, as _get_file_saving_option() does.
+        """
+        value = self._get_config_value("GENERAL", "zarr_compression", control._def.ZARR_COMPRESSION.value)
+        return control._def.ZarrCompression.convert_to_enum(value).value
+
+    def _get_zarr_chunk_mode(self):
+        """The Zarr chunk mode currently in effect, as its combo box item ("full_frame", ...).
+
+        Falls back to the running value and ignores case, as _get_file_saving_option() does.
+        """
+        value = self._get_config_value("GENERAL", "zarr_chunk_mode", control._def.ZARR_CHUNK_MODE.value)
+        return control._def.ZarrChunkMode.convert_to_enum(value).value
 
     def _get_tiff_compression_level(self):
         """The TIFF compression level currently in effect, falling back to the running value.
@@ -2360,6 +2376,16 @@ class PreferencesDialog(QDialog):
         new_val = self.tiff_compression_spinbox.value()
         if old_val != new_val:
             changes.append(("TIFF Compression Level", str(old_val), str(new_val), False))
+
+        old_val = self._get_zarr_compression()
+        new_val = self.zarr_compression_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Zarr Compression", old_val, new_val, False))
+
+        old_val = self._get_zarr_chunk_mode()
+        new_val = self.zarr_chunk_mode_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Zarr Chunk Mode", old_val, new_val, False))
 
         old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
         new_val = self.zarr_6d_fov_checkbox.isChecked()
