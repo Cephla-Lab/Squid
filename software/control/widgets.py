@@ -1116,6 +1116,54 @@ class AcquisitionYAMLDropMixin:
         raise NotImplementedError("Subclass must implement _apply_yaml_settings()")
 
 
+class _LaserAfPerStackMixin:
+    """The Z First "AF per stack" checkbox: laser AF before each later channel's stack.
+
+    Host widgets have ``combobox_z_order``, ``checkbox_withReflectionAutofocus`` and ``multipointController``
+    with ``set_laser_af_per_stack(bool)``; a tab whose z row can be hidden overrides ``_z_row_shown``.
+    """
+
+    _LASER_AF_PER_STACK_TOOLTIP = (
+        "Z First only: run laser AF before each channel's stack. The first channel uses the per-FOV laser AF."
+    )
+
+    def _create_laser_af_per_stack_checkbox(self):
+        self.checkbox_laserAfPerStack = QCheckBox("AF per stack")
+        self.checkbox_laserAfPerStack.setChecked(False)
+        self.checkbox_laserAfPerStack.setToolTip(self._LASER_AF_PER_STACK_TOOLTIP)
+        self.checkbox_laserAfPerStack.toggled.connect(lambda _checked: self._update_laser_af_per_stack_state())
+
+    def _z_row_shown(self) -> bool:
+        return True
+
+    def _laser_af_per_stack_shown(self) -> bool:
+        # Like checkbox_applyChannelOffset: the checkbox sits in a layout only when laser AF is supported, and a
+        # shown parentless widget would become a top-level window, so visibility needs the same flag.
+        return bool(
+            control._def.ENABLE_Z_STACK_ORDER_SELECTION
+            and self.combobox_z_order.currentData() == "Z FIRST"
+            and SUPPORT_LASER_AUTOFOCUS
+            and self._z_row_shown()
+        )
+
+    def laser_af_per_stack_to_start(self) -> bool:
+        return _laser_af_per_stack_to_start(
+            control._def.ENABLE_Z_STACK_ORDER_SELECTION,
+            self.combobox_z_order.currentData(),
+            SUPPORT_LASER_AUTOFOCUS,
+            self.checkbox_withReflectionAutofocus.isChecked(),
+            self._z_row_shown(),
+            self.checkbox_laserAfPerStack.isChecked(),
+        )
+
+    def _update_laser_af_per_stack_state(self):
+        """Re-apply the rule to the checkbox (shown / enabled) and push the resulting value to the controller."""
+        shown = self._laser_af_per_stack_shown()
+        self.checkbox_laserAfPerStack.setVisible(shown)
+        self.checkbox_laserAfPerStack.setEnabled(shown and self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_laser_af_per_stack(self.laser_af_per_stack_to_start())
+
+
 class _ApplyChannelOffsetMixin:
     """Mixin providing the laser-AF per-channel Z-offset checkbox + handlers.
 
@@ -3096,6 +3144,29 @@ def _z_stacking_config_offered(z_stacking_config: str) -> str:
 def _z_mode_for_z_stacking_config(z_stacking_config: str) -> str:
     """The Wellplate Z mode to show for a loaded acquisition's z-stacking config."""
     return _Z_MODE_FOR_Z_STACKING_CONFIG[_z_stacking_config_offered(z_stacking_config)]
+
+
+def _laser_af_per_stack_to_start(
+    choice_enabled: bool,
+    z_stack_order: str,
+    laser_af_supported: bool,
+    laser_af_checked: bool,
+    z_row_shown: bool,
+    checkbox_checked: bool,
+) -> bool:
+    """Whether an acquisition started from a tab runs laser AF before each later channel's stack.
+
+    One rule for showing/enabling the "AF per stack" checkbox AND for the start path, so a hidden or disabled
+    checkbox never takes effect and the exported YAML never says true for a run whose GUI showed no checkbox.
+    """
+    return bool(
+        choice_enabled
+        and z_stack_order == "Z FIRST"
+        and laser_af_supported
+        and laser_af_checked
+        and z_row_shown
+        and checkbox_checked
+    )
 
 
 def _z_stack_order_to_start(combobox) -> str:
@@ -6696,7 +6767,7 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -6902,6 +6973,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
         self._create_apply_channel_offset_checkbox()
+        self._create_laser_af_per_stack_checkbox()
 
         self.checkbox_genAFMap = QCheckBox("Generate Focus Map")
         self.checkbox_genAFMap.setChecked(False)
@@ -7097,6 +7169,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         if SUPPORT_LASER_AUTOFOCUS:
             grid_af.addWidget(self.checkbox_withReflectionAutofocus)
             grid_af.addWidget(self.checkbox_applyChannelOffset)
+            grid_af.addWidget(self.checkbox_laserAfPerStack)
         # grid_af.addWidget(self.checkbox_genAFMap)  # we are not using auto-focus map for now
         grid_af.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
@@ -7176,6 +7249,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
+        self.checkbox_withReflectionAutofocus.toggled.connect(lambda _c: self._update_laser_af_per_stack_state())
+        self.combobox_z_order.currentIndexChanged.connect(lambda _i: self._update_laser_af_per_stack_state())
+        self._update_laser_af_per_stack_state()
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
@@ -7224,6 +7300,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         """Re-apply the opt-in Z-stack order choice (ENABLE_Z_STACK_ORDER_SELECTION), e.g. after Preferences
         changed it at runtime."""
         self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+        self._update_laser_af_per_stack_state()
 
     def toggle_z_range_controls(self, state):
         is_visible = bool(state)
@@ -7507,6 +7584,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
         self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_laser_af_per_stack(self.laser_af_per_stack_to_start())
         self.multipointController.set_base_path(self.lineEdit_savingDir.text())
         self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
         self.multipointController.set_widget_type("flexible")
@@ -8150,6 +8228,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Autofocus
             self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
             self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+            self.checkbox_laserAfPerStack.setChecked(yaml_data.laser_af_per_stack)
 
             # Load positions if present
             if yaml_data.flexible_positions:
@@ -8159,6 +8238,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Unblock all signals
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+            self._update_laser_af_per_stack_state()  # the loaded checkbox state, under the rule
 
             # Update FOV positions to reflect new NX, NY, delta values
             self.update_fov_positions()
@@ -8238,7 +8318,7 @@ def _warn_if_coordinates_stale(widget, stamp):
         QMessageBox.warning(widget, "Coordinates may be stale", stale)
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
@@ -8482,6 +8562,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
         self._create_apply_channel_offset_checkbox()
+        self._create_laser_af_per_stack_checkbox()
 
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
         self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
@@ -8720,6 +8801,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         if SUPPORT_LASER_AUTOFOCUS:
             options_layout.addWidget(self.checkbox_withReflectionAutofocus)
             options_layout.addWidget(self.checkbox_applyChannelOffset)
+            options_layout.addWidget(self.checkbox_laserAfPerStack)
         # options_layout.addWidget(self.checkbox_genAFMap)  # We are not using AF map now
         options_layout.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
@@ -8795,6 +8877,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
+        self.checkbox_withReflectionAutofocus.toggled.connect(lambda _c: self._update_laser_af_per_stack_state())
+        self.combobox_z_order.currentIndexChanged.connect(lambda _i: self._update_laser_af_per_stack_state())
+        self._update_laser_af_per_stack_state()
         self.checkbox_genAFMap.toggled.connect(self.multipointController.set_gen_focus_map_flag)
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_useFocusMap.toggled.connect(self.multipointController.set_manual_focus_map_flag)
@@ -8843,6 +8928,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # cache), so it is intentionally NOT wired to this settings cache.
         self.checkbox_withAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
+        self.checkbox_laserAfPerStack.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
 
     def enable_manual_ROI(self):
@@ -8891,6 +8977,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 "z_order": self.combobox_z_order.currentData(),
                 "contrast_af": self.checkbox_withAutofocus.isChecked(),
                 "laser_af": self.checkbox_withReflectionAutofocus.isChecked(),
+                "laser_af_per_stack": self.checkbox_laserAfPerStack.isChecked(),
             }
 
             with open("cache/multipoint_widget_config.yaml", "w") as f:
@@ -8964,6 +9051,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Restore autofocus settings
             self.checkbox_withAutofocus.setChecked(settings.get("contrast_af", False))
             self.checkbox_withReflectionAutofocus.setChecked(settings.get("laser_af", False))
+            self.checkbox_laserAfPerStack.setChecked(settings.get("laser_af_per_stack", False))
 
             # Unblock signals
             self.checkbox_xy.blockSignals(False)
@@ -9298,6 +9386,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         # Enable/disable the Z mode dropdown
         self.combobox_z_mode.setEnabled(checked)
+        self._update_laser_af_per_stack_state()  # the "AF per stack" checkbox goes with the z row
 
         if checked:
             # Z Stack enabled - restore stored parameters and show controls
@@ -9430,10 +9519,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # The Z mode is left alone: with Nz = 1 it does not matter, and resetting it here would drop the INI
         # default or the user's choice every time Z is unchecked (and at start-up, when Z starts unchecked).
 
+    def _z_row_shown(self) -> bool:
+        return self.checkbox_z.isChecked()
+
     def update_z_order_dropdown_visibility(self):
         """Re-apply the opt-in Z-stack order choice (ENABLE_Z_STACK_ORDER_SELECTION), e.g. after Preferences
         changed it at runtime: shown with the rest of the z row (Z checked) and only when the choice is on."""
         self.combobox_z_order.setVisible(self.checkbox_z.isChecked() and control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+        self._update_laser_af_per_stack_state()
 
     def show_z_controls(self, visible):
         """Show Z-related controls"""
@@ -9957,6 +10050,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
         self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_laser_af_per_stack(self.laser_af_per_stack_to_start())
         self.multipointController.set_base_path(self.lineEdit_savingDir.text())
         self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
         self.multipointController.set_widget_type("wellplate")
@@ -10376,6 +10470,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Autofocus
             self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
             self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+            self.checkbox_laserAfPerStack.setChecked(yaml_data.laser_af_per_stack)
 
             # XY mode - set to Select Wells for wellplate YAML
             if yaml_data.xy_mode in ["Current Position", "Select Wells", "Manual", "Load Coordinates"]:
@@ -10392,6 +10487,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Unblock all signals
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+            self._update_laser_af_per_stack_state()  # the loaded checkbox state, under the rule
 
             # Enable/disable mode dropdowns based on checkbox states
             self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
