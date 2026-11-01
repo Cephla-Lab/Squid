@@ -13,11 +13,11 @@ Squid supports saving acquisition data in Zarr v3 format with OME-NGFF 0.5 metad
 
 ## Enabling Zarr v3
 
-Settings > Preferences > File Saving Format: **ZARR_V3**
+Settings > Preferences > File Saving Format: **OME-Zarr 0.5** (stored as `ZARR_V3` in the config file)
 
 Additional options:
 - **Compression Level**: None (fastest), Fast (LZ4), Balanced (Zstd), Best (Zstd level 9)
-- **Use 6D FOV dimension**: Combine all FOVs in a region into a single 6D array (non-standard)
+- **Use 6D FOV dimension (not OME-Zarr)**: Combine all FOVs in a region into a single 6D array (non-standard; OME-Zarr readers cannot open it)
 
 ## Output Structures
 
@@ -30,6 +30,7 @@ When acquiring from wellplate positions (region names match pattern `[A-Z]+\d+`)
 └── plate.ome.zarr/
     ├── zarr.json          # Plate metadata (ome.plate)
     ├── A/
+    │   ├── zarr.json      # Row group (no metadata; Zarr v3 has no implicit groups)
     │   └── 1/
     │       ├── zarr.json  # Well metadata (ome.well)
     │       ├── 0/
@@ -120,6 +121,13 @@ Shape: `(FOV, T, C, Z, Y, X)` where:
 }
 ```
 
+Each array's own `zarr.json` carries `dimension_names` matching the axes
+(`["t", "c", "z", "y", "x"]`, or `["fov", "t", "c", "z", "y", "x"]` in 6D mode), as OME-NGFF 0.5 requires.
+
+CI writes a small HCS plate and a per-FOV image and opens them with
+[ngff-zarr](https://github.com/thewtex/ngff-zarr) (with validation) and
+[iohub](https://github.com/czbiohub-sf/iohub); see `tests/ngff_readers/`.
+
 ## Sharding and Chunks
 
 Zarr v3 uses sharding to optimize both read and write performance:
@@ -134,7 +142,7 @@ Zarr v3 uses sharding to optimize both read and write performance:
 
 | Setting | Values | Description |
 |---------|--------|-------------|
-| `FILE_SAVING_OPTION` | ZARR_V3 | Enable Zarr v3 format |
+| `FILE_SAVING_OPTION` | ZARR_V3 | Enable Zarr v3 format (shown as "OME-Zarr 0.5" in Preferences) |
 | `ZARR_COMPRESSION` | none, fast, balanced, best | Compression level |
 | `ZARR_CHUNK_MODE` | full_frame, tiled_512, tiled_256 | Chunk size |
 | `ZARR_USE_6D_FOV_DIMENSION` | True/False | 6D array with FOV dimension |

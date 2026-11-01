@@ -189,3 +189,55 @@ def test_z_first_channels_image_the_same_planes_despite_microstep_rounding():
     for z_level, name, z_um in w.frames:
         planes_by_channel.setdefault(name, []).append(z_um)
     assert len(set(map(tuple, planes_by_channel.values()))) == 1, planes_by_channel
+
+
+@pytest.mark.parametrize("order", ["CHANNEL FIRST", "Z FIRST"])
+def test_from_center_piezo_stack_is_centred_by_the_piezo_and_leaves_the_stage_alone(order):
+    """A piezo stack From Center starts half a stack below the piezo's position (not the stage's) and
+    the piezo is back at that position afterwards; the stage never moves."""
+    w = _worker(order, use_piezo=True, z_stacking_config="FROM CENTER")
+    start_stage_z_mm = w.stage.z_mm
+    start_piezo_um = w.piezo.position  # 100 um
+    w.acquire_at_position("A1", "/tmp", 0)
+
+    expected = [
+        (z_level, name, pytest.approx(start_piezo_um - 2 + 2 * z_level)) for name in ("A", "B") for z_level in range(3)
+    ]
+    if order == "CHANNEL FIRST":
+        expected.sort(key=lambda frame: frame[0])
+    assert w.frames == expected
+    assert w.piezo.position == pytest.approx(start_piezo_um)
+    assert w.stage.z_mm == pytest.approx(start_stage_z_mm)
+
+
+def test_from_center_piezo_stack_is_centred_where_the_per_fov_autofocus_left_the_piezo():
+    """Laser AF moves the piezo directly, bypassing the worker's cached piezo position, so the half-stack
+    move down must start from the piezo's real position, not from the previous FOV's cached one."""
+    w = _worker("CHANNEL FIRST", use_piezo=True, z_stacking_config="FROM CENTER")
+    w.z_piezo_um = w.piezo.position  # stale cache from the previous FOV
+
+    def autofocus_moves_the_piezo(region_id, fov):
+        w.piezo.move_to(110.0)  # as LaserAutofocusController._move_z does: piezo.move_relative, not the cache
+        return True
+
+    w.perform_autofocus = autofocus_moves_the_piezo
+    w.acquire_at_position("A1", "/tmp", 0)
+
+    assert [z for _, _, z in w.frames] == pytest.approx([108.0, 108.0, 110.0, 110.0, 112.0, 112.0])
+    assert w.piezo.position == pytest.approx(110.0)
+
+
+@pytest.mark.parametrize("order", ["CHANNEL FIRST", "Z FIRST"])
+@pytest.mark.parametrize("abort_after_frames", [1, 2, 4, 5])
+def test_abort_mid_stack_returns_a_from_center_piezo_stack_to_the_piezo_start(order, abort_after_frames):
+    """An abort part-way through a From Center piezo stack still brings the piezo back to where the stack
+    was centred, with the stage untouched."""
+    w = _worker(order, use_piezo=True, z_stacking_config="FROM CENTER")
+    start_stage_z_mm = w.stage.z_mm
+    start_piezo_um = w.piezo.position
+    w.abort_requested_fn = lambda: len(w.frames) >= abort_after_frames
+    w.acquire_at_position("A1", "/tmp", 0)
+
+    assert len(w.frames) == abort_after_frames
+    assert w.piezo.position == pytest.approx(start_piezo_um)
+    assert w.stage.z_mm == pytest.approx(start_stage_z_mm)
