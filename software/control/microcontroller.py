@@ -1088,6 +1088,7 @@ class Microcontroller:
         self.log.debug("[MCU] Heartbeat stopped")
 
     def send_hardware_trigger(self, control_illumination=False, illumination_on_time_us=0, trigger_output_ch=0):
+        self._restore_strobe_delays_after_reopen()
         illumination_on_time_us = int(illumination_on_time_us)
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SEND_HARDWARE_TRIGGER
@@ -1114,6 +1115,25 @@ class Microcontroller:
         self.wait_till_operation_is_completed()
         self._acked_strobe_delay_us[camera_channel] = acked
         return True
+
+    def _restore_strobe_delays_after_reopen(self) -> None:
+        """
+        Before a hardware trigger: a reconnect (the micro may have rebooted, which zeroes its strobe delays) would
+        otherwise happen inside the trigger's own write, since the camera skips unchanged delays.  Reconnect first if
+        the port is down, and resend any delay acknowledged before the latest reopen, so a trigger never uses a lost one.
+        """
+        if not self._acked_strobe_delay_us:
+            return
+        if not self._serial.is_open():
+            self._serial.reconnect(Microcontroller.MAX_RECONNECT_COUNT)
+        reopen_count = self._serial.reopen_count()
+        for camera_channel, (strobe_delay_us, acked_reopen_count) in list(self._acked_strobe_delay_us.items()):
+            if acked_reopen_count != reopen_count:
+                self.log.warning(
+                    f"Serial port was reopened; resending strobe delay {strobe_delay_us} us "
+                    f"(camera channel {camera_channel}) before the trigger"
+                )
+                self.ensure_strobe_delay_us(strobe_delay_us, camera_channel)
 
     def set_strobe_delay_us(self, strobe_delay_us, camera_channel=0):
         self._acked_strobe_delay_us.pop(camera_channel, None)

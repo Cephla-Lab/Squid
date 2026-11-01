@@ -504,3 +504,47 @@ def test_ensure_strobe_delay_is_not_remembered_when_the_ack_never_comes(monkeypa
         assert micro.ensure_strobe_delay_us(11215)
     finally:
         micro.close()
+
+
+def _record_command_types(micro: Microcontroller) -> list:
+    sent = []
+    send_command = micro.send_command
+
+    def recording_send_command(command):
+        sent.append(command[1])
+        return send_command(command)
+
+    micro.send_command = recording_send_command
+    return sent
+
+
+def test_trigger_after_a_reconnect_is_preceded_by_the_strobe_delay():
+    # The camera skips an unchanged delay, so after a disconnect (the micro may have rebooted with a delay of 0) the
+    # trigger could be the first write; the delay must be restored before it.
+    micro = get_test_micro()
+    try:
+        micro.ensure_strobe_delay_us(11215)
+        sent = _record_command_types(micro)
+        micro._serial.close()
+
+        micro.send_hardware_trigger(True, 250000)
+
+        CMD_SET = control._def.CMD_SET
+        assert sent == [CMD_SET.SET_STROBE_DELAY, CMD_SET.SEND_HARDWARE_TRIGGER]
+        assert not micro.ensure_strobe_delay_us(11215)
+    finally:
+        micro.close()
+
+
+def test_trigger_without_a_reconnect_sends_only_the_trigger():
+    micro = get_test_micro()
+    try:
+        micro.ensure_strobe_delay_us(11215)
+        sent = _record_command_types(micro)
+
+        micro.send_hardware_trigger(True, 250000)
+        micro.send_hardware_trigger(True, 250000)
+
+        assert sent == [control._def.CMD_SET.SEND_HARDWARE_TRIGGER] * 2
+    finally:
+        micro.close()
