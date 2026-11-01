@@ -42,10 +42,12 @@ def _stage_utils(qtbot, stage=None):
     return dialog
 
 
-def _unattended(qtbot, dialog, to_loading):
+def _unattended(qtbot, dialog, to_loading, move_id=7):
+    """Start a move as the control server does and wait for its end: [success, error message]."""
     with qtbot.waitSignal(dialog.signal_position_move_finished, timeout=15000) as finished:
-        assert dialog.start_unattended_position_move(to_loading) == ""
-    return finished.args
+        assert dialog.start_unattended_position_move(to_loading, move_id) == ""
+    assert finished.args[0] == move_id  # the end names the move it ends
+    return finished.args[1:]
 
 
 # --- StageUtils ---------------------------------------------------------------------------------------------------
@@ -88,11 +90,11 @@ def test_an_unattended_move_that_fails_reports_the_error_without_a_dialog(qtbot)
 def test_an_unattended_move_to_where_the_stage_already_is_moves_nothing(qtbot):
     stage = _stage()
     dialog = _stage_utils(qtbot, stage)
-    assert dialog.start_unattended_position_move(False) == UNATTENDED_MOVE_ALREADY_THERE  # not at loading
+    assert dialog.start_unattended_position_move(False, 1) == UNATTENDED_MOVE_ALREADY_THERE  # not at loading
     _unattended(qtbot, dialog, to_loading=True)
     stage.move_x_to.reset_mock()
     stage.move_y_to.reset_mock()
-    assert dialog.start_unattended_position_move(True) == UNATTENDED_MOVE_ALREADY_THERE
+    assert dialog.start_unattended_position_move(True, 1) == UNATTENDED_MOVE_ALREADY_THERE
     stage.move_x_to.assert_not_called()
     stage.move_y_to.assert_not_called()
 
@@ -100,23 +102,23 @@ def test_an_unattended_move_to_where_the_stage_already_is_moves_nothing(qtbot):
 def test_nothing_starts_while_a_move_to_or_from_loading_is_running(qtbot):
     dialog = _stage_utils(qtbot)
     with patch("control.widgets.move_to_loading_position") as move:  # starts, never reports back
-        assert dialog.start_unattended_position_move(True) == ""
-        refusal = dialog.start_unattended_position_move(True)
+        assert dialog.start_unattended_position_move(True, 1) == ""
+        refusal = dialog.start_unattended_position_move(True, 1)
         dialog.switch_position()  # the button, had a click got through
     assert refusal not in ("", UNATTENDED_MOVE_ALREADY_THERE)
     move.assert_called_once()
 
     dialog._callback_loading_position_reached(True, None)  # it got there
     with patch("control.widgets.move_to_scanning_position") as move:
-        assert dialog.start_unattended_position_move(False) == ""
+        assert dialog.start_unattended_position_move(False, 1) == ""
         # leaving the loading position is not being at it: a robot must not be told to reach in now
-        refusal = dialog.start_unattended_position_move(True)
+        refusal = dialog.start_unattended_position_move(True, 1)
     assert refusal not in ("", UNATTENDED_MOVE_ALREADY_THERE)
     move.assert_called_once()
 
     dialog._callback_scanning_position_reached(True, None)  # back
     with patch("control.widgets.move_to_loading_position") as move:
-        assert dialog.start_unattended_position_move(True) == ""
+        assert dialog.start_unattended_position_move(True, 1) == ""
     move.assert_called_once()
 
 
@@ -126,7 +128,7 @@ def test_an_unattended_move_is_refused_while_the_lift_is_held(qtbot):
     dialog.set_lift_motion_guard(guard)
     assert guard.claim()  # e.g. an objective swap is running
     with patch("control.widgets.move_to_loading_position") as move:
-        refusal = dialog.start_unattended_position_move(True)
+        refusal = dialog.start_unattended_position_move(True, 1)
     assert refusal not in ("", UNATTENDED_MOVE_ALREADY_THERE)
     move.assert_not_called()
 
@@ -272,6 +274,68 @@ def test_a_failed_move_is_the_error_and_shows_no_dialog(qtbot):
     warning.assert_not_called()
 
 
+def test_after_a_failed_move_the_robot_is_not_told_the_stage_is_at_loading(qtbot):
+    stage = _stage(x_mm=47.5, y_mm=31.25)
+    moves_y = stage.move_y_to.side_effect
+    stage.move_y_to.side_effect = TimeoutError("y stalled")  # the stage stops short, somewhere on the way
+    dialog = _stage_utils(qtbot, stage)
+    server = _server(dialog)
+    with pytest.raises(RuntimeError, match="y stalled"):
+        _call(qtbot, server._cmd_move_to_loading_position)
+
+    # Asked again, it must not say "there, moved: false": a robot would reach in
+    with pytest.raises(RuntimeError, match="Refused.*return from the loading position"):
+        _call(qtbot, server._cmd_move_to_loading_position)
+
+    stage.move_y_to.side_effect = moves_y
+    result = _call(qtbot, server._cmd_return_from_loading_position)  # the way out, as the button offers
+    assert result["moved"] is True and _xy(result["position"]) == (47.5, 31.25)
+    assert _call(qtbot, server._cmd_move_to_loading_position)["moved"] is True
+
+
+def test_a_command_is_answered_by_its_own_move_not_by_another_one_ending(qtbot):
+    # A move that was already running (the button's) can end just as a command's own move starts: its end must not
+    # answer the command while the command's move is still running
+    dialog = _stage_utils(qtbot)
+    server = _server(dialog)
+    started, outcome = {}, {}
+
+    def run():
+        try:
+            outcome["result"] = server._cmd_move_to_loading_position()
+        except Exception as e:
+            outcome["error"] = e
+
+    with patch(
+        "control.widgets.move_to_loading_position", side_effect=lambda *a, callback, **k: started.update(cb=callback)
+    ):
+        thread = threading.Thread(target=run)
+        thread.start()
+        qtbot.waitUntil(lambda: "cb" in started, timeout=10000)
+
+        dialog._callback_scanning_position_reached(True, None)  # the button's move back to scanning ends now
+        qtbot.wait(300)
+        assert thread.is_alive(), outcome  # still waiting for its own move
+
+        started["cb"](False, "y stalled")  # its own move ends
+        qtbot.waitUntil(lambda: not thread.is_alive(), timeout=10000)
+    assert "y stalled" in str(outcome.get("error")), outcome
+
+
+def test_an_unattended_move_is_refused_during_an_objective_swap(qtbot):
+    dialog = _stage_utils(qtbot)  # no Z lift: no lift guard for the swap to hold
+    dialog.set_objective_swap_active(True)
+    with patch("control.widgets.move_to_loading_position") as move:
+        refusal = dialog.start_unattended_position_move(True, 1)
+    assert "objective" in refusal
+    move.assert_not_called()
+
+    dialog.set_objective_swap_active(False)
+    with patch("control.widgets.move_to_loading_position") as move:
+        assert dialog.start_unattended_position_move(True, 1) == ""
+    move.assert_called_once()
+
+
 def test_a_move_that_does_not_report_back_in_time_is_a_timeout(qtbot, monkeypatch):
     import control.microscope_control_server as server_module
 
@@ -298,3 +362,11 @@ def test_the_mcp_bridge_waits_for_the_whole_move():
     timeouts = {call.args[0]: call.kwargs.get("timeout", 30.0) for call in send.call_args_list}
     assert timeouts["ping"] == 30.0
     assert timeouts["move_to_loading_position"] > 180 and timeouts["return_from_loading_position"] > 180
+
+
+def test_the_tool_descriptions_are_whole_sentences():
+    # An MCP client sees only the docstring's first line (schema_method)
+    from control.microscope_control_server import MicroscopeControlServer
+
+    for command in ("_cmd_move_to_loading_position", "_cmd_return_from_loading_position"):
+        assert getattr(MicroscopeControlServer, command)._schema["description"].endswith("."), command

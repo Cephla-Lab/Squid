@@ -120,7 +120,8 @@ The `python_exec` command is disabled by default for security. To enable it:
 The two loading position commands are for automation such as a robot loading plates: they never show a dialog, and
 the GUI follows them (button, live view, Z lift lock). They are refused while an acquisition is running, the Z lift is
 moving, an objective swap is running, or another move to or from the loading position is running. A command to where
-the stage already is replies `moved: false`. `return_from_loading_position` replies
+the stage already is replies `moved: false`. After a move that failed (the stage stopped somewhere on the way),
+`move_to_loading_position` is refused until `return_from_loading_position` has brought the stage back. `return_from_loading_position` replies
 `returned_to_pre_loading_xy: false` when no earlier XY was known and the stage stopped at the scanning position.
 A move that lowers and raises a Z lift can take a while: a TCP client should wait a little over 3 minutes for the
 reply (the server gives up waiting after 180 s and replies with a timeout error; the MCP bridge waits 200 s).

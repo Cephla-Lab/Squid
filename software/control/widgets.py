@@ -3000,9 +3000,11 @@ class StageUtils(QDialog):
     signal_threaded_stage_move_started = Signal()
     signal_loading_position_reached = Signal()
     signal_scanning_position_reached = Signal()
-    # (success, error message) at the end of every move to or from the loading position, from the thread that ran
-    # it: what the control server waits for before it replies
-    signal_position_move_finished = Signal(bool, str)
+    # (move id, success, error message) at the end of every move to or from the loading position, from the thread
+    # that ran it: what the control server waits for before it replies. The id is the one
+    # start_unattended_position_move was given (0 for the button's own move), so a command is answered only by
+    # its own move, not by one that was already running when it came in.
+    signal_position_move_finished = Signal(int, bool, str)
 
     def __init__(self, stage: AbstractStage, live_controller: LiveController, is_wellplate: bool, parent=None):
         super().__init__(parent)
@@ -3023,6 +3025,13 @@ class StageUtils(QDialog):
         self._was_live = False
         # From the start of a move to or from the loading position until it reports back
         self._position_move_running = False
+        # True only once a move to the loading position got there (or Squid restarted there). A failed move either
+        # way also leaves slide_position "loading", so the button offers the return, but the stage is somewhere on
+        # the way: a robot must not be told it is there.
+        self._loading_position_reached = False
+        # A manual objective swap is running (ObjectivesWidget.signal_swap_active, connected by the GUI): nothing
+        # may move the stage. On a Z lift system the swap also holds the lift guard; without one, this is the lock.
+        self._objective_swap_active = False
 
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
@@ -3147,6 +3156,11 @@ class StageUtils(QDialog):
         self.lift_motion_guard = guard
         guard.signal_busy_changed.connect(self._on_lift_busy_changed)
 
+    @Slot(bool)
+    def set_objective_swap_active(self, active: bool):
+        """ObjectivesWidget.signal_swap_active: a manual objective swap started (True) or ended (False)."""
+        self._objective_swap_active = active
+
     def _on_lift_busy_changed(self, busy: bool):
         # Busy also covers this dialog's own toggle (the guard tracks it from the signals below), so this enables the
         # button exactly when the toggle could start.
@@ -3165,8 +3179,8 @@ class StageUtils(QDialog):
                 return  # cancelled: nothing moves
         self._start_position_move(restore_z, warn_on_failure=True)
 
-    @Slot(bool, result=str)
-    def start_unattended_position_move(self, to_loading: bool) -> str:
+    @Slot(bool, int, result=str)
+    def start_unattended_position_move(self, to_loading: bool, move_id: int) -> str:
         """Automation (the control server): start the button's move to the loading position (to_loading) or back
         from it, with no dialog: the objective comes back down, a failure is only reported. Returns "" when it
         started (signal_position_move_finished follows), UNATTENDED_MOVE_ALREADY_THERE when the stage is already
@@ -3175,9 +3189,12 @@ class StageUtils(QDialog):
             refusal = self._position_move_refusal()
             if refusal:
                 return refusal
-            if to_loading == (self.slide_position == "loading"):
+            at_loading = self.slide_position == "loading"
+            if to_loading and at_loading and not self._loading_position_reached:
+                return "the last move to or from the loading position did not finish: return from the loading position first"
+            if to_loading == at_loading:
                 return UNATTENDED_MOVE_ALREADY_THERE
-            self._start_position_move(restore_z=True, warn_on_failure=False)
+            self._start_position_move(restore_z=True, warn_on_failure=False, move_id=move_id)
             return ""
         except Exception as e:  # Qt drops an exception raised in a slot called across threads
             self.log.exception("Could not start the loading position move")
@@ -3186,11 +3203,13 @@ class StageUtils(QDialog):
     def _position_move_refusal(self) -> str:
         if self._position_move_running:
             return "a move to or from the loading position is already running"
+        if self._objective_swap_active:
+            return "an objective swap is running"
         if self.lift_motion_guard is not None and self.lift_motion_guard.busy:
             return "the Z lift is moving or an objective swap is running"
         return ""
 
-    def _start_position_move(self, restore_z: bool, warn_on_failure: bool):
+    def _start_position_move(self, restore_z: bool, warn_on_failure: bool, move_id: int = 0):
         if not (self.keep_live_off_at_loading and self.slide_position == "loading"):
             # (leaving a loading position where live was kept off: _was_live still holds what it was before)
             self._was_live = self.live_controller.is_live
@@ -3206,7 +3225,7 @@ class StageUtils(QDialog):
             kwargs = {"restore_z": restore_z}
 
         def callback(success, error):
-            reached(success, error, warn_on_failure)
+            reached(success, error, warn_on_failure, move_id)
 
         try:
             move(self.stage, blocking=False, callback=callback, is_wellplate=self.is_wellplate, **kwargs)
@@ -3234,10 +3253,11 @@ class StageUtils(QDialog):
         return reply == QMessageBox.Ok
 
     def _callback_loading_position_reached(
-        self, success: bool, error_message: Optional[str], warn_on_failure: bool = True
+        self, success: bool, error_message: Optional[str], warn_on_failure: bool = True, move_id: int = 0
     ):
         """Handle slide loading position reached signal."""
         self._position_move_running = False
+        self._loading_position_reached = success
         self.slide_position = "loading"
         self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
         self.btn_load_slide.setText("Return from Loading Position")
@@ -3247,20 +3267,24 @@ class StageUtils(QDialog):
         if not success and warn_on_failure:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_loading_position_reached.emit()
-        self.signal_position_move_finished.emit(success, error_message or "")
+        self.signal_position_move_finished.emit(move_id, success, error_message or "")
 
     def _callback_scanning_position_reached(
-        self, success: bool, error_message: Optional[str], warn_on_failure: bool = True
+        self, success: bool, error_message: Optional[str], warn_on_failure: bool = True, move_id: int = 0
     ):
         """Handle slide scanning position reached signal."""
         if not success:
             # The stage may not have left the loading position: it is still treated as there (a lift system keeps
             # everything locked), and the button offers the return again.
             self._callback_loading_position_reached(
-                False, f"Could not return from the loading position:\n{error_message}\n\nTry again.", warn_on_failure
+                False,
+                f"Could not return from the loading position:\n{error_message}\n\nTry again.",
+                warn_on_failure,
+                move_id,
             )
             return
         self._position_move_running = False
+        self._loading_position_reached = False
         self.slide_position = "scanning"
         self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
         self.btn_load_slide.setText("Move to Loading Position")
@@ -3268,7 +3292,7 @@ class StageUtils(QDialog):
         if self._was_live:
             self._restart_live()
         self.signal_scanning_position_reached.emit()
-        self.signal_position_move_finished.emit(True, "")
+        self.signal_position_move_finished.emit(move_id, True, "")
 
     def _restart_live(self):
         """Live view back on after a move. A camera that will not restart must not stop the move being reported:
