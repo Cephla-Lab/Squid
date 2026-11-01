@@ -367,6 +367,8 @@ class Microscope:
                 stage_config=stage_config,
                 max_speed=control._def.PRIOR_STAGE_MAX_SPEED,
                 acceleration=control._def.PRIOR_STAGE_ACCELERATION,
+                max_speed_limit=control._def.PRIOR_STAGE_MAX_SPEED_LIMIT,
+                acceleration_limit=control._def.PRIOR_STAGE_ACCELERATION_LIMIT,
             )
         else:
             if low_level_devices.microcontroller is None:

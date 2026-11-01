@@ -295,3 +295,43 @@ def test_physical_units_are_none_when_the_controller_cannot_say(fake, monkeypatc
     stage, ser = make_stage(fake)
     assert stage.get_max_speed_mm_s() is None
     assert stage.get_acceleration_mm_s2() is None
+
+
+def test_ceiling_lowers_a_larger_startup_value(fake):
+    stage, ser = make_stage(fake, max_speed=300, acceleration=750, max_speed_limit=200, acceleration_limit=500)
+    assert (ser.sms, ser.sas) == (200, 500)
+    assert (stage.speed, stage.acceleration) == (200, 500)
+
+
+def test_setters_refuse_values_above_the_ceiling(fake):
+    stage, ser = make_stage(fake, max_speed_limit=200, acceleration_limit=500)
+    with pytest.raises(ValueError, match="200"):
+        stage.set_max_speed(201)
+    with pytest.raises(ValueError, match="500"):
+        stage.set_acceleration(501)
+    stage.set_max_speed(200)
+    stage.set_acceleration(500)
+    assert (ser.sms, ser.sas) == (200, 500)
+
+
+def test_ceilings_are_kept_within_what_the_controller_takes(fake):
+    stage, ser = make_stage(fake, max_speed_limit=5000, acceleration_limit=0)
+    assert (stage.max_speed_limit, stage.acceleration_limit) == (1000, 1)
+
+
+def test_microscope_build_passes_the_ini_ceilings_to_prior_stage(fake, monkeypatch):
+    import control._def
+    import control.microscope
+
+    monkeypatch.setattr(control._def, "USE_PRIOR_STAGE", True)
+    monkeypatch.setattr(control._def, "PRIOR_STAGE_SN", "FAKE_SN")
+    monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED", 300)
+    monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION", 250)
+    monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED_LIMIT", 200)
+    monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION_LIMIT", 500)
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True)
+    try:
+        assert (scope.stage.max_speed_limit, scope.stage.acceleration_limit) == (200, 500)
+        assert (fake["fake"].sms, fake["fake"].sas) == (200, 250)
+    finally:
+        scope.close()

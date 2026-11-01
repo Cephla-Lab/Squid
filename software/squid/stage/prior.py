@@ -31,9 +31,15 @@ class PriorStage(AbstractStage):
         stage_config: StageConfig = None,
         max_speed: int = 100,
         acceleration: int = 100,
+        max_speed_limit: int = MOTION_SETTING_MAX,
+        acceleration_limit: int = MOTION_SETTING_MAX,
     ):
         """max_speed (SMS) and acceleration (SAS) are in the controller's 1-1000 scale. On the H117(1MM) stage
-        100 is 6 mm/s and 28.6 mm/s^2, 1000 is 60 mm/s and 285.5 mm/s^2 (read back with "SMS,u" / "SAS,u")."""
+        100 is 6 mm/s and 28.6 mm/s^2, 1000 is 60 mm/s and 285.5 mm/s^2 (read back with "SMS,u" / "SAS,u").
+
+        max_speed_limit / acceleration_limit are this stage's ceilings: the most it takes without losing steps (it
+        runs open loop, so a lost step goes unnoticed until the stage is homed again). A larger max_speed or
+        acceleration is lowered to the ceiling with a warning; set_max_speed() / set_acceleration() refuse it."""
         # We are not using StageConfig for Prior stage now. Waiting for further update/clarification of this part
         super().__init__(stage_config)
 
@@ -65,8 +71,10 @@ class PriorStage(AbstractStage):
         self.resolution = 0.1
         self.x_direction = 1  # 1 or -1
         self.y_direction = 1  # 1 or -1
-        self.speed = max_speed
-        self.acceleration = acceleration
+        self.max_speed_limit = PriorStage.within_controller_range(max_speed_limit)
+        self.acceleration_limit = PriorStage.within_controller_range(acceleration_limit)
+        self.speed = self._within_ceiling(max_speed, self.max_speed_limit, "max speed")
+        self.acceleration = self._within_ceiling(acceleration, self.acceleration_limit, "acceleration")
 
         self.serial_lock = threading.Lock()
         self.is_busy = False
@@ -191,14 +199,25 @@ class PriorStage(AbstractStage):
         self.stage_model = match.group(1)
         print("Stage model: ", self.stage_model)
 
+    @staticmethod
+    def within_controller_range(value) -> int:
+        return min(max(int(value), PriorStage.MOTION_SETTING_MIN), PriorStage.MOTION_SETTING_MAX)
+
+    def _within_ceiling(self, value, ceiling, name) -> int:
+        if not PriorStage.MOTION_SETTING_MIN <= value <= ceiling:
+            used = min(max(int(value), PriorStage.MOTION_SETTING_MIN), ceiling)
+            self._log.warning(f"Prior stage {name} {value} is outside 1-{ceiling} for this stage; using {used}.")
+            return used
+        return value
+
     def set_max_speed(self, speed=1000):
-        """Set the maximum speed of the stage. Range is 1 to 1000."""
-        if PriorStage.MOTION_SETTING_MIN <= speed <= PriorStage.MOTION_SETTING_MAX:
+        """Set the maximum speed of the stage. Range is 1 to the stage's max_speed_limit (at most 1000)."""
+        if PriorStage.MOTION_SETTING_MIN <= speed <= self.max_speed_limit:
             response = self._send_command(f"SMS {speed}")
             self.speed = speed
             print(f"Maximum speed set to {speed}. Response: {response}")
         else:
-            raise ValueError("Speed must be between 1 and 1000")
+            raise ValueError(f"Speed must be between 1 and {self.max_speed_limit}")
 
     def get_max_speed(self):
         """Get the current maximum speed setting."""
@@ -207,13 +226,13 @@ class PriorStage(AbstractStage):
         return int(response)
 
     def set_acceleration(self, acceleration=1000):
-        """Set the acceleration of the stage. Range is 1 to 1000."""
-        if PriorStage.MOTION_SETTING_MIN <= acceleration <= PriorStage.MOTION_SETTING_MAX:
+        """Set the acceleration of the stage. Range is 1 to the stage's acceleration_limit (at most 1000)."""
+        if PriorStage.MOTION_SETTING_MIN <= acceleration <= self.acceleration_limit:
             response = self._send_command(f"SAS {acceleration}")
             self.acceleration = acceleration
             print(f"Acceleration set to {acceleration}. Response: {response}")
         else:
-            raise ValueError("Acceleration must be between 1 and 1000")
+            raise ValueError(f"Acceleration must be between 1 and {self.acceleration_limit}")
 
     def enable_joystick(self):
         self._send_command("J")

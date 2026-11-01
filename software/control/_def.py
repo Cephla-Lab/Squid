@@ -1273,6 +1273,11 @@ PRIOR_STAGE_SN = ""
 # Editable in Preferences > Advanced > Prior Stage, which also sends them to the connected stage.
 PRIOR_STAGE_MAX_SPEED = 100
 PRIOR_STAGE_ACCELERATION = 100
+# This rig's ceilings: the most the stage takes without losing steps (it runs open loop). Preferences and the driver
+# refuse more. 1000 is the controller's own maximum; set lower where faster moves lose steps (an H117(1MM) on a
+# Squid lost steps above max speed 200).
+PRIOR_STAGE_MAX_SPEED_LIMIT = 1000
+PRIOR_STAGE_ACCELERATION_LIMIT = 1000
 
 # PI V-308 / C-414 focus drive used as the main Z (wraps the configured XY stage)
 USE_PI_FOCUS_STAGE = False

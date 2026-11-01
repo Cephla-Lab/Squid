@@ -1091,6 +1091,8 @@ class TestPriorStageSettings:
         # Restored after the test: Save writes the new values into control._def.
         monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED", 100)
         monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION", 100)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED_LIMIT", 1000)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION_LIMIT", 1000)
 
     def _dialog(self, qtbot, config, path, stage=None):
         dialog = control.widgets.PreferencesDialog(config, path, stage=stage)
@@ -1124,6 +1126,22 @@ class TestPriorStageSettings:
         dialog = self._dialog(qtbot, sample_config, temp_config_file)
         for spinbox in (dialog.prior_speed_spinbox, dialog.prior_accel_spinbox):
             assert (spinbox.minimum(), spinbox.maximum()) == (1, 1000)
+
+    def test_the_rig_ceilings_cap_the_range(self, qtbot, sample_config, temp_config_file, prior_rig, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED_LIMIT", 200)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION_LIMIT", 500)
+        # Values saved before the ceiling existed: shown at the ceiling, and not listed as a change.
+        sample_config.set("GENERAL", "prior_stage_max_speed", "300")
+        sample_config.set("GENERAL", "prior_stage_acceleration", "750")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.prior_speed_spinbox.maximum() == 200
+        assert dialog.prior_accel_spinbox.maximum() == 500
+        assert (dialog.prior_speed_spinbox.value(), dialog.prior_accel_spinbox.value()) == (200, 500)
+        assert not [c for c in dialog._get_changes() if c[0].startswith("Prior Stage")]
+        dialog.prior_speed_spinbox.setValue(250)
+        assert dialog.prior_speed_spinbox.value() == 200
 
     def test_an_out_of_range_ini_value_is_not_reported_as_a_change(
         self, qtbot, sample_config, temp_config_file, prior_rig

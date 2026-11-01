@@ -1514,24 +1514,35 @@ class PreferencesDialog(QDialog):
             prior_group = CollapsibleGroupBox("Prior Stage", collapsed=True)
             prior_layout = QFormLayout()
             speed_per_step, accel_per_step = self._prior_physical_units_per_step()
+            # The rig's ceilings (prior_stage_*_limit in the machine .ini): the most the stage takes without losing steps
+            self._prior_speed_limit = PriorStage.within_controller_range(control._def.PRIOR_STAGE_MAX_SPEED_LIMIT)
+            self._prior_accel_limit = PriorStage.within_controller_range(control._def.PRIOR_STAGE_ACCELERATION_LIMIT)
 
             self.prior_speed_spinbox, self.prior_speed_physical_label, row = self._make_prior_motion_row(
-                self._get_prior_motion_setting("prior_stage_max_speed", control._def.PRIOR_STAGE_MAX_SPEED),
+                self._get_prior_motion_setting(
+                    "prior_stage_max_speed", control._def.PRIOR_STAGE_MAX_SPEED, self._prior_speed_limit
+                ),
+                self._prior_speed_limit,
                 speed_per_step,
                 "mm/s",
-                "Prior controller max speed (SMS), 1-1000. The scale is linear; 1000 is the most the\n"
-                "controller allows for the fitted stage (60 mm/s on an H117 with 1 mm screws).",
+                "Prior controller max speed (SMS). The scale is linear; the controller allows up to 1000\n"
+                "(60 mm/s on an H117 with 1 mm screws). This rig's ceiling is prior_stage_max_speed_limit\n"
+                "in the machine .ini: the most the stage takes without losing steps.",
             )
-            prior_layout.addRow("Max Speed (1-1000):", row)
+            prior_layout.addRow(f"Max Speed (1-{self._prior_speed_limit}):", row)
 
             self.prior_accel_spinbox, self.prior_accel_physical_label, row = self._make_prior_motion_row(
-                self._get_prior_motion_setting("prior_stage_acceleration", control._def.PRIOR_STAGE_ACCELERATION),
+                self._get_prior_motion_setting(
+                    "prior_stage_acceleration", control._def.PRIOR_STAGE_ACCELERATION, self._prior_accel_limit
+                ),
+                self._prior_accel_limit,
                 accel_per_step,
                 "mm/s²",
-                "Prior controller acceleration (SAS), 1-1000. The scale is linear; 1000 is the most the\n"
-                "controller allows for the fitted stage (285.5 mm/s² on an H117 with 1 mm screws).",
+                "Prior controller acceleration (SAS). The scale is linear; the controller allows up to 1000\n"
+                "(285.5 mm/s² on an H117 with 1 mm screws). This rig's ceiling is prior_stage_acceleration_limit\n"
+                "in the machine .ini: the most the stage takes without losing steps.",
             )
-            prior_layout.addRow("Acceleration (1-1000):", row)
+            prior_layout.addRow(f"Acceleration (1-{self._prior_accel_limit}):", row)
 
             prior_note = QLabel(
                 "Applied to the stage when you click Save. Faster moves can lose steps or leave the stage still "
@@ -2087,11 +2098,12 @@ class PreferencesDialog(QDialog):
         spinbox = self.tiff_compression_spinbox
         return min(max(level, spinbox.minimum()), spinbox.maximum())
 
-    def _get_prior_motion_setting(self, option, running_value):
+    def _get_prior_motion_setting(self, option, running_value, limit):
         """A Prior SMS/SAS setting from the config, falling back to the running value, limited to what the spin box
-        can show so that an out of range value in the config file isn't reported as a change."""
+        can show (1 to the rig's ceiling) so that an out of range value in the config file isn't reported as a
+        change."""
         value = self._get_config_int("GENERAL", option, running_value)
-        return min(max(value, PriorStage.MOTION_SETTING_MIN), PriorStage.MOTION_SETTING_MAX)
+        return min(max(value, PriorStage.MOTION_SETTING_MIN), limit)
 
     def _prior_physical_units_per_step(self):
         """(mm/s, mm/s^2) per SMS/SAS step on the connected Prior stage, from what its controller reports; the scale
@@ -2103,9 +2115,9 @@ class PreferencesDialog(QDialog):
             return None, None
 
     @staticmethod
-    def _make_prior_motion_row(value, physical_per_step, unit, tooltip):
+    def _make_prior_motion_row(value, maximum, physical_per_step, unit, tooltip):
         spinbox = QSpinBox()
-        spinbox.setRange(PriorStage.MOTION_SETTING_MIN, PriorStage.MOTION_SETTING_MAX)
+        spinbox.setRange(PriorStage.MOTION_SETTING_MIN, maximum)
         spinbox.setSingleStep(50)
         spinbox.setValue(value)
         spinbox.setToolTip(tooltip)
@@ -2594,12 +2606,16 @@ class PreferencesDialog(QDialog):
 
         # Advanced - Prior Stage (live update: sent to the stage on Save)
         if self.prior_speed_spinbox is not None:
-            old_val = self._get_prior_motion_setting("prior_stage_max_speed", control._def.PRIOR_STAGE_MAX_SPEED)
+            old_val = self._get_prior_motion_setting(
+                "prior_stage_max_speed", control._def.PRIOR_STAGE_MAX_SPEED, self._prior_speed_limit
+            )
             new_val = self.prior_speed_spinbox.value()
             if old_val != new_val:
                 changes.append(("Prior Stage Max Speed", str(old_val), str(new_val), False))
 
-            old_val = self._get_prior_motion_setting("prior_stage_acceleration", control._def.PRIOR_STAGE_ACCELERATION)
+            old_val = self._get_prior_motion_setting(
+                "prior_stage_acceleration", control._def.PRIOR_STAGE_ACCELERATION, self._prior_accel_limit
+            )
             new_val = self.prior_accel_spinbox.value()
             if old_val != new_val:
                 changes.append(("Prior Stage Acceleration", str(old_val), str(new_val), False))
