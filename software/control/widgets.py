@@ -1224,7 +1224,7 @@ class PreferencesDialog(QDialog):
         FileSavingOption.INDIVIDUAL_IMAGES: "Individual images",
         FileSavingOption.MULTI_PAGE_TIFF: "Multi-page TIFF",
         FileSavingOption.OME_TIFF: "OME-TIFF",
-        FileSavingOption.ZARR_V3: "OME-Zarr",
+        FileSavingOption.ZARR_V3: "OME-Zarr 0.5",
     }
     OME_ZARR_TOOLTIP = (
         "OME-Zarr 0.5 (Zarr v3).\n"

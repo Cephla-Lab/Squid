@@ -544,7 +544,7 @@ class TestUIInitialization:
 
 class TestFileSavingLabels:
     """Each format shows a readable label but is still stored by its FileSavingOption name
-    (ZARR_V3 shows as "OME-Zarr"), so existing config files keep working."""
+    (ZARR_V3 shows as "OME-Zarr 0.5"), so existing config files keep working."""
 
     def test_each_format_shows_a_label_and_keeps_its_stored_name(self, preferences_dialog):
         combo = preferences_dialog.file_saving_combo
@@ -553,7 +553,7 @@ class TestFileSavingLabels:
             ("Individual images", "INDIVIDUAL_IMAGES"),
             ("Multi-page TIFF", "MULTI_PAGE_TIFF"),
             ("OME-TIFF", "OME_TIFF"),
-            ("OME-Zarr", "ZARR_V3"),
+            ("OME-Zarr 0.5", "ZARR_V3"),
         ]
 
     def test_zarr_v3_in_config_is_shown_as_ome_zarr(self, qtbot, sample_config, temp_config_file):
@@ -561,7 +561,7 @@ class TestFileSavingLabels:
         dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
         qtbot.addWidget(dialog)
 
-        assert dialog.file_saving_combo.currentText() == "OME-Zarr"
+        assert dialog.file_saving_combo.currentText() == "OME-Zarr 0.5"
         assert not [c for c in dialog._get_changes() if c[0] == "File Saving Format"]
 
     def test_choosing_ome_zarr_saves_and_applies_zarr_v3(self, qtbot, preferences_dialog, temp_config_file):
@@ -569,7 +569,7 @@ class TestFileSavingLabels:
 
         original = control._def.FILE_SAVING_OPTION
         try:
-            preferences_dialog.file_saving_combo.setCurrentText("OME-Zarr")
+            select_file_saving_option(preferences_dialog, "ZARR_V3")
             preferences_dialog.accept = MagicMock()
             preferences_dialog._save_and_close()
 
@@ -581,24 +581,24 @@ class TestFileSavingLabels:
             control._def.FILE_SAVING_OPTION = original
 
     def test_ome_zarr_shows_the_zarr_compression_option(self, preferences_dialog):
-        preferences_dialog.file_saving_combo.setCurrentText("OME-Zarr")
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
 
         assert preferences_dialog.zarr_compression_combo.isVisibleTo(preferences_dialog)
 
     def test_ome_zarr_tooltip_names_the_spec_and_zarr_versions(self, preferences_dialog):
-        preferences_dialog.file_saving_combo.setCurrentText("OME-Zarr")
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
 
         assert "OME-Zarr 0.5 (Zarr v3)" in preferences_dialog.file_saving_combo.toolTip()
 
     def test_tooltip_clears_when_a_tiff_format_is_chosen(self, preferences_dialog):
-        preferences_dialog.file_saving_combo.setCurrentText("OME-Zarr")
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
         select_file_saving_option(preferences_dialog, "OME_TIFF")
 
         assert preferences_dialog.file_saving_combo.toolTip() == ""
 
     def test_tooltip_says_6d_output_is_not_ome_zarr(self, preferences_dialog):
         combo = preferences_dialog.file_saving_combo
-        combo.setCurrentText("OME-Zarr")
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
 
         preferences_dialog.zarr_6d_fov_checkbox.setChecked(True)
         assert "not OME-Zarr" in combo.toolTip()
@@ -608,10 +608,10 @@ class TestFileSavingLabels:
         assert "not OME-Zarr" not in combo.toolTip()
 
     def test_change_list_shows_the_labels(self, preferences_dialog):
-        preferences_dialog.file_saving_combo.setCurrentText("OME-Zarr")
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
 
         change = next(c for c in preferences_dialog._get_changes() if c[0] == "File Saving Format")
-        assert change[1:3] == ("OME-TIFF", "OME-Zarr")
+        assert change[1:3] == ("OME-TIFF", "OME-Zarr 0.5")
 
 
 class TestFileSavingOptionFallback:
@@ -983,7 +983,7 @@ class TestTiffCompressionSetting:
             ("Individual images", True),
             ("Multi-page TIFF", True),
             ("OME-TIFF", False),  # written through a memmap, which can't be compressed
-            ("OME-Zarr", False),
+            ("OME-Zarr 0.5", False),
         ):
             preferences_dialog.file_saving_combo.setCurrentText(file_saving_label)
             assert preferences_dialog.file_saving_combo.currentText() == file_saving_label

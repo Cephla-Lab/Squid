@@ -13,7 +13,7 @@ Squid supports saving acquisition data in Zarr v3 format with OME-NGFF 0.5 metad
 
 ## Enabling Zarr v3
 
-Settings > Preferences > File Saving Format: **OME-Zarr** (stored as `ZARR_V3` in the config file)
+Settings > Preferences > File Saving Format: **OME-Zarr 0.5** (stored as `ZARR_V3` in the config file)
 
 Additional options:
 - **Compression Level**: None (fastest), Fast (LZ4), Balanced (Zstd), Best (Zstd level 9)
@@ -134,7 +134,7 @@ Zarr v3 uses sharding to optimize both read and write performance:
 
 | Setting | Values | Description |
 |---------|--------|-------------|
-| `FILE_SAVING_OPTION` | ZARR_V3 | Enable Zarr v3 format (shown as "OME-Zarr" in Preferences) |
+| `FILE_SAVING_OPTION` | ZARR_V3 | Enable Zarr v3 format (shown as "OME-Zarr 0.5" in Preferences) |
 | `ZARR_COMPRESSION` | none, fast, balanced, best | Compression level |
 | `ZARR_CHUNK_MODE` | full_frame, tiled_512, tiled_256 | Chunk size |
 | `ZARR_USE_6D_FOV_DIMENSION` | True/False | 6D array with FOV dimension |
