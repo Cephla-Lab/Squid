@@ -508,7 +508,8 @@ class SquidLaserEngine(SquidLaserEngineBase):
         _test_serial=None,
     ):
         super().__init__(query_interval_s=query_interval_s)
-        self.sn = sn
+        # the .ini reader turns an all-digit serial number into an int; USB serial numbers are text
+        self.sn = str(sn) if sn is not None else None
         self.device = device
         self._serial = _test_serial  # production: opened in start(); tests inject
         self._serial_lock = threading.Lock()
