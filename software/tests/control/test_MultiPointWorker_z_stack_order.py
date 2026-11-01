@@ -622,3 +622,46 @@ def test_a_restore_settles_in_hardware_trigger_mode_too(tmp_path):
 
     between = sleeps[sleeps_at_af_call[1] : sleeps_at_frame[3]]
     assert squid.stage.utils.z_stabilization_time_s() in between
+
+
+def test_a_successful_re_anchor_lands_at_reference_plus_region_and_channel_offsets(tmp_path):
+    """Review minor: the success path applies the per-region laser-AF offset, then the channel offset."""
+    piezo = _FakePiezo()
+    af = _FakeLaserAF(piezo, references=[100.0, 104.0])
+    w = _worker(
+        "Z FIRST",
+        use_piezo=True,
+        offsets={"A": 0.0, "B": 3.0},
+        region_offsets={"A1": 10.0},
+        laser_af_per_stack=True,
+        laser_af=af,
+        tmp_path=tmp_path,
+    )
+    w.piezo = piezo
+
+    w.acquire_at_position("A1", "/tmp", 0)
+
+    # A: 100 + 10 (region); B: re-AF to 104 + 10 (region) + 3 (channel) = 117
+    assert _planes(w) == pytest.approx([110, 112, 114, 117, 119, 121])
+
+
+def test_failed_af_diagnostics_are_named_per_fov_and_channel(tmp_path):
+    """Hongquan: one bitmap per failure, named by region, FOV and (for a re-AF) channel, so they do not overwrite."""
+    piezo = _FakePiezo(position=280.0, range_um=300.0)
+    af = _FakeLaserAF(piezo, references=[292.0, 292.0], fail_calls=())  # both AFs raise in the region offset
+    w = _worker(
+        "Z FIRST",
+        use_piezo=True,
+        offsets={"A": 0.0, "B": 0.0},
+        region_offsets={"A1": 10.0},
+        laser_af_per_stack=True,
+        laser_af=af,
+        tmp_path=tmp_path,
+    )
+    w.piezo = piezo
+    w.deltaZ = 0.001
+
+    w.acquire_at_position("A1", "/tmp", 7)
+
+    names = sorted(p.name for p in (tmp_path / "exp" / "0").glob("*.bmp"))
+    assert names == ["A1_7_B_focus_camera.bmp", "A1_7_focus_camera.bmp"]

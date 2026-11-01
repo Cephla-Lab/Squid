@@ -266,6 +266,7 @@ def acquisition_data_from_blocks(settings: dict, coordinates: dict) -> Acquisiti
     z_range = z_stack.get("z_range_mm")
     widget_type = settings.get("widget_type", "wellplate")
     regions = [dict(r) for r in (coordinates.get("regions") or [])]
+    z_stack_order = parse_z_stack_order(z_stack.get("order"))
     return AcquisitionYAMLData(
         widget_type=widget_type,
         xy_mode=settings.get("xy_mode", "Load Coordinates"),
@@ -276,7 +277,7 @@ def acquisition_data_from_blocks(settings: dict, coordinates: dict) -> Acquisiti
         nz=int(z_stack.get("nz", 1)),
         delta_z_um=float(z_stack.get("delta_z_um", 1.0)),
         z_stacking_config=str(z_stack.get("config", "FROM CENTER")),
-        z_stack_order=parse_z_stack_order(z_stack.get("order")),
+        z_stack_order=z_stack_order,
         use_piezo=bool(z_stack.get("use_piezo", False)),
         nt=1,
         delta_t_s=0.0,
@@ -286,7 +287,7 @@ def acquisition_data_from_blocks(settings: dict, coordinates: dict) -> Acquisiti
         laser_af_per_stack=parse_laser_af_per_stack(
             autofocus.get("laser_af_per_stack"),
             laser_af=bool(autofocus.get("laser_af", False)),
-            z_stack_order=parse_z_stack_order(z_stack.get("order")),
+            z_stack_order=z_stack_order,
         ),
         scan_size_mm=settings.get("scan_size_mm"),
         overlap_percent=float(settings.get("overlap_percent", 10.0)),

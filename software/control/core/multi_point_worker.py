@@ -1207,7 +1207,7 @@ class MultiPointWorker:
                     if self.laser_af_per_stack and self.do_reflection_af:
                         if self.abort_requested_fn():
                             break
-                        af_succeeded = self._re_anchor_before_stack(config, region_id, af_succeeded)
+                        af_succeeded = self._re_anchor_before_stack(config, region_id, fov, af_succeeded)
                 self._apply_channel_z_offset(config, af_succeeded)
                 # Where this channel's stack starts (piezo um or stage mm), offset included.
                 stack_start = self.z_piezo_um if self.use_piezo else self.stage.get_pos().z_mm
@@ -1326,13 +1326,13 @@ class MultiPointWorker:
                     self.autofocusController.wait_till_autofocus_has_completed()
         else:
             self._log.info("laser reflection af")
-            if not self._laser_af_anchor(region_id, restore_on_failure=False):
+            if not self._laser_af_anchor(region_id, fov, restore_on_failure=False):
                 self._laser_af_failures += 1
                 return False
             self._laser_af_successes += 1
         return True
 
-    def _laser_af_anchor(self, region_id, *, restore_on_failure: bool) -> bool:
+    def _laser_af_anchor(self, region_id, fov, *, restore_on_failure: bool, channel_name=None) -> bool:
         """Closed-loop laser AF to the reference plane, then the region's open-loop offset. True on success.
 
         move_to_target reports soft failures (no reference, NaN displacement, displacement out of range,
@@ -1366,7 +1366,7 @@ class MultiPointWorker:
                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
                 exc_info=e,
             )
-            self._save_laser_af_diagnostic(region_id)  # best effort: must never stand between us and the restore
+            self._save_laser_af_diagnostic(region_id, fov, channel_name)  # best effort: never blocks the restore
             af_succeeded = False
         if restore_on_failure:
             if not af_succeeded:
@@ -1383,16 +1383,22 @@ class MultiPointWorker:
                 self.z_piezo_um = self.piezo.position
         return af_succeeded
 
-    def _save_laser_af_diagnostic(self, region_id) -> None:
-        """Best effort: save the focus-camera image of a failed laser AF next to the time point's images."""
+    def _save_laser_af_diagnostic(self, region_id, fov, channel_name=None) -> None:
+        """Best effort: save the focus-camera image of a failed laser AF next to the time point's images.
+
+        Named per region and FOV, plus the channel for a per-stack re-AF, so one failure never overwrites another.
+        """
         try:
-            file_ID = f"{region_id}_focus_camera.bmp"
+            file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}"
+            if channel_name:
+                file_ID += "_" + channel_name.replace(" ", "_")
+            file_ID += "_focus_camera.bmp"
             saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
             iio.imwrite(saving_path, self.laser_auto_focus_controller.image)
         except Exception as e:
             self._log.warning(f"Could not save the laser AF focus-camera image for region '{region_id}': {e}")
 
-    def _re_anchor_before_stack(self, config, region_id, af_succeeded: bool) -> bool:
+    def _re_anchor_before_stack(self, config, region_id, fov, af_succeeded: bool) -> bool:
         """Z First "AF per stack": laser AF before this later channel's stack, at the stack start (the
         bottom for From Center: on an inverted microscope the reflection comes off the coverslip there).
 
@@ -1400,7 +1406,7 @@ class MultiPointWorker:
         even if the FOV's per-FOV AF had failed), else the FOV's current value (the previous anchor stands and
         the channel offset is still applied from it).
         """
-        if self._laser_af_anchor(region_id, restore_on_failure=True):
+        if self._laser_af_anchor(region_id, fov, restore_on_failure=True, channel_name=config.name):
             # The AF consumed the previous channel's offset: Z is at the anchored plane again.
             self._current_z_offset_um = 0.0
             self._laser_af_per_stack_successes += 1
