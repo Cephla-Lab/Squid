@@ -1358,6 +1358,17 @@ class PreferencesDialog(QDialog):
         )
         layout.addRow("Enable Flexible Multipoint:", self.flexible_multipoint_checkbox)
 
+        # Z-stack order dropdown (Channel First / Z First) next to Nz in the acquisition tabs. Applies live.
+        self.z_stack_order_dropdown_checkbox = QCheckBox()
+        self.z_stack_order_dropdown_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "enable_z_stack_order_selection", False)
+        )
+        self.z_stack_order_dropdown_checkbox.setToolTip(
+            "Show the Channel First / Z First choice next to Nz in the acquisition tabs.\n"
+            "Off, every acquisition started from the GUI runs Channel First."
+        )
+        layout.addRow("Z-stack Order Dropdown:", self.z_stack_order_dropdown_checkbox)
+
         self.tab_widget.addTab(tab, "Acquisition")
 
     def _create_camera_tab(self):
@@ -2108,6 +2119,11 @@ class PreferencesDialog(QDialog):
             "enable_flexible_multipoint",
             "true" if self.flexible_multipoint_checkbox.isChecked() else "false",
         )
+        self.config.set(
+            "GENERAL",
+            "enable_z_stack_order_selection",
+            "true" if self.z_stack_order_dropdown_checkbox.isChecked() else "false",
+        )
 
         # Camera settings
         self.config.set("CAMERA_CONFIG", "binning_factor_default", str(self.binning_spinbox.value()))
@@ -2290,6 +2306,7 @@ class PreferencesDialog(QDialog):
 
         # Flexible multipoint
         control._def.ENABLE_FLEXIBLE_MULTIPOINT = self.flexible_multipoint_checkbox.isChecked()
+        control._def.ENABLE_Z_STACK_ORDER_SELECTION = self.z_stack_order_dropdown_checkbox.isChecked()
 
         # Click to Move
         control._def.ENABLE_CLICK_TO_MOVE = self.click_to_move_enable_checkbox.isChecked()
@@ -2402,6 +2419,11 @@ class PreferencesDialog(QDialog):
         new_val = self.flexible_multipoint_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable Flexible Multipoint", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_bool("GENERAL", "enable_z_stack_order_selection", False)
+        new_val = self.z_stack_order_dropdown_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Z-stack Order Dropdown", str(old_val), str(new_val), False))
 
         # Camera settings (require restart)
         old_val = self._get_config_int("CAMERA_CONFIG", "binning_factor_default", 2)
@@ -7157,6 +7179,11 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.grid.addLayout(self.row_progress_layout)
         self.setLayout(self.grid)
 
+    def update_z_order_dropdown_visibility(self):
+        """Re-apply the opt-in Z-stack order choice (ENABLE_Z_STACK_ORDER_SELECTION), e.g. after Preferences
+        changed it at runtime."""
+        self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+
     def toggle_z_range_controls(self, state):
         is_visible = bool(state)
 
@@ -9348,6 +9375,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.combobox_z_mode.blockSignals(True)
         self.combobox_z_mode.setCurrentText("From Bottom")
         self.combobox_z_mode.blockSignals(False)
+
+    def update_z_order_dropdown_visibility(self):
+        """Re-apply the opt-in Z-stack order choice (ENABLE_Z_STACK_ORDER_SELECTION), e.g. after Preferences
+        changed it at runtime: shown with the rest of the z row (Z checked) and only when the choice is on."""
+        self.combobox_z_order.setVisible(self.checkbox_z.isChecked() and control._def.ENABLE_Z_STACK_ORDER_SELECTION)
 
     def show_z_controls(self, visible):
         """Show Z-related controls"""
