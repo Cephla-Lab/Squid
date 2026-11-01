@@ -3043,6 +3043,27 @@ class StageUtils(QDialog):
         self.signal_scanning_position_reached.emit()
 
 
+# Where a z stack sits relative to each FOV's z, as shown in the acquisition tabs: (label, controller name).
+_Z_STACKING_CHOICES = (("From Bottom", "FROM BOTTOM"), ("From Center", "FROM CENTER"), ("From Top", "FROM TOP"))
+# The Wellplate tab's Z mode dropdown: the three stacking choices, or an explicit Z-min..Z-max range.
+WELLPLATE_Z_MODES = tuple(label for label, _ in _Z_STACKING_CHOICES) + ("Set Range",)
+_Z_STACKING_CONFIG_FOR_Z_MODE = dict(_Z_STACKING_CHOICES, **{"Set Range": "FROM BOTTOM"})
+_Z_MODE_FOR_Z_STACKING_CONFIG = {config: label for label, config in _Z_STACKING_CHOICES}
+
+
+def _z_stacking_config_for_z_mode(z_mode: str) -> str:
+    """The z-stacking config an acquisition started from the Wellplate tab uses for its Z mode.
+
+    Set Range runs from Z-min up, i.e. From Bottom.
+    """
+    return _Z_STACKING_CONFIG_FOR_Z_MODE[z_mode]
+
+
+def _z_mode_for_z_stacking_config(z_stacking_config: str) -> str:
+    """The Wellplate Z mode to show for a loaded acquisition's z-stacking config (unknown: From Bottom)."""
+    return _Z_MODE_FOR_Z_STACKING_CONFIG.get(z_stacking_config, "From Bottom")
+
+
 def _z_stack_order_to_start(combobox) -> str:
     """The z-stack order an acquisition started from the GUI uses: the dropdown's, when the choice is enabled
     (ENABLE_Z_STACK_ORDER_SELECTION, opt-in), otherwise Channel First."""
@@ -6890,7 +6911,15 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.set_maxZ_button.clicked.connect(self.set_z_max)
 
         self.combobox_z_stack = QComboBox()
-        self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
+        for label, z_stacking_config in _Z_STACKING_CHOICES:
+            self.combobox_z_stack.addItem(label, z_stacking_config)
+        self.combobox_z_stack.setCurrentIndex(
+            self.combobox_z_stack.findData(self.multipointController.z_stacking_config)
+        )
+        self.combobox_z_stack.setToolTip(
+            "Where the z stack sits relative to the current z: starting at it, centred on it, or ending at it.\n"
+            "Not used with Set Z-range, which runs from Z-min up."
+        )
 
         self.combobox_z_order = QComboBox()
         for order in Z_STACK_ORDERS:
@@ -6991,6 +7020,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         dz_half.addStretch(1)
         dz_half.addWidget(QLabel("Nz"))
         dz_half.addWidget(self.entry_NZ)
+        dz_half.addWidget(self.combobox_z_stack)
         dz_half.addWidget(self.combobox_z_order)
         dz_half.addSpacing(EDGE_SPACING)
 
@@ -7118,7 +7148,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
-        # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
@@ -7173,6 +7202,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
+        # An explicit range runs from Z-min up, so the From Bottom/Center/Top choice does not apply.
+        self.combobox_z_stack.setEnabled(not is_visible)
         current_z = self.stage.get_pos().z_mm * 1000
         self.entry_minZ.setValue(current_z)
         if is_visible:
@@ -7428,6 +7459,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         # Set acquisition parameters
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_z_stacking_config(
+            "FROM BOTTOM" if self.checkbox_set_z_range.isChecked() else self.combobox_z_stack.currentData()
+        )
         self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
@@ -8059,6 +8093,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
             self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
+            self.combobox_z_stack.setCurrentIndex(self.combobox_z_stack.findData(yaml_data.z_stacking_config))
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
@@ -8356,10 +8391,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_Nt.setSingleStep(1)
         self.entry_Nt.setValue(1)
 
-        self.combobox_z_stack = QComboBox()
-        self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
-        self.combobox_z_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
         self.combobox_z_order = QComboBox()
         for order in Z_STACK_ORDERS:
             self.combobox_z_order.addItem(order.title(), order)
@@ -8463,7 +8494,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_z.setChecked(False)
 
         self.combobox_z_mode = QComboBox()
-        self.combobox_z_mode.addItems(["From Bottom", "Set Range"])
+        self.combobox_z_mode.addItems(list(WELLPLATE_Z_MODES))
+        self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(self.multipointController.z_stacking_config))
+        self.combobox_z_mode.setToolTip(
+            "Where the z stack sits relative to each position's z: starting at it, centred on it, or ending at it;\n"
+            "or Set Range for an explicit Z-min..Z-max (runs from Z-min up)."
+        )
         self.combobox_z_mode.setEnabled(False)  # Initially disabled since Z is unchecked
 
         z_layout = QHBoxLayout()
@@ -8867,7 +8903,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.checkbox_z.setChecked(settings.get("z_enabled", False))
 
             z_mode = settings.get("z_mode", "From Bottom")
-            if z_mode in ["From Bottom", "Set Range"]:
+            if z_mode in WELLPLATE_Z_MODES:
                 self.combobox_z_mode.setCurrentText(z_mode)
 
             self.checkbox_time.setChecked(settings.get("time_enabled", False))
@@ -9848,7 +9884,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             z = self.stage.get_pos().z_mm
             dz = self.entry_deltaZ.value()
             Nz = self.entry_NZ.value()
-            self.multipointController.set_z_range(z, z + dz * (Nz - 1))
+            self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))  # dz is in um, z in mm
 
         if self.checkbox_useFocusMap.isChecked():
             # Try to fit the surface; on success set the surface fitter in the controller
@@ -9862,6 +9898,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_z_stacking_config(
+            _z_stacking_config_for_z_mode(self.combobox_z_mode.currentText())
+        )
         self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
@@ -10258,13 +10297,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
             self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
 
-            # Z mode - map YAML config to combobox text
-            z_mode_map = {
-                "FROM BOTTOM": "From Bottom",
-                "SET RANGE": "Set Range",
-            }
-            z_mode = z_mode_map.get(yaml_data.z_stacking_config, "From Bottom")
-            self.combobox_z_mode.setCurrentText(z_mode)
+            # Z mode - the YAML's z-stacking config as the dropdown shows it
+            self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(yaml_data.z_stacking_config))
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)

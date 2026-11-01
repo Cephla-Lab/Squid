@@ -1,7 +1,8 @@
 import copy
 import dataclasses
 import threading
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -737,3 +738,21 @@ def test_start_blocker_refuses_an_acquisition_before_anything_moves():
         assert scope.stage.get_pos() == start
     finally:
         scope.close()
+
+
+@pytest.mark.parametrize("name", ["FROM BOTTOM", "FROM CENTER", "FROM TOP"])
+def test_set_z_stacking_config_takes_the_config_name(name):
+    from control.core.multi_point_controller import MultiPointController
+
+    fake = SimpleNamespace(z_stacking_config="FROM BOTTOM", _log=MagicMock())
+    MultiPointController.set_z_stacking_config(fake, name)
+    assert fake.z_stacking_config == name
+
+
+def test_set_z_stacking_config_rejects_an_unknown_name():
+    from control.core.multi_point_controller import MultiPointController
+
+    fake = SimpleNamespace(z_stacking_config="FROM BOTTOM", _log=MagicMock())
+    with pytest.raises(ValueError, match="z_stacking_config"):
+        MultiPointController.set_z_stacking_config(fake, "FROM NOWHERE")
+    assert fake.z_stacking_config == "FROM BOTTOM"
