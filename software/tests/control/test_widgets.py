@@ -2964,6 +2964,7 @@ def _wellplate_ui_fake(fit_ok=True, use_focus_map=False):
         checkbox_useFocusMap=widget(isChecked=use_focus_map),
         focusMapWidget=focus_map,
         checkbox_usePiezo=widget(isChecked=False),
+        checkbox_sequencedZ=widget(isChecked=True),
         checkbox_withAutofocus=widget(isChecked=True),
         checkbox_withReflectionAutofocus=widget(isChecked=False),
         lineEdit_savingDir=widget(text="/tmp/saving"),
@@ -2992,6 +2993,7 @@ def test_wellplate_configure_controller_from_ui_pushes_every_setting_without_sta
     mpc.set_NZ.assert_called_once_with(3)
     mpc.set_z_stack_order.assert_called_once_with("Z FIRST")
     mpc.set_af_flag.assert_called_once_with(True)
+    mpc.set_use_sequenced_z_stack.assert_called_once_with(True)
     mpc.set_base_path.assert_called_once_with("/tmp/saving")
     mpc.set_widget_type.assert_called_once_with("wellplate")
     mpc.set_xy_mode.assert_called_once_with("Load Coordinates")

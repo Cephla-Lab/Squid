@@ -24,6 +24,7 @@ from control.core.multi_point_utils import (
     OverallProgressUpdate,
     RegionProgressUpdate,
     PlateViewInit,
+    sequenced_z_stack_block_reason,
 )
 from control.core.objective_store import ObjectiveStore
 from control.microcontroller import Microcontroller
@@ -135,6 +136,8 @@ class MultiPointWorker:
         self.do_autofocus = acquisition_parameters.do_autofocus
         self.do_reflection_af = acquisition_parameters.do_reflection_autofocus
         self.use_piezo = acquisition_parameters.use_piezo
+        self.use_sequenced_z_stack = acquisition_parameters.use_sequenced_z_stack
+        self._sequenced_block_reason_logged: Optional[str] = None
         self.apply_channel_offset = acquisition_parameters.apply_channel_offset
         self.region_laser_af_offsets = acquisition_parameters.region_laser_af_offsets
         self.display_resolution_scaling = acquisition_parameters.display_resolution_scaling
@@ -1146,7 +1149,7 @@ class MultiPointWorker:
         Returns the number of z steps taken (fewer than NZ - 1 after an abort).
         """
         n_configs = len(self.selected_configurations)
-        if n_configs == 1 and self._sequenced_stack_eligible():
+        if self._sequenced_stack_eligible():  # single channel only in this order (see the block reason)
             config = self.selected_configurations[0]
             try:
                 self._apply_channel_z_offset(config, af_succeeded)
@@ -1245,19 +1248,25 @@ class MultiPointWorker:
         return z_steps_taken
 
     def _sequenced_stack_eligible(self) -> bool:
-        """The controller runs the whole stack (Z steps + one trigger per level) when the stage offers
-        it, the user opted in, the camera is hardware-triggered, Z is the stage (no piezo), and no
-        per-channel z offset is in play. Anything else takes the software loop."""
-        if not control._def.USE_HARDWARE_SEQUENCED_Z_STACK or self.NZ < 2 or self.use_piezo:
+        """The controller runs the whole stack (Z steps + one trigger per level) when the user selected it
+        and sequenced_z_stack_block_reason() finds nothing in the way; otherwise the software loop runs
+        and the reason is logged once."""
+        if not self.use_sequenced_z_stack:
             return False
-        if self.liveController.trigger_mode != TriggerMode.HARDWARE or self._scan_unit_triggers_camera():
-            return False
-        seq = self.stage.sequenced_z_stack()
-        if seq is None or seq.simulated:
-            return False
-        if self.apply_channel_offset and self.do_reflection_af:
-            return False
-        return True
+        reason = sequenced_z_stack_block_reason(
+            self.stage,
+            nz=self.NZ,
+            use_piezo=self.use_piezo,
+            hardware_trigger=self.liveController.trigger_mode == TriggerMode.HARDWARE,
+            n_channels=len(self.selected_configurations),
+            z_stack_order=self.z_stack_order,
+            channel_offsets_applied=bool(self.apply_channel_offset and self.do_reflection_af),
+            scan_unit_triggers_camera=self._scan_unit_triggers_camera(),
+        )
+        if reason is not None and reason != self._sequenced_block_reason_logged:
+            self._log.warning(f"Fast Z-stack selected but not used ({reason}); stepping Z from the host.")
+            self._sequenced_block_reason_logged = reason
+        return reason is None
 
     def _acquire_sequenced_stack(self, config, config_idx, region_id, current_path, fov, first_pass: bool) -> int:
         """One channel's whole z-stack by the controller: arm N capture infos, start the controller's
