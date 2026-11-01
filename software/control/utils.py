@@ -252,11 +252,11 @@ def write_ini_atomically(config, path: str):
     f = open(tmp_path, "x")
     try:
         with f:
+            if os.path.exists(path):  # before the fsync below, so it covers these too
+                _give_the_access_of(path, tmp_path)
             config.write(f)
             f.flush()
             os.fsync(f.fileno())
-        if os.path.exists(path):
-            shutil.copymode(path, tmp_path)
         os.replace(tmp_path, path)
     except BaseException:
         try:
@@ -264,6 +264,29 @@ def write_ini_atomically(config, path: str):
         except OSError:
             pass
         raise
+    # The new name itself only survives a power cut once its directory is synced (POSIX). The ini is replaced by now,
+    # so a failure here isn't reported as a failed save.
+    if hasattr(os, "O_DIRECTORY"):
+        try:
+            dir_fd = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+
+
+def _give_the_access_of(path: str, new_path: str):
+    """Give new_path the group and permission bits of path, so a shared ini stays as usable to its other users as
+    writing it in place left it. The group goes only where this user may set it (a member of that group); otherwise
+    the file keeps this user's group, as any new file would."""
+    if hasattr(os, "chown"):  # POSIX
+        try:
+            os.chown(new_path, -1, os.stat(path).st_gid)
+        except OSError:
+            pass
+    shutil.copymode(path, new_path)  # after chown, which may clear setuid/setgid bits
 
 
 def serialize_for_yaml(obj):

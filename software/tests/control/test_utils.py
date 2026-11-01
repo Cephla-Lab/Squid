@@ -341,10 +341,44 @@ def test_a_new_ini_gets_the_usual_permissions(tmp_path):
     assert path.stat().st_mode & 0o777 == plain.stat().st_mode & 0o777
 
 
+def test_a_shared_ini_keeps_its_group(tmp_path, monkeypatch):
+    # Written in place, the ini kept its group; the replacement is given it too, before it replaces the ini.
+    path = tmp_path / "machine.ini"
+    path.write_text("[GENERAL]\nold = 1\n")
+    chowned = []
+
+    def chown(new_path, uid, gid):
+        assert _read_general(path) == {"old": "1"}
+        chowned.append((os.path.basename(new_path), uid, gid))
+
+    monkeypatch.setattr(os, "chown", chown, raising=False)  # also on Windows, which has no os.chown
+    control.utils.write_ini_atomically(_ini(new="2"), str(path))
+    [(name, uid, gid)] = chowned
+    assert name.startswith("machine.ini.") and name.endswith(".tmp")
+    assert (uid, gid) == (-1, path.stat().st_gid)
+    assert _read_general(path) == {"new": "2"}
+
+
+def test_an_ini_whose_group_this_user_cannot_set_is_still_saved(tmp_path, monkeypatch):
+    path = tmp_path / "machine.ini"
+    path.write_text("[GENERAL]\nold = 1\n")
+
+    def chown(new_path, uid, gid):
+        raise PermissionError(errno.EPERM, "Operation not permitted", new_path)  # not a member of that group
+
+    monkeypatch.setattr(os, "chown", chown, raising=False)
+    control.utils.write_ini_atomically(_ini(new="2"), str(path))
+    assert _read_general(path) == {"new": "2"}
+    assert os.listdir(tmp_path) == ["machine.ini"]
+
+
 def test_a_read_only_ini_is_not_replaced(tmp_path):
     path = tmp_path / "machine.ini"
     path.write_text("[GENERAL]\nold = 1\n")
     os.chmod(path, 0o444)
+    if os.access(path, os.W_OK):
+        os.chmod(path, 0o644)
+        pytest.skip("running as root, which may write a read-only file")
     try:
         with pytest.raises(PermissionError):
             control.utils.write_ini_atomically(_ini(new="2"), str(path))
