@@ -4,7 +4,7 @@ import struct
 import threading
 import time
 from abc import abstractmethod
-from typing import Callable, Tuple
+from typing import Callable, Dict, Tuple
 
 import numpy as np
 import serial
@@ -158,6 +158,13 @@ class AbstractCephlaMicroSerial(abc.ABC):
         """
         pass
 
+    def reopen_count(self) -> int:
+        """
+        How many times the port has been reopened after a lost connection.  The device may have rebooted (and lost
+        any state set over the link) when this changes.
+        """
+        return 0
+
     @abstractmethod
     def write(self, data: bytearray, reconnect_tries: int = 0) -> int:
         """
@@ -276,6 +283,10 @@ class SimSerial(AbstractCephlaMicroSerial):
         self._illumination_is_on = False  # Legacy global on/off state
 
         self._closed = False
+        self._reopen_count = 0
+
+    def reopen_count(self) -> int:
+        return self._reopen_count
 
     @staticmethod
     def unpack_position(pos_bytes):
@@ -465,6 +476,7 @@ class SimSerial(AbstractCephlaMicroSerial):
                 self._log.warning("Reconnect required, succeeded.")
                 self._update_internal_state(clear_buffer=True)
                 self._closed = False
+                self._reopen_count += 1
 
         return True
 
@@ -494,6 +506,10 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
         self._port = port
         self._baudrate = baudrate
         self._serial = serial.Serial(port, baudrate)
+        self._reopen_count = 0
+
+    def reopen_count(self) -> int:
+        return self._reopen_count
 
     def __del__(self):
         self.close()
@@ -569,6 +585,7 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
                     except OSError:
                         pass
                     self._serial = serial.Serial(port=self._port, baudrate=self._baudrate)
+                    self._reopen_count += 1
                 except (IOError, OSError, SerialException) as se:
                     if i + 1 == attempts:
                         self._log.error(
@@ -643,6 +660,10 @@ class Microcontroller:
         self._cmd_id_mcu = None  # command id of mcu's last received command
         self._cmd_execution_status = None
         self.mcu_cmd_execution_in_progress = False
+
+        # camera channel -> (strobe delay [us], serial reopen count) the micro acknowledged, so that
+        # ensure_strobe_delay_us() can skip re-sending an unchanged delay before every image.
+        self._acked_strobe_delay_us: Dict[int, Tuple[int, int]] = {}
 
         # This is a sentinel/watchdog of sorts.  Every time we receive a valid packet from the micro, we update this.
         # The micro should be sending packets once very ~10 ms, so if we go much longer than that without something
@@ -775,6 +796,7 @@ class Microcontroller:
         self.joystick_listener_events_enabled = enabled
 
     def reset(self):
+        self._acked_strobe_delay_us.clear()
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.RESET
         self.log.debug("reset the microcontroller")
@@ -785,6 +807,7 @@ class Microcontroller:
         self._cmd_id = 0
 
     def initialize_drivers(self):
+        self._acked_strobe_delay_us.clear()
         self._cmd_id = 0
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.INITIALIZE
@@ -1065,6 +1088,7 @@ class Microcontroller:
         self.log.debug("[MCU] Heartbeat stopped")
 
     def send_hardware_trigger(self, control_illumination=False, illumination_on_time_us=0, trigger_output_ch=0):
+        self._restore_strobe_delays_after_reopen()
         illumination_on_time_us = int(illumination_on_time_us)
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SEND_HARDWARE_TRIGGER
@@ -1075,7 +1099,44 @@ class Microcontroller:
         cmd[6] = illumination_on_time_us & 0xFF
         self.send_command(cmd)
 
+    def ensure_strobe_delay_us(self, strobe_delay_us: int, camera_channel: int = 0) -> bool:
+        """
+        Set the strobe delay and wait for the micro to acknowledge it, unless it already acknowledged this delay.
+        Returns True if the command was sent.
+
+        The camera sets the strobe delay before every image, almost always to the same value, and each send waits
+        ~10 ms for the ack.  The remembered value is dropped on reset/initialize and when the serial port is reopened
+        (a rebooted micro starts with a delay of 0), and is only recorded once the ack arrives.
+        """
+        acked = (strobe_delay_us, self._serial.reopen_count())
+        if self._acked_strobe_delay_us.get(camera_channel) == acked:
+            return False
+        self.set_strobe_delay_us(strobe_delay_us, camera_channel)
+        self.wait_till_operation_is_completed()
+        self._acked_strobe_delay_us[camera_channel] = acked
+        return True
+
+    def _restore_strobe_delays_after_reopen(self) -> None:
+        """
+        Before a hardware trigger: a reconnect (the micro may have rebooted, which zeroes its strobe delays) would
+        otherwise happen inside the trigger's own write, since the camera skips unchanged delays.  Reconnect first if
+        the port is down, and resend any delay acknowledged before the latest reopen, so a trigger never uses a lost one.
+        """
+        if not self._acked_strobe_delay_us:
+            return
+        if not self._serial.is_open():
+            self._serial.reconnect(Microcontroller.MAX_RECONNECT_COUNT)
+        reopen_count = self._serial.reopen_count()
+        for camera_channel, (strobe_delay_us, acked_reopen_count) in list(self._acked_strobe_delay_us.items()):
+            if acked_reopen_count != reopen_count:
+                self.log.warning(
+                    f"Serial port was reopened; resending strobe delay {strobe_delay_us} us "
+                    f"(camera channel {camera_channel}) before the trigger"
+                )
+                self.ensure_strobe_delay_us(strobe_delay_us, camera_channel)
+
     def set_strobe_delay_us(self, strobe_delay_us, camera_channel=0):
+        self._acked_strobe_delay_us.pop(camera_channel, None)
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_STROBE_DELAY
         cmd[2] = camera_channel

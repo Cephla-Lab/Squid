@@ -414,3 +414,137 @@ def test_status_packet_with_encoder_reporting_is_decoded():
         assert (state["encoder_pos"], state["deviation"]) == (-12345, -7)
     finally:
         micro.close()
+
+
+def _record_strobe_delay_sends(micro: Microcontroller) -> list:
+    sent = []
+    send_command = micro.send_command
+
+    def recording_send_command(command):
+        if command[1] == control._def.CMD_SET.SET_STROBE_DELAY:
+            sent.append(command)
+        return send_command(command)
+
+    micro.send_command = recording_send_command
+    return sent
+
+
+def test_ensure_strobe_delay_sends_only_when_the_delay_changes():
+    micro = get_test_micro()
+    try:
+        sent = _record_strobe_delay_sends(micro)
+
+        assert micro.ensure_strobe_delay_us(11215)
+        assert not micro.ensure_strobe_delay_us(11215)
+        assert not micro.ensure_strobe_delay_us(11215)
+        assert len(sent) == 1
+
+        assert micro.ensure_strobe_delay_us(10700)
+        assert len(sent) == 2
+        # Another camera channel has its own delay.
+        assert micro.ensure_strobe_delay_us(10700, camera_channel=1)
+        assert len(sent) == 3
+    finally:
+        micro.close()
+
+
+def test_ensure_strobe_delay_resends_after_reset_initialize_or_a_direct_set():
+    micro = get_test_micro()
+    try:
+        sent = _record_strobe_delay_sends(micro)
+        micro.ensure_strobe_delay_us(11215)
+
+        # As at startup: reset, then initialize (waiting on a bare reset never completes, its command id is 0).
+        micro.reset()
+        assert micro._acked_strobe_delay_us == {}
+        micro.initialize_drivers()
+        micro.wait_till_operation_is_completed()
+        assert micro.ensure_strobe_delay_us(11215)
+
+        micro.initialize_drivers()
+        micro.wait_till_operation_is_completed()
+        assert micro.ensure_strobe_delay_us(11215)
+
+        micro.set_strobe_delay_us(5000)
+        micro.wait_till_operation_is_completed()
+        assert micro.ensure_strobe_delay_us(11215)
+        assert len(sent) == 5
+    finally:
+        micro.close()
+
+
+def test_ensure_strobe_delay_resends_after_the_serial_port_is_reopened():
+    # A micro that rebooted comes back with a strobe delay of 0, and we only see that as a reconnect.
+    micro = get_test_micro()
+    try:
+        micro.ensure_strobe_delay_us(11215)
+        micro._serial.close()
+        time.sleep(0.2)
+        micro.move_x_to_usteps(100)  # the write reopens the port
+        micro.wait_till_operation_is_completed()
+        assert micro._serial.reopen_count() >= 1
+
+        assert micro.ensure_strobe_delay_us(11215)
+    finally:
+        micro.close()
+
+
+def test_ensure_strobe_delay_is_not_remembered_when_the_ack_never_comes(monkeypatch):
+    micro = get_test_micro()
+    try:
+
+        def ack_timeout(*args, **kwargs):
+            raise TimeoutError("simulated")
+
+        monkeypatch.setattr(micro, "wait_till_operation_is_completed", ack_timeout)
+        with pytest.raises(TimeoutError):
+            micro.ensure_strobe_delay_us(11215)
+        monkeypatch.undo()
+
+        assert micro.ensure_strobe_delay_us(11215)
+    finally:
+        micro.close()
+
+
+def _record_command_types(micro: Microcontroller) -> list:
+    sent = []
+    send_command = micro.send_command
+
+    def recording_send_command(command):
+        sent.append(command[1])
+        return send_command(command)
+
+    micro.send_command = recording_send_command
+    return sent
+
+
+def test_trigger_after_a_reconnect_is_preceded_by_the_strobe_delay():
+    # The camera skips an unchanged delay, so after a disconnect (the micro may have rebooted with a delay of 0) the
+    # trigger could be the first write; the delay must be restored before it.
+    micro = get_test_micro()
+    try:
+        micro.ensure_strobe_delay_us(11215)
+        sent = _record_command_types(micro)
+        micro._serial.close()
+
+        micro.send_hardware_trigger(True, 250000)
+
+        CMD_SET = control._def.CMD_SET
+        assert sent == [CMD_SET.SET_STROBE_DELAY, CMD_SET.SEND_HARDWARE_TRIGGER]
+        assert not micro.ensure_strobe_delay_us(11215)
+    finally:
+        micro.close()
+
+
+def test_trigger_without_a_reconnect_sends_only_the_trigger():
+    micro = get_test_micro()
+    try:
+        micro.ensure_strobe_delay_us(11215)
+        sent = _record_command_types(micro)
+
+        micro.send_hardware_trigger(True, 250000)
+        micro.send_hardware_trigger(True, 250000)
+
+        assert sent == [control._def.CMD_SET.SEND_HARDWARE_TRIGGER] * 2
+    finally:
+        micro.close()
