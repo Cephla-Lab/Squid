@@ -1608,6 +1608,15 @@ class HighContentScreeningGui(QMainWindow):
         self.multipointController.signal_acquisition_start.connect(self._connect_backpressure_monitor_widget)
         self.multipointController.acquisition_finished.connect(self._disconnect_backpressure_monitor_widget)
 
+        # The controller stops live at the start of every run (GUI, TCP, fluidics) and, only when the INI sets
+        # resume_live_after_acquisition, turns it back on at the end: Live and Snap are locked in between.
+        self.multipointController.signal_acquisition_start.connect(
+            lambda: self.liveControlWidget.set_acquisition_running(True)
+        )
+        self.multipointController.acquisition_finished.connect(
+            lambda: self.liveControlWidget.set_acquisition_running(False)
+        )
+
         # NDViewer push-based API connections
         if self.ndviewerTab is not None:
             # TIFF mode signals

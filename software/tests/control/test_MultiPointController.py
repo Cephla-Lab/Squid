@@ -726,6 +726,53 @@ def test_run_acquisition_continues_when_stop_live_times_out_but_mcu_recovers():
     assert tt.image_count == mpc.get_acquisition_image_count()
 
 
+# --- Live after an acquisition -----------------------------------------------
+# Live is off once an acquisition ends, whether or not it was on before. A machine that
+# wants live back sets resume_live_after_acquisition = True in its INI.
+
+
+def _controller_with_live_on():
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.liveController.start_live()
+    assert mpc.liveController.is_live
+    return scope, tt, mpc
+
+
+def test_live_is_off_after_an_acquisition_that_started_with_live_on():
+    scope, tt, mpc = _controller_with_live_on()
+
+    assert mpc.run_acquisition() is True
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    assert mpc.last_end_reason == "completed"
+    assert not mpc.liveController.is_live
+
+
+def test_live_is_off_after_an_acquisition_that_fails_to_start_with_live_on():
+    scope, tt, mpc = _controller_with_live_on()
+    mpc.set_gen_focus_map_flag(True)
+    mpc.scanCoordinates.get_scan_bounds = lambda: None  # the focus-map early return, after live is stopped
+
+    assert mpc.run_acquisition() is False
+
+    assert mpc.last_end_reason == "failed_to_start"
+    assert not mpc.liveController.is_live
+
+
+def test_live_comes_back_after_an_acquisition_when_the_ini_asks_for_it(monkeypatch):
+    monkeypatch.setattr(control._def, "RESUME_LIVE_AFTER_ACQUISITION", True)
+    scope, tt, mpc = _controller_with_live_on()
+    try:
+        assert mpc.run_acquisition() is True
+        assert tt.finished_event.wait(30)
+        mpc.thread.join(10)
+
+        assert mpc.liveController.is_live
+    finally:
+        mpc.liveController.stop_live()
+
+
 def test_start_blocker_refuses_an_acquisition_before_anything_moves():
     scope = control.microscope.Microscope.build_from_global_config(True)
     try:
