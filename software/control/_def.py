@@ -124,6 +124,9 @@ class Acquisition:
     NX = 1
     NY = 1
     USE_MULTIPROCESSING = True
+    # Hand frames to the saving subprocess through shared memory rather than pickling them through its queue,
+    # which holds the GIL for ~8-27 ms per frame and freezes the acquisition thread. False restores pickling.
+    USE_SHARED_MEMORY_FRAME_HANDOFF = True
 
 
 class PosUpdate:
