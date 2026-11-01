@@ -3287,3 +3287,17 @@ def test_wellplate_hiding_the_z_controls_keeps_the_z_mode():
 
     fake.entry_NZ.setValue.assert_called_once_with(1)
     fake.combobox_z_mode.setCurrentText.assert_not_called()
+
+
+def test_wellplate_restoring_z_parameters_keeps_the_mode_until_one_was_stored():
+    """At start-up nothing has been stored yet: checking Z must not overwrite the mode the dropdown was
+    seeded with (the INI default or the cache) with a stored placeholder."""
+    fake = MagicMock()
+    fake.stored_z_params = dict(control.widgets.WellplateMultiPointWidget.INITIAL_STORED_Z_PARAMS)
+
+    control.widgets.WellplateMultiPointWidget.restore_z_parameters(fake)
+    fake.combobox_z_mode.setCurrentText.assert_not_called()
+
+    fake.stored_z_params["z_mode"] = "From Center"
+    control.widgets.WellplateMultiPointWidget.restore_z_parameters(fake)
+    fake.combobox_z_mode.setCurrentText.assert_called_once_with("From Center")

@@ -6926,7 +6926,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         for label, z_stacking_config in _Z_STACKING_CHOICES:
             self.combobox_z_stack.addItem(label, z_stacking_config)
         self.combobox_z_stack.setCurrentIndex(
-            self.combobox_z_stack.findData(self.multipointController.z_stacking_config)
+            self.combobox_z_stack.findData(_z_stacking_config_offered(self.multipointController.z_stacking_config))
         )
         self.combobox_z_stack.setToolTip(
             "Where the z stack sits relative to the current z: starting at it, or centred on it.\n"
@@ -8221,6 +8221,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
     # Signal to set acquisition running state from any thread (used by TCP server)
     signal_set_acquisition_running = Signal(bool, int, float)  # is_running, nz, delta_z_um
 
+    # Z parameters remembered while the Z controls are hidden; z_mode stays None until one was stored, so checking
+    # Z for the first time keeps the mode the dropdown was seeded with (INI default or cache).
+    INITIAL_STORED_Z_PARAMS = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": None}
+
     def __init__(
         self,
         stage: AbstractStage,
@@ -8274,7 +8278,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.cached_loaded_stamp = None
 
         # Add state tracking for Z parameters
-        self.stored_z_params = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": "From Bottom"}
+        self.stored_z_params = dict(self.INITIAL_STORED_Z_PARAMS)
 
         # Add state tracking for Time parameters
         self.stored_time_params = {"dt": None, "nt": None}
@@ -9373,7 +9377,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_minZ.setValue(self.stored_z_params["z_min"])
         if self.stored_z_params["z_max"] is not None:
             self.entry_maxZ.setValue(self.stored_z_params["z_max"])
-        self.combobox_z_mode.setCurrentText(self.stored_z_params["z_mode"])
+        if self.stored_z_params["z_mode"] is not None:
+            self.combobox_z_mode.setCurrentText(self.stored_z_params["z_mode"])
 
     def hide_z_controls(self):
         """Hide Z-related controls and set single-slice parameters"""
