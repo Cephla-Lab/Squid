@@ -1027,6 +1027,45 @@ class TestZarrSettings:
         assert dialog.zarr_chunk_mode_combo.currentText() == "tiled_512"
         assert not [c for c in dialog._get_changes() if c[0].startswith("Zarr")]
 
+    def test_invalid_config_values_show_the_values_in_effect(self, qtbot, sample_config, temp_config_file, monkeypatch):
+        """Startup rejects these, so they can only come from an edit while Squid runs; the dialog must still open."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.MULTI_PAGE_TIFF)
+        sample_config.set("GENERAL", "file_saving_option", "ZARR_V4")
+        sample_config.set("GENERAL", "zarr_compression", "fsat")
+
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        assert dialog.file_saving_combo.currentText() == "MULTI_PAGE_TIFF"
+        assert dialog.zarr_compression_combo.currentText() == "fast"
+
+    def test_saving_another_setting_writes_these_in_canonical_form(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "zarr_compression", "BEST")
+        sample_config.set("GENERAL", "zarr_chunk_mode", "tiled-512")  # rejected: the value in effect is written
+
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        dialog.saving_path_edit.setText("/some/other/path")
+        assert dialog._apply_settings()
+
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "zarr_compression") == "best"
+        assert saved.get("GENERAL", "zarr_chunk_mode") == "full_frame"
+
+    def test_6d_option_falls_back_to_the_value_in_effect(self, qtbot, sample_config, temp_config_file, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "ZARR_USE_6D_FOV_DIMENSION", True)
+
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        assert dialog.zarr_6d_fov_checkbox.isChecked()
+        assert not [c for c in dialog._get_changes() if c[0] == "Use 6D FOV Dimension"]
+
 
 class TestClickToMoveSettings:
     """Tests for the Click to Move group on the General tab."""

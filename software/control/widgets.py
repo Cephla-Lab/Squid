@@ -1286,7 +1286,7 @@ class PreferencesDialog(QDialog):
 
         # Zarr Compression (only visible when ZARR_V3 is selected)
         self.zarr_compression_combo = QComboBox()
-        self.zarr_compression_combo.addItems(["none", "fast", "balanced", "best"])
+        self.zarr_compression_combo.addItems([e.value for e in ZarrCompression])
         self.zarr_compression_combo.setToolTip(
             "none: No compression, maximum speed (~2x faster than TIFF)\n"
             "fast: blosc-lz4, ~1000 MB/s, ~2x compression (default)\n"
@@ -1498,7 +1498,7 @@ class PreferencesDialog(QDialog):
         zarr_layout = QFormLayout()
 
         self.zarr_chunk_mode_combo = QComboBox()
-        self.zarr_chunk_mode_combo.addItems(["full_frame", "tiled_512", "tiled_256"])
+        self.zarr_chunk_mode_combo.addItems([e.value for e in ZarrChunkMode])
         self.zarr_chunk_mode_combo.setToolTip(
             "full_frame: Each chunk is a full image plane (simplest, default)\n"
             "tiled_512: 512x512 pixel chunks for tiled visualization\n"
@@ -1514,7 +1514,9 @@ class PreferencesDialog(QDialog):
             "all FOVs together. When disabled (default), creates separate 5D\n"
             "OME-NGFF compliant zarr files per FOV."
         )
-        zarr_6d_fov_value = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        zarr_6d_fov_value = self._get_config_bool(
+            "GENERAL", "zarr_use_6d_fov_dimension", control._def.ZARR_USE_6D_FOV_DIMENSION
+        )
         self.zarr_6d_fov_checkbox.setChecked(zarr_6d_fov_value)
         zarr_layout.addRow("Use 6D FOV Dimension:", self.zarr_6d_fov_checkbox)
 
@@ -2013,34 +2015,36 @@ class PreferencesDialog(QDialog):
             return 0.0
         return float(value)
 
-    def _get_file_saving_option(self):
-        """The file saving format currently in effect, as a FileSavingOption name.
+    def _get_enum_setting(self, option, enum_cls, running):
+        """A [GENERAL] enum setting as set in the config file, falling back to the running value.
 
-        The config file usually has no file_saving_option key, so the fallback has to be the value
-        the software is actually running with (control._def, which the dialog itself updates live)
-        rather than a hardcoded format.  Otherwise the combo box displays a format that isn't in
-        use, _get_changes() can't detect a change away from it, and _apply_settings() persists that
-        wrong format into the machine config file.  Startup reads the value ignoring case, so it is
-        normalized here too; "zarr_v3" would otherwise match no item.
+        Startup reads these keys with convert_to_enum, which ignores case, so the dialog does too
+        ("zarr_v3" would otherwise match no item).  With no key, the running value (control._def,
+        which the dialog itself updates live) is the one in use, not a hardcoded default; otherwise
+        the combo box shows a value that isn't in use and _apply_settings() persists it.  A value
+        convert_to_enum rejects would have stopped startup, so it was written while Squid runs:
+        show the running value, so the dialog still opens and saving writes a valid one.
         """
-        value = self._get_config_value("GENERAL", "file_saving_option", control._def.FILE_SAVING_OPTION.name)
-        return FileSavingOption.convert_to_enum(value).name
+        value = self._get_config_value("GENERAL", option, None)
+        if value is None:
+            return running
+        try:
+            return enum_cls.convert_to_enum(value)
+        except ValueError:
+            self._log.warning(f"Config file has {option} = {value!r}, which is not valid; showing {running} instead")
+            return running
+
+    def _get_file_saving_option(self):
+        """The file saving format, as a FileSavingOption name (see _get_enum_setting)."""
+        return self._get_enum_setting("file_saving_option", FileSavingOption, control._def.FILE_SAVING_OPTION).name
 
     def _get_zarr_compression(self):
-        """The Zarr compression preset currently in effect, as its combo box item ("fast", ...).
-
-        Falls back to the running value and ignores case, as _get_file_saving_option() does.
-        """
-        value = self._get_config_value("GENERAL", "zarr_compression", control._def.ZARR_COMPRESSION.value)
-        return control._def.ZarrCompression.convert_to_enum(value).value
+        """The Zarr compression preset, as its combo box item ("fast", ...; see _get_enum_setting)."""
+        return self._get_enum_setting("zarr_compression", ZarrCompression, control._def.ZARR_COMPRESSION).value
 
     def _get_zarr_chunk_mode(self):
-        """The Zarr chunk mode currently in effect, as its combo box item ("full_frame", ...).
-
-        Falls back to the running value and ignores case, as _get_file_saving_option() does.
-        """
-        value = self._get_config_value("GENERAL", "zarr_chunk_mode", control._def.ZARR_CHUNK_MODE.value)
-        return control._def.ZarrChunkMode.convert_to_enum(value).value
+        """The Zarr chunk mode, as its combo box item ("full_frame", ...; see _get_enum_setting)."""
+        return self._get_enum_setting("zarr_chunk_mode", ZarrChunkMode, control._def.ZARR_CHUNK_MODE).value
 
     def _get_tiff_compression_level(self):
         """The TIFF compression level currently in effect, falling back to the running value.
@@ -2387,7 +2391,7 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("Zarr Chunk Mode", old_val, new_val, False))
 
-        old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", control._def.ZARR_USE_6D_FOV_DIMENSION)
         new_val = self.zarr_6d_fov_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Use 6D FOV Dimension", str(old_val), str(new_val), False))
