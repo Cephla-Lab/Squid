@@ -1,5 +1,6 @@
 import configparser
 import gc
+import io
 import os
 import json
 import yaml
@@ -2242,6 +2243,11 @@ class PreferencesDialog(QDialog):
         if not self._send_prior_motion_settings():
             return False
 
+        # The config as it is now, put back if the ini can't be written: left holding the unsaved values, it would
+        # show no change, so Save would close without trying again.
+        config_before = io.StringIO()
+        self.config.write(config_before)
+
         # Ensure all required sections exist
         for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING", "VIEWS"]:
             self._ensure_section(section)
@@ -2409,6 +2415,8 @@ class PreferencesDialog(QDialog):
             self._log.info(f"Configuration saved to {self.config_filepath}")
         except OSError as e:
             self._log.exception("Failed to save configuration")
+            self.config.clear()
+            self.config.read_string(config_before.getvalue())  # so the changes stay pending, ready to retry
             put_back = self._put_back_prior_motion()  # it may have taken its new speed/acceleration already
             QMessageBox.warning(
                 self,

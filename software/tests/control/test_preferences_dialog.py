@@ -469,6 +469,26 @@ class TestSaveAndCloseWorkflow:
         saved_config.read(temp_config_file)
         assert saved_config.get("GENERAL", "file_saving_option") == "MULTI_PAGE_TIFF"
 
+    def test_a_failed_write_keeps_the_change_pending_for_the_next_save(
+        self, qtbot, preferences_dialog, temp_config_file, tmp_path
+    ):
+        """The config is left as it was, so the change is still pending and Save tries again."""
+        select_file_saving_option(preferences_dialog, "MULTI_PAGE_TIFF")
+        preferences_dialog.config_filepath = str(tmp_path)  # a directory: opening it for writing raises OSError
+        preferences_dialog.accept = MagicMock()
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            preferences_dialog._save_and_close()
+            preferences_dialog._save_and_close()  # Save again: tried again, not closed as if nothing changed
+        assert mock_warning.call_count == 2
+        preferences_dialog.accept.assert_not_called()
+        assert preferences_dialog.config.get("GENERAL", "file_saving_option") == "OME_TIFF"
+        preferences_dialog.config_filepath = temp_config_file
+        preferences_dialog._save_and_close()
+        preferences_dialog.accept.assert_called_once()
+        saved_config = ConfigParser()
+        saved_config.read(temp_config_file)
+        assert saved_config.get("GENERAL", "file_saving_option") == "MULTI_PAGE_TIFF"
+
     def test_save_and_close_single_change_requires_restart(self, qtbot, preferences_dialog, temp_config_file):
         """Single change requiring restart should show restart offer dialog."""
         preferences_dialog.binning_spinbox.setValue(4)
@@ -1528,6 +1548,28 @@ class TestPriorStageSettings:
         assert stage.sent == [("SMS", 400), ("SMS", 100)]
         assert stage.controller == {"SMS": 100, "SAS": 100}
         assert control._def.PRIOR_STAGE_MAX_SPEED == 100
+
+    def test_a_failed_config_write_keeps_the_change_pending(
+        self, qtbot, sample_config, temp_config_file, prior_rig, tmp_path
+    ):
+        import control._def
+
+        stage = _FakePriorStage()
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.config_filepath = str(tmp_path)  # a directory: opening it for writing raises OSError
+        dialog.prior_speed_spinbox.setValue(200)
+        with patch.object(QMessageBox, "warning"):
+            dialog._save_and_close()
+            dialog._save_and_close()  # Save again: sent and written again, not closed as if nothing changed
+        assert dialog.result() != QDialog.Accepted
+        assert stage.sent == [("SMS", 200), ("SMS", 100)] * 2
+        dialog.config_filepath = temp_config_file
+        dialog._save_and_close()
+        assert dialog.result() == QDialog.Accepted
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "prior_stage_max_speed") == "200"
+        assert (stage.controller["SMS"], control._def.PRIOR_STAGE_MAX_SPEED) == (200, 200)
 
     def test_an_unanswering_stage_does_not_block_saving_other_settings(
         self, qtbot, sample_config, temp_config_file, prior_rig
