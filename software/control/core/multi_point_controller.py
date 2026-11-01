@@ -1073,6 +1073,19 @@ class MultiPointController:
 
     def _on_acquisition_completed(self):
         self._log.debug("MultiPointController._on_acquisition_completed called")
+        worker = self.multiPointWorker
+        self.last_end_reason = getattr(worker, "end_reason", None) or "completed"
+        self.last_image_count = int(getattr(worker, "image_count", 0) or 0)
+        try:
+            self._restore_after_acquisition()
+        except Exception:
+            # e.g. the stage stopped answering, so the move back to the start position raised. The run is over either
+            # way: report its end, or the GUI stays in "acquiring" with no acquisition left to abort.
+            self._log.exception("Restoring the microscope after the acquisition failed")
+        # emit the acquisition finished signal to enable the UI
+        self.callbacks.signal_acquisition_finished()
+
+    def _restore_after_acquisition(self):
         # Note: Plate views are saved per timepoint in the worker's run_single_time_point method
 
         # restore the previous selected mode
@@ -1106,12 +1119,8 @@ class MultiPointController:
 
             Thread(target=_stop_monitor_background, daemon=True).start()
 
-        # emit the acquisition finished signal to enable the UI
         self._log.info(f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}")
         utils.create_done_file(os.path.join(self.base_path, self.experiment_ID))
-        worker = self.multiPointWorker
-        self.last_end_reason = getattr(worker, "end_reason", None) or "completed"
-        self.last_image_count = int(getattr(worker, "image_count", 0) or 0)
 
         if self.run_acquisition_current_fov:
             self.run_acquisition_current_fov = False
@@ -1128,8 +1137,6 @@ class MultiPointController:
 
         ending_pos = self.stage.get_pos()
         self.callbacks.signal_current_fov(ending_pos.x_mm, ending_pos.y_mm)
-
-        self.callbacks.signal_acquisition_finished()
 
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True

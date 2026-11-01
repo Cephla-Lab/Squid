@@ -737,3 +737,29 @@ def test_start_blocker_refuses_an_acquisition_before_anything_moves():
         assert scope.stage.get_pos() == start
     finally:
         scope.close()
+
+
+def test_finish_is_reported_when_the_stage_stops_answering_mid_run():
+    """A dead stage controller fails the worker's next move and then the move back to the start position. The run
+    must still report its end, or the GUI stays in "acquiring" with no acquisition left to abort."""
+    import squid.exceptions
+
+    scope, tt, mpc = _controller_with_tracker()
+    real_move_x_to = scope.stage.move_x_to
+    calls = []
+
+    def move_x_to(x_mm, *args, **kwargs):
+        calls.append(x_mm)
+        if len(calls) > 2:
+            raise squid.exceptions.SquidTimeout("stage stopped answering")
+        return real_move_x_to(x_mm, *args, **kwargs)
+
+    with patch.object(scope.stage, "move_x_to", side_effect=move_x_to):
+        mpc.run_acquisition()
+        assert tt.finished_event.wait(30)
+        mpc.thread.join(10)
+
+    assert len(calls) > 3, "the move back to the start position was not attempted"
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "error"
+    assert not mpc.acquisition_in_progress()
