@@ -706,3 +706,51 @@ class TestPiezoZRange:
 
         assert data.piezo_z_range_um is None
         assert data.z_range_mm == (3.2, 3.204)
+
+
+class TestLaserAfPerStack:
+    """autofocus.laser_af_per_stack: off unless asked for, and only with laser AF in Z First."""
+
+    @pytest.mark.parametrize("value", [None, False, "false"])  # missing / null / off
+    def test_laser_af_per_stack_is_off_unless_asked_for(self, value):
+        from control.acquisition_yaml_loader import parse_laser_af_per_stack
+
+        assert parse_laser_af_per_stack(value, laser_af=True, z_stack_order="Z FIRST") is False
+
+    @pytest.mark.parametrize("value", [True, "true", "yes", 1])
+    def test_laser_af_per_stack_on_needs_laser_af_and_z_first(self, value):
+        from control.acquisition_yaml_loader import parse_laser_af_per_stack
+
+        assert parse_laser_af_per_stack(value, laser_af=True, z_stack_order="Z FIRST") is True
+
+    def test_laser_af_per_stack_without_laser_af_is_rejected(self):
+        from control.acquisition_yaml_loader import parse_laser_af_per_stack
+
+        with pytest.raises(ValueError, match="laser_af_per_stack"):
+            parse_laser_af_per_stack(True, laser_af=False, z_stack_order="Z FIRST")
+
+    def test_laser_af_per_stack_with_channel_first_is_rejected(self):
+        from control.acquisition_yaml_loader import parse_laser_af_per_stack
+
+        with pytest.raises(ValueError, match="laser_af_per_stack"):
+            parse_laser_af_per_stack(True, laser_af=True, z_stack_order="CHANNEL FIRST")
+
+    def test_laser_af_per_stack_rejects_a_value_that_is_not_a_flag(self):
+        from control.acquisition_yaml_loader import parse_laser_af_per_stack
+
+        with pytest.raises(ValueError, match="laser_af_per_stack"):
+            parse_laser_af_per_stack("sometimes", laser_af=True, z_stack_order="Z FIRST")
+
+    def test_a_yaml_with_laser_af_per_stack_and_one_plane_still_loads(self):
+        # Nz 1 makes the option a no-op, not a mistake (Review Focus 1).
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        data = parse_acquisition_dict(
+            {"z_stack": {"nz": 1, "order": "Z FIRST"}, "autofocus": {"laser_af": True, "laser_af_per_stack": True}}
+        )
+        assert data.laser_af_per_stack is True and data.nz == 1
+
+    def test_a_yaml_without_the_key_loads_off(self):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        assert parse_acquisition_dict({"z_stack": {"nz": 3}}).laser_af_per_stack is False

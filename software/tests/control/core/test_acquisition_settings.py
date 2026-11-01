@@ -209,3 +209,40 @@ def test_export_then_apply_round_trips_a_piezo_range():
     assert mpc2.use_piezo is True
     assert tuple(mpc2.piezo_z_range_um) == (20.0, 26.0)
     assert mpc2.z_range == [1.0, 1.0]
+
+
+def test_export_then_apply_round_trips_laser_af_per_stack():
+    scope, mpc = _controller()
+    mpc.set_selected_configurations(_channel_names(scope, mpc))
+    mpc.set_NZ(3)
+    mpc.set_deltaZ(1.0)
+    mpc.set_reflection_af_flag(True)
+    mpc.set_z_stack_order("Z FIRST")
+    mpc.set_laser_af_per_stack(True)
+    mpc.set_widget_type("wellplate")
+    mpc.set_xy_mode("Load Coordinates")
+    mpc.scanCoordinates.add_region_from_fovs("A1", _some_fovs(mpc))
+
+    settings, coordinates = export_acquisition_settings(mpc, mpc.scanCoordinates, scope.objective_store, scope.camera)
+    assert settings["autofocus"]["laser_af_per_stack"] is True
+
+    data = acquisition_data_from_blocks(settings, coordinates)
+    assert data.laser_af_per_stack is True
+
+    scope2, mpc2 = _controller()
+    apply_acquisition_settings(mpc2, mpc2.scanCoordinates, scope2, data)
+    assert mpc2.laser_af_per_stack is True
+
+
+def test_blocks_with_laser_af_per_stack_but_channel_first_are_rejected():
+    scope, mpc = _controller()
+    mpc.set_selected_configurations(_channel_names(scope, mpc))
+    mpc.set_widget_type("wellplate")
+    mpc.set_xy_mode("Load Coordinates")
+    mpc.scanCoordinates.add_region_from_fovs("A1", _some_fovs(mpc))
+    settings, coordinates = export_acquisition_settings(mpc, mpc.scanCoordinates, scope.objective_store, scope.camera)
+    settings["autofocus"] = {"contrast_af": False, "laser_af": True, "laser_af_per_stack": True}
+    settings["z_stack"]["order"] = "CHANNEL FIRST"
+
+    with pytest.raises(ValueError, match="laser_af_per_stack"):
+        acquisition_data_from_blocks(settings, coordinates)

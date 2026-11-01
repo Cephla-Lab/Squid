@@ -1163,6 +1163,54 @@ class _ZRangeMixin:
             self.multipointController.set_piezo_z_range_um(None)
 
 
+class _LaserAfPerStackMixin:
+    """The Z First "AF per stack" checkbox: laser AF before each later channel's stack.
+
+    Host widgets have ``combobox_z_order``, ``checkbox_withReflectionAutofocus`` and ``multipointController``
+    with ``set_laser_af_per_stack(bool)``; a tab whose z row can be hidden overrides ``_z_row_shown``.
+    """
+
+    _LASER_AF_PER_STACK_TOOLTIP = (
+        "Z First only: run laser AF before each channel's stack. The first channel uses the per-FOV laser AF."
+    )
+
+    def _create_laser_af_per_stack_checkbox(self):
+        self.checkbox_laserAfPerStack = QCheckBox("AF per stack")
+        self.checkbox_laserAfPerStack.setChecked(False)
+        self.checkbox_laserAfPerStack.setToolTip(self._LASER_AF_PER_STACK_TOOLTIP)
+        self.checkbox_laserAfPerStack.toggled.connect(lambda _checked: self._update_laser_af_per_stack_state())
+
+    def _z_row_shown(self) -> bool:
+        return True
+
+    def _laser_af_per_stack_shown(self) -> bool:
+        # Like checkbox_applyChannelOffset: the checkbox sits in a layout only when laser AF is supported, and a
+        # shown parentless widget would become a top-level window, so visibility needs the same flag.
+        return bool(
+            control._def.ENABLE_Z_STACK_ORDER_SELECTION
+            and self.combobox_z_order.currentData() == "Z FIRST"
+            and SUPPORT_LASER_AUTOFOCUS
+            and self._z_row_shown()
+        )
+
+    def laser_af_per_stack_to_start(self) -> bool:
+        return _laser_af_per_stack_to_start(
+            control._def.ENABLE_Z_STACK_ORDER_SELECTION,
+            self.combobox_z_order.currentData(),
+            SUPPORT_LASER_AUTOFOCUS,
+            self.checkbox_withReflectionAutofocus.isChecked(),
+            self._z_row_shown(),
+            self.checkbox_laserAfPerStack.isChecked(),
+        )
+
+    def _update_laser_af_per_stack_state(self):
+        """Re-apply the rule to the checkbox (shown / enabled) and push the resulting value to the controller."""
+        shown = self._laser_af_per_stack_shown()
+        self.checkbox_laserAfPerStack.setVisible(shown)
+        self.checkbox_laserAfPerStack.setEnabled(shown and self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_laser_af_per_stack(self.laser_af_per_stack_to_start())
+
+
 class _ApplyChannelOffsetMixin:
     """Mixin providing the laser-AF per-channel Z-offset checkbox + handlers.
 
@@ -1267,6 +1315,23 @@ class PreferencesDialog(QDialog):
 
     signal_config_changed = Signal()
 
+    # What the File Saving Format combo box shows; the config file keeps the FileSavingOption names.
+    FILE_SAVING_LABELS = {
+        FileSavingOption.INDIVIDUAL_IMAGES: "Individual images",
+        FileSavingOption.MULTI_PAGE_TIFF: "Multi-page TIFF",
+        FileSavingOption.OME_TIFF: "OME-TIFF",
+        FileSavingOption.ZARR_V3: "OME-Zarr 0.5",
+    }
+    OME_ZARR_TOOLTIP = (
+        "OME-Zarr 0.5 (Zarr v3).\n"
+        "Tools that only read OME-Zarr 0.4 / Zarr v2 cannot open it;\n"
+        "use a reader with Zarr v3 support, such as ngff-zarr, iohub or ome-zarr-py."
+    )
+    OME_ZARR_6D_NOTE = (
+        "\n\nUse 6D FOV Dimension is on (Advanced > OME-Zarr Options):\n"
+        "non-HCS acquisitions are saved as one 6D Zarr per region, which is not OME-Zarr."
+    )
+
     def __init__(self, config, config_filepath, parent=None, on_restart=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -1293,6 +1358,11 @@ class PreferencesDialog(QDialog):
         self._create_advanced_tab()
         self._create_development_tab()
 
+        # The format tooltip depends on the 6D option in the Advanced tab, so it is set up once all tabs exist
+        self._update_file_saving_tooltip()
+        self.file_saving_combo.currentIndexChanged.connect(self._update_file_saving_tooltip)
+        self.zarr_6d_fov_checkbox.toggled.connect(self._update_file_saving_tooltip)
+
         # Buttons
         button_layout = QHBoxLayout()
         self.save_button = QPushButton("Save")
@@ -1310,11 +1380,14 @@ class PreferencesDialog(QDialog):
         layout = QFormLayout(tab)
         layout.setSpacing(10)
 
-        # File Saving Format
+        # File Saving Format. Each item's data is the FileSavingOption name stored in the config file,
+        # so an item can show a friendlier label without changing what existing configs contain.
         self.file_saving_combo = QComboBox()
-        self.file_saving_combo.addItems([e.name for e in FileSavingOption])
-        current_value = self._get_file_saving_option()
-        self.file_saving_combo.setCurrentText(current_value)
+        for option in FileSavingOption:
+            self.file_saving_combo.addItem(self.FILE_SAVING_LABELS[option], option.name)
+        current_index = self.file_saving_combo.findData(self._get_file_saving_option())
+        if current_index >= 0:
+            self.file_saving_combo.setCurrentIndex(current_index)
         layout.addRow("File Saving Format:", self.file_saving_combo)
 
         # TIFF Compression (only visible for the TIFF formats that support it)
@@ -1333,21 +1406,20 @@ class PreferencesDialog(QDialog):
 
         # Zarr Compression (only visible when ZARR_V3 is selected)
         self.zarr_compression_combo = QComboBox()
-        self.zarr_compression_combo.addItems(["none", "fast", "balanced", "best"])
+        self.zarr_compression_combo.addItems([e.value for e in ZarrCompression])
         self.zarr_compression_combo.setToolTip(
             "none: No compression, maximum speed (~2x faster than TIFF)\n"
             "fast: blosc-lz4, ~1000 MB/s, ~2x compression (default)\n"
             "balanced: blosc-zstd level 3, ~500 MB/s, ~3-4x compression\n"
             "best: blosc-zstd level 9, slower but best compression"
         )
-        zarr_compression_value = self._get_config_value("GENERAL", "zarr_compression", "fast")
-        self.zarr_compression_combo.setCurrentText(zarr_compression_value)
+        self.zarr_compression_combo.setCurrentText(self._get_zarr_compression())
         self.zarr_compression_label = QLabel("Zarr Compression:")
         layout.addRow(self.zarr_compression_label, self.zarr_compression_combo)
 
         # Show/hide the per-format options based on file saving format selection
         self._update_file_format_options_visibility()
-        self.file_saving_combo.currentTextChanged.connect(self._update_file_format_options_visibility)
+        self.file_saving_combo.currentIndexChanged.connect(self._update_file_format_options_visibility)
 
         # Default Saving Path
         path_widget = QWidget()
@@ -1552,31 +1624,32 @@ class PreferencesDialog(QDialog):
         stage_group.content.addLayout(stage_layout)
         layout.addWidget(stage_group)
 
-        # Zarr v3 Options section
-        zarr_group = CollapsibleGroupBox("Zarr v3 Options", collapsed=True)
+        # OME-Zarr Options section
+        zarr_group = CollapsibleGroupBox("OME-Zarr Options", collapsed=True)
         zarr_layout = QFormLayout()
 
         self.zarr_chunk_mode_combo = QComboBox()
-        self.zarr_chunk_mode_combo.addItems(["full_frame", "tiled_512", "tiled_256"])
+        self.zarr_chunk_mode_combo.addItems([e.value for e in ZarrChunkMode])
         self.zarr_chunk_mode_combo.setToolTip(
             "full_frame: Each chunk is a full image plane (simplest, default)\n"
             "tiled_512: 512x512 pixel chunks for tiled visualization\n"
             "tiled_256: 256x256 pixel chunks for fine-grained streaming"
         )
-        zarr_chunk_mode_value = self._get_config_value("GENERAL", "zarr_chunk_mode", "full_frame")
-        self.zarr_chunk_mode_combo.setCurrentText(zarr_chunk_mode_value)
+        self.zarr_chunk_mode_combo.setCurrentText(self._get_zarr_chunk_mode())
         zarr_layout.addRow("Chunk Mode:", self.zarr_chunk_mode_combo)
 
         self.zarr_6d_fov_checkbox = QCheckBox()
         self.zarr_6d_fov_checkbox.setToolTip(
             "When enabled, non-HCS acquisitions use a single 6D zarr per region\n"
-            "with shape (FOV, T, C, Z, Y, X). This is non-standard but groups\n"
-            "all FOVs together. When disabled (default), creates separate 5D\n"
-            "OME-NGFF compliant zarr files per FOV."
+            "with shape (FOV, T, C, Z, Y, X). This groups all FOVs together but\n"
+            "is not OME-Zarr: OME-Zarr readers cannot open it. When disabled\n"
+            "(default), creates a separate 5D OME-Zarr image per FOV."
         )
-        zarr_6d_fov_value = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        zarr_6d_fov_value = self._get_config_bool(
+            "GENERAL", "zarr_use_6d_fov_dimension", control._def.ZARR_USE_6D_FOV_DIMENSION
+        )
         self.zarr_6d_fov_checkbox.setChecked(zarr_6d_fov_value)
-        zarr_layout.addRow("Use 6D FOV Dimension:", self.zarr_6d_fov_checkbox)
+        zarr_layout.addRow("Use 6D FOV Dimension (not OME-Zarr):", self.zarr_6d_fov_checkbox)
 
         zarr_group.content.addLayout(zarr_layout)
         layout.addWidget(zarr_group)
@@ -1610,11 +1683,8 @@ class PreferencesDialog(QDialog):
         hw_group = CollapsibleGroupBox("Hardware Configuration", collapsed=True)
         hw_layout = QFormLayout()
 
-        self.z_motor_combo = QComboBox()
-        self.z_motor_combo.addItems(["STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"])
-        self.z_motor_combo.setCurrentText(self._get_config_value("GENERAL", "z_motor_config", "STEPPER"))
-        hw_layout.addRow("Z Motor Config *:", self.z_motor_combo)
-
+        # No Z motor choice here: z_motor_config names the Z hardware the machine has, so it is set in the
+        # config file, and saving Preferences leaves it as written.
         self.spinning_disk_checkbox = QCheckBox()
         self.spinning_disk_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False))
         hw_layout.addRow("Enable Spinning Disk *:", self.spinning_disk_checkbox)
@@ -2073,16 +2143,41 @@ class PreferencesDialog(QDialog):
             return 0.0
         return float(value)
 
-    def _get_file_saving_option(self):
-        """The file saving format currently in effect, as a FileSavingOption name.
+    def _get_enum_setting(self, option, enum_cls, running):
+        """A [GENERAL] enum setting as set in the config file, falling back to the running value.
 
-        The config file usually has no file_saving_option key, so the fallback has to be the value
-        the software is actually running with (control._def, which the dialog itself updates live)
-        rather than a hardcoded format.  Otherwise the combo box displays a format that isn't in
-        use, _get_changes() can't detect a change away from it, and _apply_settings() persists that
-        wrong format into the machine config file.
+        Startup reads these keys with convert_to_enum, which ignores case, so the dialog does too
+        ("zarr_v3" would otherwise match no item).  With no key, the running value (control._def,
+        which the dialog itself updates live) is the one in use, not a hardcoded default; otherwise
+        the combo box shows a value that isn't in use and _apply_settings() persists it.  A value
+        convert_to_enum rejects would have stopped startup, so it was written while Squid runs:
+        show the running value, so the dialog still opens and saving writes a valid one.
         """
-        return self._get_config_value("GENERAL", "file_saving_option", control._def.FILE_SAVING_OPTION.name)
+        value = self._get_config_value("GENERAL", option, None)
+        if value is None:
+            return running
+        try:
+            return enum_cls.convert_to_enum(value)
+        except ValueError:
+            self._log.warning(f"Config file has {option} = {value!r}, which is not valid; showing {running} instead")
+            return running
+
+    def _get_file_saving_option(self):
+        """The file saving format, as a FileSavingOption name (see _get_enum_setting)."""
+        return self._get_enum_setting("file_saving_option", FileSavingOption, control._def.FILE_SAVING_OPTION).name
+
+    def _get_zarr_compression(self):
+        """The Zarr compression preset, as its combo box item ("fast", ...; see _get_enum_setting)."""
+        return self._get_enum_setting("zarr_compression", ZarrCompression, control._def.ZARR_COMPRESSION).value
+
+    def _get_zarr_chunk_mode(self):
+        """The Zarr chunk mode, as its combo box item ("full_frame", ...; see _get_enum_setting)."""
+        return self._get_enum_setting("zarr_chunk_mode", ZarrChunkMode, control._def.ZARR_CHUNK_MODE).value
+
+    def _file_saving_label(self, option_name):
+        """The label the format combo box shows for a FileSavingOption name (the name itself if unknown)."""
+        index = self.file_saving_combo.findData(option_name)
+        return self.file_saving_combo.itemText(index) if index >= 0 else option_name
 
     def _get_tiff_compression_level(self):
         """The TIFF compression level currently in effect, falling back to the running value.
@@ -2117,7 +2212,7 @@ class PreferencesDialog(QDialog):
 
     def _update_file_format_options_visibility(self):
         """Show/hide format specific options based on file saving format."""
-        current_format = self.file_saving_combo.currentText()
+        current_format = self.file_saving_combo.currentData()
 
         is_zarr = current_format == "ZARR_V3"
         self.zarr_compression_label.setVisible(is_zarr)
@@ -2127,6 +2222,18 @@ class PreferencesDialog(QDialog):
         supports_tiff_compression = current_format in ("INDIVIDUAL_IMAGES", "MULTI_PAGE_TIFF")
         self.tiff_compression_label.setVisible(supports_tiff_compression)
         self.tiff_compression_spinbox.setVisible(supports_tiff_compression)
+
+    def _update_file_saving_tooltip(self):
+        """Describe OME-Zarr on its combo box item and, while it is selected, on the combo box itself.
+
+        With the 6D FOV option on, non-HCS acquisitions are not OME-Zarr, so the tooltip says so.
+        """
+        tooltip = self.OME_ZARR_TOOLTIP
+        if self.zarr_6d_fov_checkbox.isChecked():
+            tooltip += self.OME_ZARR_6D_NOTE
+        zarr_index = self.file_saving_combo.findData(FileSavingOption.ZARR_V3.name)
+        self.file_saving_combo.setItemData(zarr_index, tooltip, Qt.ToolTipRole)
+        self.file_saving_combo.setToolTip(tooltip if self.file_saving_combo.currentIndex() == zarr_index else "")
 
     def _ensure_section(self, section):
         """Ensure a config section exists, creating it if necessary."""
@@ -2140,7 +2247,7 @@ class PreferencesDialog(QDialog):
             self._ensure_section(section)
 
         # General settings
-        self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
+        self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentData())
         self.config.set("GENERAL", "tiff_compression_level", str(self.tiff_compression_spinbox.value()))
         self.config.set("GENERAL", "zarr_compression", self.zarr_compression_combo.currentText())
         self.config.set("GENERAL", "zarr_chunk_mode", self.zarr_chunk_mode_combo.currentText())
@@ -2198,7 +2305,6 @@ class PreferencesDialog(QDialog):
         self.config.set("AF", "crop_height", str(self.af_crop_height.value()))
 
         # Advanced - Hardware
-        self.config.set("GENERAL", "z_motor_config", self.z_motor_combo.currentText())
         self.config.set(
             "GENERAL",
             "enable_spinning_disk_confocal",
@@ -2326,7 +2432,7 @@ class PreferencesDialog(QDialog):
         """Apply settings that can take effect without restart."""
         # File saving option
         control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.convert_to_enum(
-            self.file_saving_combo.currentText()
+            self.file_saving_combo.currentData()
         )
 
         # TIFF compression level (only applicable when saving individual or multi page TIFFs)
@@ -2414,9 +2520,11 @@ class PreferencesDialog(QDialog):
 
         # General settings (live update)
         old_val = self._get_file_saving_option()
-        new_val = self.file_saving_combo.currentText()
+        new_val = self.file_saving_combo.currentData()
         if old_val != new_val:
-            changes.append(("File Saving Format", old_val, new_val, False))
+            changes.append(
+                ("File Saving Format", self._file_saving_label(old_val), self._file_saving_label(new_val), False)
+            )
 
         # A setting missing here is silently not saved: _save_and_close() returns before
         # _apply_settings() when it is the only thing the user changed.
@@ -2425,10 +2533,20 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("TIFF Compression Level", str(old_val), str(new_val), False))
 
-        old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        old_val = self._get_zarr_compression()
+        new_val = self.zarr_compression_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Zarr Compression", old_val, new_val, False))
+
+        old_val = self._get_zarr_chunk_mode()
+        new_val = self.zarr_chunk_mode_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Zarr Chunk Mode", old_val, new_val, False))
+
+        old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", control._def.ZARR_USE_6D_FOV_DIMENSION)
         new_val = self.zarr_6d_fov_checkbox.isChecked()
         if old_val != new_val:
-            changes.append(("Use 6D FOV Dimension", str(old_val), str(new_val), False))
+            changes.append(("Use 6D FOV Dimension (not OME-Zarr)", str(old_val), str(new_val), False))
 
         old_val = self._get_config_value("GENERAL", "default_saving_path", str(Path.home() / "Downloads"))
         new_val = self.saving_path_edit.text()
@@ -2561,11 +2679,6 @@ class PreferencesDialog(QDialog):
             changes.append(("AF Crop Height", f"{old_val} px", f"{new_val} px", False))
 
         # Advanced - Hardware (require restart)
-        old_val = self._get_config_value("GENERAL", "z_motor_config", "STEPPER")
-        new_val = self.z_motor_combo.currentText()
-        if old_val != new_val:
-            changes.append(("Z Motor Config", old_val, new_val, True))
-
         old_val = self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False)
         new_val = self.spinning_disk_checkbox.isChecked()
         if old_val != new_val:
@@ -3143,6 +3256,29 @@ def _z_stacking_config_offered(z_stacking_config: str) -> str:
 def _z_mode_for_z_stacking_config(z_stacking_config: str) -> str:
     """The Wellplate Z mode to show for a loaded acquisition's z-stacking config."""
     return _Z_MODE_FOR_Z_STACKING_CONFIG[_z_stacking_config_offered(z_stacking_config)]
+
+
+def _laser_af_per_stack_to_start(
+    choice_enabled: bool,
+    z_stack_order: str,
+    laser_af_supported: bool,
+    laser_af_checked: bool,
+    z_row_shown: bool,
+    checkbox_checked: bool,
+) -> bool:
+    """Whether an acquisition started from a tab runs laser AF before each later channel's stack.
+
+    One rule for showing/enabling the "AF per stack" checkbox AND for the start path, so a hidden or disabled
+    checkbox never takes effect and the exported YAML never says true for a run whose GUI showed no checkbox.
+    """
+    return bool(
+        choice_enabled
+        and z_stack_order == "Z FIRST"
+        and laser_af_supported
+        and laser_af_checked
+        and z_row_shown
+        and checkbox_checked
+    )
 
 
 def _z_stack_order_to_start(combobox) -> str:
@@ -6743,7 +6879,7 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -6949,6 +7085,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
         self._create_apply_channel_offset_checkbox()
+        self._create_laser_af_per_stack_checkbox()
 
         self.checkbox_genAFMap = QCheckBox("Generate Focus Map")
         self.checkbox_genAFMap.setChecked(False)
@@ -7103,6 +7240,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         if SUPPORT_LASER_AUTOFOCUS:
             grid_af.addWidget(self.checkbox_withReflectionAutofocus)
             grid_af.addWidget(self.checkbox_applyChannelOffset)
+            grid_af.addWidget(self.checkbox_laserAfPerStack)
         # grid_af.addWidget(self.checkbox_genAFMap)  # we are not using auto-focus map for now
         grid_af.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
@@ -7181,6 +7319,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
+        self.checkbox_withReflectionAutofocus.toggled.connect(lambda _c: self._update_laser_af_per_stack_state())
+        self.combobox_z_order.currentIndexChanged.connect(lambda _i: self._update_laser_af_per_stack_state())
+        self._update_laser_af_per_stack_state()
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
@@ -7228,6 +7369,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         """Re-apply the opt-in Z-stack order choice (ENABLE_Z_STACK_ORDER_SELECTION), e.g. after Preferences
         changed it at runtime."""
         self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+        self._update_laser_af_per_stack_state()
 
     def update_z(self):
         z_mm = self.stage.get_pos().z_mm
@@ -7408,6 +7550,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
         self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_laser_af_per_stack(self.laser_af_per_stack_to_start())
         self.multipointController.set_base_path(self.lineEdit_savingDir.text())
         self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
         self.multipointController.set_widget_type("flexible")
@@ -7931,6 +8074,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.entry_deltaZ.setEnabled(enabled)
         self.entry_NZ.setEnabled(enabled)
         self.combobox_z_order.setEnabled(enabled)
+        if enabled:
+            self._update_laser_af_per_stack_state()  # enabled only under its rule, not blanket
+        else:
+            self.checkbox_laserAfPerStack.setEnabled(False)
         self.entry_dt.setEnabled(enabled)
         self.entry_Nt.setEnabled(enabled)
         if not self.use_overlap:
@@ -8051,6 +8198,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Autofocus
             self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
             self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+            self.checkbox_laserAfPerStack.setChecked(yaml_data.laser_af_per_stack)
 
             # Load positions if present
             if yaml_data.flexible_positions:
@@ -8060,6 +8208,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Unblock all signals
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+            self._update_laser_af_per_stack_state()  # the loaded checkbox state, under the rule
 
             # Update FOV positions to reflect new NX, NY, delta values
             self.update_fov_positions()
@@ -8139,7 +8288,9 @@ def _warn_if_coordinates_stale(widget, stamp):
         QMessageBox.warning(widget, "Coordinates may be stale", stale)
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _ZRangeMixin, QFrame):
+class WellplateMultiPointWidget(
+    AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, _ZRangeMixin, QFrame
+):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
@@ -8377,6 +8528,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
         self._create_apply_channel_offset_checkbox()
+        self._create_laser_af_per_stack_checkbox()
 
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
         self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
@@ -8616,6 +8768,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         if SUPPORT_LASER_AUTOFOCUS:
             options_layout.addWidget(self.checkbox_withReflectionAutofocus)
             options_layout.addWidget(self.checkbox_applyChannelOffset)
+            options_layout.addWidget(self.checkbox_laserAfPerStack)
         # options_layout.addWidget(self.checkbox_genAFMap)  # We are not using AF map now
         options_layout.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
@@ -8691,6 +8844,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
+        self.checkbox_withReflectionAutofocus.toggled.connect(lambda _c: self._update_laser_af_per_stack_state())
+        self.combobox_z_order.currentIndexChanged.connect(lambda _i: self._update_laser_af_per_stack_state())
+        self._update_laser_af_per_stack_state()
         self.checkbox_genAFMap.toggled.connect(self.multipointController.set_gen_focus_map_flag)
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_useFocusMap.toggled.connect(self.multipointController.set_manual_focus_map_flag)
@@ -8740,6 +8896,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # cache), so it is intentionally NOT wired to this settings cache.
         self.checkbox_withAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
+        self.checkbox_laserAfPerStack.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
 
     def enable_manual_ROI(self):
@@ -8788,6 +8945,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 "z_order": self.combobox_z_order.currentData(),
                 "contrast_af": self.checkbox_withAutofocus.isChecked(),
                 "laser_af": self.checkbox_withReflectionAutofocus.isChecked(),
+                "laser_af_per_stack": self.checkbox_laserAfPerStack.isChecked(),
             }
 
             with open("cache/multipoint_widget_config.yaml", "w") as f:
@@ -8861,6 +9019,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Restore autofocus settings
             self.checkbox_withAutofocus.setChecked(settings.get("contrast_af", False))
             self.checkbox_withReflectionAutofocus.setChecked(settings.get("laser_af", False))
+            self.checkbox_laserAfPerStack.setChecked(settings.get("laser_af_per_stack", False))
 
             # Unblock signals
             self.checkbox_xy.blockSignals(False)
@@ -8877,6 +9036,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.list_configurations.blockSignals(False)
             self.checkbox_withAutofocus.blockSignals(False)
             self.checkbox_withReflectionAutofocus.blockSignals(False)
+            # The restored Z / Z First / Laser AF state came in with signals blocked: re-apply the rule for the
+            # "AF per stack" checkbox (shown / enabled / pushed) from the loaded values.
+            self._update_laser_af_per_stack_state()
 
             # Update UI state based on loaded settings
             self.update_scan_control_ui()
@@ -9195,6 +9357,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         # Enable/disable the Z mode dropdown
         self.combobox_z_mode.setEnabled(checked)
+        self._update_laser_af_per_stack_state()  # the "AF per stack" checkbox goes with the z row
 
         if checked:
             # Z Stack enabled - restore stored parameters and show controls
@@ -9332,10 +9495,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # The Z mode is left alone: with Nz = 1 it does not matter, and resetting it here would drop the INI
         # default or the user's choice every time Z is unchecked (and at start-up, when Z starts unchecked).
 
+    def _z_row_shown(self) -> bool:
+        return self.checkbox_z.isChecked()
+
     def update_z_order_dropdown_visibility(self):
         """Re-apply the opt-in Z-stack order choice (ENABLE_Z_STACK_ORDER_SELECTION), e.g. after Preferences
         changed it at runtime: shown with the rest of the z row (Z checked) and only when the choice is on."""
         self.combobox_z_order.setVisible(self.checkbox_z.isChecked() and control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+        self._update_laser_af_per_stack_state()
 
     def show_z_controls(self, visible):
         """Show Z-related controls"""
@@ -9854,6 +10021,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
         self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_laser_af_per_stack(self.laser_af_per_stack_to_start())
         self.multipointController.set_base_path(self.lineEdit_savingDir.text())
         self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
         self.multipointController.set_widget_type("wellplate")
@@ -9994,6 +10162,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         # Restore scan controls visibility based on XY checkbox state
         if enabled:
+            # Every child was just enabled: the "AF per stack" box is enabled only under its rule (CodeRabbit).
+            self._update_laser_af_per_stack_state()
             self.update_scan_control_ui()
 
             # Restore mode dropdown states based on their respective checkboxes
@@ -10281,6 +10451,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Autofocus
             self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
             self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+            self.checkbox_laserAfPerStack.setChecked(yaml_data.laser_af_per_stack)
 
             # XY mode - set to Select Wells for wellplate YAML
             if yaml_data.xy_mode in ["Current Position", "Select Wells", "Manual", "Load Coordinates"]:
@@ -10297,6 +10468,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Unblock all signals
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+            self._update_laser_af_per_stack_state()  # the loaded checkbox state, under the rule
 
             # The Piezo Z-Stack checkbox changed with its signals blocked: give the Z-min/Z-max entries
             # the loaded motor's travel limits (its toggled handler does this on a click).

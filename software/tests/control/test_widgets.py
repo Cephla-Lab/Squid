@@ -2966,6 +2966,9 @@ def _wellplate_ui_fake(fit_ok=True, use_focus_map=False):
         checkbox_usePiezo=widget(isChecked=False),
         checkbox_withAutofocus=widget(isChecked=True),
         checkbox_withReflectionAutofocus=widget(isChecked=False),
+        checkbox_z=widget(isChecked=True),
+        checkbox_laserAfPerStack=widget(isChecked=False),
+        laser_af_per_stack_to_start=lambda: False,
         lineEdit_savingDir=widget(text="/tmp/saving"),
         checkbox_skipSaving=widget(isChecked=False),
         entry_scan_size=widget(value=2.0),
@@ -3105,6 +3108,7 @@ def test_wellplate_z_order_dropdown_follows_the_preference_live(qtbot, monkeypat
     monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", False)
     fake = _wellplate_dz_row(qtbot)
     fake.checkbox_z = MagicMock(isChecked=MagicMock(return_value=True))
+    fake._update_laser_af_per_stack_state = MagicMock()  # the "AF per stack" checkbox follows the same refresh
 
     control.widgets.WellplateMultiPointWidget.update_z_order_dropdown_visibility(fake)
     assert fake.combobox_z_order.isHidden()
@@ -3119,7 +3123,7 @@ def test_wellplate_z_order_dropdown_follows_the_preference_live(qtbot, monkeypat
 
 
 def test_flexible_z_order_dropdown_follows_the_preference_live(monkeypatch):
-    fake = SimpleNamespace(combobox_z_order=MagicMock())
+    fake = SimpleNamespace(combobox_z_order=MagicMock(), _update_laser_af_per_stack_state=MagicMock())
 
     monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", True)
     control.widgets.FlexibleMultiPointWidget.update_z_order_dropdown_visibility(fake)
@@ -3178,6 +3182,8 @@ def _flexible_ui_fake(z_stacking_config="FROM CENTER"):
         checkbox_usePiezo=widget(isChecked=False),
         checkbox_withAutofocus=widget(isChecked=False),
         checkbox_withReflectionAutofocus=widget(isChecked=False),
+        checkbox_laserAfPerStack=widget(isChecked=False),
+        laser_af_per_stack_to_start=lambda: False,
         lineEdit_savingDir=widget(text="/tmp/saving"),
         checkbox_skipSaving=widget(isChecked=False),
         channel_sequence=widget(ordered_selected_names=["BF LED matrix full"]),
@@ -3233,6 +3239,7 @@ def _yaml_data(**overrides):
         flexible_positions=None,
         z_stack_order="CHANNEL FIRST",
         z_stacking_config="FROM BOTTOM",
+        laser_af_per_stack=False,
     )
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -3341,3 +3348,217 @@ def test_flexible_tab_has_no_set_z_range_controls():
         "update_z_max",
     ):
         assert not hasattr(control.widgets.FlexibleMultiPointWidget, name), name
+
+
+# --- Z First "AF per stack" checkbox: one rule for display and for the start path ---------------------------
+
+
+@pytest.mark.parametrize(
+    "choice_enabled, order, supported, laser_af, z_row, checked, expected",
+    [
+        (True, "Z FIRST", True, True, True, True, True),
+        (False, "Z FIRST", True, True, True, True, False),
+        (True, "CHANNEL FIRST", True, True, True, True, False),
+        (True, "Z FIRST", False, True, True, True, False),
+        (True, "Z FIRST", True, False, True, True, False),
+        (True, "Z FIRST", True, True, False, True, False),  # Wellplate Z unchecked (Review Focus 5)
+        (True, "Z FIRST", True, True, True, False, False),
+    ],
+)
+def test_laser_af_per_stack_starts_only_for_the_full_combination(
+    choice_enabled, order, supported, laser_af, z_row, checked, expected
+):
+    assert (
+        control.widgets._laser_af_per_stack_to_start(choice_enabled, order, supported, laser_af, z_row, checked)
+        is expected
+    )
+
+
+def test_wellplate_configure_controller_from_ui_pushes_the_per_stack_rule():
+    fake = _wellplate_ui_fake()
+    fake.laser_af_per_stack_to_start = lambda: True
+    control.widgets.WellplateMultiPointWidget.configure_controller_from_ui(fake)
+    fake.multipointController.set_laser_af_per_stack.assert_called_once_with(True)
+
+
+def test_flexible_configure_controller_from_ui_pushes_the_per_stack_rule():
+    fake = _flexible_ui_fake()
+    fake.laser_af_per_stack_to_start = lambda: True
+    control.widgets.FlexibleMultiPointWidget.configure_controller_from_ui(fake)
+    fake.multipointController.set_laser_af_per_stack.assert_called_once_with(True)
+
+
+def _per_stack_widgets(qtbot, cls):
+    """Real widgets on a parent kept in the namespace, with the mixin's methods bound (the _wellplate_dz_row
+    pattern); cls picks the tab whose _z_row_shown rule applies."""
+    import types
+
+    from qtpy.QtWidgets import QCheckBox, QWidget
+
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    combobox_z_order = QComboBox(parent)
+    for order in control._def.Z_STACK_ORDERS:
+        combobox_z_order.addItem(order.title(), order)
+    fake = SimpleNamespace(
+        parent=parent,
+        combobox_z_order=combobox_z_order,
+        checkbox_withReflectionAutofocus=QCheckBox(parent),
+        checkbox_laserAfPerStack=QCheckBox(parent),
+        checkbox_z=QCheckBox(parent),
+        multipointController=MagicMock(),
+    )
+    for name in (
+        "_update_laser_af_per_stack_state",
+        "_laser_af_per_stack_shown",
+        "laser_af_per_stack_to_start",
+        "_z_row_shown",
+    ):
+        setattr(fake, name, types.MethodType(getattr(cls, name), fake))
+    parent.show()
+    return fake
+
+
+def test_per_stack_checkbox_state_follows_the_rule(qtbot, monkeypatch):
+    monkeypatch.setattr(control.widgets, "SUPPORT_LASER_AUTOFOCUS", True)
+    fake = _per_stack_widgets(qtbot, control.widgets.WellplateMultiPointWidget)
+    fake.checkbox_z.setChecked(True)
+    fake.combobox_z_order.setCurrentIndex(fake.combobox_z_order.findData("Z FIRST"))
+    fake.checkbox_laserAfPerStack.setChecked(True)
+
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", False)
+    fake._update_laser_af_per_stack_state()
+    assert fake.checkbox_laserAfPerStack.isHidden()
+    fake.multipointController.set_laser_af_per_stack.assert_called_with(False)
+
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", True)
+    fake.combobox_z_order.setCurrentIndex(fake.combobox_z_order.findData("CHANNEL FIRST"))
+    fake._update_laser_af_per_stack_state()
+    assert fake.checkbox_laserAfPerStack.isHidden()
+
+    fake.combobox_z_order.setCurrentIndex(fake.combobox_z_order.findData("Z FIRST"))
+    fake.checkbox_withReflectionAutofocus.setChecked(False)
+    fake._update_laser_af_per_stack_state()
+    assert not fake.checkbox_laserAfPerStack.isHidden() and not fake.checkbox_laserAfPerStack.isEnabled()
+    fake.multipointController.set_laser_af_per_stack.assert_called_with(False)
+
+    fake.checkbox_withReflectionAutofocus.setChecked(True)
+    fake._update_laser_af_per_stack_state()
+    assert fake.checkbox_laserAfPerStack.isEnabled()
+    fake.multipointController.set_laser_af_per_stack.assert_called_with(True)
+
+    fake.checkbox_z.setChecked(False)  # the Wellplate z row is hidden with Z unchecked (Review Focus 5)
+    fake._update_laser_af_per_stack_state()
+    assert fake.checkbox_laserAfPerStack.isHidden()
+    fake.multipointController.set_laser_af_per_stack.assert_called_with(False)
+
+
+def test_per_stack_checkbox_is_hidden_without_laser_af_support(qtbot, monkeypatch):
+    monkeypatch.setattr(control.widgets, "SUPPORT_LASER_AUTOFOCUS", False)
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", True)
+    fake = _per_stack_widgets(qtbot, control.widgets.FlexibleMultiPointWidget)
+    fake.combobox_z_order.setCurrentIndex(fake.combobox_z_order.findData("Z FIRST"))
+    fake.checkbox_withReflectionAutofocus.setChecked(True)
+    fake.checkbox_laserAfPerStack.setChecked(True)
+    fake._update_laser_af_per_stack_state()
+    assert fake.checkbox_laserAfPerStack.isHidden()
+    fake.multipointController.set_laser_af_per_stack.assert_called_with(False)
+
+
+def test_wellplate_yaml_drop_sets_the_per_stack_checkbox():
+    fake = MagicMock()
+    control.widgets.WellplateMultiPointWidget._apply_yaml_settings(
+        fake, _yaml_data(laser_af=True, z_stack_order="Z FIRST", laser_af_per_stack=True)
+    )
+    fake.checkbox_laserAfPerStack.setChecked.assert_called_with(True)
+    fake._update_laser_af_per_stack_state.assert_called()
+
+
+def test_flexible_yaml_drop_sets_the_per_stack_checkbox():
+    fake = MagicMock()
+    control.widgets.FlexibleMultiPointWidget._apply_yaml_settings(
+        fake, _yaml_data(laser_af=True, z_stack_order="Z FIRST", laser_af_per_stack=True)
+    )
+    fake.checkbox_laserAfPerStack.setChecked.assert_called_with(True)
+    fake._update_laser_af_per_stack_state.assert_called()
+
+
+def test_wellplate_cache_restores_laser_af_per_stack(tmp_path, monkeypatch):
+    import yaml
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "multipoint_widget_config.yaml").write_text(yaml.safe_dump({"laser_af_per_stack": True}))
+    fake = MagicMock()
+    fake.combobox_z_order.findData.return_value = 0  # the loader compares this index with 0 before our line
+    control.widgets.WellplateMultiPointWidget.load_multipoint_widget_config_from_cache(fake)
+    fake.checkbox_laserAfPerStack.setChecked.assert_called_with(True)
+
+
+def test_wellplate_cache_restore_shows_the_per_stack_checkbox_when_the_rule_says_so(qtbot, monkeypatch, tmp_path):
+    """Review finding: the loader restores Z, Z First and Laser AF with their signals blocked, so nothing re-applied
+    the rule and the checkbox stayed hidden until the user poked a control."""
+    import types
+
+    import yaml
+    from qtpy.QtWidgets import QCheckBox, QWidget
+
+    monkeypatch.setattr(control.widgets, "SUPPORT_LASER_AUTOFOCUS", True)
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", True)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "multipoint_widget_config.yaml").write_text(
+        yaml.safe_dump({"z_enabled": True, "z_order": "Z FIRST", "laser_af": True, "laser_af_per_stack": False})
+    )
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    fake = MagicMock()
+    fake.parent = parent
+    fake.combobox_z_order = QComboBox(parent)
+    for order in control._def.Z_STACK_ORDERS:
+        fake.combobox_z_order.addItem(order.title(), order)
+    fake.checkbox_withReflectionAutofocus = QCheckBox(parent)
+    fake.checkbox_laserAfPerStack = QCheckBox(parent)
+    fake.checkbox_z = QCheckBox(parent)
+    fake.multipointController = MagicMock()
+    cls = control.widgets.WellplateMultiPointWidget
+    for name in (
+        "_update_laser_af_per_stack_state",
+        "_laser_af_per_stack_shown",
+        "laser_af_per_stack_to_start",
+        "_z_row_shown",
+        "load_multipoint_widget_config_from_cache",
+    ):
+        setattr(fake, name, types.MethodType(getattr(cls, name), fake))
+    parent.show()
+    fake._update_laser_af_per_stack_state()  # construction: Z unchecked, Channel First -> hidden
+    assert fake.checkbox_laserAfPerStack.isHidden()
+
+    fake.load_multipoint_widget_config_from_cache()
+
+    assert fake._log.warning.call_args_list == []
+    assert fake.checkbox_z.isChecked() and fake.combobox_z_order.currentData() == "Z FIRST"
+    assert not fake.checkbox_laserAfPerStack.isHidden() and fake.checkbox_laserAfPerStack.isEnabled()
+
+
+def test_wellplate_enable_all_after_an_acquisition_reapplies_the_per_stack_rule():
+    """CodeRabbit on #776: setEnabled_all(True) at the end of a run enables every child widget, so the
+    "AF per stack" box came back enabled with Laser AF unchecked; the rule is re-applied instead."""
+    fake = MagicMock()
+    fake.findChildren.return_value = []
+    control.widgets.WellplateMultiPointWidget.setEnabled_all(fake, True)
+    fake._update_laser_af_per_stack_state.assert_called_once()
+
+    fake._update_laser_af_per_stack_state.reset_mock()
+    control.widgets.WellplateMultiPointWidget.setEnabled_all(fake, False)
+    fake._update_laser_af_per_stack_state.assert_not_called()
+
+
+def test_flexible_enable_all_disables_and_then_reapplies_the_per_stack_rule():
+    fake = MagicMock()
+    control.widgets.FlexibleMultiPointWidget.setEnabled_all(fake, False)
+    fake.checkbox_laserAfPerStack.setEnabled.assert_called_with(False)
+    fake._update_laser_af_per_stack_state.assert_not_called()
+
+    control.widgets.FlexibleMultiPointWidget.setEnabled_all(fake, True)
+    fake._update_laser_af_per_stack_state.assert_called_once()

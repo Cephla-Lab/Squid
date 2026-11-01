@@ -204,6 +204,7 @@ def test_wellplate_keeps_laser_af_off_in_set_range_when_controls_come_back(qtbot
     host.checkbox_withReflectionAutofocus = QCheckBox(host)
     host.scanCoordinates = SimpleNamespace(format="96 well plate")
     host.update_scan_control_ui = MagicMock()
+    host._update_laser_af_per_stack_state = MagicMock()  # the Z First "AF per stack" rule, tested in test_widgets.py
     host.checkbox_z.setChecked(True)
     host.combobox_z_mode.setCurrentText(z_mode)
 
@@ -230,6 +231,7 @@ def _yaml(use_piezo, piezo_z_range_um=None, nz=4, delta_z_um=2.0):
         channel_names=[],
         contrast_af=False,
         laser_af=False,
+        laser_af_per_stack=False,
         xy_mode="Select Wells",
         wellplate_regions=None,
     )

@@ -42,6 +42,7 @@ class AcquisitionYAMLData:
     # Autofocus
     contrast_af: bool = False
     laser_af: bool = False
+    laser_af_per_stack: bool = False  # Z First only: laser AF before each later channel's stack
 
     # Wellplate-specific
     scan_size_mm: Optional[float] = None
@@ -123,6 +124,35 @@ def parse_range(value) -> Optional[Tuple[float, float]]:
     return (float(value[0]), float(value[1])) if value and len(value) == 2 else None
 
 
+_FLAG_ON = {"true", "yes", "on", "1"}
+_FLAG_OFF = {"false", "no", "off", "0", "none", ""}
+
+
+def parse_laser_af_per_stack(value, laser_af: bool, z_stack_order: str) -> bool:
+    """Normalize a saved autofocus.laser_af_per_stack value (missing or null means off).
+
+    On, it needs laser AF and Z First: anything else is a configuration mistake the author should see,
+    so every loader (GUI drop, TCP, fluidics protocol) raises ValueError instead of silently dropping it.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        on = value
+    else:
+        text = str(value).strip().lower()
+        if text in _FLAG_ON:
+            on = True
+        elif text in _FLAG_OFF:
+            on = False
+        else:
+            raise ValueError(f"Invalid autofocus.laser_af_per_stack '{value}'. Must be true or false")
+    if on and not laser_af:
+        raise ValueError("autofocus.laser_af_per_stack: true requires autofocus.laser_af: true")
+    if on and z_stack_order != "Z FIRST":
+        raise ValueError("autofocus.laser_af_per_stack: true requires z_stack.order: Z FIRST")
+    return on
+
+
 def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAMLData:
     """Parse an already-loaded acquisition.yaml mapping (the file body, or a protocol header block)."""
     if not isinstance(data, dict):
@@ -166,6 +196,7 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
     if wellplate_regions and len(wellplate_regions) > 0:
         scan_shape = wellplate_regions[0].get("shape")
 
+    z_stack_order = parse_z_stack_order(z_stack.get("order"))
     return AcquisitionYAMLData(
         widget_type=widget_type,
         xy_mode=acq.get("xy_mode", "Select Wells"),
@@ -178,7 +209,7 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
         nz=z_stack.get("nz", 1),
         delta_z_um=z_stack.get("delta_z_mm", 0.001) * 1000,
         z_stacking_config=z_stack.get("config", "FROM BOTTOM"),
-        z_stack_order=parse_z_stack_order(z_stack.get("order")),
+        z_stack_order=z_stack_order,
         use_piezo=z_stack.get("use_piezo", False),
         # Time series
         nt=time_series.get("nt", 1),
@@ -188,6 +219,11 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
         # Autofocus
         contrast_af=autofocus.get("contrast_af", False),
         laser_af=autofocus.get("laser_af", False),
+        laser_af_per_stack=parse_laser_af_per_stack(
+            autofocus.get("laser_af_per_stack"),
+            laser_af=bool(autofocus.get("laser_af", False)),
+            z_stack_order=z_stack_order,
+        ),
         # Wellplate-specific
         scan_size_mm=wellplate_scan.get("scan_size_mm"),
         overlap_percent=overlap,

@@ -66,6 +66,8 @@ class AcquisitionParameters:
 
     # "CHANNEL FIRST" (all channels at each z level) or "Z FIRST" (full z stack per channel)
     z_stack_order: str = "CHANNEL FIRST"
+    # Z First only: run laser AF before each later channel's stack (opt-in; the first channel keeps the per-FOV AF).
+    laser_af_per_stack: bool = False
 
     # Plate dimensions (only used when xy_mode is plate-based, e.g. "Select Wells").
     plate_num_rows: int = 8  # For 96-well plate
