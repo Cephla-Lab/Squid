@@ -1362,13 +1362,11 @@ class MultiPointWorker:
                 self._log.info(f"applying per-region laser AF offset for region '{region_id}': {target_um:+.2f} µm")
                 self.laser_auto_focus_controller.apply_relative_offset_um(target_um)
         except Exception as e:
-            file_ID = f"{region_id}_focus_camera.bmp"
-            saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
-            iio.imwrite(saving_path, self.laser_auto_focus_controller.image)
             self._log.error(
                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
                 exc_info=e,
             )
+            self._save_laser_af_diagnostic(region_id)  # best effort: must never stand between us and the restore
             af_succeeded = False
         if restore_on_failure:
             if not af_succeeded:
@@ -1378,10 +1376,21 @@ class MultiPointWorker:
                         self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
                 else:
                     self.stage.move_z_to(pre_af)
-                    self._sleep(squid.stage.utils.z_stabilization_time_s())
+                # Settle as prepare_z_stack does, in both trigger modes: after a partial AF move and its
+                # rollback the next exposure must not start before the actuator has settled.
+                self._sleep(squid.stage.utils.z_stabilization_time_s())
             if self.use_piezo:
                 self.z_piezo_um = self.piezo.position
         return af_succeeded
+
+    def _save_laser_af_diagnostic(self, region_id) -> None:
+        """Best effort: save the focus-camera image of a failed laser AF next to the time point's images."""
+        try:
+            file_ID = f"{region_id}_focus_camera.bmp"
+            saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
+            iio.imwrite(saving_path, self.laser_auto_focus_controller.image)
+        except Exception as e:
+            self._log.warning(f"Could not save the laser AF focus-camera image for region '{region_id}': {e}")
 
     def _re_anchor_before_stack(self, config, region_id, af_succeeded: bool) -> bool:
         """Z First "AF per stack": laser AF before this later channel's stack, at the stack start (the

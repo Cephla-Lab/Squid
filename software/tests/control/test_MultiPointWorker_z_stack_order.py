@@ -568,3 +568,57 @@ def test_a_failed_re_anchor_restores_the_piezo_the_laser_af_moved_even_for_a_sta
     assert _planes(w) == pytest.approx([1005, 1007, 1009, 1000, 1002, 1004])
     assert piezo.position == pytest.approx(290.0)
     assert w.stage.z_mm == pytest.approx(1.0)
+
+
+def test_a_failed_diagnostic_save_does_not_skip_the_restore(tmp_path, monkeypatch):
+    """Review finding: the focus-camera bitmap write sat inside the except block before the restore; an error from
+    it left the piezo at the AF plane with a stale cache. The save is best effort, the restore unconditional."""
+    import control.core.multi_point_worker as worker_module
+
+    def imwrite_fails(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(worker_module.iio, "imwrite", imwrite_fails)
+    piezo = _FakePiezo(position=280.0, range_um=300.0)
+    af = _FakeLaserAF(piezo, references=[280.0, 292.0])
+    w = _worker(
+        "Z FIRST",
+        use_piezo=True,
+        offsets={"A": 5.0, "B": 0.0},
+        region_offsets={"A1": 10.0},
+        laser_af_per_stack=True,
+        laser_af=af,
+        tmp_path=tmp_path,
+    )
+    w.piezo = piezo
+    w.deltaZ = 0.001
+
+    w.acquire_at_position("A1", "/tmp", 0)  # the failed save is logged, not raised
+
+    assert _planes(w) == pytest.approx([295, 296, 297, 290, 291, 292])
+    assert w.z_piezo_um == pytest.approx(piezo.position)
+    assert (w._laser_af_per_stack_successes, w._laser_af_per_stack_failures) == (0, 1)
+
+
+def test_a_restore_settles_in_hardware_trigger_mode_too(tmp_path):
+    """Review finding: the restore waited only in software-trigger mode; in hardware-trigger mode the next
+    exposure could start before the piezo settled. The restore settles like prepare_z_stack, in both modes."""
+    import squid.stage.utils
+
+    piezo = _FakePiezo()
+    af = _FakeLaserAF(piezo, references=[100.0, 104.0], fail_calls=(2,))
+    w = _worker("Z FIRST", use_piezo=True, laser_af_per_stack=True, laser_af=af, tmp_path=tmp_path)
+    w.piezo = piezo
+    w.liveController.trigger_mode = TriggerMode.HARDWARE
+    sleeps = _sleep_recorder(w)
+    sleeps_at_af_call = []
+    real_move_to_target = af.move_to_target
+    af.move_to_target = lambda um: (sleeps_at_af_call.append(len(sleeps)), real_move_to_target(um))[1]
+    sleeps_at_frame = []
+    real_acquire = w.acquire_camera_image
+    w.acquire_camera_image = lambda *a, **k: (sleeps_at_frame.append(len(sleeps)), real_acquire(*a, **k))[1]
+
+    w.acquire_at_position("A1", "/tmp", 0)
+
+    between = sleeps[sleeps_at_af_call[1] : sleeps_at_frame[3]]
+    assert squid.stage.utils.z_stabilization_time_s() in between
