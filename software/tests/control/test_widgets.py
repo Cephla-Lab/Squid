@@ -3529,3 +3529,26 @@ def test_wellplate_cache_restore_shows_the_per_stack_checkbox_when_the_rule_says
     assert fake._log.warning.call_args_list == []
     assert fake.checkbox_z.isChecked() and fake.combobox_z_order.currentData() == "Z FIRST"
     assert not fake.checkbox_laserAfPerStack.isHidden() and fake.checkbox_laserAfPerStack.isEnabled()
+
+
+def test_wellplate_enable_all_after_an_acquisition_reapplies_the_per_stack_rule():
+    """CodeRabbit on #776: setEnabled_all(True) at the end of a run enables every child widget, so the
+    "AF per stack" box came back enabled with Laser AF unchecked; the rule is re-applied instead."""
+    fake = MagicMock()
+    fake.findChildren.return_value = []
+    control.widgets.WellplateMultiPointWidget.setEnabled_all(fake, True)
+    fake._update_laser_af_per_stack_state.assert_called_once()
+
+    fake._update_laser_af_per_stack_state.reset_mock()
+    control.widgets.WellplateMultiPointWidget.setEnabled_all(fake, False)
+    fake._update_laser_af_per_stack_state.assert_not_called()
+
+
+def test_flexible_enable_all_disables_and_then_reapplies_the_per_stack_rule():
+    fake = MagicMock()
+    control.widgets.FlexibleMultiPointWidget.setEnabled_all(fake, False)
+    fake.checkbox_laserAfPerStack.setEnabled.assert_called_with(False)
+    fake._update_laser_af_per_stack_state.assert_not_called()
+
+    control.widgets.FlexibleMultiPointWidget.setEnabled_all(fake, True)
+    fake._update_laser_af_per_stack_state.assert_called_once()

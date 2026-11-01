@@ -8107,6 +8107,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.entry_deltaZ.setEnabled(enabled)
         self.entry_NZ.setEnabled(enabled)
         self.combobox_z_order.setEnabled(enabled)
+        if enabled:
+            self._update_laser_af_per_stack_state()  # enabled only under its rule, not blanket
+        else:
+            self.checkbox_laserAfPerStack.setEnabled(False)
         self.entry_dt.setEnabled(enabled)
         self.entry_Nt.setEnabled(enabled)
         if not self.use_overlap:
@@ -10194,6 +10198,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         # Restore scan controls visibility based on XY checkbox state
         if enabled:
+            # Every child was just enabled: the "AF per stack" box is enabled only under its rule (CodeRabbit).
+            self._update_laser_af_per_stack_state()
             self.update_scan_control_ui()
 
             # Restore mode dropdown states based on their respective checkboxes

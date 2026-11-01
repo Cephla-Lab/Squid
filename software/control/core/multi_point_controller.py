@@ -1068,7 +1068,11 @@ class MultiPointController:
             do_autofocus=self.do_autofocus,
             do_reflection_autofocus=self.do_reflection_af,
             apply_channel_offset=self.apply_channel_offset,
-            laser_af_per_stack=self.laser_af_per_stack,
+            # Only meaningful with laser AF in Z First; the snap paths turn reflection AF off before running, so
+            # normalise here or the saved acquisition.yaml could fail the loaders' strict check on reload.
+            laser_af_per_stack=bool(
+                self.laser_af_per_stack and self.do_reflection_af and self.z_stack_order == "Z FIRST"
+            ),
             use_piezo=self.use_piezo,
             display_resolution_scaling=self.display_resolution_scaling,
             z_stacking_config=self.z_stacking_config,

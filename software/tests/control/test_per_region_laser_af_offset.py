@@ -442,3 +442,18 @@ def test_get_offsets_warns_about_regions_missing_offset():
     result = w.get_offsets_for_acquisition(reflection_af_active=True)
     assert result == {"A1": 3.0}
     assert w._log.warning.called  # B2 has no offset
+
+
+@pytest.mark.parametrize(
+    "do_reflection_af, z_stack_order, expected",
+    [(True, "Z FIRST", True), (False, "Z FIRST", False), (True, "CHANNEL FIRST", False)],
+)
+def test_build_params_normalizes_laser_af_per_stack_to_its_prerequisites(do_reflection_af, z_stack_order, expected):
+    """CodeRabbit on #776: the snap paths turn reflection AF off before run_acquisition while the per-stack flag
+    stays on, which would save a YAML (laser_af: false, laser_af_per_stack: true) the loaders reject."""
+    stub = _BuildParamsStub()
+    stub.laser_af_per_stack = True
+    stub.do_reflection_af = do_reflection_af
+    stub.z_stack_order = z_stack_order
+    params = stub.build_params(_empty_scan_position_information())
+    assert params.laser_af_per_stack is expected
