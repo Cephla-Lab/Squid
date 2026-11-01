@@ -1,5 +1,6 @@
 import collections
 import enum
+import errno
 import inspect
 import pathlib
 import sys
@@ -233,6 +234,31 @@ def ensure_directory_exists(raw_string_path: str):
     path: pathlib.Path = pathlib.Path(raw_string_path)
     _log.debug(f"Making sure directory '{path}' exists.")
     path.mkdir(parents=True, exist_ok=True)
+
+
+def write_ini_atomically(config, path: str):
+    """Write a ConfigParser to path so that a failed write (a full disk, say) leaves the file as it was, rather than
+    emptied or cut off: the text goes to a temp file next to it, which then replaces it. Squid reads the machine ini
+    at start-up, so a half-written one stops it starting. A read-only file still raises PermissionError, as writing
+    it in place did (replacing it would succeed on Linux)."""
+    path = os.path.realpath(path)  # an ini reached through a symlink keeps the link
+    if os.path.exists(path) and not os.access(path, os.W_OK):
+        raise PermissionError(errno.EACCES, "Permission denied", path)
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "w") as f:
+            config.write(f)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.exists(path):
+            shutil.copymode(path, tmp_path)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def serialize_for_yaml(obj):

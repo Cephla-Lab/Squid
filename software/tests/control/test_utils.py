@@ -1,3 +1,7 @@
+import errno
+import os
+from configparser import ConfigParser
+
 import control.utils
 import tests.tools
 import pathlib
@@ -272,3 +276,63 @@ def test_rotate_and_flip_image_matches_opencv_and_never_aliases_the_input(rotate
     assert result.flags.c_contiguous
     assert not np.may_share_memory(result, image)  # callers pass views of driver memory
     np.testing.assert_array_equal(image, original)
+
+
+def _ini(**general):
+    config = ConfigParser()
+    config["GENERAL"] = general
+    return config
+
+
+def _read_general(path):
+    saved = ConfigParser()
+    saved.read(path)
+    return dict(saved["GENERAL"])
+
+
+def test_write_ini_atomically_replaces_the_file_and_leaves_no_temp_file(tmp_path):
+    path = tmp_path / "machine.ini"
+    path.write_text("[GENERAL]\nold = 1\n")
+    control.utils.write_ini_atomically(_ini(new="2"), str(path))
+    assert _read_general(path) == {"new": "2"}
+    assert os.listdir(tmp_path) == ["machine.ini"]
+
+
+def test_a_failed_ini_write_leaves_the_file_as_it_was(tmp_path):
+    path = tmp_path / "machine.ini"
+    path.write_text("[GENERAL]\nold = 1\n")
+
+    class DiskFull(ConfigParser):
+        def write(self, fp, space_around_delimiters=True):
+            fp.write("[GENERAL]\n")  # cut off part way
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    with pytest.raises(OSError):
+        control.utils.write_ini_atomically(DiskFull(), str(path))
+    assert path.read_text() == "[GENERAL]\nold = 1\n"
+    assert os.listdir(tmp_path) == ["machine.ini"]
+
+
+def test_a_read_only_ini_is_not_replaced(tmp_path):
+    path = tmp_path / "machine.ini"
+    path.write_text("[GENERAL]\nold = 1\n")
+    os.chmod(path, 0o444)
+    try:
+        with pytest.raises(PermissionError):
+            control.utils.write_ini_atomically(_ini(new="2"), str(path))
+        assert path.read_text() == "[GENERAL]\nold = 1\n"
+    finally:
+        os.chmod(path, 0o644)
+
+
+def test_an_ini_reached_through_a_symlink_keeps_the_link(tmp_path):
+    target = tmp_path / "machine.ini"
+    target.write_text("[GENERAL]\nold = 1\n")
+    link = tmp_path / "current.ini"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("this account can't create symlinks (Windows without developer mode)")
+    control.utils.write_ini_atomically(_ini(new="2"), str(link))
+    assert link.is_symlink()
+    assert _read_general(target) == {"new": "2"}
