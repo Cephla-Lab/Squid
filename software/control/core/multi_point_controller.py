@@ -389,9 +389,12 @@ class MultiPointController:
         if self.multiPointWorker:
             self.multiPointWorker.update_use_piezo(checked)
 
-    def set_z_stacking_config(self, z_stacking_config_index):
-        if z_stacking_config_index in control._def.Z_STACKING_CONFIG_MAP:
-            self.z_stacking_config = control._def.Z_STACKING_CONFIG_MAP[z_stacking_config_index]
+    def set_z_stacking_config(self, z_stacking_config: str):
+        """Where the stack sits relative to each position's z: "FROM BOTTOM", "FROM CENTER" or "FROM TOP"."""
+        valid = set(control._def.Z_STACKING_CONFIG_MAP.values())
+        if z_stacking_config not in valid:
+            raise ValueError(f"Unknown z_stacking_config '{z_stacking_config}'; expected one of {sorted(valid)}")
+        self.z_stacking_config = z_stacking_config
         self._log.info(f"z-stacking configuration set to {self.z_stacking_config}")
 
     def set_z_stack_order(self, z_stack_order: str):
