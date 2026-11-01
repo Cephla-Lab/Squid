@@ -9381,9 +9381,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_NZ.setValue(1)
         self.entry_minZ.setValue(current_z)
         self.entry_maxZ.setValue(current_z)
-        self.combobox_z_mode.blockSignals(True)
-        self.combobox_z_mode.setCurrentText("From Bottom")
-        self.combobox_z_mode.blockSignals(False)
+        # The Z mode is left alone: with Nz = 1 it does not matter, and resetting it here would drop the INI
+        # default or the user's choice every time Z is unchecked (and at start-up, when Z starts unchecked).
 
     def show_z_controls(self, visible):
         """Show Z-related controls"""

@@ -3256,3 +3256,18 @@ def test_wellplate_dz_and_nz_mode_pushes_a_z_range_in_mm():
 
     (z_min, z_max), _ = fake.multipointController.set_z_range.call_args
     assert (z_min, z_max) == (pytest.approx(1.0), pytest.approx(1.003))
+
+
+def test_wellplate_hiding_the_z_controls_keeps_the_z_mode():
+    """Unchecking Z (or start-up with Z off) must not reset the mode to From Bottom: the INI default or the
+    user's choice has to survive until Z is checked again."""
+    fake = MagicMock()
+    fake.dz_layout.count.return_value = 0
+    fake.z_min_layout.count.return_value = 0
+    fake.z_max_layout.count.return_value = 0
+    fake.stage.get_pos.return_value.z_mm = 1.0
+
+    control.widgets.WellplateMultiPointWidget.hide_z_controls(fake)
+
+    fake.entry_NZ.setValue.assert_called_once_with(1)
+    fake.combobox_z_mode.setCurrentText.assert_not_called()
