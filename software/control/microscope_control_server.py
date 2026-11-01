@@ -1027,7 +1027,7 @@ class MicroscopeControlServer:
         except Exception as e:
             raise ValueError(f"Failed to parse YAML file: {e}") from e
 
-        # Validate hardware configuration (objective, binning)
+        # Validate hardware configuration (objective, binning, piezo)
         current_binning = None
         try:
             camera = getattr(self.microscope, "camera", None)
@@ -1041,7 +1041,13 @@ class MicroscopeControlServer:
             current_binning = (1, 1)  # Default for validation (will skip binning check)
 
         current_objective = self.microscope.objective_store.current_objective
-        validation = validate_hardware(yaml_data, current_objective, current_binning)
+        piezo = self.multipoint_controller.piezo
+        validation = validate_hardware(
+            yaml_data,
+            current_objective,
+            current_binning,
+            piezo_travel_um=piezo.range_um if piezo is not None else None,
+        )
 
         if not validation.is_valid:
             raise RuntimeError(f"Hardware configuration mismatch:\n{validation.message}")

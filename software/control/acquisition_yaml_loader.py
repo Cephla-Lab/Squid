@@ -243,6 +243,7 @@ class ValidationResult:
     is_valid: bool
     objective_mismatch: bool = False
     binning_mismatch: bool = False
+    piezo_mismatch: bool = False
     current_objective: str = ""
     yaml_objective: str = ""
     current_binning: Tuple[int, int] = (1, 1)
@@ -254,6 +255,7 @@ def validate_hardware(
     yaml_data: AcquisitionYAMLData,
     current_objective: str,
     current_binning: Tuple[int, int],
+    piezo_travel_um: Optional[float] = None,
 ) -> ValidationResult:
     """Validate that YAML settings match current hardware configuration.
 
@@ -261,12 +263,14 @@ def validate_hardware(
         yaml_data: Parsed YAML data
         current_objective: Currently selected objective name
         current_binning: Current camera binning as (x, y) tuple
+        piezo_travel_um: This microscope's piezo travel, or None when it has no piezo
 
     Returns:
         ValidationResult indicating whether hardware matches
     """
     objective_mismatch = False
     binning_mismatch = False
+    piezo_mismatch = False
     messages = []
 
     if yaml_data.objective_name and yaml_data.objective_name != current_objective:
@@ -279,10 +283,23 @@ def validate_hardware(
             f"Camera binning mismatch:\n  YAML: {list(yaml_data.camera_binning)}\n  Current: {list(current_binning)}"
         )
 
+    if yaml_data.use_piezo and piezo_travel_um is None:
+        piezo_mismatch = True
+        messages.append("Piezo mismatch:\n  YAML: z-stack on the piezo\n  Current: this microscope has no piezo")
+    elif yaml_data.use_piezo and yaml_data.piezo_z_range_um:
+        z_min_um, z_max_um = yaml_data.piezo_z_range_um
+        if z_min_um < 0 or z_max_um > piezo_travel_um:
+            piezo_mismatch = True
+            messages.append(
+                f"Piezo Z-range outside the travel:\n  YAML: {z_min_um:.1f} to {z_max_um:.1f} µm\n"
+                f"  Current: piezo travel 0 to {piezo_travel_um:.0f} µm"
+            )
+
     return ValidationResult(
-        is_valid=not (objective_mismatch or binning_mismatch),
+        is_valid=not (objective_mismatch or binning_mismatch or piezo_mismatch),
         objective_mismatch=objective_mismatch,
         binning_mismatch=binning_mismatch,
+        piezo_mismatch=piezo_mismatch,
         current_objective=current_objective,
         yaml_objective=yaml_data.objective_name or "",
         current_binning=current_binning,

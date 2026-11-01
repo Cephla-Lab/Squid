@@ -14,6 +14,7 @@ import pytest
 from qtpy.QtWidgets import QCheckBox, QDoubleSpinBox
 
 import control._def
+import control.acquisition_yaml_loader
 import control.widgets
 import squid.abc
 from control.piezo import PiezoStage
@@ -273,3 +274,34 @@ def test_wellplate_yaml_without_a_piezo_range_keeps_its_z_mode(qtbot):
     host = _wellplate_for_yaml(use_piezo=True)
     WellplateMultiPointWidget._apply_yaml_settings(host, _yaml(use_piezo=True))
     assert host.combobox_z_mode.currentText() == "From Bottom"
+
+
+@pytest.mark.parametrize(
+    "piezo_travel_um, piezo_z_range_um, loads",
+    [
+        (None, None, False),  # piezo stack, no piezo on this microscope
+        (None, (20.0, 26.0), False),
+        (300, (250.0, 350.0), False),  # saved on a piezo with longer travel
+        (300, (20.0, 26.0), True),
+    ],
+)
+def test_dropping_a_yaml_refuses_piezo_settings_this_microscope_cannot_run(
+    monkeypatch, piezo_travel_um, piezo_z_range_um, loads
+):
+    from control.acquisition_yaml_loader import AcquisitionYAMLData
+
+    yaml_data = AcquisitionYAMLData(widget_type="wellplate", use_piezo=True, piezo_z_range_um=piezo_z_range_um)
+    monkeypatch.setattr(control.acquisition_yaml_loader, "parse_acquisition_yaml", lambda path: yaml_data)
+    mismatch_dialog = MagicMock()
+    monkeypatch.setattr(control.widgets, "AcquisitionYAMLMismatchDialog", mismatch_dialog)
+    piezo = None
+    if piezo_travel_um is not None:
+        piezo = PiezoStage(MagicMock(), {"OBJECTIVE_PIEZO_RANGE_UM": piezo_travel_um})
+    host = MagicMock(multipointController=_Controller(piezo))
+    host.objectiveStore.current_objective = "20x"
+    host._get_expected_widget_type.return_value = "wellplate"
+
+    assert control.widgets.AcquisitionYAMLDropMixin._load_acquisition_yaml(host, "acquisition.yaml") is loads
+    # Refused before any control changes, with the mismatch dialog
+    assert host._apply_yaml_settings.called is loads
+    assert mismatch_dialog.called is not loads

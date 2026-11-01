@@ -405,6 +405,35 @@ class TestValidateHardware:
         assert result.current_binning == (1, 1)
         assert result.yaml_binning == (2, 2)
 
+    def test_a_piezo_stack_is_refused_on_a_microscope_without_a_piezo(self):
+        yaml_data = AcquisitionYAMLData(widget_type="wellplate", use_piezo=True)
+
+        result = validate_hardware(yaml_data, "20x", (1, 1), piezo_travel_um=None)
+
+        assert result.is_valid is False
+        assert result.piezo_mismatch is True
+        assert "no piezo" in result.message
+
+    def test_a_stepper_stack_loads_on_a_microscope_without_a_piezo(self):
+        yaml_data = AcquisitionYAMLData(widget_type="wellplate", use_piezo=False)
+
+        assert validate_hardware(yaml_data, "20x", (1, 1), piezo_travel_um=None).is_valid is True
+
+    @pytest.mark.parametrize("piezo_z_range_um", [(250.0, 350.0), (-5.0, 20.0)])
+    def test_a_saved_piezo_range_outside_this_piezos_travel_is_refused(self, piezo_z_range_um):
+        yaml_data = AcquisitionYAMLData(widget_type="wellplate", use_piezo=True, piezo_z_range_um=piezo_z_range_um)
+
+        result = validate_hardware(yaml_data, "20x", (1, 1), piezo_travel_um=300.0)
+
+        assert result.is_valid is False
+        assert result.piezo_mismatch is True
+        assert "0 to 300 µm" in result.message
+
+    def test_a_saved_piezo_range_inside_the_travel_loads(self):
+        yaml_data = AcquisitionYAMLData(widget_type="wellplate", use_piezo=True, piezo_z_range_um=(20.0, 26.0))
+
+        assert validate_hardware(yaml_data, "20x", (1, 1), piezo_travel_um=300.0).is_valid is True
+
 
 class TestAcquisitionYAMLDataclass:
     """Tests for AcquisitionYAMLData dataclass."""

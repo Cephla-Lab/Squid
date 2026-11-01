@@ -1099,7 +1099,13 @@ class AcquisitionYAMLDropMixin:
                 e,
             )
 
-        validation = validate_hardware(yaml_data, self.objectiveStore.current_objective, current_binning)
+        piezo = self.multipointController.piezo
+        validation = validate_hardware(
+            yaml_data,
+            self.objectiveStore.current_objective,
+            current_binning,
+            piezo_travel_um=piezo.range_um if piezo is not None else None,
+        )
 
         if not validation.is_valid:
             dialog = AcquisitionYAMLMismatchDialog(validation, self)
