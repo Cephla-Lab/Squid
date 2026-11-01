@@ -931,9 +931,8 @@ class ConfigEditor(QDialog):
 
     def save_to_filename(self, filename: str):
         try:
-            with open(filename, "w") as configfile:
-                self.config.write(configfile)
-                return True
+            utils.write_ini_atomically(self.config, filename)
+            return True
         except IOError:
             self._log.exception(f"Failed to write config file to '{filename}'")
             return False
@@ -973,8 +972,7 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
 
     def apply_and_exit(self):
         self.save_config()
-        with open(self.original_filepath, "w") as configfile:
-            self.config.write(configfile)
+        utils.write_ini_atomically(self.config, self.original_filepath)
         try:
             self.main_window.close()
         except (AttributeError, RuntimeError):
@@ -2505,8 +2503,7 @@ class PreferencesDialog(QDialog):
 
         # Save to file
         try:
-            with open(self.config_filepath, "w") as f:
-                self.config.write(f)
+            utils.write_ini_atomically(self.config, self.config_filepath)
             self._log.info(f"Configuration saved to {self.config_filepath}")
         except OSError as e:
             self._log.exception("Failed to save configuration")
