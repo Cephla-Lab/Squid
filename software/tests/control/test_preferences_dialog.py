@@ -1495,6 +1495,36 @@ class TestPriorStageSettings:
             assert not dialog._apply_settings()
         assert "could not be put back" in mock_warning.call_args[0][2]
 
+    def test_a_failed_config_write_puts_the_stage_back(
+        self, qtbot, sample_config, temp_config_file, prior_rig, tmp_path
+    ):
+        import control._def
+
+        apply_prior_motion = _FakeMotionApplier()
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, apply_prior_motion=apply_prior_motion)
+        dialog.config_filepath = str(tmp_path)  # a directory: opening it for writing raises OSError
+        dialog.prior_speed_spinbox.setValue(400)
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not dialog._apply_settings()
+        assert "Failed to save configuration" in mock_warning.call_args[0][2]
+        assert "could not be put back" not in mock_warning.call_args[0][2]
+        assert apply_prior_motion.calls == [{"max_speed": 400}, {}]  # sent, then back to the running values
+        assert control._def.PRIOR_STAGE_MAX_SPEED == 100
+
+    def test_a_failed_config_write_tells_the_user_when_the_stage_cannot_be_put_back(
+        self, qtbot, sample_config, temp_config_file, prior_rig, tmp_path
+    ):
+        def apply_prior_motion(**settings):
+            if not settings:
+                raise squid.exceptions.SquidError("Prior stage did not take max speed 100: no reply")
+
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, apply_prior_motion=apply_prior_motion)
+        dialog.config_filepath = str(tmp_path)
+        dialog.prior_speed_spinbox.setValue(400)
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not dialog._apply_settings()
+        assert "could not be put back" in mock_warning.call_args[0][2]
+
     def test_an_unanswering_stage_does_not_block_saving_other_settings(
         self, qtbot, sample_config, temp_config_file, prior_rig
     ):

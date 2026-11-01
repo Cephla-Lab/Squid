@@ -2483,6 +2483,7 @@ class PreferencesDialog(QDialog):
             self._log.info(f"Configuration saved to {self.config_filepath}")
         except OSError as e:
             self._log.exception("Failed to save configuration")
+            put_back = self._put_back_prior_motion()  # it may have taken its new speed/acceleration already
             QMessageBox.warning(
                 self,
                 "Error",
@@ -2494,6 +2495,11 @@ class PreferencesDialog(QDialog):
                     "- The file is not open in another application.\n"
                     "- The disk is not full or write-protected.\n\n"
                     f"System error: {e}"
+                    + (
+                        ""
+                        if put_back
+                        else "\n\nThe Prior stage could not be put back to its earlier speed/acceleration."
+                    )
                 ),
             )
             return False
@@ -2616,12 +2622,7 @@ class PreferencesDialog(QDialog):
             self._apply_prior_motion(**changed)
         except Exception as e:
             self._log.exception(f"Prior stage did not take {changed}; nothing saved")
-            try:
-                self._apply_prior_motion()  # back to the running values: resends only what the stage took
-                put_back = True
-            except Exception:
-                self._log.exception("Could not put the Prior stage back to its running speed/acceleration")
-                put_back = False
+            put_back = self._put_back_prior_motion()
             QMessageBox.warning(
                 self,
                 "Prior Stage Not Updated",
@@ -2629,6 +2630,20 @@ class PreferencesDialog(QDialog):
                 "Check the stage's connection, then Save again (or set the value back)."
                 + ("" if put_back else "\n\nThe stage could not be put back to its earlier settings."),
             )
+            return False
+        return True
+
+    def _put_back_prior_motion(self) -> bool:
+        """Put the Prior stage back to the running speed/acceleration for the current objective (apply_prior_motion with
+        no settings), resending whatever it may not have: a setting it took for a Save that then failed, or one it
+        didn't confirm (unknown then, since the controller may have taken it all the same). Returns False when the
+        stage doesn't take them."""
+        if self._apply_prior_motion is None:
+            return True
+        try:
+            self._apply_prior_motion()
+        except Exception:
+            self._log.exception("Could not put the Prior stage back to its running speed/acceleration")
             return False
         return True
 
