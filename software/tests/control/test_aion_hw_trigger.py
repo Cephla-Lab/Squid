@@ -511,13 +511,26 @@ class PiezoStub:
         self.moves.append(um)
 
 
-@pytest.mark.parametrize("steps_taken, expected_um", [(0, 100.0), (3, 70.0), (None, 10.0)])
-def test_piezo_stack_undoes_only_the_steps_taken(steps_taken, expected_um):
+@pytest.mark.parametrize(
+    "stacking, steps_taken, expected_um",
+    [
+        ("FROM BOTTOM", 0, 100.0),
+        ("FROM BOTTOM", 3, 70.0),
+        ("FROM BOTTOM", None, 10.0),
+        # From Center: the stack started round((NZ - 1) / 2) = 4 steps (40 um) below the centre, so the
+        # return adds those back on top of undoing the steps taken.
+        ("FROM CENTER", 0, 140.0),
+        ("FROM CENTER", 3, 110.0),
+        ("FROM CENTER", None, 50.0),
+    ],
+)
+def test_piezo_stack_undoes_only_the_steps_taken(stacking, steps_taken, expected_um):
     worker = types.SimpleNamespace(
         use_piezo=True,
         z_piezo_um=100.0,
         deltaZ=0.010,  # mm
         NZ=10,
+        z_stacking_config=stacking,
         piezo=PiezoStub(),
         liveController=types.SimpleNamespace(trigger_mode=TriggerMode.HARDWARE),
     )
