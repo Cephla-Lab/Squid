@@ -3198,26 +3198,23 @@ class StageUtils(QDialog):
             self.live_controller.stop_live()
         self._position_move_running = True
         self.signal_threaded_stage_move_started.emit()
+        self.btn_load_slide.setEnabled(False)  # before the thread starts: its callback may come first
         if self.slide_position != "loading":
-            move_to_loading_position(
-                self.stage,
-                blocking=False,
-                callback=lambda success, error: self._callback_loading_position_reached(
-                    success, error, warn_on_failure
-                ),
-                is_wellplate=self.is_wellplate,
-            )
+            move, reached, kwargs = move_to_loading_position, self._callback_loading_position_reached, {}
         else:
-            move_to_scanning_position(
-                self.stage,
-                blocking=False,
-                callback=lambda success, error: self._callback_scanning_position_reached(
-                    success, error, warn_on_failure
-                ),
-                is_wellplate=self.is_wellplate,
-                restore_z=restore_z,
-            )
-        self.btn_load_slide.setEnabled(False)
+            move, reached = move_to_scanning_position, self._callback_scanning_position_reached
+            kwargs = {"restore_z": restore_z}
+
+        def callback(success, error):
+            reached(success, error, warn_on_failure)
+
+        try:
+            move(self.stage, blocking=False, callback=callback, is_wellplate=self.is_wellplate, **kwargs)
+        except Exception as e:
+            # The thread did not start: the same report as a move that failed in it, which releases what the
+            # start took (this flag, the Z lift guard, the GUI's stage lock) and restarts live
+            self.log.exception("Could not start the loading position move")
+            callback(False, f"Could not start the move: {e}")
 
     def _ask_objective_return(self) -> Optional[bool]:
         """Leaving the loading position: True to lower the objective back to its Z after the lift rises, False to
@@ -3246,7 +3243,7 @@ class StageUtils(QDialog):
         self.btn_load_slide.setText("Return from Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live and not self.keep_live_off_at_loading:
-            self.live_controller.start_live()
+            self._restart_live()
         if not success and warn_on_failure:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_loading_position_reached.emit()
@@ -3269,9 +3266,18 @@ class StageUtils(QDialog):
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live:
-            self.live_controller.start_live()
+            self._restart_live()
         self.signal_scanning_position_reached.emit()
         self.signal_position_move_finished.emit(True, "")
+
+    def _restart_live(self):
+        """Live view back on after a move. A camera that will not restart must not stop the move being reported:
+        the callbacks run inside the move thread's error handling, which would report the move again, as failed,
+        and the Z lift guard, the GUI's stage lock and a waiting control server command would never hear of it."""
+        try:
+            self.live_controller.start_live()
+        except Exception:
+            self.log.exception("Could not restart live view after the loading position move")
 
 
 # Where a z stack sits relative to each FOV's z, as offered in the acquisition tabs: (label, controller name).

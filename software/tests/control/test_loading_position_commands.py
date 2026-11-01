@@ -131,6 +131,38 @@ def test_an_unattended_move_is_refused_while_the_lift_is_held(qtbot):
     move.assert_not_called()
 
 
+def test_a_move_is_reported_once_even_when_live_view_cannot_restart(qtbot, caplog):
+    dialog = _stage_utils(qtbot)
+    guard = LiftMotionGuard(dialog)
+    dialog.set_lift_motion_guard(guard)
+    dialog.live_controller.is_live = True  # live was on, so it comes back on after each move
+    dialog.live_controller.start_live.side_effect = RuntimeError("camera gone")
+
+    assert _unattended(qtbot, dialog, to_loading=True) == [True, ""]
+    assert dialog.slide_position == "loading"
+    assert _unattended(qtbot, dialog, to_loading=False) == [True, ""]
+
+    assert dialog.slide_position == "scanning"  # not reported a second time, as a failure, and so back at loading
+    assert dialog.btn_load_slide.text() == "Move to Loading Position"
+    assert not guard.busy and not guard.at_loading_position
+    assert "camera gone" in caplog.text
+
+
+def test_a_move_whose_thread_cannot_start_is_a_failed_move_that_holds_nothing(qtbot):
+    dialog = _stage_utils(qtbot)
+    guard = LiftMotionGuard(dialog)
+    dialog.set_lift_motion_guard(guard)
+    with patch("control.widgets.move_to_loading_position", side_effect=RuntimeError("can't start new thread")):
+        success, error = _unattended(qtbot, dialog, to_loading=True)
+
+    assert success is False and "can't start new thread" in error
+    # as after a move to loading that failed in its thread: treated as there, the return is offered
+    assert dialog.slide_position == "loading"
+    assert dialog.btn_load_slide.isEnabled()
+    assert not guard.busy
+    assert _unattended(qtbot, dialog, to_loading=False) == [True, ""]  # nothing left refusing the next move
+
+
 # --- control server commands --------------------------------------------------------------------------------------
 
 
