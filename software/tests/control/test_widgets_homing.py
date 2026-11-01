@@ -79,8 +79,10 @@ def test_stop_sign_is_a_red_octagon(qtbot):
     def is_red(c):
         return c.red() > 150 and c.green() < 80 and c.blue() < 80
 
-    assert is_red(color_at(0.5, 0.02))  # top edge, outside the white rim
-    assert is_red(color_at(0.02, 0.5))  # left edge
+    # Inside the white rim, above and below STOP: solid red at any display scaling. The red band outside the rim is
+    # one or two antialiased pixels at 1x, and the lettering's width depends on the font the platform substitutes.
+    assert is_red(color_at(0.5, 0.25))
+    assert is_red(color_at(0.5, 0.75))
     assert not is_red(color_at(0.02, 0.02))  # the corners are cut: an octagon, not a square
     assert not is_red(color_at(0.98, 0.98))
 
