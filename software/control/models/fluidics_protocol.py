@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 IMAGING_TYPE = "imaging"
 _FOLDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -53,6 +53,7 @@ class ZStackSettings(BaseModel):
 class AutofocusSettings(BaseModel):
     contrast_af: bool = False
     laser_af: bool = False
+    laser_af_per_stack: bool = False  # Z First only: laser AF before each later channel's stack
 
 
 class SettingsBlock(BaseModel):
@@ -70,6 +71,16 @@ class SettingsBlock(BaseModel):
     scan_size_mm: float = 0.0
     overlap_percent: float = 10.0
     skip_saving: bool = False
+
+    @model_validator(mode="after")
+    def _laser_af_per_stack_prerequisites(self):
+        # Same rule and message as the acquisition YAML loader: on needs laser AF and Z First.
+        from control.acquisition_yaml_loader import parse_laser_af_per_stack
+
+        parse_laser_af_per_stack(
+            self.autofocus.laser_af_per_stack, laser_af=self.autofocus.laser_af, z_stack_order=self.z_stack.order
+        )
+        return self
 
 
 class Region(BaseModel):
