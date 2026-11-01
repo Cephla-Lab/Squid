@@ -7,6 +7,7 @@ import re
 import squid.ftdi
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
+from squid.exceptions import SquidError, SquidTimeout
 
 
 class PriorStage(AbstractStage):
@@ -14,6 +15,10 @@ class PriorStage(AbstractStage):
     # How often wait_for_stop() asks the controller whether the move is done. With replies read up to their CR
     # terminator a "$,S" round trip is a few ms, so polling this fast costs nothing and cuts dead time after a move.
     MOVE_POLLING_PERIOD = 0.01
+    # wait_for_stop() raises when "$,S" has gone this long without a status reply. A busy status resets the clock,
+    # so long moves are fine; this catches a controller that stopped answering while its port stays open (each
+    # unanswered poll costs the 0.1 s read timeout).
+    STATUS_REPLY_TIMEOUT_S = 1.0
 
     def __init__(
         self,
@@ -175,8 +180,11 @@ class PriorStage(AbstractStage):
             return lines
 
     def get_stage_info(self):
-        stage_info = "\n".join(self._send_multiline_command("STAGE"))
-        self.stage_model = re.search(r"STAGE\s*=\s*(\S+)", stage_info).group(1)
+        lines = self._send_multiline_command("STAGE")
+        match = re.search(r"STAGE\s*=\s*(\S+)", "\n".join(lines))
+        if match is None:
+            raise SquidError(f"Prior stage did not report its model in reply to STAGE: {lines!r}")
+        self.stage_model = match.group(1)
         print("Stage model: ", self.stage_model)
 
     def set_max_speed(self, speed=1000):
@@ -318,14 +326,24 @@ class PriorStage(AbstractStage):
 
     def wait_for_stop(self):
         self.is_busy = True
+        last_status_time = time.monotonic()
         while True:
             status = self._send_command("$,S")
-            # A non-numeric reply is a stray line (not a status), so just ask again.
-            if status.isdigit() and int(status) == 0:
-                self._get_pos_poll_stage()
-                # print("xy position: ", self.x_pos, self.y_pos)
-                self.is_busy = False
-                break
+            if status.isdigit():
+                if int(status) == 0:
+                    self._get_pos_poll_stage()
+                    # print("xy position: ", self.x_pos, self.y_pos)
+                    self.is_busy = False
+                    break
+                last_status_time = time.monotonic()
+            elif time.monotonic() - last_status_time > PriorStage.STATUS_REPLY_TIMEOUT_S:
+                # A stray line or one missed reply is just asked again; this long without a status, it is gone.
+                message = (
+                    f"Prior stage gave no status reply to '$,S' for {PriorStage.STATUS_REPLY_TIMEOUT_S} s "
+                    f"(last reply {status!r})"
+                )
+                self._log.error(message)
+                raise SquidTimeout(message)
             time.sleep(PriorStage.MOVE_POLLING_PERIOD)
 
     def set_limits(

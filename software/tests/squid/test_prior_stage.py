@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 import serial.tools.list_ports  # prior.py relies on the app having imported it already
 
+import squid.exceptions
 import squid.stage.prior
 
 
@@ -204,3 +205,52 @@ def test_controller_error_raises(fake):
     ser._reply = lambda cmd: b"E,4\r"
     with pytest.raises(Exception, match="E,4"):
         stage._send_command("SMS 5000")
+
+
+def _status_replies(ser, replies):
+    """Answer "$,S" from `replies` (bytes, or None = no reply at all) and fall back to the normal fake after."""
+    normal = ser._reply
+    pending = iter(replies)
+
+    def reply(cmd):
+        if cmd == "$,S":
+            nxt = next(pending, "normal")
+            if nxt != "normal":
+                return nxt or b""
+        return normal(cmd)
+
+    ser._reply = reply
+
+
+def test_wait_for_stop_raises_when_controller_stops_answering(fake, monkeypatch):
+    monkeypatch.setattr(squid.stage.prior.PriorStage, "STATUS_REPLY_TIMEOUT_S", 0.3)
+    stage, ser = make_stage(fake)
+    _status_replies(ser, [None] * 1000)
+    t0 = time.perf_counter()
+    with pytest.raises(squid.exceptions.SquidTimeout, match=r"\$,S"):
+        stage.wait_for_stop()
+    # Each unanswered poll costs the 0.1 s read timeout, so it gives up a poll or two after the 0.3 s budget.
+    assert time.perf_counter() - t0 < 1.0
+
+
+def test_long_move_reporting_busy_does_not_time_out(fake, monkeypatch):
+    # The budget is for silence, not for move length: busy statuses keep resetting it.
+    monkeypatch.setattr(squid.stage.prior.PriorStage, "STATUS_REPLY_TIMEOUT_S", 0.05)
+    stage, ser = make_stage(fake)
+    ser.busy_polls = 30  # 30 polls x >= 10 ms, well past the budget
+    stage.wait_for_stop()
+    assert not stage.get_state().busy
+
+
+def test_stray_status_line_is_skipped(fake):
+    stage, ser = make_stage(fake)
+    _status_replies(ser, [b"R\r", None])  # a stray line, then one unanswered poll
+    stage.wait_for_stop()
+    assert not stage.get_state().busy
+
+
+def test_missing_stage_model_fails_startup_clearly(fake, monkeypatch):
+    normal = FakeProScan._reply
+    monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"" if cmd == "STAGE" else normal(self, cmd))
+    with pytest.raises(squid.exceptions.SquidError, match="STAGE"):
+        make_stage(fake)
