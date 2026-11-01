@@ -3,6 +3,7 @@ Utilities for parsing and validating acquisition YAML files.
 """
 
 import csv
+import math
 import os
 import yaml
 
@@ -288,7 +289,13 @@ def validate_hardware(
         messages.append("Piezo mismatch:\n  YAML: z-stack on the piezo\n  Current: this microscope has no piezo")
     elif yaml_data.use_piezo and yaml_data.piezo_z_range_um:
         z_min_um, z_max_um = yaml_data.piezo_z_range_um
-        if z_min_um < 0 or z_max_um > piezo_travel_um:
+        if not (math.isfinite(z_min_um) and math.isfinite(z_max_um) and z_min_um <= z_max_um):
+            piezo_mismatch = True
+            messages.append(
+                f"Piezo Z-range not in order:\n  YAML: {z_min_um:.1f} to {z_max_um:.1f} µm\n"
+                "  Z-min must be a number at or below Z-max"
+            )
+        elif z_min_um < 0 or z_max_um > piezo_travel_um:
             piezo_mismatch = True
             messages.append(
                 f"Piezo Z-range outside the travel:\n  YAML: {z_min_um:.1f} to {z_max_um:.1f} µm\n"

@@ -28,6 +28,20 @@ def test_a_last_plane_past_the_top_of_the_travel_is_refused_with_the_overrun():
     assert "1.0 µm" in problem
 
 
+@pytest.mark.parametrize(
+    "piezo_z_range_um",
+    [
+        (250.0, 20.0),  # reversed: From Bottom would run 250, 252, ... and never cover 20..250
+        (float("nan"), 26.0),
+        (20.0, float("inf")),
+    ],
+)
+def test_a_range_that_is_not_an_ordered_pair_of_numbers_is_refused(piezo_z_range_um):
+    problem = piezo_z_range_problem(piezo_z_range_um, 4, 2.0, "FROM BOTTOM", travel_um=300.0)
+    assert problem is not None
+    assert "Z-min" in problem
+
+
 def test_a_from_top_stack_below_zero_is_refused_with_the_overrun():
     # From the top: 10, 6, 2, -2 µm.
     problem = piezo_z_range_problem((2.0, 10.0), 4, 4.0, "FROM TOP", travel_um=300.0)

@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Optional, Callable, TYPE_CHECKING
 
@@ -87,7 +88,8 @@ def piezo_z_range_problem(
     The worker starts the stack at Z-max and steps down by delta_z_um for "FROM TOP", otherwise starts at
     Z-min and steps up: nz planes in all. The widget sets nz = ceil((max - min) / dz) + 1, so the last plane
     can land up to one dz past the far end of the range. "FROM CENTER" is refused: the worker would centre
-    the stack on Z-min, half of it below the range.
+    the stack on Z-min, half of it below the range. So is a range that is not two numbers with Z-min at or
+    below Z-max: a reversed one would pass the travel check while the stack never covers it.
     """
     if z_stacking_config == "FROM CENTER":
         return (
@@ -95,6 +97,11 @@ def piezo_z_range_problem(
             "choose From Bottom, or clear the range."
         )
     z_min_um, z_max_um = piezo_z_range_um
+    if not (math.isfinite(z_min_um) and math.isfinite(z_max_um) and z_min_um <= z_max_um):
+        return (
+            f"The Z-range must run from Z-min up to Z-max, got {z_min_um:.1f} to {z_max_um:.1f} µm: "
+            "set the range again."
+        )
     span_um = delta_z_um * (nz - 1)
     if z_stacking_config == "FROM TOP":
         first_um, last_um = z_max_um, z_max_um - span_um

@@ -429,6 +429,16 @@ class TestValidateHardware:
         assert result.piezo_mismatch is True
         assert "0 to 300 µm" in result.message
 
+    @pytest.mark.parametrize("piezo_z_range_um", [(250.0, 20.0), (float("nan"), 26.0), (20.0, float("inf"))])
+    def test_a_saved_piezo_range_that_is_not_an_ordered_pair_of_numbers_is_refused(self, piezo_z_range_um):
+        yaml_data = AcquisitionYAMLData(widget_type="wellplate", use_piezo=True, piezo_z_range_um=piezo_z_range_um)
+
+        result = validate_hardware(yaml_data, "20x", (1, 1), piezo_travel_um=300.0)
+
+        assert result.is_valid is False
+        assert result.piezo_mismatch is True
+        assert "Z-min" in result.message
+
     def test_a_saved_piezo_range_inside_the_travel_loads(self):
         yaml_data = AcquisitionYAMLData(widget_type="wellplate", use_piezo=True, piezo_z_range_um=(20.0, 26.0))
 
