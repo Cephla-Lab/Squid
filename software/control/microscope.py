@@ -468,9 +468,9 @@ class Microscope:
 
         def acquisition_camera_hw_strobe_delay_fn(strobe_delay_ms: float) -> bool:
             strobe_delay_us = int(1000 * strobe_delay_ms)
-            cam_trigger_log.debug(f"Setting microcontroller strobe delay to {strobe_delay_us} [us]")
-            low_level_devices.microcontroller.set_strobe_delay_us(strobe_delay_us)
-            low_level_devices.microcontroller.wait_till_operation_is_completed()
+            # Called before every image; only sends (and waits for the ack) when the delay changed.
+            if low_level_devices.microcontroller.ensure_strobe_delay_us(strobe_delay_us):
+                cam_trigger_log.debug(f"Set microcontroller strobe delay to {strobe_delay_us} [us]")
 
             return True
 
