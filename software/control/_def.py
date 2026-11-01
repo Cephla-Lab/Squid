@@ -1269,6 +1269,11 @@ SQUID_FILTERWHEEL_CONFIGS = {
 # Stage
 USE_PRIOR_STAGE = False
 PRIOR_STAGE_SN = ""
+# Encoders on a Prior stage: False switches them off at start-up (open loop), True on (closed loop), None sends
+# nothing. A ProScan turns on the encoders it detects at power-up and keeps a switched state until it is power-cycled,
+# so going back to None does not restore closed loop by itself. On an H117 closed loop made short moves ~3x slower and
+# did not recover a stall. Switched off, they still count ("P,e"), e.g. to check for lost steps.
+PRIOR_STAGE_USE_ENCODERS = None
 # ProScan SMS / SAS values, 1-1000. On an H117(1MM) stage 100 = 6 mm/s and 28.6 mm/s^2; 1000 = 60 mm/s, 285.5 mm/s^2.
 PRIOR_STAGE_MAX_SPEED = 100
 PRIOR_STAGE_ACCELERATION = 100

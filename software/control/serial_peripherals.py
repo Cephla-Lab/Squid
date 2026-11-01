@@ -1,12 +1,15 @@
 import abc
+from typing import Optional
 
 import serial
 from serial.tools import list_ports
+import threading
 import time
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode
 from control._def import *
 from squid.abc import LightSource
 
+import squid.ftdi
 import squid.logging
 
 log = squid.logging.get_logger(__name__)
@@ -536,6 +539,27 @@ def dragonfly_camera_port_for_dichroic(dichroic_name: str) -> int:
 
 
 class Dragonfly:
+    # The Dragonfly answers each AT command with one CR-terminated line, once the command is done: a filter wheel or
+    # aperture move replies when the wheel is in place (~0.1-0.3 s), AT_MS_RUN when the disk is up to speed (~6 s),
+    # AT_STANDBY,0 once the unit is out of standby (20 s in a capture of Andor's software, which sends its next command
+    # straight away). The timeouts only bound a unit that stopped answering.
+    QUERY_TIMEOUT_S = 1.0  # "...,?" round trip: ~2 ms, ~15 ms at the FTDI default latency timer
+    REPLY_TIMEOUT_S = 5.0
+    STANDBY_TIMEOUT_S = 60.0
+    MODALITY_TIMEOUT_S = 15.0
+    DISK_MOTOR_TIMEOUT_S = 20.0
+    # The driver used to wait at least this long after these commands; kept, as nothing shows they reply only once done
+    MODALITY_SETTLE_S = 2.0
+    DISK_STOP_SETTLE_S = 1.0
+    # A garbled command (e.g. a stray byte on the line) comes back as 30005:N, "unknown command": the unit did nothing,
+    # so it is sent again. An unanswered query is asked again too (queries change nothing); an unanswered move is not.
+    GARBLED_COMMAND_REPLY = "30005:N"
+    COMMAND_ATTEMPTS = 3
+    RETRY_DELAY_S = 0.1
+    # After a command went unanswered its reply may still come. Before the next command the driver sends an empty line,
+    # which the unit always answers with 30005:N, and drops everything before that answer. Until that answer comes no
+    # command is sent, since its reply could not be told from the late one.
+    RESYNC_QUIET_S = 0.05
 
     def __init__(self, SN: str):
         self.log = squid.logging.get_logger(self.__class__.__name__)
@@ -550,38 +574,139 @@ class Dragonfly:
             dsrdtr=False,
         )
         self.serial_connection.open_ser()
+        port = self.serial_connection.serial
+        if port is None:
+            raise SerialDeviceError(f"No Dragonfly found with serial number {SN}")
+        if not port.timeout:
+            port.timeout = 0.1  # reads must return now and then (and not spin) for the reply deadlines to be checked
+        self._command_lock = threading.Lock()
+        self._resync_needed = False
+        self._resync_timeout_s = 0.0
+        # A command is one short request/reply exchange, so the FTDI latency timer sets the cost of a query
+        squid.ftdi.warn_if_latency_timer_high(self.serial_connection.port, "Dragonfly", self.log)
         self.get_config()
 
         # Exit standby mode
-        self._send_command("AT_STANDBY,0", read_delay=10)
+        self._send_command("AT_STANDBY,0", timeout_s=Dragonfly.STANDBY_TIMEOUT_S)
         self._send_command("AT_DC_SLCT,1")
         self.set_disk_speed(self.spinning_disk_max_speed)
         self.get_port_selection_dichroic()
         self.ps_info = self.get_port_selection_dichroic_info()
 
-    def _send_command(self, command: str, read_delay: float = 0.1) -> str:
-        """Send AT command and return response
+    def _send_command(self, command: str, timeout_s: Optional[float] = None, settle_s: float = 0.0) -> str:
+        """Send an AT command and return its reply without the ':A' suffix.
 
-        Args:
-            command: Command to send (without \r)
-            read_delay: Time to wait for response
+        The reply is read up to its CR as soon as it arrives. The previous fixed wait plus readline(), which looks for
+        an LF the Dragonfly never sends, cost ~200 ms per command (~15 ms is the real round trip), and an empty read
+        re-sent the command, repeating a move that was still under way. A garbled command is sent again, an
+        unanswered query asked again, an unanswered move never re-sent. settle_s is the least time the command takes,
+        counted from the send that was answered (not from any resync or garbled try before it), for state changes that
+        may be acknowledged before they are complete; the lock is held throughout, so no other command reaches the unit
+        meanwhile.
 
-        Returns:
-            Response content (without suffix) on success, None on failure
+        Raises SerialDeviceError when the unit rejects the command (':N'), gives no complete reply within timeout_s
+        (default QUERY_TIMEOUT_S for queries, REPLY_TIMEOUT_S otherwise), or does not answer the resync that has to
+        come first after an unanswered command (the command is then not sent).
         """
-        response = self.serial_connection.write_and_read(command + "\r", read_delay=read_delay)
+        is_query = command.endswith("?")
+        if timeout_s is None:
+            timeout_s = Dragonfly.QUERY_TIMEOUT_S if is_query else Dragonfly.REPLY_TIMEOUT_S
+        with self._command_lock:
+            for attempt in range(1, Dragonfly.COMMAND_ATTEMPTS + 1):
+                response, sent_at = self._exchange(command, timeout_s)
+                garbled = response == Dragonfly.GARBLED_COMMAND_REPLY
+                if not (garbled or (is_query and not response)) or attempt == Dragonfly.COMMAND_ATTEMPTS:
+                    break
+                self.log.warning(
+                    f"{command} -> {response or 'no reply'}; sending it again "
+                    f"({attempt}/{Dragonfly.COMMAND_ATTEMPTS - 1})"
+                )
+                time.sleep(Dragonfly.RETRY_DELAY_S)
 
-        if response.endswith(":A"):
-            # Success - return the response without :A suffix
-            return response[:-2]
-        elif response.endswith(":N"):
+            if not response:
+                self.log.error(f"No reply to {command} within {timeout_s} s")
+                raise SerialDeviceError(f"Dragonfly gave no reply to {command} within {timeout_s} s")
+            if response.endswith(":A"):
+                remaining = settle_s - (time.monotonic() - sent_at)
+                if remaining > 0:
+                    time.sleep(remaining)
+                # Success - return the response without :A suffix
+                return response[:-2]
+        if response.endswith(":N"):
             # Failure
             self.log.error(f"Command failed: {command} -> {response}")
             raise SerialDeviceError(f"Dragonfly command failed: {command} -> {response}")
-        else:
-            # Unexpected response format
-            self.log.error(f"Unexpected response format: {command} -> {response}")
-            raise SerialDeviceError(f"Dragonfly unexpected response format: {command} -> {response}")
+        # Unexpected response format
+        self.log.error(f"Unexpected response format: {command} -> {response}")
+        raise SerialDeviceError(f"Dragonfly unexpected response format: {command} -> {response}")
+
+    def _exchange(self, command: str, timeout_s: float) -> tuple[str, float]:
+        """Write one command and read its CR-terminated reply ('' if no complete reply came within timeout_s).
+        Returns the reply and the time.monotonic() at which the command was written. The caller holds the command lock.
+
+        The deadline is kept here, not by changing port.timeout: on Windows that reconfigures the port, and doing it
+        around every command garbled 28-45 % of them on a Dragonfly (30005:N, replies cut off)."""
+        port = self.serial_connection.serial
+        try:
+            if self._resync_needed and not self._resync(port):
+                self.log.error(f"No reply to the resync; {command} not sent")
+                raise SerialDeviceError(
+                    f"Dragonfly gave no reply to the resync after an unanswered command, so {command} was not sent"
+                )
+            port.reset_input_buffer()  # drop anything stale so it can't be taken as this command's reply
+            port.write((command + "\r").encode())
+            sent_at = time.monotonic()
+            reply = self._read_line(port, sent_at + timeout_s)
+        except serial.SerialException as e:
+            raise SerialDeviceError(f"Dragonfly serial port error during {command}: {e}") from e
+        if not reply.endswith(b"\r"):
+            # The unit may still answer (a slow command finishing); that late reply would land on the next command
+            if reply:
+                self.log.warning(f"Incomplete reply to {command}: {reply!r}")
+            self._resync_needed = True
+            self._resync_timeout_s = max(self._resync_timeout_s, timeout_s)
+            return "", sent_at
+        return reply.decode(errors="replace").strip(), sent_at
+
+    @staticmethod
+    def _read_line(port, deadline: float) -> bytes:
+        line = b""
+        while not line.endswith(b"\r") and time.monotonic() < deadline:
+            line += port.read_until(b"\r")  # returns at the CR, or after the port's short read timeout
+        return line
+
+    def _resync(self, port) -> bool:
+        """Drop the late reply of a command that went unanswered, if it is still on the way. Returns whether the unit
+        answered; if not, it is still busy, its late reply may yet come, and the resync is tried again next time.
+
+        Sends an empty line, which the unit answers with 30005:N once it has finished what it was doing (it answers in
+        order), and drops everything up to that answer. Waits at most as long as the unanswered command was given.
+        That answer is a rejection, so if it comes late it can never make a later command look successful."""
+        port.reset_input_buffer()
+        port.write(b"\r")
+        deadline = time.monotonic() + max(self._resync_timeout_s, Dragonfly.QUERY_TIMEOUT_S)
+        while time.monotonic() < deadline:
+            line = self._read_line(port, deadline)
+            if not line.endswith(b"\r"):
+                break
+            text = line.decode(errors="replace").strip()
+            if text.endswith(Dragonfly.GARBLED_COMMAND_REPLY):  # also when the rest of a cut-off reply is glued on
+                self._drain_until_quiet(port)  # if that was a stale 30005:N, our own answer follows within ms
+                self._resync_needed = False
+                self._resync_timeout_s = 0.0
+                return True
+            self.log.warning(f"Dropped a late reply: {text!r}")
+        return False
+
+    @staticmethod
+    def _drain_until_quiet(port):
+        quiet_since = time.monotonic()
+        while time.monotonic() - quiet_since < Dragonfly.RESYNC_QUIET_S:
+            if port.in_waiting:
+                port.read(port.in_waiting)
+                quiet_since = time.monotonic()
+            else:
+                time.sleep(0.005)
 
     def get_config(self):
         """Get device configuration and capabilities"""
@@ -680,7 +805,7 @@ class Dragonfly:
             modality: Modality string (e.g., 'CONFOCAL', 'BF', etc.)
         """
         command = f"AT_MODALITY,{modality}"
-        self._send_command(command, read_delay=2)
+        self._send_command(command, timeout_s=Dragonfly.MODALITY_TIMEOUT_S, settle_s=Dragonfly.MODALITY_SETTLE_S)
 
     def get_modality(self) -> str:
         """Get current imaging modality
@@ -697,9 +822,11 @@ class Dragonfly:
             run: True to start, False to stop
         """
         if run:
-            self._send_command("AT_MS_RUN", read_delay=2)
+            self._send_command("AT_MS_RUN", timeout_s=Dragonfly.DISK_MOTOR_TIMEOUT_S)
         else:
-            self._send_command("AT_MS_STOP", read_delay=1)
+            self._send_command(
+                "AT_MS_STOP", timeout_s=Dragonfly.DISK_MOTOR_TIMEOUT_S, settle_s=Dragonfly.DISK_STOP_SETTLE_S
+            )
 
     def get_disk_motor_state(self) -> bool:
         """Get spinning disk motor state
@@ -720,7 +847,7 @@ class Dragonfly:
             Set speed
         """
         command = f"AT_MS,{speed}"
-        self._send_command(command, read_delay=0.1)
+        self._send_command(command, timeout_s=Dragonfly.DISK_MOTOR_TIMEOUT_S)  # in case it replies at the new speed
 
     def get_disk_speed(self) -> int:
         """Get current spinning disk motor speed
@@ -807,9 +934,14 @@ class Dragonfly:
         return info
 
     def close(self):
-        """Close serial connection"""
+        """Close serial connection (after a command in progress finishes, waiting at most REPLY_TIMEOUT_S)"""
         if self.serial_connection:
-            self.serial_connection.close()
+            locked = self._command_lock.acquire(timeout=Dragonfly.REPLY_TIMEOUT_S)
+            try:
+                self.serial_connection.close()
+            finally:
+                if locked:
+                    self._command_lock.release()
 
 
 class Dragonfly_Simulation:

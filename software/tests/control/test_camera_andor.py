@@ -39,6 +39,7 @@ class FakeAndorCamera:
         self.TriggerMode = "Internal"
         self.CycleMode = "Continuous"
         self.LineScanSpeed = 100000.0  # rows per second: 10 us per row
+        self.SensorReadoutMode = "Centre Out Simultaneous"  # the power-on default
         self.AuxiliaryOutSource = "FireRow1"  # the power-on default
         self.SensorTemperature = -5.0
         self.is_open = False
@@ -76,6 +77,17 @@ class FakeAndorCamera:
     @property
     def ImageSizeBytes(self):
         return self.AOIStride * self.AOIHeight
+
+    @property
+    def ReadoutTime(self):
+        """Seconds. The two sensor halves are read at once, so the AOI's rows in the busier half set it. Like a
+        Zyla, it reports this in the sequential readout modes too."""
+        half = self.SensorHeight // 2
+        top = self.AOITop - 1
+        bottom = top + self.AOIHeight
+        rows_in_top = max(0, min(bottom, half) - top)
+        rows_in_bottom = max(0, bottom - max(top, half))
+        return max(rows_in_top, rows_in_bottom) / self.LineScanSpeed
 
     # ---- SDK calls
     def open(self):
@@ -313,12 +325,46 @@ def test_exposure_in_hardware_trigger_mode_adds_the_readout_and_reports_the_stro
     camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
     camera.set_exposure_time(20.0)
 
-    # 2048 rows at 10 us per row = 20.48 ms of readout
-    assert camera.get_strobe_time() == pytest.approx(20.48)
+    # Centre out: the two halves' 1024 rows are read at once, 10 us per row = 10.24 ms of readout
+    assert camera.get_strobe_time() == pytest.approx(10.24)
     assert sdk_camera.TriggerMode == "External"
-    assert sdk_camera.ExposureTime == pytest.approx((20.0 + 20.48) / 1000.0)
-    assert camera.hw_strobe_delays_ms[-1] == pytest.approx(20.48)
+    assert sdk_camera.ExposureTime == pytest.approx((20.0 + 10.24) / 1000.0)
+    assert camera.hw_strobe_delays_ms[-1] == pytest.approx(10.24)
     assert camera.get_exposure_time() == 20.0
+
+
+def test_strobe_follows_the_readout_time_the_camera_reports(sdk_camera, monkeypatch):
+    sdk_camera.LineScanSpeed = 1 / 9.6e-6  # a faster readout rate: 9.6 us per row
+    cam = make_camera(sdk_camera, monkeypatch)
+    cam.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    cam.set_exposure_time(20.0)
+
+    # 1024 rows at 9.6 us, to the whole microsecond the strobe delay is kept in
+    assert cam.get_strobe_time() == pytest.approx(sdk_camera.ReadoutTime * 1e3, abs=1e-3)
+    assert cam.get_strobe_time() == pytest.approx(9.83, abs=1e-3)
+    cam.close()
+
+
+def test_a_sequential_readout_waits_for_every_row_of_the_aoi(sdk_camera, monkeypatch):
+    sdk_camera.SensorReadoutMode = "Top Down Sequential"
+    cam = make_camera(sdk_camera, monkeypatch)
+    cam.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    cam.set_exposure_time(20.0)
+
+    # ReadoutTime still reports the simultaneous 10.24 ms; the sweep is all 2048 rows
+    assert cam.get_strobe_time() == pytest.approx(20.48)
+    assert sdk_camera.ExposureTime == pytest.approx((20.0 + 20.48) / 1000.0)
+    cam.close()
+
+
+def test_without_a_readout_mode_the_strobe_counts_every_row(sdk_camera, monkeypatch):
+    del sdk_camera.SensorReadoutMode  # a camera that doesn't implement the feature
+    cam = make_camera(sdk_camera, monkeypatch)
+    cam.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    cam.set_exposure_time(20.0)
+
+    assert cam.get_strobe_time() == pytest.approx(20.48)
+    cam.close()
 
 
 # ------------------------------------------------------------------ streaming and triggers
@@ -464,7 +510,7 @@ def test_roi_change_reapplies_exposure_and_strobe_in_hardware_trigger_mode(camer
 
     camera.set_region_of_interest(0, 768, 2048, 512)
 
-    # readout now covers 512 rows at 10 us per row
-    assert camera.get_strobe_time() == pytest.approx(5.12)
-    assert camera.hw_strobe_delays_ms[-1] == pytest.approx(5.12)
-    assert sdk_camera.ExposureTime == pytest.approx((20.0 + 5.12) / 1000.0)
+    # readout now covers 512 rows centred on the sensor: 256 per half at 10 us per row
+    assert camera.get_strobe_time() == pytest.approx(2.56)
+    assert camera.hw_strobe_delays_ms[-1] == pytest.approx(2.56)
+    assert sdk_camera.ExposureTime == pytest.approx((20.0 + 2.56) / 1000.0)
