@@ -637,17 +637,33 @@ class Microscope:
         except Exception:
             self._log.exception("Could not apply the stage's speed and acceleration for the current objective")
 
-    def apply_stage_motion_limits(self) -> None:
+    def apply_stage_motion_limits(
+        self,
+        max_speed: Optional[int] = None,
+        acceleration: Optional[int] = None,
+        immersion_max_speed: Optional[int] = None,
+        immersion_acceleration: Optional[int] = None,
+    ) -> None:
         """Give a Prior stage the speed and acceleration for the current objective: the general settings, or with an
-        immersion objective (NA >= 1.0) the immersion settings where they are lower. No-op for other stages."""
+        immersion objective (NA >= 1.0) the immersion settings where they are lower. No-op for other stages.
+
+        A setting left out is its running value (control._def.PRIOR_STAGE_*). Preferences passes the ones it is about
+        to save, so that a stage that doesn't take them can stop the save; calling again with none puts the stage
+        back. Raises when the stage doesn't take them."""
         if not hasattr(self.stage, "apply_motion_settings"):
             return
-        max_speed = control._def.PRIOR_STAGE_MAX_SPEED
-        acceleration = control._def.PRIOR_STAGE_ACCELERATION
+
+        def setting(value, running):
+            return running if value is None else value
+
+        max_speed = setting(max_speed, control._def.PRIOR_STAGE_MAX_SPEED)
+        acceleration = setting(acceleration, control._def.PRIOR_STAGE_ACCELERATION)
         objective = self.objective_store.get_current_objective_info()
         if ObjectiveStore.is_immersion(objective):
-            max_speed = min(max_speed, control._def.PRIOR_STAGE_IMMERSION_MAX_SPEED)
-            acceleration = min(acceleration, control._def.PRIOR_STAGE_IMMERSION_ACCELERATION)
+            max_speed = min(max_speed, setting(immersion_max_speed, control._def.PRIOR_STAGE_IMMERSION_MAX_SPEED))
+            acceleration = min(
+                acceleration, setting(immersion_acceleration, control._def.PRIOR_STAGE_IMMERSION_ACCELERATION)
+            )
         self.stage.apply_motion_settings(max_speed, acceleration)
 
     @property

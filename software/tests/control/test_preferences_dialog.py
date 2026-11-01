@@ -1291,10 +1291,9 @@ class TestZStackOrderDropdownPreference:
 class _FakePriorStage:
     """What the dialog uses of PriorStage: the SMS/SAS values, their physical units, and the setters."""
 
-    def __init__(self, speed=100, acceleration=100, failing=()):
+    def __init__(self, speed=100, acceleration=100):
         self.speed = speed
         self.acceleration = acceleration
-        self.failing = set(failing)  # commands the controller doesn't take: the setter raises, the value stays
         self.sent = []
 
     def get_max_speed_mm_s(self):
@@ -1303,18 +1302,27 @@ class _FakePriorStage:
     def get_acceleration_mm_s2(self):
         return self.acceleration * 0.2855  # H117(1MM): 285.5 um/s^2 per step
 
-    def _send(self, command, value):
-        self.sent.append((command, value))
-        if command in self.failing:
-            raise squid.exceptions.SquidError(f"Prior stage did not take {command} {value}: no reply")
-
     def set_max_speed(self, value):
-        self._send("SMS", value)
+        self.sent.append(("SMS", value))
         self.speed = value
 
     def set_acceleration(self, value):
-        self._send("SAS", value)
+        self.sent.append(("SAS", value))
         self.acceleration = value
+
+
+class _FakeMotionApplier:
+    """Microscope.apply_stage_motion_limits as the dialog uses it: called with the settings about to be saved (the
+    others are the running values), and with none to put the stage back to the running values."""
+
+    def __init__(self, failing=False):
+        self.calls = []
+        self.failing = failing  # True: the stage doesn't take new values; "always": not even the running ones
+
+    def __call__(self, **settings):
+        self.calls.append(settings)
+        if self.failing == "always" or (self.failing and settings):
+            raise squid.exceptions.SquidError("Prior stage did not take max speed 400: no reply")
 
 
 class TestPriorStageSettings:
@@ -1335,8 +1343,8 @@ class TestPriorStageSettings:
         # Some tests also save an unrelated setting, which Save writes into control._def too.
         monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FILE_SAVING_OPTION)
 
-    def _dialog(self, qtbot, config, path, stage=None):
-        dialog = control.widgets.PreferencesDialog(config, path, stage=stage)
+    def _dialog(self, qtbot, config, path, stage=None, apply_prior_motion=None):
+        dialog = control.widgets.PreferencesDialog(config, path, stage=stage, apply_prior_motion=apply_prior_motion)
         qtbot.addWidget(dialog)
         return dialog
 
@@ -1397,8 +1405,10 @@ class TestPriorStageSettings:
     def test_save_writes_the_ini_and_the_running_values(self, qtbot, sample_config, temp_config_file, prior_rig):
         import control._def
 
-        stage = _FakePriorStage()
-        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        stage, apply_prior_motion = _FakePriorStage(), _FakeMotionApplier()
+        dialog = self._dialog(
+            qtbot, sample_config, temp_config_file, stage=stage, apply_prior_motion=apply_prior_motion
+        )
         dialog.prior_speed_spinbox.setValue(500)
         dialog.prior_immersion_speed_spinbox.setValue(80)
         assert [c for c in dialog._get_changes() if c[0].startswith("Prior Stage")] == [
@@ -1413,7 +1423,9 @@ class TestPriorStageSettings:
         assert saved.get("GENERAL", "prior_stage_immersion_max_speed") == "80"
         assert saved.get("GENERAL", "prior_stage_immersion_acceleration") == "100"
         assert (control._def.PRIOR_STAGE_MAX_SPEED, control._def.PRIOR_STAGE_IMMERSION_MAX_SPEED) == (500, 80)
-        # The GUI sends them on signal_config_changed, for the current objective (Microscope.apply_stage_motion_limits)
+        # The stage got the changed settings first, for the current objective (Microscope.apply_stage_motion_limits),
+        # not straight from the dialog.
+        assert apply_prior_motion.calls == [{"max_speed": 500, "immersion_max_speed": 80}]
         assert stage.sent == []
 
     def test_immersion_rows_show_their_physical_units(self, qtbot, sample_config, temp_config_file, prior_rig):
@@ -1438,52 +1450,56 @@ class TestPriorStageSettings:
     ):
         import control._def
 
-        stage = _FakePriorStage(failing={"SMS"})
-        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        apply_prior_motion = _FakeMotionApplier(failing=True)
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, apply_prior_motion=apply_prior_motion)
         dialog.prior_speed_spinbox.setValue(400)
         select_file_saving_option(dialog, "INDIVIDUAL_IMAGES")  # an unrelated change saved in the same click
         with patch.object(QMessageBox, "warning") as mock_warning:
             assert not dialog._apply_settings()
         mock_warning.assert_called_once()
         assert "no reply" in mock_warning.call_args[0][2]
-        # Nothing written: the ini, the running values and the stage keep the old values ...
+        # The stage is put back to the running values (only what it took gets resent) ...
+        assert apply_prior_motion.calls == [{"max_speed": 400}, {}]
+        # ... and nothing is written: the ini and the running values keep the old values ...
         saved = ConfigParser()
         saved.read(temp_config_file)
         assert not saved.has_option("GENERAL", "prior_stage_max_speed")
         assert saved.get("GENERAL", "file_saving_option") == "OME_TIFF"
         assert control._def.PRIOR_STAGE_MAX_SPEED == 100
-        assert stage.speed == 100
         # ... so the change is still pending, and a retry sends it again.
         assert ("Prior Stage Max Speed", "100", "400", False) in dialog._get_changes()
-        stage.failing.clear()
+        apply_prior_motion.failing = False
         assert dialog._apply_settings()
-        assert stage.speed == 400
+        assert apply_prior_motion.calls[-1] == {"max_speed": 400}
         assert control._def.PRIOR_STAGE_MAX_SPEED == 400
 
     def test_save_and_close_keeps_the_dialog_open_when_the_stage_does_not_take_the_change(
         self, qtbot, sample_config, temp_config_file, prior_rig
     ):
-        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=_FakePriorStage(failing={"SAS"}))
+        dialog = self._dialog(
+            qtbot, sample_config, temp_config_file, apply_prior_motion=_FakeMotionApplier(failing=True)
+        )
         dialog.prior_accel_spinbox.setValue(250)
         with patch.object(QMessageBox, "warning"):
             dialog._save_and_close()
         assert dialog.result() != QDialog.Accepted
 
-    def test_when_only_one_setting_is_taken_it_is_put_back(self, qtbot, sample_config, temp_config_file, prior_rig):
-        stage = _FakePriorStage(failing={"SAS"})
-        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+    def test_the_user_is_told_when_the_stage_could_not_be_put_back(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        dialog = self._dialog(
+            qtbot, sample_config, temp_config_file, apply_prior_motion=_FakeMotionApplier(failing="always")
+        )
         dialog.prior_speed_spinbox.setValue(400)
-        dialog.prior_accel_spinbox.setValue(250)
-        with patch.object(QMessageBox, "warning"):
+        with patch.object(QMessageBox, "warning") as mock_warning:
             assert not dialog._apply_settings()
-        assert stage.sent == [("SMS", 400), ("SAS", 250), ("SMS", 100)]
-        assert (stage.speed, stage.acceleration) == (100, 100)
+        assert "could not be put back" in mock_warning.call_args[0][2]
 
     def test_an_unanswering_stage_does_not_block_saving_other_settings(
         self, qtbot, sample_config, temp_config_file, prior_rig
     ):
-        stage = _FakePriorStage(failing={"SMS", "SAS"})
-        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        apply_prior_motion = _FakeMotionApplier(failing=True)
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, apply_prior_motion=apply_prior_motion)
         select_file_saving_option(dialog, "INDIVIDUAL_IMAGES")
         assert dialog._apply_settings()
-        assert stage.sent == []
+        assert apply_prior_motion.calls == []

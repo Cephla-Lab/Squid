@@ -1990,8 +1990,9 @@ class HighContentScreeningGui(QMainWindow):
             dialog.exec_()
 
     def _apply_stage_motion_limits(self):
-        """Give the stage the speed/acceleration for the current objective (slower ones for immersion objectives).
-        A failure is logged, not raised, so it can't stop an objective change or a Preferences save."""
+        """Give the stage the speed/acceleration for the new objective (slower ones for immersion objectives). A
+        failure is logged, not raised, so it can't stop an objective change. (Preferences sends its changes itself,
+        before saving, so that a refused change is reported and stays pending.)"""
         try:
             self.microscope.apply_stage_motion_limits()
         except Exception:
@@ -2007,13 +2008,12 @@ class HighContentScreeningGui(QMainWindow):
                 parent=self,
                 on_restart=self.restart_application,
                 stage=self.stage,
+                apply_prior_motion=self.microscope.apply_stage_motion_limits,
             )
             dialog.signal_config_changed.connect(self._update_ram_monitor_visibility)
             dialog.signal_config_changed.connect(
                 lambda: self.navigationWidget.set_click_to_move(control._def.ENABLE_CLICK_TO_MOVE)
             )
-            # Prior stage speed/acceleration apply live, for the current objective
-            dialog.signal_config_changed.connect(self._apply_stage_motion_limits)
             # The Z-stack order dropdown preference applies live: the tabs re-read the flag.
             for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget):
                 if tab is not None:

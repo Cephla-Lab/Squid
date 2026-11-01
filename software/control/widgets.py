@@ -1238,13 +1238,15 @@ class PreferencesDialog(QDialog):
         "non-HCS acquisitions are saved as one 6D Zarr per region, which is not OME-Zarr."
     )
 
-    def __init__(self, config, config_filepath, parent=None, on_restart=None, stage=None):
+    def __init__(self, config, config_filepath, parent=None, on_restart=None, stage=None, apply_prior_motion=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
         self.config_filepath = config_filepath
         self._on_restart = on_restart  # Optional callback for application restart
-        self._stage = stage  # Optional; settings the stage can take live (Prior speed/acceleration) are sent to it
+        self._stage = stage  # Optional; a Prior stage's controller gives the physical units of its speed/acceleration
+        # Optional; Microscope.apply_stage_motion_limits, which gives the Prior stage the settings about to be saved
+        self._apply_prior_motion = apply_prior_motion
         self.setWindowTitle("Preferences")
         self.setMinimumWidth(500)
         self.setMinimumHeight(600)
@@ -2590,46 +2592,44 @@ class PreferencesDialog(QDialog):
         control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
         control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
 
-        # Prior stage speed and acceleration. The GUI sends them to the stage on signal_config_changed, picking the
-        # immersion values for an immersion objective (Microscope.apply_stage_motion_limits).
+        # Prior stage speed and acceleration (the stage already has them: _send_prior_motion_settings)
         for _, _, def_name, _, spinbox in self._prior_motion_settings():
             setattr(control._def, def_name, spinbox.value())
 
     def _send_prior_motion_settings(self) -> bool:
-        """Send the Prior stage the speed and acceleration it doesn't have yet. Runs before anything is saved, so when
-        the stage doesn't take them the ini and the running values stay as they were and the change stays pending,
-        ready to retry. Returns False, after putting back a setting it did take and telling the user, in that case."""
-        stage = self._stage
-        if self.prior_speed_spinbox is None or not hasattr(stage, "set_max_speed"):
+        """Give the Prior stage the speed/acceleration settings about to be saved (for the current objective, via
+        apply_prior_motion). Runs before anything is saved, so when the stage doesn't take them the ini and the running
+        values stay as they were and the change stays pending, ready to retry. Returns False, after putting the stage
+        back to the running values and telling the user, in that case."""
+        if self._apply_prior_motion is None:
             return True
-        taken = []  # (setter, value before) of each setting the stage took this time
-        for setter, attr, spinbox, name in (
-            (stage.set_max_speed, "speed", self.prior_speed_spinbox, "max speed"),
-            (stage.set_acceleration, "acceleration", self.prior_accel_spinbox, "acceleration"),
-        ):
-            before, value = getattr(stage, attr), spinbox.value()
-            if before == value:
-                continue
+        # Only the settings that change, each under its apply_prior_motion keyword
+        # (PRIOR_STAGE_IMMERSION_MAX_SPEED -> immersion_max_speed); the others stay at their running values.
+        changed = {
+            def_name.removeprefix("PRIOR_STAGE_").lower(): spinbox.value()
+            for _, _, def_name, _, spinbox in self._prior_motion_settings()
+            if spinbox.value() != getattr(control._def, def_name)
+        }
+        if not changed:
+            return True
+        try:
+            self._apply_prior_motion(**changed)
+        except Exception as e:
+            self._log.exception(f"Prior stage did not take {changed}; nothing saved")
             try:
-                setter(value)
-            except Exception as e:
-                self._log.exception(f"Prior stage did not take {name} {value}; nothing saved")
-                still_changed = []
-                for undo, undo_to in reversed(taken):
-                    try:
-                        undo(undo_to)
-                    except Exception:
-                        self._log.exception(f"Could not put the Prior stage back to {undo_to}")
-                        still_changed.append(undo_to)
-                QMessageBox.warning(
-                    self,
-                    "Prior Stage Not Updated",
-                    f"The Prior stage did not take {name} {value}, so no settings were saved.\n\n{e}\n\n"
-                    "Check the stage's connection, then Save again (or set the value back)."
-                    + ("\n\nThe stage could not be put back to its earlier settings." if still_changed else ""),
-                )
-                return False
-            taken.append((setter, before))
+                self._apply_prior_motion()  # back to the running values: resends only what the stage took
+                put_back = True
+            except Exception:
+                self._log.exception("Could not put the Prior stage back to its running speed/acceleration")
+                put_back = False
+            QMessageBox.warning(
+                self,
+                "Prior Stage Not Updated",
+                f"The Prior stage did not take the new speed/acceleration, so no settings were saved.\n\n{e}\n\n"
+                "Check the stage's connection, then Save again (or set the value back)."
+                + ("" if put_back else "\n\nThe stage could not be put back to its earlier settings."),
+            )
+            return False
         return True
 
     def _get_changes(self):
