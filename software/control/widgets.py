@@ -87,6 +87,7 @@ from scipy.spatial import Delaunay
 import shutil
 from control._def import *
 from control.lighting import LightSourceType
+from control.widgets_homing import confirm_nosepiece_lowered
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -2923,16 +2924,20 @@ class StageUtils(QDialog):
         move_z_axis_to_safety_position(self.stage)
 
     def _show_confirmation_dialog(self, x: bool, y: bool, z: bool, theta: bool):
-        """Display a confirmation dialog and home the specified axis if confirmed."""
-        msg = QMessageBox()
-        msg.setIcon(QMessageBox.Information)
-        msg.setText("Confirm your action")
-        msg.setInformativeText("Click OK to run homing")
-        msg.setWindowTitle("Confirmation")
-        msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-        msg.setDefaultButton(QMessageBox.Cancel)
-        retval = msg.exec_()
-        if QMessageBox.Ok == retval:
+        """Display a confirmation dialog and home the specified axis if confirmed. An X or Y home on a piezo-only
+        system asks at the stop sign instead: the nosepiece has to be lowered by hand first."""
+        if control._def.IS_PIEZO_ONLY and (x or y):
+            confirmed = confirm_nosepiece_lowered(self, decline_text="Cancel")
+        else:
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Information)
+            msg.setText("Confirm your action")
+            msg.setInformativeText("Click OK to run homing")
+            msg.setWindowTitle("Confirmation")
+            msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+            msg.setDefaultButton(QMessageBox.Cancel)
+            confirmed = msg.exec_() == QMessageBox.Ok
+        if confirmed:
             self.stage.home(x=x, y=y, z=z, theta=theta)
 
     def zero_x(self):
