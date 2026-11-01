@@ -14,7 +14,7 @@
 seq::ValidationResult seq_load(const seq::wire::ParsedProgram& program);
 
 // Run the loaded program from stack_start (piezo: DAC code). False = nothing loaded / busy.
-bool seq_start(int32_t stack_start);
+bool seq_start(int32_t stack_start, uint8_t channel);  // channel: seq::kAllChannels or an index
 
 void seq_cancel();              // finish the current exposure, then wind down
 void seq_abort(seq::SeqError);  // interlock / watchdog / TURN_OFF_ALL_PORTS: terminal now

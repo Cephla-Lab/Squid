@@ -224,7 +224,7 @@ def test_a_z_first_acquisition_runs_one_single_channel_burst_per_channel(sequenc
     monkeypatch.setattr(
         control.microcontroller.Microcontroller,
         "seq_run",
-        lambda self, start: (runs.append(start), seq_run(self, start))[1],
+        lambda self, start, channel=None: (runs.append((start, channel)), seq_run(self, start, channel))[1],
     )
     monkeypatch.setattr(
         control.microcontroller.Microcontroller,
@@ -248,9 +248,10 @@ def test_a_z_first_acquisition_runs_one_single_channel_burst_per_channel(sequenc
         [20 + z * DZ_UM for _ in FLUORESCENCE for z in range(NZ)]
     )
     assert piezo_um == pytest.approx(20)  # the controller returned the piezo after the last burst
-    # one burst per channel, each from the stack start, each with its own one-channel program
-    assert len(runs) == len(FLUORESCENCE) and len(set(runs)) == 1
-    assert [len(program.channels) for program in uploads] == [1] * len(FLUORESCENCE)
+    # one burst per channel, each from the stack start, each selecting its channel of the ONE uploaded program
+    assert [channel for _, channel in runs] == list(range(len(FLUORESCENCE)))
+    assert len({start for start, _ in runs}) == 1
+    assert [len(program.channels) for program in uploads] == [len(FLUORESCENCE)]
     assert status.state == SeqState.DONE and status.error == SeqError.NONE
     assert status.frames_fired == NZ  # the last burst's count
     assert software_status is None
@@ -265,12 +266,12 @@ def test_z_first_sets_each_channels_exposure_and_emission_filter_before_its_burs
     at_run = []  # (camera exposure, wheel position) when each burst starts
     seq_run = control.microcontroller.Microcontroller.seq_run
 
-    def record_then_run(self, stack_start):
+    def record_then_run(self, stack_start, channel=None):
         scope = scopes[0]
         at_run.append(
             (scope.camera.get_exposure_time(), scope.addons.emission_filter_wheel.get_filter_wheel_position()[1])
         )
-        return seq_run(self, stack_start)
+        return seq_run(self, stack_start, channel)
 
     monkeypatch.setattr(control.microcontroller.Microcontroller, "seq_run", record_then_run)
 
@@ -318,9 +319,9 @@ def test_the_emission_filter_position_the_channels_share_is_set_before_the_burst
     wheel_at_run = []
     seq_run = control.microcontroller.Microcontroller.seq_run
 
-    def record_then_run(self, stack_start):
+    def record_then_run(self, stack_start, channel=None):
         wheel_at_run.append(scopes[0].addons.emission_filter_wheel.get_filter_wheel_position()[1])
-        return seq_run(self, stack_start)
+        return seq_run(self, stack_start, channel)
 
     monkeypatch.setattr(control.microcontroller.Microcontroller, "seq_run", record_then_run)
 
@@ -349,12 +350,12 @@ def test_contrast_autofocus_does_not_leave_its_channel_settings_on_the_burst(
     seq_run = control.microcontroller.Microcontroller.seq_run
     move = squid.filter_wheel_controller.utils.SimulatedFilterWheelController.set_filter_wheel_position
 
-    def record_then_run(self, stack_start):
+    def record_then_run(self, stack_start, channel=None):
         scope = scopes[0]
         at_run.append(
             (scope.camera.get_exposure_time(), scope.addons.emission_filter_wheel.get_filter_wheel_position()[1])
         )
-        return seq_run(self, stack_start)
+        return seq_run(self, stack_start, channel)
 
     def record_move(self, positions):
         moves.append(dict(positions))
@@ -466,7 +467,7 @@ def test_a_run_the_controller_refuses_fails_at_once_not_after_the_frame_timeout(
     controller FIRED, not by what was expected."""
     import time
 
-    def refuse(sequencer, stack_start):
+    def refuse(sequencer, stack_start, channel=None):
         sequencer._fail(SeqError.INTERLOCK_OPEN, 0)  # as the firmware does: Failed, nothing triggered
 
     monkeypatch.setattr(control.sequencer_sim.SimulatedSequencer, "_seq_run", refuse)
@@ -503,9 +504,9 @@ def test_the_next_burst_starts_while_the_previous_one_is_still_being_handed_to_t
         events.append(("dispatched", info.region_id, time.time()))
         return real_dispatch(worker, camera_frame, info)
 
-    def seq_run(mcu, stack_start):
+    def seq_run(mcu, stack_start, channel=None):
         events.append(("burst", None, time.time()))
-        return real_seq_run(mcu, stack_start)
+        return real_seq_run(mcu, stack_start, channel)
 
     monkeypatch.setattr(multi_point_worker.MultiPointWorker, "_dispatch_frame", slow_dispatch)
     monkeypatch.setattr(control.microcontroller.Microcontroller, "seq_run", seq_run)
@@ -569,9 +570,9 @@ def test_a_time_point_is_completely_handed_over_before_the_next_one_begins(seque
         events.append(("dispatched", info.time_point, time.time()))
         return real_dispatch(worker, camera_frame, info)
 
-    def seq_run(mcu, stack_start):
+    def seq_run(mcu, stack_start, channel=None):
         events.append(("burst", None, time.time()))
-        return real_seq_run(mcu, stack_start)
+        return real_seq_run(mcu, stack_start, channel)
 
     monkeypatch.setattr(multi_point_worker.MultiPointWorker, "_dispatch_frame", slow_dispatch)
     monkeypatch.setattr(control.microcontroller.Microcontroller, "seq_run", seq_run)

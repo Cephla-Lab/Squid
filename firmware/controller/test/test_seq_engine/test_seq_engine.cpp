@@ -336,6 +336,55 @@ void test_z_inner_order_and_z_offset(void) {
     for (int i = 0; i < 5; i++) TEST_ASSERT_EQUAL_UINT16(expect[i], targets[i]);
 }
 
+// SEQ_RUN channel selector (2026-11-01): a run may image ONE channel of the committed program, so a
+// Z FIRST stack is one burst per channel without a program upload per burst. The selected channel's
+// planes (its z offset included), its exposure, and the return to start; nothing of the others.
+void test_a_selected_channel_runs_alone(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 3;
+    l.n_channels = 2;
+    l.z_settle_us = 0;
+    SeqChannel ch[2] = {good_channel(), good_channel()};
+    ch[1].z_offset = 40;
+    ch[1].exposure_us = 25000;
+    SeqCameraConfig cams[1] = {cam_level()};
+    cams[0].readout_time_us = 0;
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(0, 5000000, 40000, /*channel=*/1));
+    run_until(e, hal, 3000000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT32(3, e.progress().frames_fired);
+    TEST_ASSERT_EQUAL_UINT8(1, e.progress().total_channels);
+    TEST_ASSERT_EQUAL(3, (int)hal.plans.size());
+    for (int i = 0; i < 3; i++)
+        TEST_ASSERT_EQUAL_UINT32(25000, hal.plans[i].t_illum_off_us - hal.plans[i].t_illum_on_us);
+    std::vector<uint16_t> targets;
+    for (auto& c : hal.calls) {
+        if (c.what == "dac" && c.a == 7) targets.push_back((uint16_t)c.b);
+    }
+    uint16_t expect[4] = {40040, 40160, 40280, 40000};  // channel 1's three planes, then return_to_start
+    TEST_ASSERT_EQUAL(4, (int)targets.size());
+    for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_UINT16(expect[i], targets[i]);
+}
+
+void test_a_selector_past_the_last_channel_fails_before_any_move(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_channels = 2;
+    SeqChannel ch[2] = {good_channel(), good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(0, 5000000, 40000, /*channel=*/2));
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::BadChannel, e.progress().abort_error);
+    TEST_ASSERT_EQUAL_UINT8(2, e.progress().abort_detail);
+    TEST_ASSERT_FALSE(saw(hal, "dac"));
+    TEST_ASSERT_EQUAL(0, (int)hal.plans.size());
+}
+
 void test_edge_mode_pulse_and_modeled_exposure_end(void) {
     FakeHal hal;
     SeqEngine e(hal);
@@ -1053,6 +1102,8 @@ int main(int, char**) {
     RUN_TEST(test_filter_move_overlaps_readout);
     RUN_TEST(test_z_step_overlaps_readout_between_layers);
     RUN_TEST(test_z_inner_order_and_z_offset);
+    RUN_TEST(test_a_selected_channel_runs_alone);
+    RUN_TEST(test_a_selector_past_the_last_channel_fails_before_any_move);
     RUN_TEST(test_edge_mode_pulse_and_modeled_exposure_end);
     RUN_TEST(test_two_cameras_simultaneous_exposure);
     RUN_TEST(test_ready_line_blocks_until_asserted);

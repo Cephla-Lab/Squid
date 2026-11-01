@@ -39,8 +39,11 @@ class SeqEngine {
     ValidationResult load(const SeqLoop& loop, const SeqChannel* channels,
                           const SeqCameraConfig* cams, uint8_t n_cameras);
     // Run the loaded program from stack_axis_start (per FOV: usteps, or DAC LSB for a piezo
-    // stack). Returns false when nothing is loaded or a sequence is already running.
-    bool start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_axis_start);
+    // stack): every channel, or ONE channel of it (a Z FIRST stack is one such run per channel;
+    // a channel index past the program fails the run with BadChannel before anything moves).
+    // Returns false when nothing is loaded or a sequence is already running.
+    bool start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_axis_start,
+               uint8_t channel = kAllChannels);
     bool running() const;
     void cancel();  // finish current exposure, then wind down (never truncates)
     // External abort (laser interlock open, serial watchdog, host TURN_OFF_ALL_PORTS):
@@ -54,6 +57,7 @@ class SeqEngine {
 
    private:
     uint32_t total_steps() const;
+    uint8_t run_channels() const { return run_channel_ == kAllChannels ? loop_.n_channels : 1; }
     void step_to_layer_channel(uint32_t k, uint16_t* layer, uint8_t* ch) const;
     int32_t stack_target_for(uint16_t layer, uint8_t ch) const;
     // True when every stack target of the run (and the start itself, which is also the
@@ -77,6 +81,7 @@ class SeqEngine {
     SeqCameraConfig cams_[kMaxCameras]{};
     uint8_t n_cameras_ = 0;
     int32_t stack_start_ = 0;
+    uint8_t run_channel_ = kAllChannels;  // this run's channel, or every channel
     SeqState state_ = SeqState::Idle;
     SeqProgress progress_{};
     uint32_t step_ = 0;            // current step index k

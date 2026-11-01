@@ -45,13 +45,13 @@ from control.sequencer_program import (
 #   cam0    @72 : Level, ready_line=0, ready_active_high=1, readout_overlap_safe=1,
 #                 strobe_delay=300, readout=25_000, min_trigger_period=0
 GOLDEN_HEX = (
-    "02010000404b4c00"
+    "03010000404b4c00"
     "0107780000000a0000204e0000010200"
     "ff0000000001ff00e8031027000001000000000000000000"
     "ff0000000002ff01e903204e000001000000000064000000"
     "010001012c010000a861000000000000"
 )
-GOLDEN_CRC16 = 0xB921  # pinned by the firmware's test_golden_program_bytes_match_the_host_mirror too
+GOLDEN_CRC16 = 0xEB4E  # pinned by the firmware's test_golden_program_bytes_match_the_host_mirror too
 
 FIRMWARE_SRC = Path(sp.__file__).resolve().parents[2] / "firmware" / "controller" / "src"
 
@@ -237,7 +237,7 @@ class TestWords:
         words = golden_program().words()
         assert len(words) == 22
         assert [i for i, _ in words] == list(range(22))
-        assert words[0] == (0, bytes.fromhex("02010000"))
+        assert words[0] == (0, bytes.fromhex("03010000"))  # wire v3
         assert words[1] == (1, bytes.fromhex("404b4c00"))
         assert words[17] == (17, bytes.fromhex("64000000"))  # ch1's illum_lead_us = 100, reserved = 0
         assert words[-1] == (21, bytes.fromhex("00000000"))
@@ -570,6 +570,14 @@ class TestStackRange:
     def test_reports_the_offending_channel(self):
         with pytest.raises(ProgramValidationError) as exc:
             self.piezo(dz=0, n_layers=1, z_offsets=(0, 0, -5)).check_stack_range(1)
+        assert exc.value.detail == 2
+
+    def test_a_selected_channel_is_the_only_one_range_checked(self):
+        # SEQ_RUN with a channel selector visits that channel's planes only (SeqEngine::stack_range_ok).
+        program = self.piezo(dz=0, n_layers=1, z_offsets=(0, 0, -5))
+        program.check_stack_range(1, channel=0)  # channel 2 would leave the range, but it does not run
+        with pytest.raises(ProgramValidationError) as exc:
+            program.check_stack_range(1, channel=2)
         assert exc.value.detail == 2
 
     def test_a_stepper_stack_has_the_full_int32_range(self):

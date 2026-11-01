@@ -105,10 +105,10 @@ seq::ValidationResult seq_load(const seq::wire::ParsedProgram& p) {
     return r;
 }
 
-bool seq_start(int32_t stack_start) {
+bool seq_start(int32_t stack_start, uint8_t channel) {
     if (engine.running()) return false;
     hal.begin_run();
-    return engine.start(micros(), wait_timeout_us, stack_start);
+    return engine.start(micros(), wait_timeout_us, stack_start, channel);
 }
 
 void seq_cancel() { engine.cancel(); }

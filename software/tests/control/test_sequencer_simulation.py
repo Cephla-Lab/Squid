@@ -170,6 +170,20 @@ class TestRun:
         assert recorder.count == 6
         assert mcu.seq_status.frames_fired == 2  # per run, not cumulative
 
+    def test_a_run_of_one_channel_fires_that_channels_layers_only(self, mcu):
+        # SEQ_RUN channel selector: a Z FIRST stack is one such run per channel of the one uploaded program.
+        recorder = TriggerRecorder()
+        sequencer_of(mcu).on_hardware_trigger = recorder
+
+        mcu.seq_upload(stack_program(n_channels=2, n_layers=3))
+        mcu.seq_run(0, channel=1)
+        mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
+
+        assert recorder.count == 3
+        assert mcu.seq_status.frames_fired == 3
+        assert mcu.seq_status.state == sp.SeqState.DONE
+        assert mcu.seq_status.error == sp.SeqError.NONE
+
     def test_triggers_every_camera_in_the_mask(self, mcu):
         recorder = TriggerRecorder()
         sequencer_of(mcu).on_hardware_trigger = recorder
@@ -232,6 +246,20 @@ class TestRunRejections:
         with pytest.raises(CommandAborted):
             mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
 
+        assert recorder.count == 0
+
+    def test_a_channel_past_the_program_is_refused_before_anything_moves(self, mcu):
+        recorder = TriggerRecorder()
+        sequencer_of(mcu).on_hardware_trigger = recorder
+
+        mcu.seq_upload(stack_program(n_channels=2, n_layers=3))
+        mcu.seq_run(0, channel=2)
+        with pytest.raises(CommandAborted) as exc:
+            mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
+
+        assert exc.value.seq_status.error == sp.SeqError.BAD_CHANNEL
+        assert exc.value.seq_status.detail == 2
+        assert exc.value.seq_status.state == sp.SeqState.FAILED
         assert recorder.count == 0
 
 

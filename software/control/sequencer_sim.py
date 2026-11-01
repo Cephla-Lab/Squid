@@ -256,7 +256,8 @@ class SimulatedSequencer:
             crc = struct.unpack(">H", command[4:6])[0]
             self._seq_commit(length, crc)
         elif code == CMD_SET.SEQ_RUN:
-            self._seq_run(struct.unpack(">i", command[2:6])[0])
+            selector = command[6]  # 0 = every channel, n = channel n-1 alone (sequence_commands.cpp)
+            self._seq_run(struct.unpack(">i", command[2:6])[0], None if selector == 0 else selector - 1)
         elif code == CMD_SET.SEQ_CANCEL:
             self._seq_cancel()
 
@@ -302,7 +303,7 @@ class SimulatedSequencer:
             self._show_transport_error = False
         self._log.debug(f"committed a {program.n_channels}-channel program, {program.n_frames} frames")
 
-    def _seq_run(self, stack_start: int) -> None:
+    def _seq_run(self, stack_start: int, channel: Optional[int]) -> None:
         with self._lock:
             program = self._program if self._committed else None
         if program is None:
@@ -318,8 +319,11 @@ class SimulatedSequencer:
             self._show_transport_error = False
             self._state = sp.SeqState.WAIT_HW
         self._quiet_abort = False
+        if channel is not None and channel >= program.n_channels:
+            self._fail(sp.SeqError.BAD_CHANNEL, channel)  # SeqEngine::start(): refused before anything moves
+            return
         try:
-            program.check_stack_range(stack_start)
+            program.check_stack_range(stack_start, channel)
         except sp.ProgramValidationError as e:
             self._fail(e.error, e.detail)  # nothing is triggered
             return
@@ -329,7 +333,7 @@ class SimulatedSequencer:
         with self._lock:
             self._cmd_in_progress = True
         self._thread = threading.Thread(
-            target=self._run_timeline, args=(program, stack_start), name="SimulatedSequencer", daemon=True
+            target=self._run_timeline, args=(program, stack_start, channel), name="SimulatedSequencer", daemon=True
         )
         self._thread.start()
 
@@ -371,15 +375,15 @@ class SimulatedSequencer:
 
     # --- the run thread -------------------------------------------------------------------
 
-    def _run_timeline(self, program: sp.SequencerProgram, stack_start: int) -> None:
-        total_steps = program.n_frames
+    def _run_timeline(self, program: sp.SequencerProgram, stack_start: int, selected: Optional[int]) -> None:
+        total_steps = program.n_frames_for(selected)
         try:
             for step in range(total_steps):
                 if self._abort.is_set():
                     return  # host_abort()/reset()/close() already set the terminal state
                 if self._cancel.is_set():
                     break  # cancel never truncates an exposure, so it stops between frames
-                _layer, channel_index = program.step_to_layer_channel(step)
+                _layer, channel_index = program.step_to_layer_channel(step, selected)
                 channel = program.channels[channel_index]
 
                 with self._lock:

@@ -1781,14 +1781,17 @@ class Microcontroller:
         self.wait_till_operation_is_completed(Microcontroller.SEQ_STAGING_TIMEOUT_S)
         self.log.debug(f"[MCU] seq_upload committed: length={length} crc=0x{crc:04X}")
 
-    def seq_run(self, stack_start: int) -> None:
-        """Start the committed program from this stack-axis position (usteps, or DAC LSB).
+    def seq_run(self, stack_start: int, channel: Optional[int] = None) -> None:
+        """Start the committed program from this stack-axis position (usteps, or DAC LSB):
+        every channel of it, or `channel` alone (a Z FIRST stack is one such run per channel).
 
         Non-blocking, like every other command here: SEQ_RUN stays IN_PROGRESS until the
         engine is terminal, so the caller waits with
         wait_till_operation_is_completed(timeout) sized for the whole burst.
         """
         self._require_hardware_sequencer("seq_run")
+        if channel is not None and not 0 <= channel < 0xFF:
+            raise ValueError(f"channel {channel} is not a channel index")
         payload = self._int_to_payload(stack_start, 4)
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SEQ_RUN
@@ -1796,6 +1799,8 @@ class Microcontroller:
         cmd[3] = (payload >> 16) & 0xFF
         cmd[4] = (payload >> 8) & 0xFF
         cmd[5] = payload & 0xFF
+        # 0 = every channel of the program, n = channel n-1 alone (firmware sequence_commands.cpp)
+        cmd[6] = 0 if channel is None else channel + 1
         self.log.debug(f"[MCU] seq_run: stack_start={stack_start}")
         self._sequence_run_pending = True
         self.send_command(cmd)
