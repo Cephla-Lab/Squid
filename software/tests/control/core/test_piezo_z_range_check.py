@@ -62,3 +62,23 @@ def test_start_is_refused_when_a_piezo_range_is_set_but_the_stack_runs_on_the_st
 @pytest.mark.parametrize("piezo_z_range_um", [None, (20.0, 26.0)])
 def test_start_is_allowed_without_a_piezo_range_or_with_one_that_fits(piezo_z_range_um):
     assert _controller(piezo_z_range_um).validate_acquisition_settings() is True
+
+
+def test_start_is_refused_when_laser_af_is_on_with_a_piezo_range():
+    # Laser AF moves the piezo to its reference at every FOV and the stack runs from there, so a range of
+    # absolute piezo positions would be ignored (and the travel check above would vouch for planes never taken).
+    c = _controller(piezo_z_range_um=(20.0, 26.0))
+    c.do_reflection_af = True
+    c.laserAutoFocusController = MagicMock()
+    c.laserAutoFocusController.laser_af_properties.has_reference = True
+    assert c.validate_acquisition_settings() is False
+    c._log.error.assert_called_once()
+    assert "laser AF" in c._log.error.call_args.args[0]
+
+
+def test_a_from_center_stack_with_a_range_is_refused():
+    # The worker moves the piezo to Z-min, then From Center steps it below that by half the stack: a range
+    # has no centre to run from (0..10 µm, Nz 5, dz 2 µm would ask the piezo for -4 µm).
+    problem = piezo_z_range_problem((0.0, 10.0), 5, 2.0, "FROM CENTER", travel_um=300.0)
+    assert problem is not None
+    assert "From Center" in problem

@@ -9996,8 +9996,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             # Restore Z controls based on Z mode
             if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() == "Set Range":
-                # In Set Range mode, Nz should be disabled
+                # In Set Range mode, Nz comes from the range, and laser AF stays off (see toggle_z_range_controls)
                 self.entry_NZ.setEnabled(False)
+                self.checkbox_withReflectionAutofocus.setEnabled(False)
 
             # Restore coverage based on XY mode
             if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position":
@@ -10232,6 +10233,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         for widget in widgets_to_block:
             widget.blockSignals(True)
 
+        # Only a piezo range marks Set Range in the YAML: z_range_mm is written for every z mode.
+        piezo_z_range_um = yaml_data.piezo_z_range_um if yaml_data.use_piezo else None
+
         try:
             # Z-stack settings
             self.checkbox_z.setChecked(yaml_data.nz > 1)
@@ -10239,8 +10243,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
             self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
 
-            # Z mode - the YAML's z-stacking config as the dropdown shows it
-            self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(yaml_data.z_stacking_config))
+            # Z mode - Set Range for a saved piezo range, otherwise the YAML's z-stacking config as the dropdown shows it
+            if piezo_z_range_um is not None:
+                self.combobox_z_mode.setCurrentText("Set Range")
+            else:
+                self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(yaml_data.z_stacking_config))
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
@@ -10285,6 +10292,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             for widget in widgets_to_block:
                 widget.blockSignals(False)
 
+            # The Piezo Z-Stack checkbox changed with its signals blocked: give the Z-min/Z-max entries
+            # the loaded motor's travel limits (its toggled handler does this on a click).
+            self._on_stack_motor_changed()
+
             # Enable/disable mode dropdowns based on checkbox states
             self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
             self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
@@ -10294,6 +10305,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.update_control_visibility()
             self.update_tab_styles()
             self.update_coordinates()
+
+            # After update_control_visibility, which starts both entries at the current position
+            if piezo_z_range_um is not None:
+                self.entry_minZ.setValue(piezo_z_range_um[0])
+                self.entry_maxZ.setValue(piezo_z_range_um[1])
 
     def _load_well_regions(self, regions):
         """Load well regions from YAML and select them in the well selector."""

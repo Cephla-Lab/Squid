@@ -86,8 +86,14 @@ def piezo_z_range_problem(
 
     The worker starts the stack at Z-max and steps down by delta_z_um for "FROM TOP", otherwise starts at
     Z-min and steps up: nz planes in all. The widget sets nz = ceil((max - min) / dz) + 1, so the last plane
-    can land up to one dz past the far end of the range.
+    can land up to one dz past the far end of the range. "FROM CENTER" is refused: the worker would centre
+    the stack on Z-min, half of it below the range.
     """
+    if z_stacking_config == "FROM CENTER":
+        return (
+            "A Z-range runs from Z-min up (From Bottom) or from Z-max down (From Top), not From Center: "
+            "choose From Bottom, or clear the range."
+        )
     z_min_um, z_max_um = piezo_z_range_um
     span_um = delta_z_um * (nz - 1)
     if z_stacking_config == "FROM TOP":

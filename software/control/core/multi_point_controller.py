@@ -1175,6 +1175,12 @@ class MultiPointController:
                     "The Z-range holds piezo positions, but the z-stack is set to run on the stepper - set the range again."
                 )
                 return False
+            if self.do_reflection_af:
+                self._log.error(
+                    "Laser AF can't run with Set Range: the range is absolute piezo positions and laser AF would "
+                    "move the piezo off them at every FOV. Turn laser AF off, or use From Bottom / From Center."
+                )
+                return False
             problem = piezo_z_range_problem(
                 self.piezo_z_range_um, self.NZ, abs(self.deltaZ) * 1000, self.z_stacking_config, self.piezo.range_um
             )

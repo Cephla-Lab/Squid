@@ -14,11 +14,16 @@ import pytest
 from qtpy.QtWidgets import QCheckBox, QDoubleSpinBox
 
 import control._def
+import control.widgets
 import squid.abc
 from control.piezo import PiezoStage
 from control.widgets import WellplateMultiPointWidget
 
 WIDGETS = [WellplateMultiPointWidget]
+SOFTWARE_POS_LIMIT_Z_UM = (
+    control._def.SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000,
+    control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000,
+)
 
 
 class _FakeStage:
@@ -180,3 +185,91 @@ def test_wellplate_does_not_restore_a_range_recorded_on_the_other_motor(qtbot):
     WellplateMultiPointWidget.restore_z_parameters(fake)  # Z checked again
 
     assert (fake.entry_minZ.value(), fake.entry_maxZ.value()) == (1000.0, 1000.0)
+
+
+@pytest.mark.parametrize("z_mode, laser_af_enabled", [("Set Range", False), ("From Bottom", True)])
+def test_wellplate_keeps_laser_af_off_in_set_range_when_controls_come_back(qtbot, z_mode, laser_af_enabled):
+    # After an acquisition setEnabled_all(True) re-enables every child; Set Range must keep Laser AF disabled.
+    from qtpy.QtWidgets import QComboBox, QLabel, QProgressBar, QPushButton, QSpinBox, QWidget
+
+    host = QWidget()
+    qtbot.addWidget(host)
+    host.btn_startAcquisition, host.progress_bar = QPushButton(host), QProgressBar(host)
+    host.progress_label, host.eta_label = QLabel(host), QLabel(host)
+    host.checkbox_xy, host.checkbox_z = QCheckBox(host), QCheckBox(host)
+    host.combobox_xy_mode, host.combobox_z_mode = QComboBox(host), QComboBox(host)
+    host.combobox_z_mode.addItems(["From Bottom", "Set Range"])
+    host.entry_NZ, host.entry_well_coverage = QSpinBox(host), QDoubleSpinBox(host)
+    host.checkbox_withReflectionAutofocus = QCheckBox(host)
+    host.scanCoordinates = SimpleNamespace(format="96 well plate")
+    host.update_scan_control_ui = MagicMock()
+    host.checkbox_z.setChecked(True)
+    host.combobox_z_mode.setCurrentText(z_mode)
+
+    WellplateMultiPointWidget.setEnabled_all(host, False)  # acquisition running
+    WellplateMultiPointWidget.setEnabled_all(host, True)  # acquisition finished
+
+    assert host.checkbox_withReflectionAutofocus.isEnabled() is laser_af_enabled
+
+
+def _yaml(use_piezo, piezo_z_range_um=None, nz=4, delta_z_um=2.0):
+    """The fields WellplateMultiPointWidget._apply_yaml_settings reads from a parsed acquisition.yaml."""
+    return SimpleNamespace(
+        nz=nz,
+        delta_z_um=delta_z_um,
+        z_stack_order="CHANNEL FIRST",
+        z_stacking_config="FROM BOTTOM",  # what Set Range saves
+        use_piezo=use_piezo,
+        piezo_z_range_um=piezo_z_range_um,
+        nt=1,
+        delta_t_s=0.0,
+        overlap_percent=10.0,
+        scan_size_mm=None,
+        scan_shape=None,
+        channel_names=[],
+        contrast_af=False,
+        laser_af=False,
+        xy_mode="Select Wells",
+        wellplate_regions=None,
+    )
+
+
+def _wellplate_for_yaml(use_piezo, stage_z_mm=1.0, piezo_um=50.0):
+    """A Wellplate stand-in for _apply_yaml_settings: real z entries, motor checkbox, Z checkbox and Z mode."""
+    from qtpy.QtWidgets import QComboBox, QSpinBox
+
+    fake = _fake(WellplateMultiPointWidget, use_piezo, stage_z_mm=stage_z_mm, piezo_um=piezo_um)
+    host = MagicMock()
+    for name, value in vars(fake).items():
+        setattr(host, name, value)
+    host.entry_NZ, host.entry_deltaZ, host.checkbox_z = QSpinBox(), QDoubleSpinBox(), QCheckBox()
+    host.entry_NZ.setRange(1, 1000)
+    host.combobox_z_mode = QComboBox()
+    host.combobox_z_mode.addItems(list(control.widgets.WELLPLATE_Z_MODES))
+    host.stored_z_params = dict(WellplateMultiPointWidget.INITIAL_STORED_Z_PARAMS)
+    for name in ("_stack_z_um", "_reset_z_range_entries", "_on_stack_motor_changed"):
+        setattr(host, name, functools.partial(getattr(WellplateMultiPointWidget, name), host))
+    return host
+
+
+def test_wellplate_yaml_switching_to_the_stepper_gives_the_entries_the_stepper_limits(qtbot):
+    host = _wellplate_for_yaml(use_piezo=True, stage_z_mm=1.0)  # entries limited to the piezo's 0..300 µm
+    WellplateMultiPointWidget._apply_yaml_settings(host, _yaml(use_piezo=False))
+
+    assert host.entry_minZ.maximum() == SOFTWARE_POS_LIMIT_Z_UM[1]
+    host.entry_minZ.setValue(1000.0)  # Set Min at a 1,000 µm stage z
+    assert host.entry_minZ.value() == 1000.0
+
+
+def test_wellplate_yaml_with_a_piezo_range_restores_set_range_and_both_ends(qtbot):
+    host = _wellplate_for_yaml(use_piezo=True, piezo_um=50.0)
+    WellplateMultiPointWidget._apply_yaml_settings(host, _yaml(use_piezo=True, piezo_z_range_um=(20.0, 26.0)))
+
+    assert host.combobox_z_mode.currentText() == "Set Range"
+    assert (host.entry_minZ.value(), host.entry_maxZ.value()) == (20.0, 26.0)
+
+
+def test_wellplate_yaml_without_a_piezo_range_keeps_its_z_mode(qtbot):
+    host = _wellplate_for_yaml(use_piezo=True)
+    WellplateMultiPointWidget._apply_yaml_settings(host, _yaml(use_piezo=True))
+    assert host.combobox_z_mode.currentText() == "From Bottom"
