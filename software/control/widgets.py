@@ -2311,6 +2311,10 @@ class PreferencesDialog(QDialog):
 
     def _apply_settings(self) -> bool:
         """Apply settings to config file. Returns True on success, False on failure."""
+        # The Prior stage first: when it doesn't take its new speed/acceleration, nothing is saved.
+        if not self._send_prior_motion_settings():
+            return False
+
         # Ensure all required sections exist
         for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING", "VIEWS"]:
             self._ensure_section(section)
@@ -2590,6 +2594,43 @@ class PreferencesDialog(QDialog):
         # immersion values for an immersion objective (Microscope.apply_stage_motion_limits).
         for _, _, def_name, _, spinbox in self._prior_motion_settings():
             setattr(control._def, def_name, spinbox.value())
+
+    def _send_prior_motion_settings(self) -> bool:
+        """Send the Prior stage the speed and acceleration it doesn't have yet. Runs before anything is saved, so when
+        the stage doesn't take them the ini and the running values stay as they were and the change stays pending,
+        ready to retry. Returns False, after putting back a setting it did take and telling the user, in that case."""
+        stage = self._stage
+        if self.prior_speed_spinbox is None or not hasattr(stage, "set_max_speed"):
+            return True
+        taken = []  # (setter, value before) of each setting the stage took this time
+        for setter, attr, spinbox, name in (
+            (stage.set_max_speed, "speed", self.prior_speed_spinbox, "max speed"),
+            (stage.set_acceleration, "acceleration", self.prior_accel_spinbox, "acceleration"),
+        ):
+            before, value = getattr(stage, attr), spinbox.value()
+            if before == value:
+                continue
+            try:
+                setter(value)
+            except Exception as e:
+                self._log.exception(f"Prior stage did not take {name} {value}; nothing saved")
+                still_changed = []
+                for undo, undo_to in reversed(taken):
+                    try:
+                        undo(undo_to)
+                    except Exception:
+                        self._log.exception(f"Could not put the Prior stage back to {undo_to}")
+                        still_changed.append(undo_to)
+                QMessageBox.warning(
+                    self,
+                    "Prior Stage Not Updated",
+                    f"The Prior stage did not take {name} {value}, so no settings were saved.\n\n{e}\n\n"
+                    "Check the stage's connection, then Save again (or set the value back)."
+                    + ("\n\nThe stage could not be put back to its earlier settings." if still_changed else ""),
+                )
+                return False
+            taken.append((setter, before))
+        return True
 
     def _get_changes(self):
         """Get list of settings that have changed from current config.
