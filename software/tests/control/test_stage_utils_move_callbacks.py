@@ -60,3 +60,22 @@ def test_a_failed_move_shows_its_error_on_the_gui_thread(qtbot):
 
     assert threads == {"dialog": threading.main_thread()}
     assert "y stalled" in warning.call_args.args[2]
+
+
+def test_a_camera_that_will_not_restart_live_still_ends_the_move(qtbot, caplog):
+    from control.widgets_z_lift import LiftMotionGuard
+
+    dialog = _stage_utils(qtbot, live_was_on=True)
+    guard = LiftMotionGuard(dialog)
+    dialog.set_lift_motion_guard(guard)
+    dialog.live_controller.start_live.side_effect = RuntimeError("camera gone")
+
+    with qtbot.waitSignal(dialog.signal_loading_position_reached, timeout=10000):
+        dialog.switch_position()
+    with qtbot.waitSignal(dialog.signal_scanning_position_reached, timeout=10000):
+        dialog.switch_position()
+
+    assert dialog.slide_position == "scanning"
+    assert dialog.btn_load_slide.isEnabled()
+    assert not guard.busy and not guard.at_loading_position  # nothing left refusing the next move
+    assert "camera gone" in caplog.text

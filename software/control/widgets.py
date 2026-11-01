@@ -3217,7 +3217,7 @@ class StageUtils(QDialog):
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live and not self.keep_live_off_at_loading:
-            self.live_controller.start_live()
+            self._restart_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_loading_position_reached.emit()
@@ -3237,10 +3237,18 @@ class StageUtils(QDialog):
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live:
-            self.live_controller.start_live()
+            self._restart_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_scanning_position_reached.emit()
+
+    def _restart_live(self):
+        """Live view back on after a move. A camera that will not restart must not stop the move ending: the reached
+        signals that follow release the Z lift guard and the GUI's stage lock."""
+        try:
+            self.live_controller.start_live()
+        except Exception:
+            self.log.exception("Could not restart live view after the loading position move")
 
 
 # Where a z stack sits relative to each FOV's z, as offered in the acquisition tabs: (label, controller name).
