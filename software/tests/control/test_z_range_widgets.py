@@ -170,6 +170,25 @@ def test_start_without_set_z_range_clears_a_piezo_range(cls, range_off):
     fake.multipointController.set_piezo_z_range_um.assert_called_once_with(None)
 
 
+def test_wellplate_start_with_z_unchecked_ignores_a_remembered_set_range():
+    """Unchecking Z leaves the Z mode alone (Nz = 1): a "Set Range" still in the dropdown must not reach the
+    controller, or laser AF on a single-plane run would be refused as Set Range."""
+    fake = MagicMock()
+    fake.checkbox_z.isChecked.return_value = False
+    fake.combobox_z_mode.currentText.return_value = "Set Range"
+    fake.checkbox_usePiezo.isChecked.return_value = True
+    fake.checkbox_useFocusMap.isChecked.return_value = False
+    fake.stage.get_pos.return_value.z_mm = 1.0
+    fake.entry_deltaZ.value.return_value = 1.5
+    fake.entry_NZ.value.return_value = 1
+
+    WellplateMultiPointWidget.configure_controller_from_ui(fake)
+
+    fake._push_set_z_range.assert_not_called()
+    fake.multipointController.set_piezo_z_range_um.assert_called_once_with(None)
+    fake.multipointController.set_z_range.assert_called_once_with(1.0, 1.0)
+
+
 def test_wellplate_does_not_restore_a_range_recorded_on_the_other_motor(qtbot):
     from qtpy.QtWidgets import QComboBox, QSpinBox
 

@@ -9990,7 +9990,8 @@ class WellplateMultiPointWidget(
 
         self.scanCoordinates.sort_coordinates()
 
-        if self.combobox_z_mode.currentText() == "Set Range":
+        # Unchecking Z leaves the Z mode as it was (Nz = 1), so a "Set Range" there only counts with Z checked
+        if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() == "Set Range":
             self._push_set_z_range()
             self._log.debug(f"Set z-range: ({self.entry_minZ.value()}, {self.entry_maxZ.value()}) µm")
         else:
