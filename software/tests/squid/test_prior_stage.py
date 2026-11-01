@@ -202,7 +202,9 @@ def test_microscope_build_passes_ini_speed_to_prior_stage(fake, monkeypatch):
 
 def test_controller_error_raises(fake):
     stage, ser = make_stage(fake)
-    ser._reply = lambda cmd: b"E,4\r"
+    normal = ser._reply
+    # Only the command under test: the background position poller's "P" must keep getting real replies.
+    ser._reply = lambda cmd: b"E,4\r" if cmd.startswith("SMS") else normal(cmd)
     with pytest.raises(Exception, match="E,4"):
         stage._send_command("SMS 5000")
 
