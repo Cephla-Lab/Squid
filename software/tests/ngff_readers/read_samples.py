@@ -1,6 +1,9 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = ["ngff-zarr[validate]==0.50.0", "iohub==0.4.0"]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-30T00:00:00Z"
 # ///
 """Open the samples from write_samples.py with ngff-zarr and iohub.
 
@@ -8,7 +11,12 @@ Downstream pipelines read Squid's Zarr output with these libraries. Both need a
 newer Python than the Squid environment, so CI runs this script with uv, which
 reads the dependencies above and fetches its own Python:
 
-    uv run tests/ngff_readers/read_samples.py <out_dir>
+    uv run --python 3.12 tests/ngff_readers/read_samples.py <out_dir>
+
+Python 3.12 (iohub's minimum) has wheels for every dependency; uv would
+otherwise pick the newest Python and compile some of them from source.
+exclude-newer makes uv ignore releases after that date, so the packages these
+two pull in do not change from run to run; move it forward with the pins.
 
 Exits non-zero if either library fails to open a sample or reads it differently
 from expected.json.

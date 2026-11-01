@@ -94,9 +94,10 @@ jobs:
       - name: Open the Zarr output with ngff-zarr and iohub
         # Downstream pipelines read Squid's Zarr output with these libraries. Both need a newer Python
         # than this environment, so uv runs the reader script with its own Python and the versions
-        # pinned in the script header.
+        # pinned in the script header. uv, Python and the dependency date are pinned so the step
+        # only changes when we change it.
         run: |
           python3 -m tests.ngff_readers.write_samples "$RUNNER_TEMP/zarr_samples"
-          python3 -m pip install uv
-          python3 -m uv run tests/ngff_readers/read_samples.py "$RUNNER_TEMP/zarr_samples"
+          python3 -m pip install "uv==0.13.6"
+          python3 -m uv run --python 3.12 tests/ngff_readers/read_samples.py "$RUNNER_TEMP/zarr_samples"
         working-directory: ./software
