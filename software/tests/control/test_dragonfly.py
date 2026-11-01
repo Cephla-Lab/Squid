@@ -50,6 +50,8 @@ class FakeDragonflyPort:
         self.late = set()  # commands whose reply only arrives during the next exchange, ahead of that one's reply
         self.cut_off = {}  # command -> the part of a reply that arrives, without its CR
         self.chunk = None  # deliver at most this many bytes per read, as a slow reply would arrive
+        self.busy_for = {}  # command -> seconds the unit takes before answering it (it answers in order)
+        self._pending = []  # (arrival time, bytes): replies still on their way, in order
         self.dead = False  # the unit answers nothing at all
         self.io_error = False  # the port itself fails (e.g. closed under a command)
         self._withheld = b""
@@ -62,6 +64,7 @@ class FakeDragonflyPort:
 
     @property
     def in_waiting(self):
+        self._deliver()
         return len(self._unread)
 
     @property
@@ -78,13 +81,14 @@ class FakeDragonflyPort:
             raise serial_peripherals.serial.SerialException("port went away")
         command = data.decode().rstrip("\r")
         self.commands.append(command)
-        self._unread += self._withheld  # a late reply to the previous command lands now, ahead of this one's
+        self._emit(self._withheld)  # a late reply to the previous command lands now, ahead of this one's
         self._withheld = b""
         if self.dead:
             return
+        delay = self.busy_for.get(command, 0.0)
         if command in self.reject_once:
             self.reject_once.discard(command)
-            self._unread += b"30005:N\r"
+            self._emit(b"30005:N\r", delay)
         elif command in self.drop_once:
             self.drop_once.discard(command)
         elif command in self.late:
@@ -92,16 +96,29 @@ class FakeDragonflyPort:
             self._withheld = (self._execute(command) + "\r").encode()
         elif command in self.cut_off:
             self._execute(command)
-            self._unread += self.cut_off.pop(command)
+            self._emit(self.cut_off.pop(command), delay)
         elif command not in self.unanswered:
-            self._unread += (self._execute(command) + "\r").encode()
+            self._emit((self._execute(command) + "\r").encode(), delay)
+
+    def _emit(self, data, delay=0.0):
+        """Send bytes back, `delay` s after whatever the unit is still busy answering (it answers in order)."""
+        if data:
+            busy_until = self._pending[-1][0] if self._pending else 0.0
+            self._pending.append((max(time.monotonic(), busy_until) + delay, data))
+        self._deliver()
+
+    def _deliver(self):
+        while self._pending and self._pending[0][0] <= time.monotonic():
+            self._unread += self._pending.pop(0)[1]
 
     def readline(self):
+        self._deliver()
         line, self._unread = self._unread, b""
         return line
 
     def read_until(self, expected=b"\n"):
         # Up to and including the terminator; with nothing more coming pyserial returns what it has at its timeout
+        self._deliver()
         idx = self._unread.find(expected)
         end = idx + len(expected) if idx >= 0 else len(self._unread)
         if self.chunk:
@@ -110,10 +127,12 @@ class FakeDragonflyPort:
         return line
 
     def read(self, size=1):
+        self._deliver()
         data, self._unread = self._unread[:size], self._unread[size:]
         return data
 
     def reset_input_buffer(self):
+        self._deliver()  # drops what has arrived; replies still on their way come later
         self._unread = b""
 
     def close(self):
@@ -352,7 +371,7 @@ def test_an_unresponsive_unit_fails_within_the_commands_own_timeouts(dragonfly, 
     with pytest.raises(serial_peripherals.SerialDeviceError, match="no reply"):
         dragonfly.get_emission_filter(1)
 
-    assert time.monotonic() - started < 2  # 3 tries x (query + resync), twice, at 0.05 s each; not 60 s resyncs
+    assert time.monotonic() - started < 2  # query + unanswered resync, then a resync, at 0.05 s each; not 60 s ones
 
 
 def test_a_late_resync_answer_cannot_pass_for_a_success(dragonfly, port, monkeypatch):
@@ -361,12 +380,33 @@ def test_a_late_resync_answer_cannot_pass_for_a_success(dragonfly, port, monkeyp
     port.unanswered.add("AT_FW_POS,1,6")
     with pytest.raises(serial_peripherals.SerialDeviceError):
         dragonfly.set_emission_filter(1, 6)
-    port.unanswered.add("")  # the resync goes unanswered too; its 30005:N then turns up during the next move
+    port.unanswered.add("")  # the resync goes unanswered too; its 30005:N then turns up during the next exchange
     port.late.add("")
 
-    # 30005:N is a rejection: the move is sent again rather than reported done on the strength of a stale reply
+    with pytest.raises(serial_peripherals.SerialDeviceError, match="resync"):
+        dragonfly.set_emission_filter(1, 2)  # not sent: the unit has not answered the resync
+    # The late 30005:N answers the next resync (the unit has caught up); it is never taken as the move's reply
     dragonfly.set_emission_filter(1, 2)
+
+    assert port.commands.count("AT_FW_POS,1,2") == 1
     assert port.positions["AT_FW_POS,1"] == 2
+
+
+def test_no_command_is_sent_until_the_resync_is_answered(dragonfly, port, monkeypatch):
+    monkeypatch.setattr(Dragonfly, "REPLY_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(Dragonfly, "QUERY_TIMEOUT_S", 0.05)
+    port.busy_for["AT_FW_POS,1,7"] = 0.2  # its ':A' comes after its own timeout and after the resync's
+    with pytest.raises(serial_peripherals.SerialDeviceError, match="no reply"):
+        dragonfly.set_emission_filter(1, 7)
+    monkeypatch.setattr(Dragonfly, "REPLY_TIMEOUT_S", 1.0)  # long enough for that late ':A' to turn up
+
+    with pytest.raises(serial_peripherals.SerialDeviceError, match="resync"):
+        dragonfly.set_emission_filter(1, 2)  # the move to 7's late ':A' must not pass for this move's
+    assert "AT_FW_POS,1,2" not in port.commands
+
+    REAL_SLEEP(0.2)  # the move to 7 is done
+    dragonfly.set_emission_filter(1, 2)
+    assert port.commands[-2:] == ["", "AT_FW_POS,1,2"]
 
 
 def test_serial_port_errors_are_reported_as_dragonfly_errors(dragonfly, port):
@@ -420,6 +460,32 @@ def test_a_modality_change_and_a_disk_stop_keep_their_minimum_time(dragonfly, mo
     assert len(sleeps) == 2
     assert sleeps[0] == pytest.approx(Dragonfly.MODALITY_SETTLE_S, abs=0.05)
     assert sleeps[1] == pytest.approx(Dragonfly.DISK_STOP_SETTLE_S, abs=0.05)
+
+
+def test_a_minimum_wait_counts_from_the_send_that_was_answered(dragonfly, port, monkeypatch):
+    monkeypatch.setattr(Dragonfly, "REPLY_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(Dragonfly, "MODALITY_SETTLE_S", 0.4)
+    port.busy_for["AT_FW_POS,1,7"] = 0.3
+    with pytest.raises(serial_peripherals.SerialDeviceError, match="no reply"):
+        dragonfly.set_emission_filter(1, 7)
+    sleeps = _record_sleeps_of_this_thread(monkeypatch)
+
+    dragonfly.set_modality("CONFOCAL")  # resyncs first, for ~0.25 s, until the move to 7 is done
+
+    # The time spent resyncing comes before the modality command was sent, so none of it counts
+    assert sleeps[-1] == pytest.approx(Dragonfly.MODALITY_SETTLE_S, abs=0.1)
+
+
+def test_a_minimum_wait_counts_from_the_retry_that_was_answered(dragonfly, port, monkeypatch):
+    monkeypatch.setattr(Dragonfly, "MODALITY_SETTLE_S", 0.5)
+    port.reject_once.add("AT_MODALITY,CONFOCAL")  # garbled the first time: the unit did nothing
+    port.busy_for["AT_MODALITY,CONFOCAL"] = 0.2  # each try is answered 0.2 s after it is sent
+    sleeps = _record_sleeps_of_this_thread(monkeypatch)
+
+    dragonfly.set_modality("CONFOCAL")
+
+    # 0.5 s from the second send, which was answered after 0.2 s; the garbled first try does not count
+    assert sleeps == [Dragonfly.RETRY_DELAY_S, pytest.approx(0.3, abs=0.1)]
 
 
 @pytest.mark.parametrize("timeout", [None, 0])  # blocking, and non-blocking (which would spin)
