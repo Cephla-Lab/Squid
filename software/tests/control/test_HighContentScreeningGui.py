@@ -1,8 +1,10 @@
+import types
 import unittest.mock
 
 import pytest
 
 import control._def
+import control.acquisition_yaml_loader
 
 import control.gui_hcs
 import control.widgets
@@ -379,3 +381,35 @@ def test_closing_after_a_restart_neither_asks_nor_cleans_up_again(qtbot, monkeyp
     assert cleanups == [True]  # the restart cleanup only
     assert len(spawned) == 1 and spawned[0][-1] == "--skip-init"
     assert not gui.isVisible()
+
+
+@pytest.mark.parametrize(
+    "widget_name, widget_type", [("wellplateMultiPointWidget", "wellplate"), ("flexibleMultiPointWidget", "flexible")]
+)
+def test_loading_a_yaml_refreshes_the_fast_z_stack_hint(qtbot, monkeypatch, confirm_exit_yes, widget_name, widget_type):
+    """The YAML load sets the widgets with their signals blocked. With Fast Z-stack staying checked, a file
+    that turns piezo on must still leave the label saying the option is not used (review of PR 763)."""
+    monkeypatch.setattr(
+        squid.abc.AbstractStage, "sequenced_z_stack", lambda self: types.SimpleNamespace(simulated=False)
+    )
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    win.liveController.trigger_mode = control._def.TriggerMode.HARDWARE
+
+    widget = getattr(win, widget_name)
+    widget.checkbox_usePiezo.setChecked(False)
+    widget.entry_NZ.setValue(5)
+    widget.checkbox_sequencedZ.setChecked(True)
+    widget._refresh_sequenced_z_hint()
+    assert widget.checkbox_sequencedZ.text() == "Fast Z-stack"
+
+    widget._apply_yaml_settings(
+        control.acquisition_yaml_loader.AcquisitionYAMLData(
+            widget_type=widget_type, nz=5, use_piezo=True, use_sequenced_z_stack=True
+        )
+    )
+
+    assert widget.checkbox_sequencedZ.isChecked()
+    assert widget.checkbox_sequencedZ.text() == "Fast Z-stack - not used"
+    assert "piezo" in widget.checkbox_sequencedZ.toolTip()

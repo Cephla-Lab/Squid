@@ -8158,6 +8158,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
             # Update FOV positions to reflect new NX, NY, delta values
             self.update_fov_positions()
+            # Signals were blocked, so nothing above refreshed the Fast Z-stack label
+            self._refresh_sequenced_z_hint()
 
     def _load_positions(self, positions):
         """Load positions from YAML into the location list."""
@@ -10394,6 +10396,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.update_control_visibility()
             self.update_tab_styles()
             self.update_coordinates()
+            # Signals were blocked, so nothing above refreshed the Fast Z-stack label
+            self._refresh_sequenced_z_hint()
 
     def _load_well_regions(self, regions):
         """Load well regions from YAML and select them in the well selector."""

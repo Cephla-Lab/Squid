@@ -1312,17 +1312,21 @@ class MultiPointWorker:
             self._abort_due_to_error()
             return 0
         # The controller's stack does not switch the light; switching it on may pulse the camera once.
-        # Let that frame arrive while nothing is armed, or it would be saved as level 0.
+        # Let that frame arrive while nothing is armed, or it would be saved as level 0. Without it the
+        # stack is not started: a missed pulse and a late frame look the same from here, and a late
+        # frame would shift every level by one while the stack still reports success.
         dropped_before = self._unarmed_frames_dropped
         if seq.prepare_light():
             frame_time_s = self.camera.get_total_frame_time() / 1e3
             t_deadline = time.monotonic() + frame_time_s + 1.0
             while self._unarmed_frames_dropped == dropped_before:
                 if time.monotonic() > t_deadline:
-                    self._log.warning(
-                        "No frame from the light switch-on pulse; if it arrives late it will be taken as level 0."
+                    self._log.error(
+                        "No frame from the light switch-on pulse; a late one would be saved as level 0. "
+                        "Aborting the acquisition before the z-stack."
                     )
-                    break
+                    self._abort_due_to_error()
+                    return 0
                 self._sleep(0.002)
         if self._backpressure.should_throttle():
             if not self._backpressure.wait_for_capacity():

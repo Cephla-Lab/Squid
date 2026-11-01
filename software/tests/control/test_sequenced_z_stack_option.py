@@ -1,12 +1,18 @@
 """The per-acquisition "Fast Z-stack" option: when it applies, how it is saved and loaded,
 and that the worker uses it instead of the ini flag."""
 
+import contextlib
 import logging
+import threading
+import time
 import types
+from unittest.mock import MagicMock
 
 import pytest
 
 import control._def
+import control.core.multi_point_worker
+import squid.abc
 from control.acquisition_yaml_loader import AcquisitionYAMLData, parse_acquisition_yaml
 from control.core.acquisition_settings import (
     acquisition_data_from_blocks,
@@ -171,3 +177,131 @@ def test_worker_logs_why_it_steps_z_itself_once(caplog):
         assert MultiPointWorker._sequenced_stack_eligible(w) is False
     msgs = [r.getMessage() for r in caplog.records if "Fast Z-stack selected but not used" in r.getMessage()]
     assert len(msgs) == 1 and "2 channels in channel-first order" in msgs[0]
+
+
+# ---- the light switch-on pulse before a controller-run stack ---------------------------------------------
+
+
+class _Clock:
+    """monotonic() for the worker module; the worker's _sleep advances it, so deadlines pass instantly."""
+
+    def __init__(self):
+        self.t = 1000.0
+
+    def monotonic(self):
+        return self.t
+
+    def advance(self, s):
+        self.t += s
+
+
+class _StackStage:
+    def __init__(self, seq, z_mm=1.0):
+        self.seq = seq
+        self.z_mm = z_mm
+        self.moves = []
+
+    def sequenced_z_stack(self):
+        return self.seq
+
+    def get_pos(self):
+        return squid.abc.Pos(x_mm=10.0, y_mm=20.0, z_mm=self.z_mm, theta_rad=None)
+
+    def move_z_to(self, z_mm):
+        self.moves.append(z_mm)
+        self.z_mm = z_mm
+
+
+class _PulsingSeq:
+    """prepare_light() reports a camera pulse. pulse_frame_arrives: whether the frame callback drops that
+    frame (unarmed) in time. start() stands in for the controller plus the frame callback: each of its
+    n_levels frames takes the next armed capture info."""
+
+    simulated = False
+    extra_steps_after_last_level = 1
+
+    def __init__(self, worker, pulse_frame_arrives):
+        self.w = worker
+        self.pulse_frame_arrives = pulse_frame_arrives
+        self.started_with = None
+        self.levels_taken = []
+
+    def prepare_light(self):
+        if self.pulse_frame_arrives:
+            self.w._unarmed_frames_dropped += 1
+        return True
+
+    def start(self, step_mm, n_levels):
+        self.started_with = (step_mm, n_levels)
+        for _ in range(n_levels):
+            self.levels_taken.append(self.w._burst_capture_infos.popleft().z_index)
+            self.w._burst_frames_received += 1
+
+    def running(self):
+        return False
+
+    def finish(self):
+        pass
+
+    def abort(self):
+        pass
+
+
+def _stack_worker(monkeypatch, pulse_frame_arrives, nz=3):
+    clock = _Clock()
+    monkeypatch.setattr(
+        control.core.multi_point_worker,
+        "time",
+        types.SimpleNamespace(monotonic=clock.monotonic, time=time.time, perf_counter=time.perf_counter),
+    )
+    w = MultiPointWorker.__new__(MultiPointWorker)
+    seq = _PulsingSeq(w, pulse_frame_arrives)
+    w.stage = _StackStage(seq)
+    w.NZ = nz
+    w.deltaZ = 0.001
+    w.z_stack_order = "CHANNEL FIRST"
+    w.selected_configurations = [MagicMock(name="BF")]
+    w._config_already_applied = lambda config: True
+    w._current_z_offset_um = 0.0
+    w.time_point = 0
+    w.total_scans = nz
+    w.camera = MagicMock()
+    w.camera.get_total_frame_time.return_value = 10.0
+    w.camera.get_ready_for_trigger.return_value = True
+    w._ready_for_next_trigger = threading.Event()
+    w._ready_for_next_trigger.set()
+    w._unarmed_frames_dropped = 0
+    w._burst_capture_infos = None
+    w._burst_frames_received = 0
+    w._backpressure = MagicMock()
+    w._backpressure.should_throttle.return_value = False
+    w._timing = MagicMock()
+    w._timing.get_timer.return_value = contextlib.nullcontext()
+    w.callbacks = MagicMock()
+    w._log = MagicMock()
+    w._sleep = clock.advance
+    w.abort_requested_fn = lambda: False
+    w._abort_due_to_error = MagicMock()
+    return w, seq
+
+
+def test_stack_runs_once_the_pulse_frame_is_dropped(monkeypatch):
+    w, seq = _stack_worker(monkeypatch, pulse_frame_arrives=True)
+    steps = MultiPointWorker._acquire_sequenced_stack(w, w.selected_configurations[0], 0, 0, "/tmp", 0, False)
+    assert seq.started_with == (0.001, 3)
+    assert seq.levels_taken == [0, 1, 2]
+    assert steps == 3 - 1 + seq.extra_steps_after_last_level
+    w._abort_due_to_error.assert_not_called()
+
+
+def test_pulse_frame_that_never_shows_up_stops_the_acquisition_before_the_stack(monkeypatch):
+    # A pulse frame arriving after the wait would be taken as level 0 and shift every level by one
+    # (review of PR 763), so the stack must not be armed or started without it.
+    w, seq = _stack_worker(monkeypatch, pulse_frame_arrives=False)
+    steps = MultiPointWorker._acquire_sequenced_stack(w, w.selected_configurations[0], 0, 0, "/tmp", 0, False)
+    assert seq.started_with is None
+    assert w._burst_capture_infos is None
+    assert w._ready_for_next_trigger.is_set()  # a late frame is dropped as unarmed
+    w._abort_due_to_error.assert_called_once()
+    assert steps == 0
+    assert w.stage.z_mm == 1.0
