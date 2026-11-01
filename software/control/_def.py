@@ -1003,7 +1003,7 @@ ENABLE_STROBE_OUTPUT = False
 ACQUISITION_PATTERN = "S-Pattern"  # 'S-Pattern', 'Unidirectional'
 FOV_PATTERN = "Unidirectional"  # 'S-Pattern', 'Unidirectional'
 
-Z_STACKING_CONFIG = "FROM BOTTOM"  # 'FROM BOTTOM', 'FROM TOP'
+Z_STACKING_CONFIG = "FROM BOTTOM"  # 'FROM BOTTOM', 'FROM CENTER', 'FROM TOP'
 Z_STACKING_CONFIG_MAP = {0: "FROM BOTTOM", 1: "FROM CENTER", 2: "FROM TOP"}
 
 # Order of the z and channel loops at each FOV:
@@ -1274,8 +1274,9 @@ PRIOR_STAGE_SN = ""
 PRIOR_STAGE_MAX_SPEED = 100
 PRIOR_STAGE_ACCELERATION = 100
 # This rig's ceilings: the most the stage takes without losing steps (it runs open loop). Preferences and the driver
-# refuse more. 1000 is the controller's own maximum; set lower where faster moves lose steps (an H117(1MM) on a
-# Squid lost steps above max speed 200).
+# refuse more. 1000 is the controller's own maximum; set lower where faster moves lose steps. Speed and acceleration
+# act together: an H117(1MM) on a Squid stalled at 200/250 (its Y axis, on 10 mm moves) but not at 200/100, 175/250
+# or 150 with any acceleration up to 1000.
 PRIOR_STAGE_MAX_SPEED_LIMIT = 1000
 PRIOR_STAGE_ACCELERATION_LIMIT = 1000
 # Used instead, when lower, while the current objective has NA >= 1.0 (oil, water or silicone immersion): fast moves

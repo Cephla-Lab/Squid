@@ -1221,6 +1221,23 @@ class PreferencesDialog(QDialog):
 
     signal_config_changed = Signal()
 
+    # What the File Saving Format combo box shows; the config file keeps the FileSavingOption names.
+    FILE_SAVING_LABELS = {
+        FileSavingOption.INDIVIDUAL_IMAGES: "Individual images",
+        FileSavingOption.MULTI_PAGE_TIFF: "Multi-page TIFF",
+        FileSavingOption.OME_TIFF: "OME-TIFF",
+        FileSavingOption.ZARR_V3: "OME-Zarr 0.5",
+    }
+    OME_ZARR_TOOLTIP = (
+        "OME-Zarr 0.5 (Zarr v3).\n"
+        "Tools that only read OME-Zarr 0.4 / Zarr v2 cannot open it;\n"
+        "use a reader with Zarr v3 support, such as ngff-zarr, iohub or ome-zarr-py."
+    )
+    OME_ZARR_6D_NOTE = (
+        "\n\nUse 6D FOV Dimension is on (Advanced > OME-Zarr Options):\n"
+        "non-HCS acquisitions are saved as one 6D Zarr per region, which is not OME-Zarr."
+    )
+
     def __init__(self, config, config_filepath, parent=None, on_restart=None, stage=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -1248,6 +1265,11 @@ class PreferencesDialog(QDialog):
         self._create_advanced_tab()
         self._create_development_tab()
 
+        # The format tooltip depends on the 6D option in the Advanced tab, so it is set up once all tabs exist
+        self._update_file_saving_tooltip()
+        self.file_saving_combo.currentIndexChanged.connect(self._update_file_saving_tooltip)
+        self.zarr_6d_fov_checkbox.toggled.connect(self._update_file_saving_tooltip)
+
         # Buttons
         button_layout = QHBoxLayout()
         self.save_button = QPushButton("Save")
@@ -1265,11 +1287,14 @@ class PreferencesDialog(QDialog):
         layout = QFormLayout(tab)
         layout.setSpacing(10)
 
-        # File Saving Format
+        # File Saving Format. Each item's data is the FileSavingOption name stored in the config file,
+        # so an item can show a friendlier label without changing what existing configs contain.
         self.file_saving_combo = QComboBox()
-        self.file_saving_combo.addItems([e.name for e in FileSavingOption])
-        current_value = self._get_file_saving_option()
-        self.file_saving_combo.setCurrentText(current_value)
+        for option in FileSavingOption:
+            self.file_saving_combo.addItem(self.FILE_SAVING_LABELS[option], option.name)
+        current_index = self.file_saving_combo.findData(self._get_file_saving_option())
+        if current_index >= 0:
+            self.file_saving_combo.setCurrentIndex(current_index)
         layout.addRow("File Saving Format:", self.file_saving_combo)
 
         # TIFF Compression (only visible for the TIFF formats that support it)
@@ -1288,21 +1313,20 @@ class PreferencesDialog(QDialog):
 
         # Zarr Compression (only visible when ZARR_V3 is selected)
         self.zarr_compression_combo = QComboBox()
-        self.zarr_compression_combo.addItems(["none", "fast", "balanced", "best"])
+        self.zarr_compression_combo.addItems([e.value for e in ZarrCompression])
         self.zarr_compression_combo.setToolTip(
             "none: No compression, maximum speed (~2x faster than TIFF)\n"
             "fast: blosc-lz4, ~1000 MB/s, ~2x compression (default)\n"
             "balanced: blosc-zstd level 3, ~500 MB/s, ~3-4x compression\n"
             "best: blosc-zstd level 9, slower but best compression"
         )
-        zarr_compression_value = self._get_config_value("GENERAL", "zarr_compression", "fast")
-        self.zarr_compression_combo.setCurrentText(zarr_compression_value)
+        self.zarr_compression_combo.setCurrentText(self._get_zarr_compression())
         self.zarr_compression_label = QLabel("Zarr Compression:")
         layout.addRow(self.zarr_compression_label, self.zarr_compression_combo)
 
         # Show/hide the per-format options based on file saving format selection
         self._update_file_format_options_visibility()
-        self.file_saving_combo.currentTextChanged.connect(self._update_file_format_options_visibility)
+        self.file_saving_combo.currentIndexChanged.connect(self._update_file_format_options_visibility)
 
         # Default Saving Path
         path_widget = QWidget()
@@ -1592,31 +1616,32 @@ class PreferencesDialog(QDialog):
             prior_group.content.addLayout(prior_layout)
             layout.addWidget(prior_group)
 
-        # Zarr v3 Options section
-        zarr_group = CollapsibleGroupBox("Zarr v3 Options", collapsed=True)
+        # OME-Zarr Options section
+        zarr_group = CollapsibleGroupBox("OME-Zarr Options", collapsed=True)
         zarr_layout = QFormLayout()
 
         self.zarr_chunk_mode_combo = QComboBox()
-        self.zarr_chunk_mode_combo.addItems(["full_frame", "tiled_512", "tiled_256"])
+        self.zarr_chunk_mode_combo.addItems([e.value for e in ZarrChunkMode])
         self.zarr_chunk_mode_combo.setToolTip(
             "full_frame: Each chunk is a full image plane (simplest, default)\n"
             "tiled_512: 512x512 pixel chunks for tiled visualization\n"
             "tiled_256: 256x256 pixel chunks for fine-grained streaming"
         )
-        zarr_chunk_mode_value = self._get_config_value("GENERAL", "zarr_chunk_mode", "full_frame")
-        self.zarr_chunk_mode_combo.setCurrentText(zarr_chunk_mode_value)
+        self.zarr_chunk_mode_combo.setCurrentText(self._get_zarr_chunk_mode())
         zarr_layout.addRow("Chunk Mode:", self.zarr_chunk_mode_combo)
 
         self.zarr_6d_fov_checkbox = QCheckBox()
         self.zarr_6d_fov_checkbox.setToolTip(
             "When enabled, non-HCS acquisitions use a single 6D zarr per region\n"
-            "with shape (FOV, T, C, Z, Y, X). This is non-standard but groups\n"
-            "all FOVs together. When disabled (default), creates separate 5D\n"
-            "OME-NGFF compliant zarr files per FOV."
+            "with shape (FOV, T, C, Z, Y, X). This groups all FOVs together but\n"
+            "is not OME-Zarr: OME-Zarr readers cannot open it. When disabled\n"
+            "(default), creates a separate 5D OME-Zarr image per FOV."
         )
-        zarr_6d_fov_value = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        zarr_6d_fov_value = self._get_config_bool(
+            "GENERAL", "zarr_use_6d_fov_dimension", control._def.ZARR_USE_6D_FOV_DIMENSION
+        )
         self.zarr_6d_fov_checkbox.setChecked(zarr_6d_fov_value)
-        zarr_layout.addRow("Use 6D FOV Dimension:", self.zarr_6d_fov_checkbox)
+        zarr_layout.addRow("Use 6D FOV Dimension (not OME-Zarr):", self.zarr_6d_fov_checkbox)
 
         zarr_group.content.addLayout(zarr_layout)
         layout.addWidget(zarr_group)
@@ -1650,11 +1675,8 @@ class PreferencesDialog(QDialog):
         hw_group = CollapsibleGroupBox("Hardware Configuration", collapsed=True)
         hw_layout = QFormLayout()
 
-        self.z_motor_combo = QComboBox()
-        self.z_motor_combo.addItems(["STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"])
-        self.z_motor_combo.setCurrentText(self._get_config_value("GENERAL", "z_motor_config", "STEPPER"))
-        hw_layout.addRow("Z Motor Config *:", self.z_motor_combo)
-
+        # No Z motor choice here: z_motor_config names the Z hardware the machine has, so it is set in the
+        # config file, and saving Preferences leaves it as written.
         self.spinning_disk_checkbox = QCheckBox()
         self.spinning_disk_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False))
         hw_layout.addRow("Enable Spinning Disk *:", self.spinning_disk_checkbox)
@@ -2113,16 +2135,41 @@ class PreferencesDialog(QDialog):
             return 0.0
         return float(value)
 
-    def _get_file_saving_option(self):
-        """The file saving format currently in effect, as a FileSavingOption name.
+    def _get_enum_setting(self, option, enum_cls, running):
+        """A [GENERAL] enum setting as set in the config file, falling back to the running value.
 
-        The config file usually has no file_saving_option key, so the fallback has to be the value
-        the software is actually running with (control._def, which the dialog itself updates live)
-        rather than a hardcoded format.  Otherwise the combo box displays a format that isn't in
-        use, _get_changes() can't detect a change away from it, and _apply_settings() persists that
-        wrong format into the machine config file.
+        Startup reads these keys with convert_to_enum, which ignores case, so the dialog does too
+        ("zarr_v3" would otherwise match no item).  With no key, the running value (control._def,
+        which the dialog itself updates live) is the one in use, not a hardcoded default; otherwise
+        the combo box shows a value that isn't in use and _apply_settings() persists it.  A value
+        convert_to_enum rejects would have stopped startup, so it was written while Squid runs:
+        show the running value, so the dialog still opens and saving writes a valid one.
         """
-        return self._get_config_value("GENERAL", "file_saving_option", control._def.FILE_SAVING_OPTION.name)
+        value = self._get_config_value("GENERAL", option, None)
+        if value is None:
+            return running
+        try:
+            return enum_cls.convert_to_enum(value)
+        except ValueError:
+            self._log.warning(f"Config file has {option} = {value!r}, which is not valid; showing {running} instead")
+            return running
+
+    def _get_file_saving_option(self):
+        """The file saving format, as a FileSavingOption name (see _get_enum_setting)."""
+        return self._get_enum_setting("file_saving_option", FileSavingOption, control._def.FILE_SAVING_OPTION).name
+
+    def _get_zarr_compression(self):
+        """The Zarr compression preset, as its combo box item ("fast", ...; see _get_enum_setting)."""
+        return self._get_enum_setting("zarr_compression", ZarrCompression, control._def.ZARR_COMPRESSION).value
+
+    def _get_zarr_chunk_mode(self):
+        """The Zarr chunk mode, as its combo box item ("full_frame", ...; see _get_enum_setting)."""
+        return self._get_enum_setting("zarr_chunk_mode", ZarrChunkMode, control._def.ZARR_CHUNK_MODE).value
+
+    def _file_saving_label(self, option_name):
+        """The label the format combo box shows for a FileSavingOption name (the name itself if unknown)."""
+        index = self.file_saving_combo.findData(option_name)
+        return self.file_saving_combo.itemText(index) if index >= 0 else option_name
 
     def _get_tiff_compression_level(self):
         """The TIFF compression level currently in effect, falling back to the running value.
@@ -2234,7 +2281,7 @@ class PreferencesDialog(QDialog):
 
     def _update_file_format_options_visibility(self):
         """Show/hide format specific options based on file saving format."""
-        current_format = self.file_saving_combo.currentText()
+        current_format = self.file_saving_combo.currentData()
 
         is_zarr = current_format == "ZARR_V3"
         self.zarr_compression_label.setVisible(is_zarr)
@@ -2244,6 +2291,18 @@ class PreferencesDialog(QDialog):
         supports_tiff_compression = current_format in ("INDIVIDUAL_IMAGES", "MULTI_PAGE_TIFF")
         self.tiff_compression_label.setVisible(supports_tiff_compression)
         self.tiff_compression_spinbox.setVisible(supports_tiff_compression)
+
+    def _update_file_saving_tooltip(self):
+        """Describe OME-Zarr on its combo box item and, while it is selected, on the combo box itself.
+
+        With the 6D FOV option on, non-HCS acquisitions are not OME-Zarr, so the tooltip says so.
+        """
+        tooltip = self.OME_ZARR_TOOLTIP
+        if self.zarr_6d_fov_checkbox.isChecked():
+            tooltip += self.OME_ZARR_6D_NOTE
+        zarr_index = self.file_saving_combo.findData(FileSavingOption.ZARR_V3.name)
+        self.file_saving_combo.setItemData(zarr_index, tooltip, Qt.ToolTipRole)
+        self.file_saving_combo.setToolTip(tooltip if self.file_saving_combo.currentIndex() == zarr_index else "")
 
     def _ensure_section(self, section):
         """Ensure a config section exists, creating it if necessary."""
@@ -2257,7 +2316,7 @@ class PreferencesDialog(QDialog):
             self._ensure_section(section)
 
         # General settings
-        self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
+        self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentData())
         self.config.set("GENERAL", "tiff_compression_level", str(self.tiff_compression_spinbox.value()))
         self.config.set("GENERAL", "zarr_compression", self.zarr_compression_combo.currentText())
         self.config.set("GENERAL", "zarr_chunk_mode", self.zarr_chunk_mode_combo.currentText())
@@ -2319,7 +2378,6 @@ class PreferencesDialog(QDialog):
         self.config.set("AF", "crop_height", str(self.af_crop_height.value()))
 
         # Advanced - Hardware
-        self.config.set("GENERAL", "z_motor_config", self.z_motor_combo.currentText())
         self.config.set(
             "GENERAL",
             "enable_spinning_disk_confocal",
@@ -2447,7 +2505,7 @@ class PreferencesDialog(QDialog):
         """Apply settings that can take effect without restart."""
         # File saving option
         control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.convert_to_enum(
-            self.file_saving_combo.currentText()
+            self.file_saving_combo.currentData()
         )
 
         # TIFF compression level (only applicable when saving individual or multi page TIFFs)
@@ -2540,9 +2598,11 @@ class PreferencesDialog(QDialog):
 
         # General settings (live update)
         old_val = self._get_file_saving_option()
-        new_val = self.file_saving_combo.currentText()
+        new_val = self.file_saving_combo.currentData()
         if old_val != new_val:
-            changes.append(("File Saving Format", old_val, new_val, False))
+            changes.append(
+                ("File Saving Format", self._file_saving_label(old_val), self._file_saving_label(new_val), False)
+            )
 
         # A setting missing here is silently not saved: _save_and_close() returns before
         # _apply_settings() when it is the only thing the user changed.
@@ -2551,10 +2611,20 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("TIFF Compression Level", str(old_val), str(new_val), False))
 
-        old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        old_val = self._get_zarr_compression()
+        new_val = self.zarr_compression_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Zarr Compression", old_val, new_val, False))
+
+        old_val = self._get_zarr_chunk_mode()
+        new_val = self.zarr_chunk_mode_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Zarr Chunk Mode", old_val, new_val, False))
+
+        old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", control._def.ZARR_USE_6D_FOV_DIMENSION)
         new_val = self.zarr_6d_fov_checkbox.isChecked()
         if old_val != new_val:
-            changes.append(("Use 6D FOV Dimension", str(old_val), str(new_val), False))
+            changes.append(("Use 6D FOV Dimension (not OME-Zarr)", str(old_val), str(new_val), False))
 
         old_val = self._get_config_value("GENERAL", "default_saving_path", str(Path.home() / "Downloads"))
         new_val = self.saving_path_edit.text()
@@ -2694,11 +2764,6 @@ class PreferencesDialog(QDialog):
             changes.append(("AF Crop Height", f"{old_val} px", f"{new_val} px", False))
 
         # Advanced - Hardware (require restart)
-        old_val = self._get_config_value("GENERAL", "z_motor_config", "STEPPER")
-        new_val = self.z_motor_combo.currentText()
-        if old_val != new_val:
-            changes.append(("Z Motor Config", old_val, new_val, True))
-
         old_val = self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False)
         new_val = self.spinning_disk_checkbox.isChecked()
         if old_val != new_val:
@@ -3243,6 +3308,39 @@ class StageUtils(QDialog):
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_scanning_position_reached.emit()
+
+
+# Where a z stack sits relative to each FOV's z, as offered in the acquisition tabs: (label, controller name).
+# "FROM TOP" is deliberately not offered (Hongquan, 2026-10-31); the worker still runs it for a YAML / TCP request.
+_Z_STACKING_CHOICES = (("From Bottom", "FROM BOTTOM"), ("From Center", "FROM CENTER"))
+# The Wellplate tab's Z mode dropdown: the three stacking choices, or an explicit Z-min..Z-max range.
+WELLPLATE_Z_MODES = tuple(label for label, _ in _Z_STACKING_CHOICES) + ("Set Range",)
+_Z_STACKING_CONFIG_FOR_Z_MODE = dict(_Z_STACKING_CHOICES, **{"Set Range": "FROM BOTTOM"})
+_Z_MODE_FOR_Z_STACKING_CONFIG = {config: label for label, config in _Z_STACKING_CHOICES}
+
+
+def _z_stacking_config_for_z_mode(z_mode: str) -> str:
+    """The z-stacking config an acquisition started from the Wellplate tab uses for its Z mode.
+
+    Set Range runs from Z-min up, i.e. From Bottom.
+    """
+    return _Z_STACKING_CONFIG_FOR_Z_MODE[z_mode]
+
+
+def _z_stacking_config_offered(z_stacking_config: str) -> str:
+    """The config the tabs can show for a loaded acquisition's z-stacking config: itself when offered, else
+    From Bottom (e.g. "FROM TOP", which the GUI does not offer)."""
+    if z_stacking_config in _Z_MODE_FOR_Z_STACKING_CONFIG:
+        return z_stacking_config
+    squid.logging.get_logger(__name__).warning(
+        f"z-stack config '{z_stacking_config}' is not offered in the GUI; showing From Bottom instead"
+    )
+    return "FROM BOTTOM"
+
+
+def _z_mode_for_z_stacking_config(z_stacking_config: str) -> str:
+    """The Wellplate Z mode to show for a loaded acquisition's z-stacking config."""
+    return _Z_MODE_FOR_Z_STACKING_CONFIG[_z_stacking_config_offered(z_stacking_config)]
 
 
 def _z_stack_order_to_start(combobox) -> str:
@@ -7092,7 +7190,15 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.set_maxZ_button.clicked.connect(self.set_z_max)
 
         self.combobox_z_stack = QComboBox()
-        self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
+        for label, z_stacking_config in _Z_STACKING_CHOICES:
+            self.combobox_z_stack.addItem(label, z_stacking_config)
+        self.combobox_z_stack.setCurrentIndex(
+            self.combobox_z_stack.findData(_z_stacking_config_offered(self.multipointController.z_stacking_config))
+        )
+        self.combobox_z_stack.setToolTip(
+            "Where the z stack sits relative to the current z: starting at it, or centred on it.\n"
+            "Not used with Set Z-range, which runs from Z-min up."
+        )
 
         self.combobox_z_order = QComboBox()
         for order in Z_STACK_ORDERS:
@@ -7193,6 +7299,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         dz_half.addStretch(1)
         dz_half.addWidget(QLabel("Nz"))
         dz_half.addWidget(self.entry_NZ)
+        dz_half.addWidget(self.combobox_z_stack)
         dz_half.addWidget(self.combobox_z_order)
         dz_half.addSpacing(EDGE_SPACING)
 
@@ -7320,7 +7427,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
-        # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
@@ -7380,6 +7486,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
+        # An explicit range runs from Z-min up, so the From Bottom/Center/Top choice does not apply.
+        self.combobox_z_stack.setEnabled(not is_visible)
         current_z = self.stage.get_pos().z_mm * 1000
         self.entry_minZ.setValue(current_z)
         if is_visible:
@@ -7635,6 +7743,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         # Set acquisition parameters
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_z_stacking_config(
+            "FROM BOTTOM" if self.checkbox_set_z_range.isChecked() else self.combobox_z_stack.currentData()
+        )
         self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
@@ -8266,6 +8377,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
             self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
+            self.combobox_z_stack.setCurrentIndex(
+                self.combobox_z_stack.findData(_z_stacking_config_offered(yaml_data.z_stacking_config))
+            )
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
@@ -8379,6 +8493,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
     # Signal to set acquisition running state from any thread (used by TCP server)
     signal_set_acquisition_running = Signal(bool, int, float)  # is_running, nz, delta_z_um
 
+    # Z parameters remembered while the Z controls are hidden; z_mode stays None until one was stored, so checking
+    # Z for the first time keeps the mode the dropdown was seeded with (INI default or cache).
+    INITIAL_STORED_Z_PARAMS = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": None}
+
     def __init__(
         self,
         stage: AbstractStage,
@@ -8432,7 +8550,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.cached_loaded_stamp = None
 
         # Add state tracking for Z parameters
-        self.stored_z_params = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": "From Bottom"}
+        self.stored_z_params = dict(self.INITIAL_STORED_Z_PARAMS)
 
         # Add state tracking for Time parameters
         self.stored_time_params = {"dt": None, "nt": None}
@@ -8563,10 +8681,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_Nt.setSingleStep(1)
         self.entry_Nt.setValue(1)
 
-        self.combobox_z_stack = QComboBox()
-        self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
-        self.combobox_z_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
         self.combobox_z_order = QComboBox()
         for order in Z_STACK_ORDERS:
             self.combobox_z_order.addItem(order.title(), order)
@@ -8670,7 +8784,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_z.setChecked(False)
 
         self.combobox_z_mode = QComboBox()
-        self.combobox_z_mode.addItems(["From Bottom", "Set Range"])
+        self.combobox_z_mode.addItems(list(WELLPLATE_Z_MODES))
+        self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(self.multipointController.z_stacking_config))
+        self.combobox_z_mode.setToolTip(
+            "Where the z stack sits relative to each position's z: starting at it, or centred on it;\n"
+            "or Set Range for an explicit Z-min..Z-max (runs from Z-min up)."
+        )
         self.combobox_z_mode.setEnabled(False)  # Initially disabled since Z is unchecked
 
         z_layout = QHBoxLayout()
@@ -9074,7 +9193,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.checkbox_z.setChecked(settings.get("z_enabled", False))
 
             z_mode = settings.get("z_mode", "From Bottom")
-            if z_mode in ["From Bottom", "Set Range"]:
+            if z_mode in WELLPLATE_Z_MODES:
                 self.combobox_z_mode.setCurrentText(z_mode)
 
             self.checkbox_time.setChecked(settings.get("time_enabled", False))
@@ -9530,7 +9649,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_minZ.setValue(self.stored_z_params["z_min"])
         if self.stored_z_params["z_max"] is not None:
             self.entry_maxZ.setValue(self.stored_z_params["z_max"])
-        self.combobox_z_mode.setCurrentText(self.stored_z_params["z_mode"])
+        if self.stored_z_params["z_mode"] is not None:
+            self.combobox_z_mode.setCurrentText(self.stored_z_params["z_mode"])
 
     def hide_z_controls(self):
         """Hide Z-related controls and set single-slice parameters"""
@@ -9552,9 +9672,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_NZ.setValue(1)
         self.entry_minZ.setValue(current_z)
         self.entry_maxZ.setValue(current_z)
-        self.combobox_z_mode.blockSignals(True)
-        self.combobox_z_mode.setCurrentText("From Bottom")
-        self.combobox_z_mode.blockSignals(False)
+        # The Z mode is left alone: with Nz = 1 it does not matter, and resetting it here would drop the INI
+        # default or the user's choice every time Z is unchecked (and at start-up, when Z starts unchecked).
 
     def update_z_order_dropdown_visibility(self):
         """Re-apply the opt-in Z-stack order choice (ENABLE_Z_STACK_ORDER_SELECTION), e.g. after Preferences
@@ -10060,7 +10179,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             z = self.stage.get_pos().z_mm
             dz = self.entry_deltaZ.value()
             Nz = self.entry_NZ.value()
-            self.multipointController.set_z_range(z, z + dz * (Nz - 1))
+            self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))  # dz is in um, z in mm
 
         if self.checkbox_useFocusMap.isChecked():
             # Try to fit the surface; on success set the surface fitter in the controller
@@ -10074,6 +10193,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_z_stacking_config(
+            _z_stacking_config_for_z_mode(self.combobox_z_mode.currentText())
+        )
         self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
@@ -10470,13 +10592,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
             self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
 
-            # Z mode - map YAML config to combobox text
-            z_mode_map = {
-                "FROM BOTTOM": "From Bottom",
-                "SET RANGE": "Set Range",
-            }
-            z_mode = z_mode_map.get(yaml_data.z_stacking_config, "From Bottom")
-            self.combobox_z_mode.setCurrentText(z_mode)
+            # Z mode - the YAML's z-stacking config as the dropdown shows it
+            self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(yaml_data.z_stacking_config))
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)

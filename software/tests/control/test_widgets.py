@@ -3125,3 +3125,209 @@ def test_flexible_z_order_dropdown_follows_the_preference_live(monkeypatch):
     monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", False)
     control.widgets.FlexibleMultiPointWidget.update_z_order_dropdown_visibility(fake)
     fake.combobox_z_order.setVisible.assert_called_with(False)
+
+
+# --- z-stacking config (From Bottom / From Center / From Top) reaching the controller ---------------------
+
+_WELLPLATE_Z_MODE_CASES = [
+    ("From Bottom", "FROM BOTTOM"),
+    ("From Center", "FROM CENTER"),
+    ("Set Range", "FROM BOTTOM"),  # an explicit range runs from Z-min up
+]
+
+
+@pytest.mark.parametrize("z_mode, expected", _WELLPLATE_Z_MODE_CASES)
+def test_wellplate_z_mode_maps_to_the_z_stacking_config(z_mode, expected):
+    assert control.widgets._z_stacking_config_for_z_mode(z_mode) == expected
+
+
+def test_every_wellplate_z_mode_in_the_dropdown_has_a_z_stacking_config():
+    for z_mode in control.widgets.WELLPLATE_Z_MODES:
+        assert control.widgets._z_stacking_config_for_z_mode(z_mode) in control._def.Z_STACKING_CONFIG_MAP.values()
+
+
+@pytest.mark.parametrize("z_mode, expected", _WELLPLATE_Z_MODE_CASES)
+def test_wellplate_configure_controller_from_ui_pushes_the_z_stacking_config(z_mode, expected):
+    fake = _wellplate_ui_fake()
+    fake.combobox_z_mode.currentText.return_value = z_mode
+    control.widgets.WellplateMultiPointWidget.configure_controller_from_ui(fake)
+    fake.multipointController.set_z_stacking_config.assert_called_once_with(expected)
+
+
+def _flexible_ui_fake(set_z_range=False, z_stacking_config="FROM CENTER"):
+    def widget(**kw):
+        m = MagicMock()
+        for name, value in kw.items():
+            getattr(m, name).return_value = value
+        return m
+
+    stage = MagicMock()
+    stage.get_pos.return_value.z_mm = 1.0
+    return SimpleNamespace(
+        checkbox_set_z_range=widget(isChecked=set_z_range),
+        entry_minZ=widget(value=100.0),
+        entry_maxZ=widget(value=200.0),
+        entry_deltaZ=widget(value=1.5),
+        entry_NZ=widget(value=3),
+        combobox_z_stack=widget(currentData=z_stacking_config),
+        combobox_z_order=widget(currentData="CHANNEL FIRST"),
+        entry_dt=widget(value=0.0),
+        entry_Nt=widget(value=1),
+        checkbox_useFocusMap=widget(isChecked=False),
+        focusMapWidget=MagicMock(),
+        checkbox_usePiezo=widget(isChecked=False),
+        checkbox_withAutofocus=widget(isChecked=False),
+        checkbox_withReflectionAutofocus=widget(isChecked=False),
+        lineEdit_savingDir=widget(text="/tmp/saving"),
+        checkbox_skipSaving=widget(isChecked=False),
+        channel_sequence=widget(ordered_selected_names=["BF LED matrix full"]),
+        multipointController=MagicMock(),
+        stage=stage,
+        _log=MagicMock(),
+    )
+
+
+@pytest.mark.parametrize("z_stacking_config", ["FROM BOTTOM", "FROM CENTER"])
+def test_flexible_configure_controller_from_ui_pushes_the_z_stacking_config(z_stacking_config):
+    fake = _flexible_ui_fake(z_stacking_config=z_stacking_config)
+    control.widgets.FlexibleMultiPointWidget.configure_controller_from_ui(fake)
+    fake.multipointController.set_z_stacking_config.assert_called_once_with(z_stacking_config)
+
+
+def test_flexible_set_z_range_runs_from_bottom_whatever_the_stacking_dropdown_says():
+    fake = _flexible_ui_fake(set_z_range=True, z_stacking_config="FROM CENTER")
+    control.widgets.FlexibleMultiPointWidget.configure_controller_from_ui(fake)
+    fake.multipointController.set_z_stacking_config.assert_called_once_with("FROM BOTTOM")
+
+
+def test_flexible_set_z_range_disables_the_stacking_dropdown_and_releases_it_again():
+    fake = MagicMock()
+    fake.z_min_layout.count.return_value = 0
+    fake.z_max_layout.count.return_value = 0
+    fake.stage.get_pos.return_value.z_mm = 1.0
+
+    control.widgets.FlexibleMultiPointWidget.toggle_z_range_controls(fake, True)
+    fake.combobox_z_stack.setEnabled.assert_called_with(False)
+
+    control.widgets.FlexibleMultiPointWidget.toggle_z_range_controls(fake, False)
+    fake.combobox_z_stack.setEnabled.assert_called_with(True)
+
+
+@pytest.mark.parametrize(
+    "z_stacking_config, z_mode",
+    [
+        ("FROM BOTTOM", "From Bottom"),
+        ("FROM CENTER", "From Center"),
+        ("FROM TOP", "From Bottom"),  # not offered in the GUI (a YAML / the TCP server can still ask for it)
+    ],
+)
+def test_wellplate_yaml_drop_selects_the_z_mode_of_the_stacking_config(z_stacking_config, z_mode):
+    fake = MagicMock()
+    control.widgets.WellplateMultiPointWidget._apply_yaml_settings(
+        fake, _yaml_data(z_stacking_config=z_stacking_config)
+    )
+    fake.combobox_z_mode.setCurrentText.assert_called_with(z_mode)
+
+
+def _yaml_data(**overrides):
+    """A dropped acquisition YAML as the loader hands it to the tabs, with plain values where the handlers compare."""
+    fields = dict(
+        nx=1,
+        ny=1,
+        nz=3,
+        nt=1,
+        delta_x_mm=0.9,
+        delta_y_mm=0.9,
+        delta_z_um=1.0,
+        delta_t_s=0.0,
+        overlap_percent=10.0,
+        scan_size_mm=None,
+        scan_shape=None,
+        channel_names=[],
+        contrast_af=False,
+        laser_af=False,
+        use_piezo=False,
+        xy_mode="Select Wells",
+        wellplate_regions=None,
+        flexible_positions=None,
+        z_stack_order="CHANNEL FIRST",
+        z_stacking_config="FROM BOTTOM",
+    )
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def test_flexible_yaml_drop_selects_the_stacking_config():
+    fake = MagicMock()
+    yaml_data = _yaml_data(z_stacking_config="FROM CENTER")
+    control.widgets.FlexibleMultiPointWidget._apply_yaml_settings(fake, yaml_data)
+    fake.combobox_z_stack.findData.assert_called_with("FROM CENTER")
+    fake.combobox_z_stack.setCurrentIndex.assert_called_with(fake.combobox_z_stack.findData.return_value)
+
+
+def test_flexible_yaml_drop_falls_back_to_from_bottom_for_a_config_the_gui_does_not_offer():
+    fake = MagicMock()
+    control.widgets.FlexibleMultiPointWidget._apply_yaml_settings(fake, _yaml_data(z_stacking_config="FROM TOP"))
+    fake.combobox_z_stack.findData.assert_called_with("FROM BOTTOM")
+    fake.combobox_z_stack.setCurrentIndex.assert_called_with(fake.combobox_z_stack.findData.return_value)
+
+
+def test_from_top_is_not_offered_in_the_gui():
+    assert "From Top" not in control.widgets.WELLPLATE_Z_MODES
+    assert control.widgets._z_stacking_config_offered("FROM TOP") == "FROM BOTTOM"
+    assert control.widgets._z_stacking_config_offered("FROM CENTER") == "FROM CENTER"
+
+
+@pytest.mark.parametrize("z_mode", ["From Bottom", "From Center", "Set Range"])
+def test_wellplate_cache_restores_every_z_mode(tmp_path, monkeypatch, z_mode):
+    import yaml
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "multipoint_widget_config.yaml").write_text(yaml.safe_dump({"z_mode": z_mode}))
+    fake = MagicMock()
+    control.widgets.WellplateMultiPointWidget.load_multipoint_widget_config_from_cache(fake)
+    fake.combobox_z_mode.setCurrentText.assert_called_with(z_mode)
+
+
+def test_wellplate_dz_and_nz_mode_pushes_a_z_range_in_mm():
+    """dz is entered in um but the range is in mm, like the stage z (the range is exported to the acquisition YAML)."""
+    fake = _wellplate_ui_fake()
+    fake.combobox_z_mode.currentText.return_value = "From Center"
+    fake.stage.get_pos.return_value.z_mm = 1.0
+    fake.entry_deltaZ.value.return_value = 1.5
+    fake.entry_NZ.value.return_value = 3
+
+    control.widgets.WellplateMultiPointWidget.configure_controller_from_ui(fake)
+
+    (z_min, z_max), _ = fake.multipointController.set_z_range.call_args
+    assert (z_min, z_max) == (pytest.approx(1.0), pytest.approx(1.003))
+
+
+def test_wellplate_hiding_the_z_controls_keeps_the_z_mode():
+    """Unchecking Z (or start-up with Z off) must not reset the mode to From Bottom: the INI default or the
+    user's choice has to survive until Z is checked again."""
+    fake = MagicMock()
+    fake.dz_layout.count.return_value = 0
+    fake.z_min_layout.count.return_value = 0
+    fake.z_max_layout.count.return_value = 0
+    fake.stage.get_pos.return_value.z_mm = 1.0
+
+    control.widgets.WellplateMultiPointWidget.hide_z_controls(fake)
+
+    fake.entry_NZ.setValue.assert_called_once_with(1)
+    fake.combobox_z_mode.setCurrentText.assert_not_called()
+
+
+def test_wellplate_restoring_z_parameters_keeps_the_mode_until_one_was_stored():
+    """At start-up nothing has been stored yet: checking Z must not overwrite the mode the dropdown was
+    seeded with (the INI default or the cache) with a stored placeholder."""
+    fake = MagicMock()
+    fake.stored_z_params = dict(control.widgets.WellplateMultiPointWidget.INITIAL_STORED_Z_PARAMS)
+
+    control.widgets.WellplateMultiPointWidget.restore_z_parameters(fake)
+    fake.combobox_z_mode.setCurrentText.assert_not_called()
+
+    fake.stored_z_params["z_mode"] = "From Center"
+    control.widgets.WellplateMultiPointWidget.restore_z_parameters(fake)
+    fake.combobox_z_mode.setCurrentText.assert_called_once_with("From Center")
