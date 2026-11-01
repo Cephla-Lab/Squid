@@ -812,7 +812,6 @@ class HighContentScreeningGui(QMainWindow):
 
                 if ENABLE_WELLPLATE_MULTIPOINT:
                     self.wellplateMultiPointWidget.init_z()
-                self.flexibleMultiPointWidget.init_z()
 
         # Create the menu bar
         menubar = self.menuBar()
