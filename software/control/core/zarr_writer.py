@@ -277,7 +277,9 @@ def write_plate_metadata(
 ) -> None:
     """Write OME-NGFF HCS plate metadata.
 
-    Creates the plate-level zarr.json with well references in attributes.
+    Creates the plate-level zarr.json with well references in attributes, and a
+    group zarr.json for each row (Zarr v3 has no implicit groups, so readers that
+    walk plate -> row -> well find nothing under a row without one).
 
     Args:
         plate_path: Path to plate.ome.zarr directory
@@ -307,6 +309,8 @@ def write_plate_metadata(
     }
 
     _write_group_metadata(plate_path, plate_metadata, "plate")
+    for row in rows:
+        _write_group_metadata(os.path.join(plate_path, row), {}, f"row {row}")
 
 
 def write_well_metadata(
@@ -375,9 +379,12 @@ class ZarrWriter:
         compression_codec = _get_compression_codec(config.compression)
 
         # Dimension names and transpose order depend on 5D vs 6D
+        # (OME-NGFF 0.5 requires dimension_names to match the axes in the group metadata)
         if config.ndim == 5:
+            dimension_names = ["t", "c", "z", "y", "x"]
             transpose_order = [4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
         else:
+            dimension_names = ["fov", "t", "c", "z", "y", "x"]
             transpose_order = [5, 4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
 
         # Determine if we need sharding (when chunk != shard)
@@ -420,6 +427,7 @@ class ZarrWriter:
                 "data_type": _dtype_to_zarr(config.dtype),
                 "codecs": codecs,
                 "fill_value": 0,
+                "dimension_names": dimension_names,
             },
         }
 
@@ -568,7 +576,6 @@ class ZarrWriter:
                                 "coordinateTransformations": coordinate_transforms,
                             }
                         ],
-                        "coordinateTransformations": [{"type": "identity"}],
                     }
                 ],
                 "omero": {
