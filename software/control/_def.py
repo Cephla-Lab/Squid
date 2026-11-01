@@ -1003,7 +1003,7 @@ ENABLE_STROBE_OUTPUT = False
 ACQUISITION_PATTERN = "S-Pattern"  # 'S-Pattern', 'Unidirectional'
 FOV_PATTERN = "Unidirectional"  # 'S-Pattern', 'Unidirectional'
 
-Z_STACKING_CONFIG = "FROM BOTTOM"  # 'FROM BOTTOM', 'FROM TOP'
+Z_STACKING_CONFIG = "FROM BOTTOM"  # 'FROM BOTTOM', 'FROM CENTER', 'FROM TOP'
 Z_STACKING_CONFIG_MAP = {0: "FROM BOTTOM", 1: "FROM CENTER", 2: "FROM TOP"}
 
 # Order of the z and channel loops at each FOV:
