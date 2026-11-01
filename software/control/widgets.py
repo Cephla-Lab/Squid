@@ -1544,10 +1544,46 @@ class PreferencesDialog(QDialog):
             )
             prior_layout.addRow(f"Acceleration (1-{self._prior_accel_limit}):", row)
 
+            immersion_tooltip = (
+                "Used instead of the {} above while the current objective has NA >= 1.0 (oil, water or\n"
+                "silicone immersion), if lower: fast moves drag the immersion liquid, which can tear its film\n"
+                "or pull the sample."
+            )
+            self.prior_immersion_speed_spinbox, self.prior_immersion_speed_physical_label, row = (
+                self._make_prior_motion_row(
+                    self._get_prior_motion_setting(
+                        "prior_stage_immersion_max_speed",
+                        control._def.PRIOR_STAGE_IMMERSION_MAX_SPEED,
+                        self._prior_speed_limit,
+                    ),
+                    self._prior_speed_limit,
+                    speed_per_step,
+                    "mm/s",
+                    immersion_tooltip.format("Max Speed"),
+                )
+            )
+            prior_layout.addRow(f"Immersion Max Speed (1-{self._prior_speed_limit}):", row)
+
+            self.prior_immersion_accel_spinbox, self.prior_immersion_accel_physical_label, row = (
+                self._make_prior_motion_row(
+                    self._get_prior_motion_setting(
+                        "prior_stage_immersion_acceleration",
+                        control._def.PRIOR_STAGE_IMMERSION_ACCELERATION,
+                        self._prior_accel_limit,
+                    ),
+                    self._prior_accel_limit,
+                    accel_per_step,
+                    "mm/s²",
+                    immersion_tooltip.format("Acceleration"),
+                )
+            )
+            prior_layout.addRow(f"Immersion Acceleration (1-{self._prior_accel_limit}):", row)
+
             prior_note = QLabel(
-                "Applied to the stage when you click Save. Faster moves can lose steps or leave the stage still "
-                "settling when an exposure starts: after raising these, check that the stage returns to the same "
-                "spot and that images are sharp."
+                "Applied to the stage when you click Save, and on every objective change: objectives with NA of "
+                "1.0 or more (immersion) use the Immersion values where they are lower. Faster moves can lose steps "
+                "or leave the stage still settling when an exposure starts: after raising these, check that the "
+                "stage returns to the same spot and that images are sharp."
             )
             prior_note.setWordWrap(True)
             prior_note.setStyleSheet("color: #666; font-style: italic;")
@@ -2098,6 +2134,43 @@ class PreferencesDialog(QDialog):
         spinbox = self.tiff_compression_spinbox
         return min(max(level, spinbox.minimum()), spinbox.maximum())
 
+    def _prior_motion_settings(self):
+        """(change name, ini option, control._def name, ceiling, spin box) of each Prior stage setting shown; none
+        without a Prior stage."""
+        if self.prior_speed_spinbox is None:
+            return []
+        speed, accel = self._prior_speed_limit, self._prior_accel_limit
+        return [
+            (
+                "Prior Stage Max Speed",
+                "prior_stage_max_speed",
+                "PRIOR_STAGE_MAX_SPEED",
+                speed,
+                self.prior_speed_spinbox,
+            ),
+            (
+                "Prior Stage Acceleration",
+                "prior_stage_acceleration",
+                "PRIOR_STAGE_ACCELERATION",
+                accel,
+                self.prior_accel_spinbox,
+            ),
+            (
+                "Prior Stage Immersion Max Speed",
+                "prior_stage_immersion_max_speed",
+                "PRIOR_STAGE_IMMERSION_MAX_SPEED",
+                speed,
+                self.prior_immersion_speed_spinbox,
+            ),
+            (
+                "Prior Stage Immersion Acceleration",
+                "prior_stage_immersion_acceleration",
+                "PRIOR_STAGE_IMMERSION_ACCELERATION",
+                accel,
+                self.prior_immersion_accel_spinbox,
+            ),
+        ]
+
     def _get_prior_motion_setting(self, option, running_value, limit):
         """A Prior SMS/SAS setting from the config, falling back to the running value, limited to what the spin box
         can show (1 to the rig's ceiling) so that an out of range value in the config file isn't reported as a
@@ -2237,9 +2310,8 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "scan_stabilization_time_ms_z", str(self.scan_stab_z.value()))
 
         # Advanced - Prior Stage
-        if self.prior_speed_spinbox is not None:
-            self.config.set("GENERAL", "prior_stage_max_speed", str(self.prior_speed_spinbox.value()))
-            self.config.set("GENERAL", "prior_stage_acceleration", str(self.prior_accel_spinbox.value()))
+        for _, option, _, _, spinbox in self._prior_motion_settings():
+            self.config.set("GENERAL", option, str(spinbox.value()))
 
         # Advanced - Autofocus
         self.config.set("AF", "stop_threshold", str(self.af_stop_threshold.value()))
@@ -2456,16 +2528,10 @@ class PreferencesDialog(QDialog):
         control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
         control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
 
-        # Prior stage speed and acceleration: sent to the controller now (last, so a failure here skips nothing above)
-        if self.prior_speed_spinbox is not None:
-            control._def.PRIOR_STAGE_MAX_SPEED = self.prior_speed_spinbox.value()
-            control._def.PRIOR_STAGE_ACCELERATION = self.prior_accel_spinbox.value()
-            stage = self._stage
-            if stage is not None and hasattr(stage, "set_max_speed") and hasattr(stage, "set_acceleration"):
-                if getattr(stage, "speed", None) != control._def.PRIOR_STAGE_MAX_SPEED:
-                    stage.set_max_speed(control._def.PRIOR_STAGE_MAX_SPEED)
-                if getattr(stage, "acceleration", None) != control._def.PRIOR_STAGE_ACCELERATION:
-                    stage.set_acceleration(control._def.PRIOR_STAGE_ACCELERATION)
+        # Prior stage speed and acceleration. The GUI sends them to the stage on signal_config_changed, picking the
+        # immersion values for an immersion objective (Microscope.apply_stage_motion_limits).
+        for _, _, def_name, _, spinbox in self._prior_motion_settings():
+            setattr(control._def, def_name, spinbox.value())
 
     def _get_changes(self):
         """Get list of settings that have changed from current config.
@@ -2605,20 +2671,11 @@ class PreferencesDialog(QDialog):
             changes.append(("Scan Stabilization Z", f"{old_val} ms", f"{new_val} ms", True))
 
         # Advanced - Prior Stage (live update: sent to the stage on Save)
-        if self.prior_speed_spinbox is not None:
-            old_val = self._get_prior_motion_setting(
-                "prior_stage_max_speed", control._def.PRIOR_STAGE_MAX_SPEED, self._prior_speed_limit
-            )
-            new_val = self.prior_speed_spinbox.value()
+        for name, option, def_name, limit, spinbox in self._prior_motion_settings():
+            old_val = self._get_prior_motion_setting(option, getattr(control._def, def_name), limit)
+            new_val = spinbox.value()
             if old_val != new_val:
-                changes.append(("Prior Stage Max Speed", str(old_val), str(new_val), False))
-
-            old_val = self._get_prior_motion_setting(
-                "prior_stage_acceleration", control._def.PRIOR_STAGE_ACCELERATION, self._prior_accel_limit
-            )
-            new_val = self.prior_accel_spinbox.value()
-            if old_val != new_val:
-                changes.append(("Prior Stage Acceleration", str(old_val), str(new_val), False))
+                changes.append((name, str(old_val), str(new_val), False))
 
         # Advanced - Autofocus (live update)
         old_val = self._get_config_float("AF", "stop_threshold", 0.85)

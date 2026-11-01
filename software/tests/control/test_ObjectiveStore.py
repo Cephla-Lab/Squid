@@ -22,3 +22,13 @@ def test_objective_store():
     assert objective_store.calculate_pixel_size_factor(objective2, control._def.TUBE_LENS_MM) == float(
         3 / control._def.TUBE_LENS_MM
     )
+
+
+def test_immersion_objectives_are_those_with_na_from_1():
+    from control.core.objective_store import ObjectiveStore
+
+    assert ObjectiveStore.is_immersion({"NA": 1.2})
+    assert ObjectiveStore.is_immersion({"NA": 1.0})
+    assert not ObjectiveStore.is_immersion({"NA": 0.95})  # the most a dry objective reaches
+    assert not ObjectiveStore.is_immersion({})
+    assert not ObjectiveStore.is_immersion(None)

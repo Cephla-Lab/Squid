@@ -1574,6 +1574,7 @@ class HighContentScreeningGui(QMainWindow):
 
         self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.redraw_fov)
+        self.objectivesWidget.signal_objective_changed.connect(self._apply_stage_motion_limits)
         self.objectivesWidget.signal_swap_active.connect(self._on_objective_swap_active)
         self.cameraSettingWidget.signal_binning_changed.connect(self.navigationViewer.redraw_fov)
         # Sensor mode changes (readout speed) can shift the valid exposure range;
@@ -1988,6 +1989,14 @@ class HighContentScreeningGui(QMainWindow):
             dialog = widgets.LedMatrixSettingsDialog(self.liveController.led_array)
             dialog.exec_()
 
+    def _apply_stage_motion_limits(self):
+        """Give the stage the speed/acceleration for the current objective (slower ones for immersion objectives).
+        A failure is logged, not raised, so it can't stop an objective change or a Preferences save."""
+        try:
+            self.microscope.apply_stage_motion_limits()
+        except Exception:
+            self.log.exception("Could not apply the stage's speed and acceleration for the current objective")
+
     def openPreferences(self):
         if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             config = ConfigParser()
@@ -2003,6 +2012,8 @@ class HighContentScreeningGui(QMainWindow):
             dialog.signal_config_changed.connect(
                 lambda: self.navigationWidget.set_click_to_move(control._def.ENABLE_CLICK_TO_MOVE)
             )
+            # Prior stage speed/acceleration apply live, for the current objective
+            dialog.signal_config_changed.connect(self._apply_stage_motion_limits)
             # The Z-stack order dropdown preference applies live: the tabs re-read the flag.
             for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget):
                 if tab is not None:

@@ -631,6 +631,25 @@ class Microscope:
         if not skip_prepare_for_use:
             self._prepare_for_use(skip_init=skip_init)
 
+        # A Prior stage starts with the general speed/acceleration; take the current objective into account.
+        try:
+            self.apply_stage_motion_limits()
+        except Exception:
+            self._log.exception("Could not apply the stage's speed and acceleration for the current objective")
+
+    def apply_stage_motion_limits(self) -> None:
+        """Give a Prior stage the speed and acceleration for the current objective: the general settings, or with an
+        immersion objective (NA >= 1.0) the immersion settings where they are lower. No-op for other stages."""
+        if not hasattr(self.stage, "apply_motion_settings"):
+            return
+        max_speed = control._def.PRIOR_STAGE_MAX_SPEED
+        acceleration = control._def.PRIOR_STAGE_ACCELERATION
+        objective = self.objective_store.get_current_objective_info()
+        if ObjectiveStore.is_immersion(objective):
+            max_speed = min(max_speed, control._def.PRIOR_STAGE_IMMERSION_MAX_SPEED)
+            acceleration = min(acceleration, control._def.PRIOR_STAGE_IMMERSION_ACCELERATION)
+        self.stage.apply_motion_settings(max_speed, acceleration)
+
     @property
     def config_repo(self) -> ConfigRepository:
         """Centralized config repository, shared by every consumer in this microscope."""
@@ -1389,6 +1408,10 @@ class Microscope:
         # Reload laser AF config for the new objective
         if self._laser_af_controller is not None:
             self._laser_af_controller.on_settings_changed()
+        try:
+            self.apply_stage_motion_limits()
+        except Exception:
+            self._log.exception("Could not apply the stage's speed and acceleration for the new objective")
 
     def set_illumination_intensity(self, channel: str, intensity: float, objective: Optional[str] = None) -> None:
         """Set the illumination intensity for a channel.

@@ -335,3 +335,47 @@ def test_microscope_build_passes_the_ini_ceilings_to_prior_stage(fake, monkeypat
         assert (fake["fake"].sms, fake["fake"].sas) == (200, 250)
     finally:
         scope.close()
+
+
+def test_apply_motion_settings_sends_only_what_changed(fake):
+    stage, ser = make_stage(fake, max_speed_limit=200)
+    ser.commands.clear()
+    stage.apply_motion_settings(100, 300)
+    assert [c for c in ser.commands if c.startswith(("SMS", "SAS"))] == ["SAS 300"]
+    stage.apply_motion_settings(5000, 300)  # above the ceiling: lowered to it
+    assert (ser.sms, stage.speed) == (200, 200)
+
+
+def test_immersion_objectives_get_the_immersion_limits(fake, monkeypatch):
+    import control._def
+    import control.microscope
+    from control.core.objective_store import ObjectiveStore
+
+    for name, value in {
+        "USE_PRIOR_STAGE": True,
+        "PRIOR_STAGE_SN": "FAKE_SN",
+        "PRIOR_STAGE_MAX_SPEED": 200,
+        "PRIOR_STAGE_ACCELERATION": 250,
+        "PRIOR_STAGE_MAX_SPEED_LIMIT": 1000,
+        "PRIOR_STAGE_ACCELERATION_LIMIT": 1000,
+        "PRIOR_STAGE_IMMERSION_MAX_SPEED": 80,
+        "PRIOR_STAGE_IMMERSION_ACCELERATION": 150,
+    }.items():
+        monkeypatch.setattr(control._def, name, value)
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True)
+    try:
+        ser = fake["fake"]
+        objectives = scope.objective_store.objectives_dict
+        dry = next(name for name, o in objectives.items() if not ObjectiveStore.is_immersion(o))
+        immersion = next(name for name, o in objectives.items() if ObjectiveStore.is_immersion(o))
+
+        scope.set_objective(immersion)
+        assert (ser.sms, ser.sas) == (80, 150)
+        scope.set_objective(dry)
+        assert (ser.sms, ser.sas) == (200, 250)
+        # The immersion values only ever lower the general ones.
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_IMMERSION_MAX_SPEED", 900)
+        scope.set_objective(immersion)
+        assert (ser.sms, ser.sas) == (200, 150)
+    finally:
+        scope.close()

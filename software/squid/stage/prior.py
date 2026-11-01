@@ -219,6 +219,16 @@ class PriorStage(AbstractStage):
         else:
             raise ValueError(f"Speed must be between 1 and {self.max_speed_limit}")
 
+    def apply_motion_settings(self, max_speed: int, acceleration: int) -> None:
+        """Send the max speed and acceleration, each only if it differs from what the stage has, lowered to this
+        stage's ceilings."""
+        max_speed = self._within_ceiling(max_speed, self.max_speed_limit, "max speed")
+        acceleration = self._within_ceiling(acceleration, self.acceleration_limit, "acceleration")
+        if max_speed != self.speed:
+            self.set_max_speed(max_speed)
+        if acceleration != self.acceleration:
+            self.set_acceleration(acceleration)
+
     def get_max_speed(self):
         """Get the current maximum speed setting."""
         response = self._send_command("SMS")

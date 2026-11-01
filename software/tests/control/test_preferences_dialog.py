@@ -1093,6 +1093,8 @@ class TestPriorStageSettings:
         monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION", 100)
         monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED_LIMIT", 1000)
         monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION_LIMIT", 1000)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_IMMERSION_MAX_SPEED", 100)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_IMMERSION_ACCELERATION", 100)
 
     def _dialog(self, qtbot, config, path, stage=None):
         dialog = control.widgets.PreferencesDialog(config, path, stage=stage)
@@ -1138,6 +1140,8 @@ class TestPriorStageSettings:
         dialog = self._dialog(qtbot, sample_config, temp_config_file)
         assert dialog.prior_speed_spinbox.maximum() == 200
         assert dialog.prior_accel_spinbox.maximum() == 500
+        assert dialog.prior_immersion_speed_spinbox.maximum() == 200
+        assert dialog.prior_immersion_accel_spinbox.maximum() == 500
         assert (dialog.prior_speed_spinbox.value(), dialog.prior_accel_spinbox.value()) == (200, 500)
         assert not [c for c in dialog._get_changes() if c[0].startswith("Prior Stage")]
         dialog.prior_speed_spinbox.setValue(250)
@@ -1151,24 +1155,35 @@ class TestPriorStageSettings:
         assert dialog.prior_speed_spinbox.value() == 1000
         assert not [c for c in dialog._get_changes() if c[0].startswith("Prior Stage")]
 
-    def test_save_writes_the_ini_and_sends_only_what_changed_to_the_stage(
-        self, qtbot, sample_config, temp_config_file, prior_rig
-    ):
+    def test_save_writes_the_ini_and_the_running_values(self, qtbot, sample_config, temp_config_file, prior_rig):
         import control._def
 
         stage = _FakePriorStage()
         dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
         dialog.prior_speed_spinbox.setValue(500)
+        dialog.prior_immersion_speed_spinbox.setValue(80)
         assert [c for c in dialog._get_changes() if c[0].startswith("Prior Stage")] == [
-            ("Prior Stage Max Speed", "100", "500", False)
+            ("Prior Stage Max Speed", "100", "500", False),
+            ("Prior Stage Immersion Max Speed", "100", "80", False),
         ]
         assert dialog._apply_settings()
         saved = ConfigParser()
         saved.read(temp_config_file)
         assert saved.get("GENERAL", "prior_stage_max_speed") == "500"
         assert saved.get("GENERAL", "prior_stage_acceleration") == "100"
-        assert control._def.PRIOR_STAGE_MAX_SPEED == 500
-        assert stage.sent == [("SMS", 500)]
+        assert saved.get("GENERAL", "prior_stage_immersion_max_speed") == "80"
+        assert saved.get("GENERAL", "prior_stage_immersion_acceleration") == "100"
+        assert (control._def.PRIOR_STAGE_MAX_SPEED, control._def.PRIOR_STAGE_IMMERSION_MAX_SPEED) == (500, 80)
+        # The GUI sends them on signal_config_changed, for the current objective (Microscope.apply_stage_motion_limits)
+        assert stage.sent == []
+
+    def test_immersion_rows_show_their_physical_units(self, qtbot, sample_config, temp_config_file, prior_rig):
+        sample_config.set("GENERAL", "prior_stage_immersion_max_speed", "50")
+        sample_config.set("GENERAL", "prior_stage_immersion_acceleration", "400")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=_FakePriorStage())
+        assert (dialog.prior_immersion_speed_spinbox.value(), dialog.prior_immersion_accel_spinbox.value()) == (50, 400)
+        assert dialog.prior_immersion_speed_physical_label.text() == "≈ 3.0 mm/s"
+        assert dialog.prior_immersion_accel_physical_label.text() == "≈ 114.2 mm/s²"
 
     def test_save_without_a_stage_still_saves(self, qtbot, sample_config, temp_config_file, prior_rig):
         import control._def
