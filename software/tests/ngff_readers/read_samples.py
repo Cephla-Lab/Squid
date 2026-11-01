@@ -19,10 +19,12 @@ exclude-newer makes uv ignore releases after that date, so the packages these
 two pull in do not change from run to run; move it forward with the pins.
 
 Exits non-zero if either library fails to open a sample or reads it differently
-from expected.json, including the value of one known pixel.
+from expected.json: fields, axes, channels, shape, known pixel values, and the
+pixel size and z step with their units.
 """
 
 import json
+import math
 import os
 import sys
 import traceback
@@ -47,12 +49,20 @@ def check_ngff_zarr_image(path: str, expected: dict) -> None:
     image = multiscales.images[0]
     assert list(image.dims) == ["t", "c", "z", "y", "x"], image.dims
     assert list(image.data.shape) == expected["shape"], image.data.shape
-    check_pixel(image.data[tuple(expected["pixel"]["index"])].compute(), expected)
+    for pixel in expected["pixels"]:
+        check_pixel(image.data[tuple(pixel["index"])].compute(), pixel)
+    check_scale(image.scale, image.axes_units, expected)
 
 
-def check_pixel(value, expected: dict) -> None:
+def check_pixel(value, pixel: dict) -> None:
     """The pixel read back is the one written, so the reader decoded the image chunks, not just the metadata."""
-    assert int(value) == expected["pixel"]["value"], (int(value), expected["pixel"])
+    assert int(value) == pixel["value"], (int(value), pixel)
+
+
+def check_scale(scale: dict, units: dict, expected: dict) -> None:
+    """The reader puts the pixel size and z step on the right axes, in micrometers."""
+    for axis, step_um in expected["scale"].items():
+        assert math.isclose(scale[axis], step_um) and units[axis] == "micrometer", (axis, scale, units)
 
 
 def check_iohub(expected: dict) -> None:
@@ -62,13 +72,22 @@ def check_iohub(expected: dict) -> None:
         assert sorted(fields) == sorted(expected["plate_fields"]), fields
         assert plate.channel_names == expected["channels"], plate.channel_names
         for _, position in plate.positions():
-            assert list(position["0"].shape) == expected["shape"], position["0"].shape
-            check_pixel(position["0"][tuple(expected["pixel"]["index"])], expected)
+            check_iohub_position(position, expected)
     for image in expected["images"]:
         with open_ome_zarr(image, mode="r", layout="fov") as position:
             assert position.channel_names == expected["channels"], position.channel_names
-            assert list(position["0"].shape) == expected["shape"], position["0"].shape
-            check_pixel(position["0"][tuple(expected["pixel"]["index"])], expected)
+            check_iohub_position(position, expected)
+
+
+def check_iohub_position(position, expected: dict) -> None:
+    array = position["0"]
+    assert list(array.shape) == expected["shape"], array.shape
+    for pixel in expected["pixels"]:
+        check_pixel(array[tuple(pixel["index"])], pixel)
+    names = [axis.name for axis in position.axes]
+    # Only spatial axes carry a unit in iohub (its channel axis has no unit attribute)
+    units = {axis.name: axis.unit for axis in position.axes if axis.name in expected["scale"]}
+    check_scale(dict(zip(names, position.scale)), units, expected)
 
 
 def main(out_dir: str) -> int:
