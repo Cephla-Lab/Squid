@@ -5,6 +5,7 @@ from configparser import ConfigParser
 from unittest.mock import patch, MagicMock
 
 import pytest
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QMessageBox
 
 import control.widgets
@@ -570,6 +571,29 @@ class TestOmeZarrLabel:
         preferences_dialog.file_saving_combo.setCurrentText("OME-Zarr")
 
         assert "OME-Zarr 0.5 (Zarr v3)" in preferences_dialog.file_saving_combo.toolTip()
+
+    def test_tooltip_clears_when_a_tiff_format_is_chosen(self, preferences_dialog):
+        preferences_dialog.file_saving_combo.setCurrentText("OME-Zarr")
+        preferences_dialog.file_saving_combo.setCurrentText("OME_TIFF")
+
+        assert preferences_dialog.file_saving_combo.toolTip() == ""
+
+    def test_tooltip_says_6d_output_is_not_ome_zarr(self, preferences_dialog):
+        combo = preferences_dialog.file_saving_combo
+        combo.setCurrentText("OME-Zarr")
+
+        preferences_dialog.zarr_6d_fov_checkbox.setChecked(True)
+        assert "not OME-Zarr" in combo.toolTip()
+        assert "not OME-Zarr" in combo.itemData(combo.findData("ZARR_V3"), Qt.ToolTipRole)
+
+        preferences_dialog.zarr_6d_fov_checkbox.setChecked(False)
+        assert "not OME-Zarr" not in combo.toolTip()
+
+    def test_change_list_shows_the_ome_zarr_label(self, preferences_dialog):
+        preferences_dialog.file_saving_combo.setCurrentText("OME-Zarr")
+
+        change = next(c for c in preferences_dialog._get_changes() if c[0] == "File Saving Format")
+        assert change[1:3] == ("OME_TIFF", "OME-Zarr")
 
 
 class TestFileSavingOptionFallback:

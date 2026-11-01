@@ -1224,6 +1224,10 @@ class PreferencesDialog(QDialog):
         "Tools that only read OME-Zarr 0.4 / Zarr v2 cannot open it;\n"
         "use a reader with Zarr v3 support, such as ngff-zarr, iohub or ome-zarr-py."
     )
+    OME_ZARR_6D_NOTE = (
+        "\n\nUse 6D FOV Dimension is on (Advanced > OME-Zarr Options):\n"
+        "non-HCS acquisitions are saved as one 6D Zarr per region, which is not OME-Zarr."
+    )
 
     def __init__(self, config, config_filepath, parent=None, on_restart=None):
         super().__init__(parent)
@@ -1251,6 +1255,11 @@ class PreferencesDialog(QDialog):
         self._create_advanced_tab()
         self._create_development_tab()
 
+        # The format tooltip depends on the 6D option in the Advanced tab, so it is set up once all tabs exist
+        self._update_file_saving_tooltip()
+        self.file_saving_combo.currentIndexChanged.connect(self._update_file_saving_tooltip)
+        self.zarr_6d_fov_checkbox.toggled.connect(self._update_file_saving_tooltip)
+
         # Buttons
         button_layout = QHBoxLayout()
         self.save_button = QPushButton("Save")
@@ -1272,13 +1281,8 @@ class PreferencesDialog(QDialog):
         # so an item can show a friendlier label without changing what existing configs contain.
         self.file_saving_combo = QComboBox()
         for option in FileSavingOption:
-            if option is FileSavingOption.ZARR_V3:
-                self.file_saving_combo.addItem("OME-Zarr", option.name)
-                self.file_saving_combo.setItemData(
-                    self.file_saving_combo.count() - 1, self.OME_ZARR_TOOLTIP, Qt.ToolTipRole
-                )
-            else:
-                self.file_saving_combo.addItem(option.name, option.name)
+            label = "OME-Zarr" if option is FileSavingOption.ZARR_V3 else option.name
+            self.file_saving_combo.addItem(label, option.name)
         current_index = self.file_saving_combo.findData(self._get_file_saving_option())
         if current_index >= 0:
             self.file_saving_combo.setCurrentIndex(current_index)
@@ -1314,7 +1318,7 @@ class PreferencesDialog(QDialog):
 
         # Show/hide the per-format options based on file saving format selection
         self._update_file_format_options_visibility()
-        self.file_saving_combo.currentTextChanged.connect(self._update_file_format_options_visibility)
+        self.file_saving_combo.currentIndexChanged.connect(self._update_file_format_options_visibility)
 
         # Default Saving Path
         path_widget = QWidget()
@@ -2040,6 +2044,11 @@ class PreferencesDialog(QDialog):
         """
         return self._get_config_value("GENERAL", "file_saving_option", control._def.FILE_SAVING_OPTION.name)
 
+    def _file_saving_label(self, option_name):
+        """The label the format combo box shows for a FileSavingOption name ("OME-Zarr" for ZARR_V3)."""
+        index = self.file_saving_combo.findData(option_name)
+        return self.file_saving_combo.itemText(index) if index >= 0 else option_name
+
     def _get_tiff_compression_level(self):
         """The TIFF compression level currently in effect, falling back to the running value.
 
@@ -2076,7 +2085,6 @@ class PreferencesDialog(QDialog):
         current_format = self.file_saving_combo.currentData()
 
         is_zarr = current_format == "ZARR_V3"
-        self.file_saving_combo.setToolTip(self.OME_ZARR_TOOLTIP if is_zarr else "")
         self.zarr_compression_label.setVisible(is_zarr)
         self.zarr_compression_combo.setVisible(is_zarr)
 
@@ -2084,6 +2092,18 @@ class PreferencesDialog(QDialog):
         supports_tiff_compression = current_format in ("INDIVIDUAL_IMAGES", "MULTI_PAGE_TIFF")
         self.tiff_compression_label.setVisible(supports_tiff_compression)
         self.tiff_compression_spinbox.setVisible(supports_tiff_compression)
+
+    def _update_file_saving_tooltip(self):
+        """Describe OME-Zarr on its combo box item and, while it is selected, on the combo box itself.
+
+        With the 6D FOV option on, non-HCS acquisitions are not OME-Zarr, so the tooltip says so.
+        """
+        tooltip = self.OME_ZARR_TOOLTIP
+        if self.zarr_6d_fov_checkbox.isChecked():
+            tooltip += self.OME_ZARR_6D_NOTE
+        zarr_index = self.file_saving_combo.findData(FileSavingOption.ZARR_V3.name)
+        self.file_saving_combo.setItemData(zarr_index, tooltip, Qt.ToolTipRole)
+        self.file_saving_combo.setToolTip(tooltip if self.file_saving_combo.currentIndex() == zarr_index else "")
 
     def _ensure_section(self, section):
         """Ensure a config section exists, creating it if necessary."""
@@ -2367,7 +2387,9 @@ class PreferencesDialog(QDialog):
         old_val = self._get_file_saving_option()
         new_val = self.file_saving_combo.currentData()
         if old_val != new_val:
-            changes.append(("File Saving Format", old_val, new_val, False))
+            changes.append(
+                ("File Saving Format", self._file_saving_label(old_val), self._file_saving_label(new_val), False)
+            )
 
         # A setting missing here is silently not saved: _save_and_close() returns before
         # _apply_settings() when it is the only thing the user changed.
@@ -2379,7 +2401,7 @@ class PreferencesDialog(QDialog):
         old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
         new_val = self.zarr_6d_fov_checkbox.isChecked()
         if old_val != new_val:
-            changes.append(("Use 6D FOV Dimension", str(old_val), str(new_val), False))
+            changes.append(("Use 6D FOV Dimension (not OME-Zarr)", str(old_val), str(new_val), False))
 
         old_val = self._get_config_value("GENERAL", "default_saving_path", str(Path.home() / "Downloads"))
         new_val = self.saving_path_edit.text()
