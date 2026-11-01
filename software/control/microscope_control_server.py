@@ -18,6 +18,7 @@ import traceback
 from typing import Any, Callable, Dict, List, Optional, TypedDict, get_type_hints
 
 import squid.logging
+import squid.stage.utils
 from control.core.acquisition_settings import apply_acquisition_settings, parse_wells
 
 import control._def  # Module import for runtime access to MCP-modifiable settings
@@ -25,7 +26,7 @@ import control.utils
 
 # Qt imports for thread-safe GUI operations
 try:
-    from qtpy.QtCore import Q_ARG, QMetaObject, Qt, QTimer
+    from qtpy.QtCore import Q_ARG, Q_RETURN_ARG, QMetaObject, Qt, QTimer
 
     QT_AVAILABLE = True
 except ImportError:
@@ -95,6 +96,8 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5050
 MAX_BUFFER_SIZE = 1 * 1024 * 1024  # 1 MB limit to prevent memory exhaustion
 MAX_CONNECTIONS = 5  # Maximum concurrent client connections
+# A move to or from the loading position lowers and raises a Z lift around its XY travel: well over a plain move
+LOADING_POSITION_MOVE_TIMEOUT_S = 180.0
 
 
 def schema_method(func: Callable) -> Callable:
@@ -467,6 +470,71 @@ class MicroscopeControlServer:
         self.microscope.home_xyz()
         pos = self.microscope.stage.get_pos()
         return {"homed": True, "position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
+
+    @schema_method
+    def _cmd_move_to_loading_position(self) -> Dict[str, Any]:
+        """Move the stage to the loading position, as the Stage Utils button does, so a sample can be put in or
+        taken out. Replies once the stage has stopped there (moved is false if it already was). Refused while an
+        acquisition is running, the Z lift is moving, an objective swap is running, or another move to or from the
+        loading position is running."""
+        return self._loading_position_move(to_loading=True)
+
+    @schema_method
+    def _cmd_return_from_loading_position(self) -> Dict[str, Any]:
+        """Move the stage from the loading position back to the XY it was at before (by way of the scanning
+        position), then raise the Z lift and lower the objective back, as the Stage Utils button does. Replies once
+        the stage has stopped; returned_to_pre_loading_xy is false when no earlier XY was known and the stage
+        stopped at the scanning position. Refused as move_to_loading_position is."""
+        return self._loading_position_move(to_loading=False)
+
+    def _loading_position_move(self, to_loading: bool) -> Dict[str, Any]:
+        """Run StageUtils' move on the GUI thread, so the GUI follows it (button, live view, Z lift lock), and wait
+        for it to end."""
+        if not QT_AVAILABLE or self.gui is None or self.gui.stageUtils is None:
+            raise RuntimeError("Moving to or from the loading position needs the Squid GUI")
+        if self.multipoint_controller is not None and self.multipoint_controller.acquisition_in_progress():
+            raise RuntimeError("Refused: an acquisition is running")
+        from control.widgets import UNATTENDED_MOVE_ALREADY_THERE
+
+        stage_utils = self.gui.stageUtils
+        goes_back_to_xy = not to_loading and squid.stage.utils.return_xy_mm(stage_utils.stage) is not None
+        finished = threading.Event()
+        outcome = {}
+
+        def on_finished(success: bool, error: str):
+            outcome.update(success=success, error=error)
+            finished.set()
+
+        # Direct: called in the move's own thread, since this one has no event loop to queue it to
+        stage_utils.signal_position_move_finished.connect(on_finished, Qt.DirectConnection)
+        try:
+            started = QMetaObject.invokeMethod(
+                stage_utils,
+                "start_unattended_position_move",
+                Qt.BlockingQueuedConnection,
+                Q_RETURN_ARG(str),
+                Q_ARG(bool, to_loading),
+            )
+            if started == UNATTENDED_MOVE_ALREADY_THERE:
+                moved = False
+            elif started:
+                raise RuntimeError(f"Refused: {started}")
+            elif not finished.wait(LOADING_POSITION_MOVE_TIMEOUT_S):
+                raise TimeoutError(
+                    f"The move did not report back within {LOADING_POSITION_MOVE_TIMEOUT_S:g} s; it may still be running"
+                )
+            elif not outcome["success"]:
+                raise RuntimeError(outcome["error"])
+            else:
+                moved = True
+        finally:
+            stage_utils.signal_position_move_finished.disconnect(on_finished)
+
+        pos = self.microscope.stage.get_pos()
+        result = {"moved": moved, "position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
+        if not to_loading:
+            result["returned_to_pre_loading_xy"] = moved and goes_back_to_xy
+        return result
 
     @schema_method
     def _cmd_start_live(self) -> Dict[str, Any]:

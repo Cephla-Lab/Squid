@@ -2990,12 +2990,19 @@ class PreferencesDialog(QDialog):
             # If save failed, dialog stays open (error already shown)
 
 
+# StageUtils.start_unattended_position_move: the stage is already where it was asked to go, nothing moves
+UNATTENDED_MOVE_ALREADY_THERE = "already there"
+
+
 class StageUtils(QDialog):
     """Dialog containing microscope utility functions like homing, zeroing, and slide positioning."""
 
     signal_threaded_stage_move_started = Signal()
     signal_loading_position_reached = Signal()
     signal_scanning_position_reached = Signal()
+    # (success, error message) at the end of every move to or from the loading position, from the thread that ran
+    # it: what the control server waits for before it replies
+    signal_position_move_finished = Signal(bool, str)
 
     def __init__(self, stage: AbstractStage, live_controller: LiveController, is_wellplate: bool, parent=None):
         super().__init__(parent)
@@ -3014,6 +3021,8 @@ class StageUtils(QDialog):
         # returns to its Z once the lift is back up, or stays retracted.
         self.ask_objective_return = False
         self._was_live = False
+        # From the start of a move to or from the loading position until it reports back
+        self._position_move_running = False
 
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
@@ -3144,33 +3153,67 @@ class StageUtils(QDialog):
         self.btn_load_slide.setEnabled(not busy)
 
     def switch_position(self):
-        """Switch between loading and scanning positions."""
-        if self.lift_motion_guard is not None and self.lift_motion_guard.busy:
-            self.log.info("Loading / scanning position refused: the Z lift is moving or an objective swap is running")
+        """The button: move to the loading position, or back from it to where the stage was."""
+        refusal = self._position_move_refusal()
+        if refusal:
+            self.log.info(f"Loading position move refused: {refusal}")
             return
         restore_z = True
         if self.slide_position == "loading" and self.ask_objective_return:
             restore_z = self._ask_objective_return()
             if restore_z is None:
                 return  # cancelled: nothing moves
+        self._start_position_move(restore_z, warn_on_failure=True)
+
+    @Slot(bool, result=str)
+    def start_unattended_position_move(self, to_loading: bool) -> str:
+        """Automation (the control server): start the button's move to the loading position (to_loading) or back
+        from it, with no dialog: the objective comes back down, a failure is only reported. Returns "" when it
+        started (signal_position_move_finished follows), UNATTENDED_MOVE_ALREADY_THERE when the stage is already
+        there, else why it was refused. Runs on the GUI thread (a BlockingQueuedConnection from the server)."""
+        try:
+            refusal = self._position_move_refusal()
+            if refusal:
+                return refusal
+            if to_loading == (self.slide_position == "loading"):
+                return UNATTENDED_MOVE_ALREADY_THERE
+            self._start_position_move(restore_z=True, warn_on_failure=False)
+            return ""
+        except Exception as e:  # Qt drops an exception raised in a slot called across threads
+            self.log.exception("Could not start the loading position move")
+            return f"could not start: {e}"
+
+    def _position_move_refusal(self) -> str:
+        if self._position_move_running:
+            return "a move to or from the loading position is already running"
+        if self.lift_motion_guard is not None and self.lift_motion_guard.busy:
+            return "the Z lift is moving or an objective swap is running"
+        return ""
+
+    def _start_position_move(self, restore_z: bool, warn_on_failure: bool):
         if not (self.keep_live_off_at_loading and self.slide_position == "loading"):
             # (leaving a loading position where live was kept off: _was_live still holds what it was before)
             self._was_live = self.live_controller.is_live
         if self.live_controller.is_live:
             self.live_controller.stop_live()
+        self._position_move_running = True
         self.signal_threaded_stage_move_started.emit()
         if self.slide_position != "loading":
             move_to_loading_position(
                 self.stage,
                 blocking=False,
-                callback=self._callback_loading_position_reached,
+                callback=lambda success, error: self._callback_loading_position_reached(
+                    success, error, warn_on_failure
+                ),
                 is_wellplate=self.is_wellplate,
             )
         else:
             move_to_scanning_position(
                 self.stage,
                 blocking=False,
-                callback=self._callback_scanning_position_reached,
+                callback=lambda success, error: self._callback_scanning_position_reached(
+                    success, error, warn_on_failure
+                ),
                 is_wellplate=self.is_wellplate,
                 restore_z=restore_z,
             )
@@ -3184,7 +3227,7 @@ class StageUtils(QDialog):
             return True
         reply = _ask_objective_z_return(
             self,
-            "Move to Scanning Position",
+            "Return from Loading Position",
             "The objective is retracted for loading. Once the stage is back and the Z lift has risen, should the "
             f"objective return to {z_mm:.4f} mm, or stay retracted?",
             z_mm,
@@ -3193,36 +3236,42 @@ class StageUtils(QDialog):
             return None
         return reply == QMessageBox.Ok
 
-    def _callback_loading_position_reached(self, success: bool, error_message: Optional[str]):
+    def _callback_loading_position_reached(
+        self, success: bool, error_message: Optional[str], warn_on_failure: bool = True
+    ):
         """Handle slide loading position reached signal."""
+        self._position_move_running = False
         self.slide_position = "loading"
         self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
-        self.btn_load_slide.setText("Move to Scanning Position")
+        self.btn_load_slide.setText("Return from Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live and not self.keep_live_off_at_loading:
             self.live_controller.start_live()
-        if not success:
+        if not success and warn_on_failure:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_loading_position_reached.emit()
+        self.signal_position_move_finished.emit(success, error_message or "")
 
-    def _callback_scanning_position_reached(self, success: bool, error_message: Optional[str]):
+    def _callback_scanning_position_reached(
+        self, success: bool, error_message: Optional[str], warn_on_failure: bool = True
+    ):
         """Handle slide scanning position reached signal."""
         if not success:
             # The stage may not have left the loading position: it is still treated as there (a lift system keeps
-            # everything locked), and the button offers the move back to scanning again.
+            # everything locked), and the button offers the return again.
             self._callback_loading_position_reached(
-                False, f"Could not move back to the scanning position:\n{error_message}\n\nTry again."
+                False, f"Could not return from the loading position:\n{error_message}\n\nTry again.", warn_on_failure
             )
             return
+        self._position_move_running = False
         self.slide_position = "scanning"
         self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live:
             self.live_controller.start_live()
-        if not success:
-            QMessageBox.warning(self, "Error", error_message)
         self.signal_scanning_position_reached.emit()
+        self.signal_position_move_finished.emit(True, "")
 
 
 # Where a z stack sits relative to each FOV's z, as offered in the acquisition tabs: (label, controller name).
