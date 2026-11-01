@@ -1239,6 +1239,28 @@ class TestFilterWheelCompletionWindow:
         assert preferences_dialog.wheel_window_spinbox.value() == 10.0
 
 
+class TestZMotorConfigNotInPreferences:
+    """z_motor_config names the Z hardware the machine has, so it is set in the config file, not in
+    Preferences. Saving Preferences must leave it exactly as written."""
+
+    def test_saving_leaves_the_z_motor_config_as_written(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "z_motor_config", "STEPPER + PIEZO  # piezo fitted")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        dialog.binning_spinbox.setValue(4)
+        assert dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "z_motor_config") == "STEPPER + PIEZO  # piezo fitted"
+
+    def test_saving_does_not_add_a_z_motor_config(self, preferences_dialog, temp_config_file):
+        preferences_dialog.binning_spinbox.setValue(4)
+        assert preferences_dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert not saved.has_option("GENERAL", "z_motor_config")
+
+
 class TestZStackOrderDropdownPreference:
     """The opt-in Z-stack order dropdown (Channel First / Z First) is switched from Preferences, live."""
 

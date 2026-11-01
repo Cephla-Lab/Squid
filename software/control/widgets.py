@@ -1588,11 +1588,8 @@ class PreferencesDialog(QDialog):
         hw_group = CollapsibleGroupBox("Hardware Configuration", collapsed=True)
         hw_layout = QFormLayout()
 
-        self.z_motor_combo = QComboBox()
-        self.z_motor_combo.addItems(["STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"])
-        self.z_motor_combo.setCurrentText(self._get_config_value("GENERAL", "z_motor_config", "STEPPER"))
-        hw_layout.addRow("Z Motor Config *:", self.z_motor_combo)
-
+        # No Z motor choice here: z_motor_config names the Z hardware the machine has, so it is set in the
+        # config file, and saving Preferences leaves it as written.
         self.spinning_disk_checkbox = QCheckBox()
         self.spinning_disk_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False))
         hw_layout.addRow("Enable Spinning Disk *:", self.spinning_disk_checkbox)
@@ -2213,7 +2210,6 @@ class PreferencesDialog(QDialog):
         self.config.set("AF", "crop_height", str(self.af_crop_height.value()))
 
         # Advanced - Hardware
-        self.config.set("GENERAL", "z_motor_config", self.z_motor_combo.currentText())
         self.config.set(
             "GENERAL",
             "enable_spinning_disk_confocal",
@@ -2588,11 +2584,6 @@ class PreferencesDialog(QDialog):
             changes.append(("AF Crop Height", f"{old_val} px", f"{new_val} px", False))
 
         # Advanced - Hardware (require restart)
-        old_val = self._get_config_value("GENERAL", "z_motor_config", "STEPPER")
-        new_val = self.z_motor_combo.currentText()
-        if old_val != new_val:
-            changes.append(("Z Motor Config", old_val, new_val, True))
-
         old_val = self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False)
         new_val = self.spinning_disk_checkbox.isChecked()
         if old_val != new_val:
