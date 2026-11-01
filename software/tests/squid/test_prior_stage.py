@@ -1,5 +1,6 @@
 """PriorStage against a fake ProScan that, like the real controller, ends every reply with a bare CR."""
 
+import logging
 import threading
 import time
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 import serial.tools.list_ports  # prior.py relies on the app having imported it already
 
 import squid.exceptions
+import squid.logging
 import squid.stage.prior
 
 
@@ -191,27 +193,110 @@ def test_checks_ftdi_latency_timer_of_its_port(fake, monkeypatch):
     assert checks == [("COM_FAKE", "Prior stage")]
 
 
-def test_encoders_are_left_as_the_controller_has_them_by_default(fake):
+@pytest.fixture
+def prior_log():
+    """Warnings and info lines PriorStage logs (the squid loggers don't propagate to pytest's caplog)."""
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    logger = squid.logging.get_logger("PriorStage")
+    logger.addHandler(handler)
+    yield records
+    logger.removeHandler(handler)
+
+
+def _messages(records, level):
+    return [r.getMessage() for r in records if r.levelno == level]
+
+
+def test_by_default_nothing_about_the_encoders_is_sent(fake):
     stage, ser = make_stage(fake)
-    assert not [c for c in ser.commands if c.startswith("SENCODER")]
-    assert stage.encoder_axes == 3
+    assert not [c for c in ser.commands if "ENCODER" in c]  # neither SENCODER nor even an ENCODER query
+    assert stage.encoder_axes is None
 
 
-@pytest.mark.parametrize("use_encoders, command, axes", [(False, "SENCODER,0", 0), (True, "SENCODER,1", 3)])
-def test_encoders_are_switched_as_configured(fake, use_encoders, command, axes):
+@pytest.mark.parametrize("use_encoders, command", [(False, "SENCODER,0"), (True, "SENCODER,1")])
+def test_encoders_are_switched_as_configured_after_the_stage_check(fake, prior_log, use_encoders, command):
     stage, ser = make_stage(fake, use_encoders=use_encoders)
-    assert command in ser.commands
-    assert stage.encoder_axes == axes
-    assert stage.get_encoder_axes() == axes
+    assert ser.commands.index(command) > ser.commands.index("STAGE")
+    assert stage.encoder_axes == (3 if use_encoders else 0)
+    assert _messages(prior_log, logging.WARNING) == []
+    expected = "X+Y (closed loop)" if use_encoders else "off (open loop)"
+    assert any(expected in m for m in _messages(prior_log, logging.INFO))
 
 
-def test_a_controller_refusing_sencoder_does_not_stop_start_up(fake, monkeypatch):
+def test_switching_on_without_fitted_encoders_is_reported(fake, prior_log, monkeypatch):
+    normal = FakeProScan._reply
+    monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"0\r" if cmd == "ENCODER" else normal(self, cmd))
+    make_stage(fake, use_encoders=True)  # acknowledged, but no axis comes under encoder control
+    assert any("asked for on" in m for m in _messages(prior_log, logging.WARNING))
+
+
+def test_encoders_left_on_after_switching_off_are_reported(fake, prior_log, monkeypatch):
+    normal = FakeProScan._reply
+    monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"0\r" if cmd == "SENCODER,0" else normal(self, cmd))
+    stage, ser = make_stage(fake, use_encoders=False)  # the controller acknowledges but keeps them on
+    assert stage.encoder_axes == 3
+    assert any("asked for off" in m for m in _messages(prior_log, logging.WARNING))
+
+
+def test_a_controller_refusing_sencoder_does_not_stop_start_up(fake, prior_log, monkeypatch):
     normal = FakeProScan._reply
     monkeypatch.setattr(
         FakeProScan, "_reply", lambda self, cmd: b"E,1\r" if cmd.startswith("SENCODER") else normal(self, cmd)
     )
     stage, ser = make_stage(fake, use_encoders=False)
-    assert stage.encoder_axes == 3  # still on, and logged as a warning
+    assert stage.encoder_axes == 3
+    warnings = _messages(prior_log, logging.WARNING)
+    assert any("switching the encoders off was answered" in m for m in warnings)
+    assert any("asked for off" in m for m in warnings)
+
+
+def test_an_unreadable_encoder_state_is_reported(fake, prior_log, monkeypatch):
+    normal = FakeProScan._reply
+    monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"?\r" if cmd == "ENCODER" else normal(self, cmd))
+    stage, ser = make_stage(fake, use_encoders=False)
+    assert stage.encoder_axes is None
+    assert any("could not read back" in m for m in _messages(prior_log, logging.WARNING))
+
+
+def test_a_focus_encoder_does_not_count_as_the_stage_being_closed_loop(fake, prior_log, monkeypatch):
+    normal = FakeProScan._reply
+    monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"4\r" if cmd == "ENCODER" else normal(self, cmd))
+    make_stage(fake, use_encoders=False)  # Z (4) still under encoder control: not this stage's concern
+    assert _messages(prior_log, logging.WARNING) == []
+
+
+@pytest.mark.parametrize(
+    "value, parsed",
+    [
+        (None, None),
+        ("", None),
+        ("none", None),
+        ("None", None),
+        (False, False),
+        ("off", False),
+        ("no", False),
+        ("FALSE", False),
+        (0, False),
+        (True, True),
+        ("on", True),
+        ("yes", True),
+        (1, True),
+    ],
+)
+def test_the_ini_setting_is_read_as_true_false_or_none(value, parsed):
+    assert squid.stage.prior.PriorStage.parse_use_encoders(value) is parsed
+
+
+def test_an_unclear_ini_setting_stops_start_up(fake):
+    with pytest.raises(ValueError, match="prior_stage_use_encoders"):
+        make_stage(fake, use_encoders="maybe")
+
+
+def test_the_encoder_setting_cannot_be_given_by_position(fake):
+    with pytest.raises(TypeError):
+        squid.stage.prior.PriorStage("FAKE_SN", 115200, None, False)
 
 
 def test_microscope_build_passes_the_ini_encoder_setting(fake, monkeypatch):

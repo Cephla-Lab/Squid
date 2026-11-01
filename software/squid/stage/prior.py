@@ -25,6 +25,7 @@ class PriorStage(AbstractStage):
         sn: str,
         baudrate: int = 115200,
         stage_config: StageConfig = None,
+        *,
         use_encoders: Optional[bool] = None,
         max_speed: int = 100,
         acceleration: int = 100,
@@ -68,7 +69,7 @@ class PriorStage(AbstractStage):
         self.serial_lock = threading.Lock()
         self.is_busy = False
         # True/False switches the stage's encoders on/off at start-up; None leaves them as the controller has them
-        self.use_encoders = use_encoders
+        self.use_encoders = PriorStage.parse_use_encoders(use_encoders)
         self.encoder_axes: Optional[int] = None
 
         self.set_baudrate(baudrate)
@@ -143,9 +144,9 @@ class PriorStage(AbstractStage):
         self._send_command("YD -1")  # Set direction of Y axis move
         self._send_command("H 0")  # Joystick enabled
         self.joystick_enabled = True
-        self._apply_encoder_setting()
         self.user_unit = self.stage_microsteps_per_mm * self.resolution
         self.get_stage_info()
+        self._apply_encoder_setting()  # once the controller has shown it is a ProScan with a stage
         self.set_acceleration(self.acceleration)
         self.set_max_speed(self.speed)
         self._get_pos_poll_stage()
@@ -232,26 +233,50 @@ class PriorStage(AbstractStage):
             self._log.debug(f"Prior stage gave no usable reply to 'ENCODER': {e}")
             return None
 
+    @staticmethod
+    def parse_use_encoders(value) -> Optional[bool]:
+        """The prior_stage_use_encoders setting as True, False or None. The .ini loader passes text such as 'off' or
+        'none' through as a non-empty (truthy) string, which would switch the encoders the wrong way; anything that is
+        not clearly one of the three is refused."""
+        if value is None or isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ("", "none", "null"):
+            return None
+        if text in ("true", "on", "yes", "1"):
+            return True
+        if text in ("false", "off", "no", "0"):
+            return False
+        raise ValueError(f"prior_stage_use_encoders must be True, False or None (leave as is), not {value!r}")
+
     def _apply_encoder_setting(self):
-        """Switch the encoders on or off as configured (use_encoders None leaves them as the controller has them).
+        """Switch the X/Y encoders on or off as configured; with use_encoders None nothing is sent at all.
 
         A ProScan enables the encoders it detects at power-up, which makes every move closed loop. On an H117 that
         made 0.2 mm moves ~3x slower (0.55 s vs 0.17 s), and a stall still ended a move short (9 mm) rather than being
         recovered. SENCODER, unlike ENCODER, makes the step and encoder counts equal when switching, so the position
-        doesn't jump. With the encoders off they still count: "P,e" reads where the stage really is."""
-        if self.use_encoders is not None:
-            state = "on" if self.use_encoders else "off"
-            try:
-                self._send_command(f"SENCODER,{1 if self.use_encoders else 0}")
-            except Exception as e:
-                self._log.warning(f"Prior stage: could not switch the encoders {state}: {e}")
+        doesn't jump. With the encoders off they still count: "P,e" reads where the stage really is. The controller
+        keeps the switched state until it is power-cycled. The result is read back and checked for X and Y (ENCODER
+        reports the axes under encoder control: 3 after power-up with X/Y encoders, 0 after SENCODER,0)."""
+        if self.use_encoders is None:
+            return
+        wanted = "on" if self.use_encoders else "off"
+        try:
+            reply = self._send_command(f"SENCODER,{1 if self.use_encoders else 0}")
+        except Exception as e:
+            reply = str(e)
+        if reply != "0":
+            self._log.warning(f"Prior stage: switching the encoders {wanted} was answered {reply!r}")
         self.encoder_axes = self.get_encoder_axes()
         if self.encoder_axes is None:
+            self._log.warning(f"Prior stage: could not read back the encoders after switching them {wanted}")
             return
-        axes = [name for bit, name in ((1, "X"), (2, "Y"), (4, "Z")) if self.encoder_axes & bit]
-        self._log.info(f"Prior stage encoders: {'+'.join(axes) + ' (closed loop)' if axes else 'off (open loop)'}")
-        if self.use_encoders is False and self.encoder_axes:
-            self._log.warning(f"Prior stage encoders are still on ({'+'.join(axes)}) after switching them off.")
+        xy = self.encoder_axes & 0b11  # X=1, Y=2; the stage has no other axes (Z=4 would be a focus drive)
+        axes = "+".join(name for bit, name in ((1, "X"), (2, "Y")) if xy & bit)
+        if bool(xy) != self.use_encoders:
+            self._log.warning(f"Prior stage encoders: asked for {wanted}, but X/Y read back {axes or 'off'}")
+        else:
+            self._log.info(f"Prior stage encoders: {axes + ' (closed loop)' if xy else 'off (open loop)'}")
 
     def get_acceleration(self):
         """Get the current acceleration setting."""
