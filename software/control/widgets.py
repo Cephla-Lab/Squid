@@ -1219,6 +1219,13 @@ class PreferencesDialog(QDialog):
 
     signal_config_changed = Signal()
 
+    # What the File Saving Format combo box shows; the config file keeps the FileSavingOption names.
+    FILE_SAVING_LABELS = {
+        FileSavingOption.INDIVIDUAL_IMAGES: "Individual images",
+        FileSavingOption.MULTI_PAGE_TIFF: "Multi-page TIFF",
+        FileSavingOption.OME_TIFF: "OME-TIFF",
+        FileSavingOption.ZARR_V3: "OME-Zarr",
+    }
     OME_ZARR_TOOLTIP = (
         "OME-Zarr 0.5 (Zarr v3).\n"
         "Tools that only read OME-Zarr 0.4 / Zarr v2 cannot open it;\n"
@@ -1281,8 +1288,7 @@ class PreferencesDialog(QDialog):
         # so an item can show a friendlier label without changing what existing configs contain.
         self.file_saving_combo = QComboBox()
         for option in FileSavingOption:
-            label = "OME-Zarr" if option is FileSavingOption.ZARR_V3 else option.name
-            self.file_saving_combo.addItem(label, option.name)
+            self.file_saving_combo.addItem(self.FILE_SAVING_LABELS[option], option.name)
         current_index = self.file_saving_combo.findData(self._get_file_saving_option())
         if current_index >= 0:
             self.file_saving_combo.setCurrentIndex(current_index)
@@ -2045,7 +2051,7 @@ class PreferencesDialog(QDialog):
         return self._get_config_value("GENERAL", "file_saving_option", control._def.FILE_SAVING_OPTION.name)
 
     def _file_saving_label(self, option_name):
-        """The label the format combo box shows for a FileSavingOption name ("OME-Zarr" for ZARR_V3)."""
+        """The label the format combo box shows for a FileSavingOption name (the name itself if unknown)."""
         index = self.file_saving_combo.findData(option_name)
         return self.file_saving_combo.itemText(index) if index >= 0 else option_name
 

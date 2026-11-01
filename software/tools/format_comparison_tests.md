@@ -16,7 +16,7 @@ This gives ~72 images per acquisition (2 wells × ~4 FOVs × 3z × 1t × 3ch).
 
 ### Test 1: Individual TIFF (Baseline)
 1. Use current master branch
-2. Settings > Preferences > General > File Saving Format: `INDIVIDUAL_IMAGES`
+2. Settings > Preferences > General > File Saving Format: `Individual images`
 3. Run acquisition with above parameters
 4. Note: Save to `/Volumes/Extreme SSD/test_tiff_{timestamp}/`
 
