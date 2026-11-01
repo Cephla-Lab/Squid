@@ -8,6 +8,7 @@ import shutil
 import statistics
 import time
 import threading
+import uuid
 from dataclasses import dataclass
 
 import cv2
@@ -244,9 +245,13 @@ def write_ini_atomically(config, path: str):
     path = os.path.realpath(path)  # an ini reached through a symlink keeps the link
     if os.path.exists(path) and not os.access(path, os.W_OK):
         raise PermissionError(errno.EACCES, "Permission denied", path)
-    tmp_path = path + ".tmp"
+    # A temp file of this save's own: a shared ini may be saved from another user or host at the same time. "x"
+    # creates it or fails, so this save never writes to, publishes or deletes another one's. (tempfile.mkstemp would
+    # make a new ini readable by its owner only; this gets the usual permissions.)
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    f = open(tmp_path, "x")
     try:
-        with open(tmp_path, "w") as f:
+        with f:
             config.write(f)
             f.flush()
             os.fsync(f.fileno())

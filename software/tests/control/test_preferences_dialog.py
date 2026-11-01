@@ -1,4 +1,5 @@
 import errno
+import glob
 import io
 import os
 import sys
@@ -460,7 +461,7 @@ class TestApplySettings:
         mock_warning.assert_called_once()
         with open(temp_config_file) as f:
             assert f.read() == before
-        assert not os.path.exists(temp_config_file + ".tmp")
+        assert not glob.glob(glob.escape(temp_config_file) + ".*.tmp")
 
     def test_apply_settings_emits_signal(self, qtbot, preferences_dialog):
         """Verify signal_config_changed is emitted when settings are saved."""

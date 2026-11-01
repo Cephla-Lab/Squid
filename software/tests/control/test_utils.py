@@ -1,5 +1,6 @@
 import errno
 import os
+import sys
 from configparser import ConfigParser
 
 import control.utils
@@ -311,6 +312,33 @@ def test_a_failed_ini_write_leaves_the_file_as_it_was(tmp_path):
         control.utils.write_ini_atomically(DiskFull(), str(path))
     assert path.read_text() == "[GENERAL]\nold = 1\n"
     assert os.listdir(tmp_path) == ["machine.ini"]
+
+
+def test_a_save_made_while_another_is_part_way_publishes_only_its_own_text(tmp_path):
+    # A shared ini saved from another user or host while this save is part way, which then runs out of space.
+    path = tmp_path / "machine.ini"
+    path.write_text("[GENERAL]\nold = 1\n")
+
+    class DiskFullAfterAnotherSave(ConfigParser):
+        def write(self, fp, space_around_delimiters=True):
+            fp.write("[GENERAL]\n")
+            control.utils.write_ini_atomically(_ini(other="2"), str(path))
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    with pytest.raises(OSError):
+        control.utils.write_ini_atomically(DiskFullAfterAnotherSave(), str(path))
+    assert path.read_text() == "[GENERAL]\nother = 2\n\n"  # the other save, whole
+    assert os.listdir(tmp_path) == ["machine.ini"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows files have no group/other permission bits")
+def test_a_new_ini_gets_the_usual_permissions(tmp_path):
+    # Not the owner-only 0600 of a tempfile.mkstemp file, which would shut other users out of a shared ini.
+    plain = tmp_path / "plain.txt"
+    plain.write_text("")
+    path = tmp_path / "machine.ini"
+    control.utils.write_ini_atomically(_ini(new="2"), str(path))
+    assert path.stat().st_mode & 0o777 == plain.stat().st_mode & 0o777
 
 
 def test_a_read_only_ini_is_not_replaced(tmp_path):
