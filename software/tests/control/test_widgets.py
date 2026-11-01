@@ -3095,3 +3095,33 @@ def test_wellplate_z_checkbox_keeps_the_hidden_z_order_dropdown_hidden(qtbot, mo
     assert fake.combobox_z_order.isHidden()
     control.widgets.WellplateMultiPointWidget.show_z_controls(fake, True)
     assert not fake.combobox_z_order.isHidden()
+
+
+def test_wellplate_z_order_dropdown_follows_the_preference_live(qtbot, monkeypatch):
+    """Preferences switches ENABLE_Z_STACK_ORDER_SELECTION at runtime; the tab re-applies the #762 rule."""
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", False)
+    fake = _wellplate_dz_row(qtbot)
+    fake.checkbox_z = MagicMock(isChecked=MagicMock(return_value=True))
+
+    control.widgets.WellplateMultiPointWidget.update_z_order_dropdown_visibility(fake)
+    assert fake.combobox_z_order.isHidden()
+
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", True)
+    control.widgets.WellplateMultiPointWidget.update_z_order_dropdown_visibility(fake)
+    assert not fake.combobox_z_order.isHidden()
+
+    fake.checkbox_z.isChecked.return_value = False  # the z row is hidden with Z unchecked, the dropdown with it
+    control.widgets.WellplateMultiPointWidget.update_z_order_dropdown_visibility(fake)
+    assert fake.combobox_z_order.isHidden()
+
+
+def test_flexible_z_order_dropdown_follows_the_preference_live(monkeypatch):
+    fake = SimpleNamespace(combobox_z_order=MagicMock())
+
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", True)
+    control.widgets.FlexibleMultiPointWidget.update_z_order_dropdown_visibility(fake)
+    fake.combobox_z_order.setVisible.assert_called_with(True)
+
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", False)
+    control.widgets.FlexibleMultiPointWidget.update_z_order_dropdown_visibility(fake)
+    fake.combobox_z_order.setVisible.assert_called_with(False)
