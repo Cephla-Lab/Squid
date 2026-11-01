@@ -384,7 +384,15 @@ class Microscope:
 
         stage_config = squid.config.get_stage_config()
         if control._def.USE_PRIOR_STAGE:
-            stage = PriorStage(sn=control._def.PRIOR_STAGE_SN, stage_config=stage_config)
+            stage = PriorStage(
+                sn=control._def.PRIOR_STAGE_SN,
+                stage_config=stage_config,
+                use_encoders=control._def.PRIOR_STAGE_USE_ENCODERS,
+                max_speed=control._def.PRIOR_STAGE_MAX_SPEED,
+                acceleration=control._def.PRIOR_STAGE_ACCELERATION,
+                max_speed_limit=control._def.PRIOR_STAGE_MAX_SPEED_LIMIT,
+                acceleration_limit=control._def.PRIOR_STAGE_ACCELERATION_LIMIT,
+            )
         else:
             if low_level_devices.microcontroller is None:
                 raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
@@ -519,7 +527,9 @@ class Microscope:
             )
         elif control._def.USE_ANDOR_LASER_CONTROL and not simulated:
             andor_laser = control.illumination_andor.AndorLaser(
-                control._def.ANDOR_LASER_VID, control._def.ANDOR_LASER_PID
+                control._def.ANDOR_LASER_VID,
+                control._def.ANDOR_LASER_PID,
+                active_blanking=control._def.USE_ANDOR_ACTIVE_BLANKING,
             )
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,

@@ -405,6 +405,45 @@ class TestValidateHardware:
         assert result.current_binning == (1, 1)
         assert result.yaml_binning == (2, 2)
 
+    def test_a_piezo_stack_is_refused_on_a_microscope_without_a_piezo(self):
+        yaml_data = AcquisitionYAMLData(widget_type="wellplate", use_piezo=True)
+
+        result = validate_hardware(yaml_data, "20x", (1, 1), piezo_travel_um=None)
+
+        assert result.is_valid is False
+        assert result.piezo_mismatch is True
+        assert "no piezo" in result.message
+
+    def test_a_stepper_stack_loads_on_a_microscope_without_a_piezo(self):
+        yaml_data = AcquisitionYAMLData(widget_type="wellplate", use_piezo=False)
+
+        assert validate_hardware(yaml_data, "20x", (1, 1), piezo_travel_um=None).is_valid is True
+
+    @pytest.mark.parametrize("piezo_z_range_um", [(250.0, 350.0), (-5.0, 20.0)])
+    def test_a_saved_piezo_range_outside_this_piezos_travel_is_refused(self, piezo_z_range_um):
+        yaml_data = AcquisitionYAMLData(widget_type="wellplate", use_piezo=True, piezo_z_range_um=piezo_z_range_um)
+
+        result = validate_hardware(yaml_data, "20x", (1, 1), piezo_travel_um=300.0)
+
+        assert result.is_valid is False
+        assert result.piezo_mismatch is True
+        assert "0 to 300 µm" in result.message
+
+    @pytest.mark.parametrize("piezo_z_range_um", [(250.0, 20.0), (float("nan"), 26.0), (20.0, float("inf"))])
+    def test_a_saved_piezo_range_that_is_not_an_ordered_pair_of_numbers_is_refused(self, piezo_z_range_um):
+        yaml_data = AcquisitionYAMLData(widget_type="wellplate", use_piezo=True, piezo_z_range_um=piezo_z_range_um)
+
+        result = validate_hardware(yaml_data, "20x", (1, 1), piezo_travel_um=300.0)
+
+        assert result.is_valid is False
+        assert result.piezo_mismatch is True
+        assert "Z-min" in result.message
+
+    def test_a_saved_piezo_range_inside_the_travel_loads(self):
+        yaml_data = AcquisitionYAMLData(widget_type="wellplate", use_piezo=True, piezo_z_range_um=(20.0, 26.0))
+
+        assert validate_hardware(yaml_data, "20x", (1, 1), piezo_travel_um=300.0).is_valid is True
+
 
 class TestAcquisitionYAMLDataclass:
     """Tests for AcquisitionYAMLData dataclass."""
@@ -619,3 +658,99 @@ class TestZStackOrder:
 
         with pytest.raises(ValueError, match="z_stack.order"):
             parse_acquisition_dict({"z_stack": {"nz": 3, "order": "TIME FIRST"}})
+
+
+class TestPiezoZRange:
+    def _params(self, piezo_z_range_um):
+        from control.core.multi_point_utils import AcquisitionParameters, ScanPositionInformation
+
+        return AcquisitionParameters(
+            experiment_ID="piezo_range",
+            base_path=None,
+            selected_configurations=[],
+            acquisition_start_time=0.0,
+            scan_position_information=ScanPositionInformation(
+                scan_region_coords_mm=[], scan_region_names=[], scan_region_fov_coords_mm={}
+            ),
+            NX=1,
+            deltaX=0,
+            NY=1,
+            deltaY=0,
+            NZ=4,
+            deltaZ=0.002,
+            Nt=1,
+            deltat=0,
+            do_autofocus=False,
+            do_reflection_autofocus=False,
+            use_piezo=True,
+            display_resolution_scaling=1.0,
+            z_stacking_config="FROM BOTTOM",
+            z_range=(1.0, 1.0),
+            piezo_z_range_um=piezo_z_range_um,
+        )
+
+    @pytest.mark.parametrize("piezo_z_range_um", [(20.0, 26.0), None])
+    def test_a_saved_acquisition_yaml_reads_back_its_piezo_range(self, tmp_path, piezo_z_range_um):
+        from control.core.multi_point_controller import _save_acquisition_yaml
+
+        _save_acquisition_yaml(self._params(piezo_z_range_um), str(tmp_path))
+        data = parse_acquisition_yaml(str(tmp_path))
+
+        assert data.piezo_z_range_um == piezo_z_range_um
+        assert data.z_range_mm == (1.0, 1.0)  # the stepper's z stays in its own field
+
+    def test_an_older_piezo_yaml_without_the_field_keeps_its_stepper_range(self):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        data = parse_acquisition_dict({"z_stack": {"nz": 3, "use_piezo": True, "z_range_mm": [3.2, 3.204]}})
+
+        assert data.piezo_z_range_um is None
+        assert data.z_range_mm == (3.2, 3.204)
+
+
+class TestLaserAfPerStack:
+    """autofocus.laser_af_per_stack: off unless asked for, and only with laser AF in Z First."""
+
+    @pytest.mark.parametrize("value", [None, False, "false"])  # missing / null / off
+    def test_laser_af_per_stack_is_off_unless_asked_for(self, value):
+        from control.acquisition_yaml_loader import parse_laser_af_per_stack
+
+        assert parse_laser_af_per_stack(value, laser_af=True, z_stack_order="Z FIRST") is False
+
+    @pytest.mark.parametrize("value", [True, "true", "yes", 1])
+    def test_laser_af_per_stack_on_needs_laser_af_and_z_first(self, value):
+        from control.acquisition_yaml_loader import parse_laser_af_per_stack
+
+        assert parse_laser_af_per_stack(value, laser_af=True, z_stack_order="Z FIRST") is True
+
+    def test_laser_af_per_stack_without_laser_af_is_rejected(self):
+        from control.acquisition_yaml_loader import parse_laser_af_per_stack
+
+        with pytest.raises(ValueError, match="laser_af_per_stack"):
+            parse_laser_af_per_stack(True, laser_af=False, z_stack_order="Z FIRST")
+
+    def test_laser_af_per_stack_with_channel_first_is_rejected(self):
+        from control.acquisition_yaml_loader import parse_laser_af_per_stack
+
+        with pytest.raises(ValueError, match="laser_af_per_stack"):
+            parse_laser_af_per_stack(True, laser_af=True, z_stack_order="CHANNEL FIRST")
+
+    def test_laser_af_per_stack_rejects_a_value_that_is_not_a_flag(self):
+        from control.acquisition_yaml_loader import parse_laser_af_per_stack
+
+        with pytest.raises(ValueError, match="laser_af_per_stack"):
+            parse_laser_af_per_stack("sometimes", laser_af=True, z_stack_order="Z FIRST")
+
+    def test_a_yaml_with_laser_af_per_stack_and_one_plane_still_loads(self):
+        # Nz 1 makes the option a no-op, not a mistake (Review Focus 1).
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        data = parse_acquisition_dict(
+            {"z_stack": {"nz": 1, "order": "Z FIRST"}, "autofocus": {"laser_af": True, "laser_af_per_stack": True}}
+        )
+        assert data.laser_af_per_stack is True and data.nz == 1
+
+    def test_a_yaml_without_the_key_loads_off(self):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        assert parse_acquisition_dict({"z_stack": {"nz": 3}}).laser_af_per_stack is False

@@ -211,6 +211,41 @@ class TestSlackNotifierTimepointNotifications:
             args = mock_queue.call_args[0][0]
             assert "5/10" in args.text
 
+    @staticmethod
+    def _rendered(message):
+        import json
+
+        return message.text + json.dumps(getattr(message, "blocks", None) or [])
+
+    def _timepoint_stats(self, **per_stack):
+        return TimepointStats(
+            timepoint=2,
+            total_timepoints=4,
+            elapsed_seconds=120,
+            estimated_remaining_seconds=120,
+            images_captured=60,
+            fovs_captured=3,
+            laser_af_successes=3,
+            laser_af_failures=0,
+            laser_af_failure_reasons=[],
+            **per_stack,
+        )
+
+    def test_timepoint_summary_has_no_per_stack_line_when_no_re_af_ran(self, notifier):
+        with mock.patch.object(notifier, "_queue_message") as mock_queue:
+            notifier.notify_timepoint_complete(self._timepoint_stats())
+            rendered = self._rendered(mock_queue.call_args[0][0])
+        assert "Laser AF:* 3/3 FOVs succeeded" in rendered
+        assert "per stack" not in rendered
+
+    def test_timepoint_summary_reports_per_stack_re_af_separately(self, notifier):
+        stats = self._timepoint_stats(laser_af_per_stack_successes=5, laser_af_per_stack_failures=1)
+        with mock.patch.object(notifier, "_queue_message") as mock_queue:
+            notifier.notify_timepoint_complete(stats)
+            rendered = self._rendered(mock_queue.call_args[0][0])
+        assert "Laser AF:* 3/3 FOVs succeeded" in rendered
+        assert "Laser AF per stack:* 5/6 stacks succeeded (1 failed)" in rendered
+
     def test_notify_timepoint_respects_flag(self):
         """Test that notify_timepoint_complete respects flag."""
         control._def.SlackNotifications.ENABLED = True

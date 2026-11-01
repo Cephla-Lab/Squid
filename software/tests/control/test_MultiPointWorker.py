@@ -69,6 +69,9 @@ def test_z_stack_moves_pause_for_the_stage_specific_stabilization_time(monkeypat
     )
     sleeps = []
     worker._sleep = sleeps.append
+    worker._move_down_half_stack = types.MethodType(
+        MultiPointWorker._move_down_half_stack, worker
+    )  # prepare_z_stack calls it
 
     MultiPointWorker.move_z_for_stack(worker)
     MultiPointWorker.prepare_z_stack(worker)
