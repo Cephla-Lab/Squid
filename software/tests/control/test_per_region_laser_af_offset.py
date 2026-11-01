@@ -39,6 +39,7 @@ class _BuildParamsStub:
         self.z_stacking_config = "FROM CENTER"
         self.z_stack_order = "CHANNEL FIRST"
         self.z_range = (0.0, 0.0)
+        self.piezo_z_range_um = None
         self.skip_saving = False
         self.xy_mode = "Current Position"
 

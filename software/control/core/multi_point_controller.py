@@ -17,7 +17,12 @@ import pandas as pd
 from control import utils, utils_acquisition
 import control._def
 from control.core.auto_focus_controller import AutoFocusController
-from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
+from control.core.multi_point_utils import (
+    MultiPointControllerFunctions,
+    ScanPositionInformation,
+    AcquisitionParameters,
+    piezo_z_range_problem,
+)
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
@@ -90,6 +95,7 @@ def _save_acquisition_yaml(
             "config": params.z_stacking_config,
             "order": params.z_stack_order,
             "z_range_mm": _serialize_for_yaml(params.z_range) if params.z_range else None,
+            "piezo_z_range_um": _serialize_for_yaml(params.piezo_z_range_um) if params.piezo_z_range_um else None,
             "use_piezo": params.use_piezo,
         },
         "time_series": {
@@ -258,6 +264,7 @@ class MultiPointController:
         self.scanCoordinates = scan_coordinates
         self.old_images_per_page = 1
         self.z_range: Tuple[float, float] = None
+        self.piezo_z_range_um: Optional[Tuple[float, float]] = None
         self.z_stacking_config = control._def.Z_STACKING_CONFIG
         self.z_stack_order = control._def.Z_STACK_ORDER
 
@@ -405,6 +412,10 @@ class MultiPointController:
 
     def set_z_range(self, minZ, maxZ):
         self.z_range = [minZ, maxZ]
+
+    def set_piezo_z_range_um(self, piezo_z_range_um: Optional[Tuple[float, float]]):
+        """Set Z-range on a piezo stack: (min, max) piezo positions in µm, or None to start from the current piezo."""
+        self.piezo_z_range_um = piezo_z_range_um
 
     def set_NX(self, N):
         self.NX = N
@@ -1067,6 +1078,7 @@ class MultiPointController:
             z_stacking_config=self.z_stacking_config,
             z_stack_order=self.z_stack_order,
             z_range=self.z_range,
+            piezo_z_range_um=self.piezo_z_range_um,
             skip_saving=self.skip_saving,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
@@ -1157,6 +1169,18 @@ class MultiPointController:
                 "Laser Autofocus Not Ready - Please set the laser autofocus reference position before starting acquisition with laser AF enabled."
             )
             return False
+        if self.piezo_z_range_um is not None:
+            if not self.use_piezo:
+                self._log.error(
+                    "The Z-range holds piezo positions, but the z-stack is set to run on the stepper - set the range again."
+                )
+                return False
+            problem = piezo_z_range_problem(
+                self.piezo_z_range_um, self.NZ, abs(self.deltaZ) * 1000, self.z_stacking_config, self.piezo.range_um
+            )
+            if problem:
+                self._log.error(problem)
+                return False
         return True
 
     def get_plate_view(self) -> np.ndarray:

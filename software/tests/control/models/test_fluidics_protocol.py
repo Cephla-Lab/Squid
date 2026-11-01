@@ -220,3 +220,21 @@ def test_settings_block_rejects_an_unknown_z_stack_order_at_load():
 
     with pytest.raises(ValidationError, match="z_stack.order"):
         SettingsBlock.model_validate({**SETTINGS, "z_stack": {"order": "TIME FIRST"}})
+
+
+def test_settings_block_keeps_a_piezo_range_through_to_the_acquisition_data():
+    from control.core.acquisition_settings import acquisition_data_from_blocks
+
+    z_stack = {**SETTINGS["z_stack"], "use_piezo": True, "z_range_mm": [1.0, 1.0], "piezo_z_range_um": [20.0, 26.0]}
+    block = SettingsBlock.model_validate({**SETTINGS, "z_stack": z_stack})
+    assert acquisition_data_from_blocks(block.model_dump(), COORDS).piezo_z_range_um == (20.0, 26.0)
+
+
+def test_settings_block_from_an_acquisition_file_keeps_its_piezo_range():
+    from control.acquisition_yaml_loader import AcquisitionYAMLData
+    from control.core.fluidics_protocol.resolve import settings_block_from_acquisition
+
+    data = AcquisitionYAMLData(
+        widget_type="wellplate", use_piezo=True, z_range_mm=(1.0, 1.0), piezo_z_range_um=(20.0, 26.0)
+    )
+    assert settings_block_from_acquisition(data, "acquisition.yaml").z_stack.piezo_z_range_um == [20.0, 26.0]

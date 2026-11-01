@@ -59,6 +59,8 @@ class AcquisitionYAMLData:
     experiment_id: Optional[str] = None
     wellplate_format: Optional[str] = None
     z_range_mm: Optional[Tuple[float, float]] = None
+    # Set Z-range on a piezo z-stack, in piezo µm; files written before it existed have none.
+    piezo_z_range_um: Optional[Tuple[float, float]] = None
     skip_saving: bool = False
 
 
@@ -115,6 +117,11 @@ def parse_z_stack_order(value) -> str:
     return normalized
 
 
+def parse_range(value) -> Optional[Tuple[float, float]]:
+    """A saved (min, max) pair as two floats; None when missing or not a pair."""
+    return (float(value[0]), float(value[1])) if value and len(value) == 2 else None
+
+
 def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAMLData:
     """Parse an already-loaded acquisition.yaml mapping (the file body, or a protocol header block)."""
     if not isinstance(data, dict):
@@ -158,9 +165,6 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
     if wellplate_regions and len(wellplate_regions) > 0:
         scan_shape = wellplate_regions[0].get("shape")
 
-    z_range = z_stack.get("z_range_mm")
-    z_range_mm = tuple(float(v) for v in z_range) if z_range and len(z_range) == 2 else None
-
     return AcquisitionYAMLData(
         widget_type=widget_type,
         xy_mode=acq.get("xy_mode", "Select Wells"),
@@ -197,7 +201,8 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
         # Saved-acquisition reuse
         experiment_id=acq.get("experiment_id"),
         wellplate_format=sample.get("wellplate_format"),
-        z_range_mm=z_range_mm,
+        z_range_mm=parse_range(z_stack.get("z_range_mm")),
+        piezo_z_range_um=parse_range(z_stack.get("piezo_z_range_um")),
         skip_saving=bool(acq.get("skip_saving", False)),
     )
 

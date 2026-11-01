@@ -619,3 +619,51 @@ class TestZStackOrder:
 
         with pytest.raises(ValueError, match="z_stack.order"):
             parse_acquisition_dict({"z_stack": {"nz": 3, "order": "TIME FIRST"}})
+
+
+class TestPiezoZRange:
+    def _params(self, piezo_z_range_um):
+        from control.core.multi_point_utils import AcquisitionParameters, ScanPositionInformation
+
+        return AcquisitionParameters(
+            experiment_ID="piezo_range",
+            base_path=None,
+            selected_configurations=[],
+            acquisition_start_time=0.0,
+            scan_position_information=ScanPositionInformation(
+                scan_region_coords_mm=[], scan_region_names=[], scan_region_fov_coords_mm={}
+            ),
+            NX=1,
+            deltaX=0,
+            NY=1,
+            deltaY=0,
+            NZ=4,
+            deltaZ=0.002,
+            Nt=1,
+            deltat=0,
+            do_autofocus=False,
+            do_reflection_autofocus=False,
+            use_piezo=True,
+            display_resolution_scaling=1.0,
+            z_stacking_config="FROM BOTTOM",
+            z_range=(1.0, 1.0),
+            piezo_z_range_um=piezo_z_range_um,
+        )
+
+    @pytest.mark.parametrize("piezo_z_range_um", [(20.0, 26.0), None])
+    def test_a_saved_acquisition_yaml_reads_back_its_piezo_range(self, tmp_path, piezo_z_range_um):
+        from control.core.multi_point_controller import _save_acquisition_yaml
+
+        _save_acquisition_yaml(self._params(piezo_z_range_um), str(tmp_path))
+        data = parse_acquisition_yaml(str(tmp_path))
+
+        assert data.piezo_z_range_um == piezo_z_range_um
+        assert data.z_range_mm == (1.0, 1.0)  # the stepper's z stays in its own field
+
+    def test_an_older_piezo_yaml_without_the_field_keeps_its_stepper_range(self):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        data = parse_acquisition_dict({"z_stack": {"nz": 3, "use_piezo": True, "z_range_mm": [3.2, 3.204]}})
+
+        assert data.piezo_z_range_um is None
+        assert data.z_range_mm == (3.2, 3.204)

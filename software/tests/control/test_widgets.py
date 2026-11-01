@@ -2950,7 +2950,7 @@ def _wellplate_ui_fake(fit_ok=True, use_focus_map=False):
 
     focus_map = MagicMock()
     focus_map.fit_surface.return_value = fit_ok
-    return SimpleNamespace(
+    fake = SimpleNamespace(
         checkbox_xy=widget(isChecked=True),
         scanCoordinates=MagicMock(),
         combobox_z_mode=widget(currentText="Set Range"),
@@ -2977,6 +2977,8 @@ def _wellplate_ui_fake(fit_ok=True, use_focus_map=False):
         _log=MagicMock(),
         set_coordinates_to_current_position=MagicMock(),
     )
+    fake._push_set_z_range = lambda: control.widgets.WellplateMultiPointWidget._push_set_z_range(fake)
+    return fake
 
 
 def test_wellplate_configure_controller_from_ui_pushes_every_setting_without_starting(monkeypatch):
@@ -2987,6 +2989,7 @@ def test_wellplate_configure_controller_from_ui_pushes_every_setting_without_sta
 
     mpc = fake.multipointController
     mpc.set_z_range.assert_called_once_with(0.1, 0.2)
+    mpc.set_piezo_z_range_um.assert_called_once_with(None)  # a stepper range
     mpc.set_focus_map.assert_called_once_with(None)
     mpc.set_deltaZ.assert_called_once_with(1.5)
     mpc.set_NZ.assert_called_once_with(3)
@@ -3154,7 +3157,7 @@ def test_wellplate_configure_controller_from_ui_pushes_the_z_stacking_config(z_m
     fake.multipointController.set_z_stacking_config.assert_called_once_with(expected)
 
 
-def _flexible_ui_fake(set_z_range=False, z_stacking_config="FROM CENTER"):
+def _flexible_ui_fake(z_stacking_config="FROM CENTER"):
     def widget(**kw):
         m = MagicMock()
         for name, value in kw.items():
@@ -3164,9 +3167,6 @@ def _flexible_ui_fake(set_z_range=False, z_stacking_config="FROM CENTER"):
     stage = MagicMock()
     stage.get_pos.return_value.z_mm = 1.0
     return SimpleNamespace(
-        checkbox_set_z_range=widget(isChecked=set_z_range),
-        entry_minZ=widget(value=100.0),
-        entry_maxZ=widget(value=200.0),
         entry_deltaZ=widget(value=1.5),
         entry_NZ=widget(value=3),
         combobox_z_stack=widget(currentData=z_stacking_config),
@@ -3192,25 +3192,6 @@ def test_flexible_configure_controller_from_ui_pushes_the_z_stacking_config(z_st
     fake = _flexible_ui_fake(z_stacking_config=z_stacking_config)
     control.widgets.FlexibleMultiPointWidget.configure_controller_from_ui(fake)
     fake.multipointController.set_z_stacking_config.assert_called_once_with(z_stacking_config)
-
-
-def test_flexible_set_z_range_runs_from_bottom_whatever_the_stacking_dropdown_says():
-    fake = _flexible_ui_fake(set_z_range=True, z_stacking_config="FROM CENTER")
-    control.widgets.FlexibleMultiPointWidget.configure_controller_from_ui(fake)
-    fake.multipointController.set_z_stacking_config.assert_called_once_with("FROM BOTTOM")
-
-
-def test_flexible_set_z_range_disables_the_stacking_dropdown_and_releases_it_again():
-    fake = MagicMock()
-    fake.z_min_layout.count.return_value = 0
-    fake.z_max_layout.count.return_value = 0
-    fake.stage.get_pos.return_value.z_mm = 1.0
-
-    control.widgets.FlexibleMultiPointWidget.toggle_z_range_controls(fake, True)
-    fake.combobox_z_stack.setEnabled.assert_called_with(False)
-
-    control.widgets.FlexibleMultiPointWidget.toggle_z_range_controls(fake, False)
-    fake.combobox_z_stack.setEnabled.assert_called_with(True)
 
 
 @pytest.mark.parametrize(
@@ -3331,3 +3312,32 @@ def test_wellplate_restoring_z_parameters_keeps_the_mode_until_one_was_stored():
     fake.stored_z_params["z_mode"] = "From Center"
     control.widgets.WellplateMultiPointWidget.restore_z_parameters(fake)
     fake.combobox_z_mode.setCurrentText.assert_called_once_with("From Center")
+
+
+def test_flexible_start_runs_dz_and_nz_from_the_current_z_with_no_piezo_range():
+    """The Flexible tab has no Set Z-range: locations keep their own z (Hongquan, 2026-10-31), the stack is
+    dz & Nz from the current z, and any piezo range left by the Wellplate tab is cleared."""
+    fake = _flexible_ui_fake(z_stacking_config="FROM CENTER")
+    fake.stage.get_pos.return_value.z_mm = 1.0
+    fake.entry_deltaZ.value.return_value = 1.5
+    fake.entry_NZ.value.return_value = 3
+
+    control.widgets.FlexibleMultiPointWidget.configure_controller_from_ui(fake)
+
+    (z_min, z_max), _ = fake.multipointController.set_z_range.call_args
+    assert (z_min, z_max) == (pytest.approx(1.0), pytest.approx(1.003))
+    fake.multipointController.set_piezo_z_range_um.assert_called_once_with(None)
+    fake.multipointController.set_z_stacking_config.assert_called_once_with("FROM CENTER")
+
+
+def test_flexible_tab_has_no_set_z_range_controls():
+    for name in (
+        "toggle_z_range_controls",
+        "set_z_min",
+        "set_z_max",
+        "update_Nz",
+        "init_z",
+        "update_z_min",
+        "update_z_max",
+    ):
+        assert not hasattr(control.widgets.FlexibleMultiPointWidget, name), name

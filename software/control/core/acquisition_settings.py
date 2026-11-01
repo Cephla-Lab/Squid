@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 
 import control._def
 import control.utils
-from control.acquisition_yaml_loader import AcquisitionYAMLData, parse_z_stack_order
+from control.acquisition_yaml_loader import AcquisitionYAMLData, parse_range, parse_z_stack_order
 from control.utils import serialize_for_yaml
 
 
@@ -183,6 +183,7 @@ def apply_acquisition_settings(
         controller.set_z_range(float(data.z_range_mm[0]), float(data.z_range_mm[1]))
     else:
         controller.z_range = None  # run_acquisition derives it from the current z and the stack
+    controller.set_piezo_z_range_um(data.piezo_z_range_um)
     controller.set_focus_map(None)
     controller.set_region_laser_af_offsets({})
     controller.set_skip_saving(data.skip_saving)
@@ -228,6 +229,9 @@ def export_acquisition_settings(controller, scan_coordinates, objective_store, c
             "order": controller.z_stack_order,
             "use_piezo": bool(controller.use_piezo),
             "z_range_mm": [float(v) for v in controller.z_range] if controller.z_range else None,
+            "piezo_z_range_um": (
+                [float(v) for v in controller.piezo_z_range_um] if controller.piezo_z_range_um else None
+            ),
         },
         "autofocus": {"contrast_af": bool(controller.do_autofocus), "laser_af": bool(controller.do_reflection_af)},
         "widget_type": controller.widget_type,
@@ -258,7 +262,6 @@ def acquisition_data_from_blocks(settings: dict, coordinates: dict) -> Acquisiti
     z_stack = settings.get("z_stack") or {}
     autofocus = settings.get("autofocus") or {}
     binning = objective.get("camera_binning")
-    z_range = z_stack.get("z_range_mm")
     widget_type = settings.get("widget_type", "wellplate")
     regions = [dict(r) for r in (coordinates.get("regions") or [])]
     return AcquisitionYAMLData(
@@ -284,6 +287,7 @@ def acquisition_data_from_blocks(settings: dict, coordinates: dict) -> Acquisiti
         wellplate_regions=regions if widget_type == "wellplate" else None,
         flexible_positions=regions if widget_type != "wellplate" else None,
         wellplate_format=coordinates.get("wellplate_format"),
-        z_range_mm=(float(z_range[0]), float(z_range[1])) if z_range and len(z_range) == 2 else None,
+        z_range_mm=parse_range(z_stack.get("z_range_mm")),
+        piezo_z_range_um=parse_range(z_stack.get("piezo_z_range_um")),
         skip_saving=bool(settings.get("skip_saving", False)),
     )

@@ -80,6 +80,7 @@ def settings_block_from_acquisition(data: AcquisitionYAMLData, source_path: str)
             "order": data.z_stack_order,
             "use_piezo": data.use_piezo,
             "z_range_mm": list(data.z_range_mm) if data.z_range_mm else None,
+            "piezo_z_range_um": list(data.piezo_z_range_um) if data.piezo_z_range_um else None,
         },
         autofocus={"contrast_af": data.contrast_af, "laser_af": data.laser_af},
         widget_type=data.widget_type,
