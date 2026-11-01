@@ -1999,6 +1999,7 @@ class HighContentScreeningGui(QMainWindow):
                 CACHED_CONFIG_FILE_PATH,
                 parent=self,
                 on_restart=self.restart_application,
+                stage=self.stage,
             )
             dialog.signal_config_changed.connect(self._update_ram_monitor_visibility)
             dialog.signal_config_changed.connect(

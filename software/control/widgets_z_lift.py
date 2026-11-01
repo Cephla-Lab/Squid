@@ -67,7 +67,7 @@ class LiftMotionGuard(QObject):
         self._at_loading_position = False
         if stage_utils is not None:
             # signal_threaded_stage_move_started is emitted on the GUI thread before the toggle's thread starts,
-            # so the guard is busy before any of its motion; the "reached" signals arrive from that thread.
+            # so the guard is busy before any of its motion; the "reached" signals follow on the GUI thread too.
             stage_utils.signal_threaded_stage_move_started.connect(self._on_loading_started)
             stage_utils.signal_loading_position_reached.connect(self._on_loading_position_reached)
             stage_utils.signal_scanning_position_reached.connect(self._on_scanning_position_reached)

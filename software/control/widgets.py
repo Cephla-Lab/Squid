@@ -1,5 +1,6 @@
 import configparser
 import gc
+import io
 import os
 import json
 import yaml
@@ -54,6 +55,7 @@ from control.models.yaml_store import YamlStoreDamaged
 from control.core.plate_transform import has_well_grid, plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
+from squid.stage.prior import PriorStage
 from squid.stage.utils import (
     move_to_loading_position,
     move_to_scanning_position,
@@ -929,9 +931,8 @@ class ConfigEditor(QDialog):
 
     def save_to_filename(self, filename: str):
         try:
-            with open(filename, "w") as configfile:
-                self.config.write(configfile)
-                return True
+            utils.write_ini_atomically(self.config, filename)
+            return True
         except IOError:
             self._log.exception(f"Failed to write config file to '{filename}'")
             return False
@@ -971,8 +972,7 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
 
     def apply_and_exit(self):
         self.save_config()
-        with open(self.original_filepath, "w") as configfile:
-            self.config.write(configfile)
+        utils.write_ini_atomically(self.config, self.original_filepath)
         try:
             self.main_window.close()
         except (AttributeError, RuntimeError):
@@ -1332,12 +1332,13 @@ class PreferencesDialog(QDialog):
         "non-HCS acquisitions are saved as one 6D Zarr per region, which is not OME-Zarr."
     )
 
-    def __init__(self, config, config_filepath, parent=None, on_restart=None):
+    def __init__(self, config, config_filepath, parent=None, on_restart=None, stage=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
         self.config_filepath = config_filepath
         self._on_restart = on_restart  # Optional callback for application restart
+        self._stage = stage  # Optional; settings the stage can take live (Prior speed/acceleration) are sent to it
         self.setWindowTitle("Preferences")
         self.setMinimumWidth(500)
         self.setMinimumHeight(600)
@@ -1623,6 +1624,55 @@ class PreferencesDialog(QDialog):
 
         stage_group.content.addLayout(stage_layout)
         layout.addWidget(stage_group)
+
+        # Prior Stage section (sent to the stage on Save, no restart)
+        self.prior_speed_spinbox = None
+        self.prior_accel_spinbox = None
+        if control._def.USE_PRIOR_STAGE:
+            prior_group = CollapsibleGroupBox("Prior Stage", collapsed=True)
+            prior_layout = QFormLayout()
+            speed_per_step, accel_per_step = self._prior_physical_units_per_step()
+            # The rig's ceilings (prior_stage_*_limit in the machine .ini): the most the stage takes without losing steps
+            self._prior_speed_limit = PriorStage.within_controller_range(control._def.PRIOR_STAGE_MAX_SPEED_LIMIT)
+            self._prior_accel_limit = PriorStage.within_controller_range(control._def.PRIOR_STAGE_ACCELERATION_LIMIT)
+
+            self.prior_speed_spinbox, self.prior_speed_physical_label, row = self._make_prior_motion_row(
+                self._get_prior_motion_setting(
+                    "prior_stage_max_speed", control._def.PRIOR_STAGE_MAX_SPEED, self._prior_speed_limit
+                ),
+                self._prior_speed_limit,
+                speed_per_step,
+                "mm/s",
+                "Prior controller max speed (SMS). The scale is linear; the controller allows up to 1000\n"
+                "(60 mm/s on an H117 with 1 mm screws). This rig's ceiling is prior_stage_max_speed_limit\n"
+                "in the machine .ini: the most the stage takes without losing steps.",
+            )
+            prior_layout.addRow(f"Max Speed (1-{self._prior_speed_limit}):", row)
+
+            self.prior_accel_spinbox, self.prior_accel_physical_label, row = self._make_prior_motion_row(
+                self._get_prior_motion_setting(
+                    "prior_stage_acceleration", control._def.PRIOR_STAGE_ACCELERATION, self._prior_accel_limit
+                ),
+                self._prior_accel_limit,
+                accel_per_step,
+                "mm/s²",
+                "Prior controller acceleration (SAS). The scale is linear; the controller allows up to 1000\n"
+                "(285.5 mm/s² on an H117 with 1 mm screws). This rig's ceiling is prior_stage_acceleration_limit\n"
+                "in the machine .ini: the most the stage takes without losing steps.",
+            )
+            prior_layout.addRow(f"Acceleration (1-{self._prior_accel_limit}):", row)
+
+            prior_note = QLabel(
+                "Applied to the stage when you click Save. Faster moves can lose steps or leave the stage still "
+                "settling when an exposure starts: after raising these, check that the stage returns to the same "
+                "spot and that images are sharp."
+            )
+            prior_note.setWordWrap(True)
+            prior_note.setStyleSheet("color: #666; font-style: italic;")
+            prior_layout.addRow(prior_note)
+
+            prior_group.content.addLayout(prior_layout)
+            layout.addWidget(prior_group)
 
         # OME-Zarr Options section
         zarr_group = CollapsibleGroupBox("OME-Zarr Options", collapsed=True)
@@ -2189,6 +2239,46 @@ class PreferencesDialog(QDialog):
         spinbox = self.tiff_compression_spinbox
         return min(max(level, spinbox.minimum()), spinbox.maximum())
 
+    def _get_prior_motion_setting(self, option, running_value, limit):
+        """A Prior SMS/SAS setting from the config, falling back to the running value, limited to what the spin box
+        can show (1 to the rig's ceiling) so that an out of range value in the config file isn't reported as a
+        change."""
+        value = self._get_config_int("GENERAL", option, running_value)
+        return min(max(value, PriorStage.MOTION_SETTING_MIN), limit)
+
+    def _prior_physical_units_per_step(self):
+        """(mm/s, mm/s^2) per SMS/SAS step on the connected Prior stage, from what its controller reports; the scale
+        is linear. (None, None) without a Prior stage or when the controller doesn't say."""
+        stage = self._stage
+        try:
+            return stage.get_max_speed_mm_s() / stage.speed, stage.get_acceleration_mm_s2() / stage.acceleration
+        except Exception:  # no stage, not a Prior stage, or no usable reply
+            return None, None
+
+    @staticmethod
+    def _make_prior_motion_row(value, maximum, physical_per_step, unit, tooltip):
+        spinbox = QSpinBox()
+        spinbox.setRange(PriorStage.MOTION_SETTING_MIN, maximum)
+        spinbox.setSingleStep(50)
+        spinbox.setValue(value)
+        spinbox.setToolTip(tooltip)
+        physical_label = QLabel()
+        physical_label.setStyleSheet("color: #666;")
+
+        def show_physical(steps):
+            physical_label.setText(f"≈ {steps * physical_per_step:.1f} {unit}" if physical_per_step else "")
+
+        spinbox.valueChanged.connect(show_physical)
+        show_physical(value)
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(spinbox)
+        row_layout.addWidget(physical_label)
+        row_layout.addStretch()
+        return spinbox, physical_label, row
+
     def _floats_equal(self, a, b, epsilon=1e-4):
         """Compare two floats with epsilon tolerance to avoid precision issues."""
         return abs(a - b) < epsilon
@@ -2242,6 +2332,15 @@ class PreferencesDialog(QDialog):
 
     def _apply_settings(self) -> bool:
         """Apply settings to config file. Returns True on success, False on failure."""
+        # The Prior stage first: when it doesn't take its new speed/acceleration, nothing is saved.
+        if not self._send_prior_motion_settings():
+            return False
+
+        # The config as it is now, put back if the ini can't be written: left holding the unsaved values, it would
+        # show no change, so Save would close without trying again.
+        config_before = io.StringIO()
+        self.config.write(config_before)
+
         # Ensure all required sections exist
         for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING", "VIEWS"]:
             self._ensure_section(section)
@@ -2298,6 +2397,11 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "scan_stabilization_time_ms_x", str(self.scan_stab_x.value()))
         self.config.set("GENERAL", "scan_stabilization_time_ms_y", str(self.scan_stab_y.value()))
         self.config.set("GENERAL", "scan_stabilization_time_ms_z", str(self.scan_stab_z.value()))
+
+        # Advanced - Prior Stage
+        if self.prior_speed_spinbox is not None:
+            self.config.set("GENERAL", "prior_stage_max_speed", str(self.prior_speed_spinbox.value()))
+            self.config.set("GENERAL", "prior_stage_acceleration", str(self.prior_accel_spinbox.value()))
 
         # Advanced - Autofocus
         self.config.set("AF", "stop_threshold", str(self.af_stop_threshold.value()))
@@ -2399,11 +2503,13 @@ class PreferencesDialog(QDialog):
 
         # Save to file
         try:
-            with open(self.config_filepath, "w") as f:
-                self.config.write(f)
+            utils.write_ini_atomically(self.config, self.config_filepath)
             self._log.info(f"Configuration saved to {self.config_filepath}")
         except OSError as e:
             self._log.exception("Failed to save configuration")
+            self.config.clear()
+            self.config.read_string(config_before.getvalue())  # so the changes stay pending, ready to retry
+            put_back = self._put_back_prior_motion()  # it may have taken its new speed/acceleration already
             QMessageBox.warning(
                 self,
                 "Error",
@@ -2415,6 +2521,11 @@ class PreferencesDialog(QDialog):
                     "- The file is not open in another application.\n"
                     "- The disk is not full or write-protected.\n\n"
                     f"System error: {e}"
+                    + (
+                        ""
+                        if put_back
+                        else "\n\nThe Prior stage could not be put back to its earlier speed/acceleration."
+                    )
                 ),
             )
             return False
@@ -2512,6 +2623,66 @@ class PreferencesDialog(QDialog):
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = self.display_mosaic_view_checkbox.isChecked()
         control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
         control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
+
+        # Prior stage speed and acceleration (the stage already has them: _send_prior_motion_settings)
+        if self.prior_speed_spinbox is not None:
+            control._def.PRIOR_STAGE_MAX_SPEED = self.prior_speed_spinbox.value()
+            control._def.PRIOR_STAGE_ACCELERATION = self.prior_accel_spinbox.value()
+
+    def _prior_stage_settings(self):
+        """(setter, the stage's attribute for its value, spin box, running value, name) of the Prior max speed and
+        acceleration; empty without a Prior stage. The running value is control._def's, within 1 to the rig's ceiling
+        as the stage lowered it at startup."""
+        stage = self._stage
+        if self.prior_speed_spinbox is None or not hasattr(stage, "set_max_speed"):
+            return []
+        speed = min(max(control._def.PRIOR_STAGE_MAX_SPEED, PriorStage.MOTION_SETTING_MIN), self._prior_speed_limit)
+        accel = min(max(control._def.PRIOR_STAGE_ACCELERATION, PriorStage.MOTION_SETTING_MIN), self._prior_accel_limit)
+        return [
+            (stage.set_max_speed, "speed", self.prior_speed_spinbox, speed, "max speed"),
+            (stage.set_acceleration, "acceleration", self.prior_accel_spinbox, accel, "acceleration"),
+        ]
+
+    def _send_prior_motion_settings(self) -> bool:
+        """Send the Prior stage the speed and acceleration about to be saved, when either changes. Runs before anything
+        is saved, so when the stage doesn't take them the ini and the running values stay as they were and the change
+        stays pending, ready to retry. Returns False, after putting the stage back to the running values and telling
+        the user, in that case."""
+        settings = self._prior_stage_settings()
+        if all(spinbox.value() == running for _, _, spinbox, running, _ in settings):
+            return True  # neither changes: leave the stage alone, even one that doesn't answer
+        for setter, attr, spinbox, _, name in settings:
+            value = spinbox.value()
+            if getattr(self._stage, attr) == value:
+                continue  # it has it already
+            try:
+                setter(value)
+            except Exception as e:
+                self._log.exception(f"Prior stage did not take {name} {value}; nothing saved")
+                put_back = self._put_back_prior_motion()
+                QMessageBox.warning(
+                    self,
+                    "Prior Stage Not Updated",
+                    f"The Prior stage did not take {name} {value}, so no settings were saved.\n\n{e}\n\n"
+                    "Check the stage's connection, then Save again (or set the value back)."
+                    + ("" if put_back else "\n\nThe stage could not be put back to its earlier settings."),
+                )
+                return False
+        return True
+
+    def _put_back_prior_motion(self) -> bool:
+        """Send the Prior stage its running speed and acceleration wherever it may not have them: a setting it took for a
+        Save that then failed, or one it didn't confirm (its value is then None, unknown, since the controller may have
+        taken it all the same). Returns False when the stage doesn't take them."""
+        put_back = True
+        for setter, attr, _, running, name in self._prior_stage_settings():
+            if getattr(self._stage, attr) != running:
+                try:
+                    setter(running)
+                except Exception:
+                    self._log.exception(f"Could not put the Prior stage back to {name} {running}")
+                    put_back = False
+        return put_back
 
     def _get_changes(self):
         """Get list of settings that have changed from current config.
@@ -2661,6 +2832,22 @@ class PreferencesDialog(QDialog):
         new_val = self.scan_stab_z.value()
         if old_val != new_val:
             changes.append(("Scan Stabilization Z", f"{old_val} ms", f"{new_val} ms", True))
+
+        # Advanced - Prior Stage (live update: sent to the stage on Save)
+        if self.prior_speed_spinbox is not None:
+            old_val = self._get_prior_motion_setting(
+                "prior_stage_max_speed", control._def.PRIOR_STAGE_MAX_SPEED, self._prior_speed_limit
+            )
+            new_val = self.prior_speed_spinbox.value()
+            if old_val != new_val:
+                changes.append(("Prior Stage Max Speed", str(old_val), str(new_val), False))
+
+            old_val = self._get_prior_motion_setting(
+                "prior_stage_acceleration", control._def.PRIOR_STAGE_ACCELERATION, self._prior_accel_limit
+            )
+            new_val = self.prior_accel_spinbox.value()
+            if old_val != new_val:
+                changes.append(("Prior Stage Acceleration", str(old_val), str(new_val), False))
 
         # Advanced - Autofocus (live update)
         old_val = self._get_config_float("AF", "stop_threshold", 0.85)
@@ -2994,14 +3181,30 @@ class PreferencesDialog(QDialog):
 UNATTENDED_MOVE_ALREADY_THERE = "already there"
 
 
+def _queued_slot(receiver: QObject, slot_name: str):
+    """A threaded_operation_helper callback that delivers (success, error_msg) to a slot of receiver, on the GUI
+    thread: the operation's own thread must not touch widgets, live view or dialogs."""
+
+    def on_finished(success, error_msg):
+        QMetaObject.invokeMethod(
+            receiver,
+            slot_name,
+            Qt.QueuedConnection,
+            Q_ARG(bool, success),
+            Q_ARG(str, error_msg or ""),
+        )
+
+    return on_finished
+
+
 class StageUtils(QDialog):
     """Dialog containing microscope utility functions like homing, zeroing, and slide positioning."""
 
     signal_threaded_stage_move_started = Signal()
     signal_loading_position_reached = Signal()
     signal_scanning_position_reached = Signal()
-    # (move id, success, error message) at the end of every move to or from the loading position, from the thread
-    # that ran it: what the control server waits for before it replies. The id is the one
+    # (move id, success, error message) at the end of every move to or from the loading position, on the GUI
+    # thread: what the control server waits for before it replies. The id is the one
     # start_unattended_position_move was given (0 for the button's own move), so a command is answered only by
     # its own move, not by one that was already running when it came in.
     signal_position_move_finished = Signal(int, bool, str)
@@ -3025,6 +3228,10 @@ class StageUtils(QDialog):
         self._was_live = False
         # From the start of a move to or from the loading position until it reports back
         self._position_move_running = False
+        # That move's own settings, for its callback (one such move at a time, so they hold until it reports back):
+        # the control server's id for it (0: the button's), and whether a failure shows a dialog (not for a robot)
+        self._position_move_id = 0
+        self._position_move_warns = True
         # True only once a move to the loading position got there (or Squid restarted there). A failed move either
         # way also leaves slide_position "loading", so the button offers the return, but the stage is somewhere on
         # the way: a robot must not be told it is there.
@@ -3216,24 +3423,27 @@ class StageUtils(QDialog):
         if self.live_controller.is_live:
             self.live_controller.stop_live()
         self._position_move_running = True
+        self._position_move_id, self._position_move_warns = move_id, warn_on_failure
         self.signal_threaded_stage_move_started.emit()
-        self.btn_load_slide.setEnabled(False)  # before the thread starts: its callback may come first
+        self.btn_load_slide.setEnabled(False)
         if self.slide_position != "loading":
             move, reached, kwargs = move_to_loading_position, self._callback_loading_position_reached, {}
         else:
             move, reached = move_to_scanning_position, self._callback_scanning_position_reached
             kwargs = {"restore_z": restore_z}
-
-        def callback(success, error):
-            reached(success, error, warn_on_failure, move_id)
-
         try:
-            move(self.stage, blocking=False, callback=callback, is_wellplate=self.is_wellplate, **kwargs)
+            move(
+                self.stage,
+                blocking=False,
+                callback=_queued_slot(self, reached.__name__),
+                is_wellplate=self.is_wellplate,
+                **kwargs,
+            )
         except Exception as e:
             # The thread did not start: the same report as a move that failed in it, which releases what the
             # start took (this flag, the Z lift guard, the GUI's stage lock) and restarts live
             self.log.exception("Could not start the loading position move")
-            callback(False, f"Could not start the move: {e}")
+            reached(False, f"Could not start the move: {e}")
 
     def _ask_objective_return(self) -> Optional[bool]:
         """Leaving the loading position: True to lower the objective back to its Z after the lift rises, False to
@@ -3252,10 +3462,9 @@ class StageUtils(QDialog):
             return None
         return reply == QMessageBox.Ok
 
-    def _callback_loading_position_reached(
-        self, success: bool, error_message: Optional[str], warn_on_failure: bool = True, move_id: int = 0
-    ):
-        """Handle slide loading position reached signal."""
+    @Slot(bool, str)
+    def _callback_loading_position_reached(self, success: bool, error_message: str):
+        """The move to the loading position ended (on the GUI thread, from _queued_slot)."""
         self._position_move_running = False
         self._loading_position_reached = success
         self.slide_position = "loading"
@@ -3264,23 +3473,19 @@ class StageUtils(QDialog):
         self.btn_load_slide.setEnabled(True)
         if self._was_live and not self.keep_live_off_at_loading:
             self._restart_live()
-        if not success and warn_on_failure:
+        if not success and self._position_move_warns:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_loading_position_reached.emit()
-        self.signal_position_move_finished.emit(move_id, success, error_message or "")
+        self.signal_position_move_finished.emit(self._position_move_id, success, error_message or "")
 
-    def _callback_scanning_position_reached(
-        self, success: bool, error_message: Optional[str], warn_on_failure: bool = True, move_id: int = 0
-    ):
-        """Handle slide scanning position reached signal."""
+    @Slot(bool, str)
+    def _callback_scanning_position_reached(self, success: bool, error_message: str):
+        """The move back to the scanning position ended (on the GUI thread, from _queued_slot)."""
         if not success:
             # The stage may not have left the loading position: it is still treated as there (a lift system keeps
             # everything locked), and the button offers the return again.
             self._callback_loading_position_reached(
-                False,
-                f"Could not return from the loading position:\n{error_message}\n\nTry again.",
-                warn_on_failure,
-                move_id,
+                False, f"Could not return from the loading position:\n{error_message}\n\nTry again."
             )
             return
         self._position_move_running = False
@@ -3292,12 +3497,11 @@ class StageUtils(QDialog):
         if self._was_live:
             self._restart_live()
         self.signal_scanning_position_reached.emit()
-        self.signal_position_move_finished.emit(move_id, True, "")
+        self.signal_position_move_finished.emit(self._position_move_id, True, "")
 
     def _restart_live(self):
-        """Live view back on after a move. A camera that will not restart must not stop the move being reported:
-        the callbacks run inside the move thread's error handling, which would report the move again, as failed,
-        and the Z lift guard, the GUI's stage lock and a waiting control server command would never hear of it."""
+        """Live view back on after a move. A camera that will not restart must not stop the move ending: the signals
+        that follow release the Z lift guard and the GUI's stage lock, and answer a waiting control server command."""
         try:
             self.live_controller.start_live()
         except Exception:
@@ -4413,24 +4617,10 @@ class ObjectivesWidget(QWidget):
             self.signal_swap_active.emit(True)
         utils.threaded_operation_helper(
             self._lower_lift_then,
-            self._queued_slot("_on_objective_move_finished"),
+            _queued_slot(self, "_on_objective_move_finished"),
             move=self.objective_changer.move_to_objective,
             objective_name=objective_name,
         )
-
-    def _queued_slot(self, slot_name):
-        """A threaded_operation_helper callback that delivers (success, error_msg) to a slot on the GUI thread."""
-
-        def on_finished(success, error_msg):
-            QMetaObject.invokeMethod(
-                self,
-                slot_name,
-                Qt.QueuedConnection,
-                Q_ARG(bool, success),
-                Q_ARG(str, error_msg or ""),
-            )
-
-        return on_finished
 
     @Slot(bool, str)
     def _on_objective_move_finished(self, success, error_msg):
@@ -4486,7 +4676,7 @@ class ObjectivesWidget(QWidget):
         self._swap_target = objective_name
         self._swap_z_before_mm = None
         self._swap_retracted = False
-        utils.threaded_operation_helper(self._retract_z_and_release_servo, self._queued_slot("_on_servo_released"))
+        utils.threaded_operation_helper(self._retract_z_and_release_servo, _queued_slot(self, "_on_servo_released"))
 
     def _retract_z_and_release_servo(self):
         self._swap_z_before_mm = self.focus_servo.get_pos().z_mm
@@ -4545,7 +4735,7 @@ class ObjectivesWidget(QWidget):
         self._swap_servo_on = False
         self._swap_lift_raised = False
         self._swap_z_cleared = False
-        utils.threaded_operation_helper(self._reengage_servo_and_restore_z, self._queued_slot("_on_servo_reengaged"))
+        utils.threaded_operation_helper(self._reengage_servo_and_restore_z, _queued_slot(self, "_on_servo_reengaged"))
 
     def _profile_frozen(self) -> bool:
         is_frozen = getattr(self.focus_servo, "is_profile_frozen", None)

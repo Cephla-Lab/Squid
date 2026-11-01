@@ -100,6 +100,15 @@ class FakeProScan:
             self.y += dy
             self.busy_polls = 2
             return b"R\r"
+        # Physical units as an H117(1MM) reports them: 60 um/s and 285.5 um/s^2 per SMS/SAS step.
+        if cmd == "SMS,u":
+            return f"{self.sms * 60:.2f}\r".encode()
+        if cmd == "SAS,u":
+            return f"{self.sas * 285.5:.2f}\r".encode()
+        if cmd == "SMS":
+            return f"{self.sms}\r".encode()
+        if cmd == "SAS":
+            return f"{self.sas}\r".encode()
         if cmd.startswith("SMS "):
             self.sms = int(cmd.split()[1])
         if cmd.startswith("SAS "):
@@ -422,4 +431,135 @@ def test_missing_stage_model_fails_startup_clearly(fake, monkeypatch):
     normal = FakeProScan._reply
     monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"" if cmd == "STAGE" else normal(self, cmd))
     with pytest.raises(squid.exceptions.SquidError, match="STAGE"):
+        make_stage(fake)
+
+
+def test_set_speed_and_acceleration_are_remembered(fake):
+    stage, ser = make_stage(fake)
+    stage.set_max_speed(400)
+    stage.set_acceleration(300)
+    assert (ser.sms, ser.sas) == (400, 300)
+    assert (stage.speed, stage.acceleration) == (400, 300)
+
+
+@pytest.mark.parametrize("value", [0, 1001])
+def test_speed_and_acceleration_outside_1_to_1000_are_refused(fake, value):
+    stage, ser = make_stage(fake)
+    with pytest.raises(ValueError):
+        stage.set_max_speed(value)
+    with pytest.raises(ValueError):
+        stage.set_acceleration(value)
+    assert (ser.sms, ser.sas) == (100, 100)
+
+
+def test_speed_and_acceleration_in_physical_units(fake):
+    stage, ser = make_stage(fake)
+    assert stage.get_max_speed_mm_s() == pytest.approx(6.0)
+    assert stage.get_acceleration_mm_s2() == pytest.approx(28.55)
+    stage.set_max_speed(1000)
+    assert stage.get_max_speed_mm_s() == pytest.approx(60.0)
+
+
+def test_physical_units_are_none_when_the_controller_cannot_say(fake, monkeypatch):
+    normal = FakeProScan._reply
+    monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"E,1\r" if cmd.endswith(",u") else normal(self, cmd))
+    stage, ser = make_stage(fake)
+    assert stage.get_max_speed_mm_s() is None
+    assert stage.get_acceleration_mm_s2() is None
+
+
+def test_ceiling_lowers_a_larger_startup_value(fake):
+    stage, ser = make_stage(fake, max_speed=300, acceleration=750, max_speed_limit=200, acceleration_limit=500)
+    assert (ser.sms, ser.sas) == (200, 500)
+    assert (stage.speed, stage.acceleration) == (200, 500)
+
+
+def test_setters_refuse_values_above_the_ceiling(fake):
+    stage, ser = make_stage(fake, max_speed_limit=200, acceleration_limit=500)
+    with pytest.raises(ValueError, match="200"):
+        stage.set_max_speed(201)
+    with pytest.raises(ValueError, match="500"):
+        stage.set_acceleration(501)
+    stage.set_max_speed(200)
+    stage.set_acceleration(500)
+    assert (ser.sms, ser.sas) == (200, 500)
+
+
+def test_ceilings_are_kept_within_what_the_controller_takes(fake):
+    stage, ser = make_stage(fake, max_speed_limit=5000, acceleration_limit=0)
+    assert (stage.max_speed_limit, stage.acceleration_limit) == (1000, 1)
+
+
+def test_microscope_build_passes_the_ini_ceilings_to_prior_stage(fake, monkeypatch):
+    import control._def
+    import control.microscope
+
+    monkeypatch.setattr(control._def, "USE_PRIOR_STAGE", True)
+    monkeypatch.setattr(control._def, "PRIOR_STAGE_SN", "FAKE_SN")
+    monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED", 300)
+    monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION", 250)
+    monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED_LIMIT", 200)
+    monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION_LIMIT", 500)
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True)
+    try:
+        assert (scope.stage.max_speed_limit, scope.stage.acceleration_limit) == (200, 500)
+        assert (fake["fake"].sms, fake["fake"].sas) == (200, 250)
+    finally:
+        scope.close()
+
+
+def _unanswered(ser, prefix, applied):
+    """Never answer commands starting with `prefix` (pyserial runs out its timeout and returns b""); the value in a
+    setting command is taken by the controller only if `applied` (a lost reply doesn't mean a lost command)."""
+    normal = ser._reply
+
+    def reply(cmd):
+        if cmd.startswith(prefix):
+            if applied:
+                normal(cmd)
+            return b""
+        return normal(cmd)
+
+    ser._reply = reply
+
+
+SETTINGS = [("set_max_speed", "speed", "SMS", "max speed"), ("set_acceleration", "acceleration", "SAS", "acceleration")]
+
+
+@pytest.mark.parametrize("setter, attr, command, name", SETTINGS)
+def test_an_unanswered_setting_the_controller_did_not_take_raises_and_is_not_remembered(
+    fake, setter, attr, command, name
+):
+    stage, ser = make_stage(fake)
+    _unanswered(ser, f"{command} ", applied=False)
+    with pytest.raises(squid.exceptions.SquidError, match=name):
+        getattr(stage, setter)(400)
+    assert getattr(stage, attr) is None  # unknown, so the next Save sends 400 again
+
+
+@pytest.mark.parametrize("setter, attr, command, name", SETTINGS)
+def test_a_setting_taken_despite_a_lost_reply_is_remembered(fake, setter, attr, command, name):
+    stage, ser = make_stage(fake)
+    _unanswered(ser, f"{command} ", applied=True)
+    getattr(stage, setter)(400)
+    assert getattr(stage, attr) == 400
+
+
+@pytest.mark.parametrize("setter, attr, command, name", SETTINGS)
+@pytest.mark.parametrize("applied", [False, True], ids=["not-taken", "taken"])
+def test_a_setting_raises_when_the_controller_cannot_be_read_back(fake, setter, attr, command, name, applied):
+    stage, ser = make_stage(fake)
+    _unanswered(ser, command, applied=applied)  # the setting and the read-back query
+    with pytest.raises(squid.exceptions.SquidError, match=name):
+        getattr(stage, setter)(400)
+    assert getattr(ser, command.lower()) == (400 if applied else 100)
+    # Whether the controller has 400 or 100 is unknown here, so the stage doesn't claim 100: putting 100 back, or
+    # sending it next, isn't skipped as already there.
+    assert getattr(stage, attr) is None
+
+
+def test_startup_fails_when_the_controller_does_not_take_the_acceleration(fake, monkeypatch):
+    normal = FakeProScan._reply
+    monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"" if cmd.startswith("SAS ") else normal(self, cmd))
+    with pytest.raises(squid.exceptions.SquidError, match="acceleration"):
         make_stage(fake)

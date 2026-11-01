@@ -1,3 +1,6 @@
+import errno
+import glob
+import io
 import os
 import sys
 import tempfile
@@ -6,9 +9,10 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QMessageBox
+from qtpy.QtWidgets import QDialog, QMessageBox
 
 import control.widgets
+import squid.exceptions
 
 
 def select_file_saving_option(dialog, option_name):
@@ -437,6 +441,28 @@ class TestApplySettings:
         finally:
             os.chmod(temp_config_file, 0o644)
 
+    def test_a_write_that_fails_part_way_leaves_the_file_as_it_was(
+        self, preferences_dialog, temp_config_file, monkeypatch
+    ):
+        with open(temp_config_file) as f:
+            before = f.read()
+        write = ConfigParser.write
+
+        def disk_full_part_way(config, fp, *args, **kwargs):
+            if isinstance(fp, io.StringIO):  # the dialog's copy of the config, kept in case the save fails
+                return write(config, fp, *args, **kwargs)
+            fp.write("[GENERAL]\n")
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(ConfigParser, "write", disk_full_part_way)
+        select_file_saving_option(preferences_dialog, "INDIVIDUAL_IMAGES")
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not preferences_dialog._apply_settings()
+        mock_warning.assert_called_once()
+        with open(temp_config_file) as f:
+            assert f.read() == before
+        assert not glob.glob(glob.escape(temp_config_file) + ".*.tmp")
+
     def test_apply_settings_emits_signal(self, qtbot, preferences_dialog):
         """Verify signal_config_changed is emitted when settings are saved."""
         with qtbot.waitSignal(preferences_dialog.signal_config_changed, timeout=1000):
@@ -464,6 +490,26 @@ class TestSaveAndCloseWorkflow:
         preferences_dialog.accept.assert_called_once()
 
         # Verify saved
+        saved_config = ConfigParser()
+        saved_config.read(temp_config_file)
+        assert saved_config.get("GENERAL", "file_saving_option") == "MULTI_PAGE_TIFF"
+
+    def test_a_failed_write_keeps_the_change_pending_for_the_next_save(
+        self, qtbot, preferences_dialog, temp_config_file, tmp_path
+    ):
+        """The config is left as it was, so the change is still pending and Save tries again."""
+        select_file_saving_option(preferences_dialog, "MULTI_PAGE_TIFF")
+        preferences_dialog.config_filepath = str(tmp_path)  # a directory: opening it for writing raises OSError
+        preferences_dialog.accept = MagicMock()
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            preferences_dialog._save_and_close()
+            preferences_dialog._save_and_close()  # Save again: tried again, not closed as if nothing changed
+        assert mock_warning.call_count == 2
+        preferences_dialog.accept.assert_not_called()
+        assert preferences_dialog.config.get("GENERAL", "file_saving_option") == "OME_TIFF"
+        preferences_dialog.config_filepath = temp_config_file
+        preferences_dialog._save_and_close()
+        preferences_dialog.accept.assert_called_once()
         saved_config = ConfigParser()
         saved_config.read(temp_config_file)
         assert saved_config.get("GENERAL", "file_saving_option") == "MULTI_PAGE_TIFF"
@@ -1285,3 +1331,287 @@ class TestZStackOrderDropdownPreference:
 
         assert preferences_dialog.config.get("GENERAL", "enable_z_stack_order_selection") == "true"
         assert control._def.ENABLE_Z_STACK_ORDER_SELECTION is True
+
+
+class _FakePriorStage:
+    """What the dialog uses of PriorStage: the SMS/SAS values, their physical units, and the setters. Like PriorStage,
+    a setter that raises leaves its value unknown (None), since the controller may have taken it all the same."""
+
+    def __init__(self, speed=100, acceleration=100, failing=(), taken_anyway=False):
+        self.speed = speed
+        self.acceleration = acceleration
+        # Settings the controller doesn't confirm, each a command ("SMS": every SMS, as from an unanswering stage) or a
+        # (command, value): the setter raises. With taken_anyway the controller has the value all the same (only the
+        # reply was lost).
+        self.failing = set(failing)
+        self.taken_anyway = taken_anyway
+        self.controller = {"SMS": speed, "SAS": acceleration}  # what the controller actually has
+        self.sent = []
+
+    def get_max_speed_mm_s(self):
+        return self.controller["SMS"] * 0.06  # H117(1MM): 60 um/s per step
+
+    def get_acceleration_mm_s2(self):
+        return self.controller["SAS"] * 0.2855  # H117(1MM): 285.5 um/s^2 per step
+
+    def _set(self, command, attr, value):
+        self.sent.append((command, value))
+        setattr(self, attr, None)
+        if command in self.failing or (command, value) in self.failing:
+            if self.taken_anyway:
+                self.controller[command] = value
+            raise squid.exceptions.SquidError(f"Prior stage did not take {command} {value}: no reply")
+        self.controller[command] = value
+        setattr(self, attr, value)
+
+    def set_max_speed(self, value):
+        self._set("SMS", "speed", value)
+
+    def set_acceleration(self, value):
+        self._set("SAS", "acceleration", value)
+
+
+class TestPriorStageSettings:
+    """Preferences > Advanced > Prior Stage: SMS/SAS 1-1000, saved to the ini and sent to the stage on Save."""
+
+    @pytest.fixture
+    def prior_rig(self, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_PRIOR_STAGE", True)
+        # Restored after the test: Save writes the new values into control._def.
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED", 100)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION", 100)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED_LIMIT", 1000)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION_LIMIT", 1000)
+        # Some tests also save an unrelated setting, which Save writes into control._def too.
+        monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FILE_SAVING_OPTION)
+
+    def _dialog(self, qtbot, config, path, stage=None):
+        dialog = control.widgets.PreferencesDialog(config, path, stage=stage)
+        qtbot.addWidget(dialog)
+        return dialog
+
+    def test_hidden_and_not_written_without_a_prior_stage(self, qtbot, sample_config, temp_config_file, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_PRIOR_STAGE", False)
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.prior_speed_spinbox is None
+        assert dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert not saved.has_option("GENERAL", "prior_stage_max_speed")
+
+    def test_shows_the_ini_values_and_their_physical_units(self, qtbot, sample_config, temp_config_file, prior_rig):
+        sample_config.set("GENERAL", "prior_stage_max_speed", "500")
+        sample_config.set("GENERAL", "prior_stage_acceleration", "400")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=_FakePriorStage(500, 400))
+        assert dialog.prior_speed_spinbox.value() == 500
+        assert dialog.prior_accel_spinbox.value() == 400
+        assert dialog.prior_speed_physical_label.text() == "≈ 30.0 mm/s"
+        assert dialog.prior_accel_physical_label.text() == "≈ 114.2 mm/s²"
+        dialog.prior_speed_spinbox.setValue(1000)
+        assert dialog.prior_speed_physical_label.text() == "≈ 60.0 mm/s"
+        assert not [c for c in dialog._get_changes() if c[0] == "Prior Stage Acceleration"]
+
+    def test_range_is_1_to_1000(self, qtbot, sample_config, temp_config_file, prior_rig):
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        for spinbox in (dialog.prior_speed_spinbox, dialog.prior_accel_spinbox):
+            assert (spinbox.minimum(), spinbox.maximum()) == (1, 1000)
+
+    def test_the_rig_ceilings_cap_the_range(self, qtbot, sample_config, temp_config_file, prior_rig, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED_LIMIT", 200)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION_LIMIT", 500)
+        # Values saved before the ceiling existed: shown at the ceiling, and not listed as a change.
+        sample_config.set("GENERAL", "prior_stage_max_speed", "300")
+        sample_config.set("GENERAL", "prior_stage_acceleration", "750")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.prior_speed_spinbox.maximum() == 200
+        assert dialog.prior_accel_spinbox.maximum() == 500
+        assert (dialog.prior_speed_spinbox.value(), dialog.prior_accel_spinbox.value()) == (200, 500)
+        assert not [c for c in dialog._get_changes() if c[0].startswith("Prior Stage")]
+        dialog.prior_speed_spinbox.setValue(250)
+        assert dialog.prior_speed_spinbox.value() == 200
+
+    def test_an_out_of_range_ini_value_is_not_reported_as_a_change(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        sample_config.set("GENERAL", "prior_stage_max_speed", "5000")  # the controller would clamp it to 1000
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.prior_speed_spinbox.value() == 1000
+        assert not [c for c in dialog._get_changes() if c[0].startswith("Prior Stage")]
+
+    def test_save_writes_the_ini_and_sends_only_what_changed_to_the_stage(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        import control._def
+
+        stage = _FakePriorStage()
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.prior_speed_spinbox.setValue(500)
+        assert [c for c in dialog._get_changes() if c[0].startswith("Prior Stage")] == [
+            ("Prior Stage Max Speed", "100", "500", False)
+        ]
+        assert dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "prior_stage_max_speed") == "500"
+        assert saved.get("GENERAL", "prior_stage_acceleration") == "100"
+        assert control._def.PRIOR_STAGE_MAX_SPEED == 500
+        assert stage.sent == [("SMS", 500)]
+
+    def test_save_without_a_stage_still_saves(self, qtbot, sample_config, temp_config_file, prior_rig):
+        import control._def
+
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.prior_speed_physical_label.text() == ""
+        dialog.prior_accel_spinbox.setValue(250)
+        assert dialog._apply_settings()
+        assert control._def.PRIOR_STAGE_ACCELERATION == 250
+
+    def test_a_stage_that_does_not_take_the_change_blocks_save_and_keeps_it_pending(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        import control._def
+
+        stage = _FakePriorStage(failing={("SMS", 400)})
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.prior_speed_spinbox.setValue(400)
+        select_file_saving_option(dialog, "INDIVIDUAL_IMAGES")  # an unrelated change saved in the same click
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not dialog._apply_settings()
+        mock_warning.assert_called_once()
+        assert "no reply" in mock_warning.call_args[0][2]
+        # Nothing written: the ini, the running values and the stage keep the old values ...
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert not saved.has_option("GENERAL", "prior_stage_max_speed")
+        assert saved.get("GENERAL", "file_saving_option") == "OME_TIFF"
+        assert control._def.PRIOR_STAGE_MAX_SPEED == 100
+        assert stage.speed == 100
+        # ... so the change is still pending, and a retry sends it again.
+        assert ("Prior Stage Max Speed", "100", "400", False) in dialog._get_changes()
+        stage.failing.clear()
+        assert dialog._apply_settings()
+        assert stage.speed == 400
+        assert control._def.PRIOR_STAGE_MAX_SPEED == 400
+
+    def test_save_and_close_keeps_the_dialog_open_when_the_stage_does_not_take_the_change(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=_FakePriorStage(failing={"SAS"}))
+        dialog.prior_accel_spinbox.setValue(250)
+        with patch.object(QMessageBox, "warning"):
+            dialog._save_and_close()
+        assert dialog.result() != QDialog.Accepted
+
+    def test_when_only_one_setting_is_taken_it_is_put_back(self, qtbot, sample_config, temp_config_file, prior_rig):
+        stage = _FakePriorStage(failing={("SAS", 250)})
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.prior_speed_spinbox.setValue(400)
+        dialog.prior_accel_spinbox.setValue(250)
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not dialog._apply_settings()
+        # The acceleration is unknown after its failure, so it's sent again too.
+        assert stage.sent == [("SMS", 400), ("SAS", 250), ("SMS", 100), ("SAS", 100)]
+        assert (stage.speed, stage.acceleration) == (100, 100)
+        assert "could not be put back" not in mock_warning.call_args[0][2]
+
+    def test_a_setting_taken_despite_a_lost_reply_is_put_back(self, qtbot, sample_config, temp_config_file, prior_rig):
+        # The controller took 400 but its read-back was lost, so the setter raised: 100 goes back all the same.
+        stage = _FakePriorStage(failing={("SMS", 400)}, taken_anyway=True)
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.prior_speed_spinbox.setValue(400)
+        with patch.object(QMessageBox, "warning"):
+            assert not dialog._apply_settings()
+        assert stage.sent == [("SMS", 400), ("SMS", 100)]
+        assert stage.controller == {"SMS": 100, "SAS": 100}
+        assert stage.speed == 100
+
+    def test_putting_back_keeps_a_running_value_above_the_ceiling_at_the_ceiling(
+        self, qtbot, sample_config, temp_config_file, prior_rig, monkeypatch
+    ):
+        import control._def
+
+        # Configured above this rig's ceiling, so the stage started at the ceiling, 200.
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED", 300)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED_LIMIT", 200)
+        stage = _FakePriorStage(speed=200, failing={("SAS", 250)})
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.prior_accel_spinbox.setValue(250)
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not dialog._apply_settings()
+        assert stage.sent == [("SAS", 250), ("SAS", 100)]
+        assert "could not be put back" not in mock_warning.call_args[0][2]
+
+    def test_the_user_is_told_when_the_stage_cannot_be_put_back(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        stage = _FakePriorStage(failing={"SMS"}, taken_anyway=True)
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.prior_speed_spinbox.setValue(400)
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not dialog._apply_settings()
+        assert stage.sent == [("SMS", 400), ("SMS", 100)]
+        assert "could not be put back" in mock_warning.call_args[0][2]
+
+    def test_a_failed_config_write_puts_the_stage_back(
+        self, qtbot, sample_config, temp_config_file, prior_rig, tmp_path
+    ):
+        import control._def
+
+        stage = _FakePriorStage()
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.config_filepath = str(tmp_path)  # a directory: opening it for writing raises OSError
+        dialog.prior_speed_spinbox.setValue(400)
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not dialog._apply_settings()
+        assert "Failed to save configuration" in mock_warning.call_args[0][2]
+        assert stage.sent == [("SMS", 400), ("SMS", 100)]
+        assert stage.controller == {"SMS": 100, "SAS": 100}
+        assert control._def.PRIOR_STAGE_MAX_SPEED == 100
+
+    def test_a_failed_config_write_keeps_the_change_pending(
+        self, qtbot, sample_config, temp_config_file, prior_rig, tmp_path
+    ):
+        import control._def
+
+        stage = _FakePriorStage()
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.config_filepath = str(tmp_path)  # a directory: opening it for writing raises OSError
+        dialog.prior_speed_spinbox.setValue(200)
+        with patch.object(QMessageBox, "warning"):
+            dialog._save_and_close()
+            dialog._save_and_close()  # Save again: sent and written again, not closed as if nothing changed
+        assert dialog.result() != QDialog.Accepted
+        assert stage.sent == [("SMS", 200), ("SMS", 100)] * 2
+        dialog.config_filepath = temp_config_file
+        dialog._save_and_close()
+        assert dialog.result() == QDialog.Accepted
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "prior_stage_max_speed") == "200"
+        assert (stage.controller["SMS"], control._def.PRIOR_STAGE_MAX_SPEED) == (200, 200)
+
+    def test_an_unanswering_stage_does_not_block_saving_other_settings(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        stage = _FakePriorStage(failing={"SMS", "SAS"})
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        select_file_saving_option(dialog, "INDIVIDUAL_IMAGES")
+        assert dialog._apply_settings()
+        assert stage.sent == []
+
+    def test_a_stage_left_unknown_is_not_touched_when_its_settings_do_not_change(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        # After a failure that couldn't be put back, saving other settings doesn't retry the stage.
+        stage = _FakePriorStage(speed=None, failing={"SMS"})
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        select_file_saving_option(dialog, "INDIVIDUAL_IMAGES")
+        with patch.object(QMessageBox, "warning"):
+            assert dialog._apply_settings()
+        assert stage.sent == []

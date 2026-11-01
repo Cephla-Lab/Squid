@@ -294,11 +294,11 @@ def test_after_a_failed_move_the_robot_is_not_told_the_stage_is_at_loading(qtbot
 
 
 def test_a_command_is_answered_by_its_own_move_not_by_another_one_ending(qtbot):
-    # A move that was already running (the button's) can end just as a command's own move starts: its end must not
-    # answer the command while the command's move is still running
+    # The race: the button's move ends just as a command comes in. Its end is queued to the GUI thread ahead of the
+    # command's start, after the command began listening; it must not answer the command while its own move runs.
     dialog = _stage_utils(qtbot)
     server = _server(dialog)
-    started, outcome = {}, {}
+    callbacks, outcome = [], {}
 
     def run():
         try:
@@ -306,18 +306,27 @@ def test_a_command_is_answered_by_its_own_move_not_by_another_one_ending(qtbot):
         except Exception as e:
             outcome["error"] = e
 
-    with patch(
-        "control.widgets.move_to_loading_position", side_effect=lambda *a, callback, **k: started.update(cb=callback)
+    def capture(*args, callback, **kwargs):
+        callbacks.append(callback)
+
+    with patch("control.widgets.move_to_scanning_position", side_effect=capture), patch(
+        "control.widgets.move_to_loading_position", side_effect=capture
     ):
+        dialog._callback_loading_position_reached(True, None)  # at the loading position
+        dialog.switch_position()  # the button's move back to scanning
+        callbacks[0](True, None)  # it ends: the report waits in the GUI thread's queue
         thread = threading.Thread(target=run)
         thread.start()
-        qtbot.waitUntil(lambda: "cb" in started, timeout=10000)
+        deadline = time.monotonic() + 10
+        while dialog.receivers(dialog.signal_position_move_finished) == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)  # (no events processed meanwhile, so the report stays queued)
+        time.sleep(0.1)  # the command's start is queued behind it now
 
-        dialog._callback_scanning_position_reached(True, None)  # the button's move back to scanning ends now
+        qtbot.waitUntil(lambda: len(callbacks) == 2, timeout=10000)  # the report ran, then the command's move started
         qtbot.wait(300)
         assert thread.is_alive(), outcome  # still waiting for its own move
 
-        started["cb"](False, "y stalled")  # its own move ends
+        callbacks[1](False, "y stalled")  # its own move ends
         qtbot.waitUntil(lambda: not thread.is_alive(), timeout=10000)
     assert "y stalled" in str(outcome.get("error")), outcome
 
