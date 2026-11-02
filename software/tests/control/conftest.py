@@ -5,14 +5,17 @@ Microcontroller/Microscope/MultiPointController cleanup is handled suite-wide
 by the autouse fixture in tests/conftest.py.
 """
 
+import logging
 import os
 import shutil
+import sys
 from unittest.mock import patch
 
 import pytest
 
 from control.core.core import ImageDisplayWindow
 from control.firmware_sim_serial import FirmwareSimSerial
+from tests.control.stray_qevent import is_stray_qevent_call
 
 # software/, wherever pytest was started from
 SOFTWARE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -188,3 +191,26 @@ def fluidics_config_path(tmp_path_factory) -> str:
     path = tmp_path_factory.mktemp("fluidics_config") / "fluidics_config.yaml"
     path.write_text(CONFIG_YAML, encoding="utf-8")
     return str(path)
+
+
+@pytest.fixture
+def ignore_stray_qevent_call():
+    """Drop one known spurious Qt-loop exception, logged instead of failing the test.
+
+    Building the full GUI on CI (PyQt5 5.15.6) occasionally gets "QEvent(QEvent.Type): not enough arguments"
+    from Qt's event dispatch, with no Python frame, right after the simulated Y homing. It has failed whichever
+    GUI test was building the window at the time (master run 39964612171 on 2026-10-23, PR 763 run 41258589239);
+    the next runs on those branches passed, and no Squid code uses QEvent as a callable. Every other exception still
+    reaches pytest-qt's hook and fails the test.
+    """
+    captured_hook = sys.excepthook  # pytest-qt installs its hook before fixtures are set up
+
+    def hook(exc_type, value, tb):
+        if is_stray_qevent_call(exc_type, value, tb):
+            logging.getLogger(__name__).warning("Ignored a stray zero-argument QEvent call from Qt: %s", value)
+            return
+        captured_hook(exc_type, value, tb)
+
+    sys.excepthook = hook
+    yield
+    sys.excepthook = captured_hook

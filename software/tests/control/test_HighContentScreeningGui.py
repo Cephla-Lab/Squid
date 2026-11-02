@@ -15,6 +15,9 @@ import control.microscope
 import squid.abc
 import squid.stage.utils
 
+# A rare spurious Qt-loop TypeError while the GUI is built on CI (see the fixture).
+pytestmark = pytest.mark.usefixtures("ignore_stray_qevent_call")
+
 
 @pytest.fixture
 def confirm_exit_yes(monkeypatch):
