@@ -35,6 +35,7 @@ class _BuildParamsStub:
         self.do_reflection_af = True
         self.apply_channel_offset = True
         self.use_piezo = False
+        self.use_sequenced_z_stack = False
         self.display_resolution_scaling = 1.0
         self.z_stacking_config = "FROM CENTER"
         self.z_stack_order = "CHANNEL FIRST"

@@ -728,6 +728,10 @@ class ZmotionMcuShim:
         # CtrlBL run (on, off, trigger) also emits the ~1 ms OP(2) camera pulse.
         self._blv: Optional[int] = None  # slider %, None = never set (light left as found)
         self._blv_sent: Optional[int] = None  # last pBLV written
+        # pBLV the light was last switched to by a CtrlBL run (None = unknown). Writing pBLV alone does
+        # not switch the light (bench 2026-10-31 run 13: a sequenced z-stack wrote pBLV=5 with the light
+        # off, ran no CtrlBL, and every level came out dark).
+        self._blv_applied: Optional[int] = None
         self._light_wanted = True  # turn_off_illumination() -> False
         # Bench run 11: per-frame light switching in a software-triggered acquisition added ~6 s to a
         # 2-4 s run. MultiPointWorker brackets a run with enable_joystick(False/True), so the shim keeps
@@ -754,6 +758,7 @@ class ZmotionMcuShim:
             self._send_blv_if_changed()
             self.link.set_var("pBLCnt", 1)  # not sticky on the bench: re-sent every shot
             self.link.run_task(TRIGGER_TASK, "CtrlBL")
+            self._blv_applied = self._blv_sent
 
     def _wanted_blv(self) -> Optional[int]:
         if not self._light_wanted:
@@ -774,6 +779,19 @@ class ZmotionMcuShim:
             self._send_blv_if_changed()
             self.link.set_var("pBLCnt", 1)
             self.link.run_task(TRIGGER_TASK, "CtrlBL")
+            self._blv_applied = self._blv_sent
+
+    def ensure_light_on(self) -> bool:
+        """Switch the light on through one CtrlBL run unless the last run already left it on. Returns
+        True when a run happened (it pulses OP(2): one stray camera frame in hardware-trigger mode)."""
+        with self.link.lock:
+            self._light_wanted = True
+            wanted = self._wanted_blv()  # None (slider never seen): pBLV as found, light state unknown
+            if wanted is not None and wanted == self._blv_applied:
+                return False
+            self._run_ctrlbl_once()
+            _log.info("Zmotion: light switched on through CtrlBL (one stray camera pulse)")
+            return True
 
     def _set_brightness_percent(self, pct: float) -> None:
         self._blv = max(0, min(100, int(round(pct))))
@@ -932,6 +950,10 @@ class ZmotionSequencedZStack(SequencedZStack):
         if counts == 0:
             raise ZmotionError(f"z-stack step {step_mm * 1e3:+.2f} um is below one Z count")
         return counts
+
+    def prepare_light(self) -> bool:
+        # MoveZStack1 does not switch the light; it must already be on (pBLV written is not enough).
+        return self._stage._shim.ensure_light_on()
 
     def start(self, step_mm: float, n_levels: int) -> None:
         if n_levels < 1:

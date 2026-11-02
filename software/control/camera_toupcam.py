@@ -1129,10 +1129,14 @@ class ToupcamCamera(AbstractCamera):
                         error_type = hresult_checker(ex)
                         self._log.exception("Unable to set trigger input activation: " + error_type)
                         raise
-                # set GPIO1 to trigger wait
+                # GPIO1 (ioLine 3) as an output carrying frame trigger wait (ready). GPIODIR: 0 input, 1 output
+                # (read back on the bench ITR3CMOS26000KMA: opto-in reads 0, opto-out reads 1).
+                ready_inverted = bool(CAMERA_CONFIG.TOUPCAM_GPIO1_READY_INVERTED)
                 try:
+                    self._camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_GPIODIR, 1)
                     self._camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE, 0)
-                    self._camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER, 0)
+                    self._camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER, int(ready_inverted))
+                    self._log.info(f"ToupCam GPIO1 output: trigger ready, inverted={ready_inverted}")
                 except toupcam.HRESULTException as ex:
                     error_type = hresult_checker(ex)
                     self._log.exception("Unable to set GPIO1 for trigger ready: " + error_type)

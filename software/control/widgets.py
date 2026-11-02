@@ -1163,6 +1163,75 @@ class _ApplyChannelOffsetMixin:
         self.multipointController.set_apply_channel_offset(checked)
 
 
+class _SequencedZStackMixin:
+    """Mixin providing the "Fast Z-stack" checkbox.
+
+    Shown only when the stage's controller can run z-stacks (MultiPointController.sequenced_z_stack_available()).
+    Its default comes from USE_HARDWARE_SEQUENCED_Z_STACK. When it is checked but the current settings rule the
+    controller out, the label says "not used" and the tooltip gives the reason; the acquisition then steps Z
+    from the host as usual. Host widgets need entry_NZ, combobox_z_order, checkbox_usePiezo,
+    checkbox_withReflectionAutofocus, checkbox_applyChannelOffset, list_configurations and channel_sequence.
+    """
+
+    _SEQUENCED_Z_LABEL = "Fast Z-stack"
+    _SEQUENCED_Z_TOOLTIP = (
+        "Let the stage controller run each z-stack: it steps Z and triggers the camera once per level, "
+        "much faster than stepping Z from the PC.\n"
+        "Needs hardware trigger, Nz > 1, no piezo, no per-channel Z-offset, and one channel per stack.\n"
+        "Saved z positions are the planned ones (not read back), and the light stays on for the whole stack."
+    )
+
+    def _create_sequenced_z_checkbox(self):
+        self._sequenced_z_available = self.multipointController.sequenced_z_stack_available()
+        self.checkbox_sequencedZ = QCheckBox(self._SEQUENCED_Z_LABEL)
+        self.checkbox_sequencedZ.setToolTip(self._SEQUENCED_Z_TOOLTIP)
+        self.checkbox_sequencedZ.setChecked(bool(USE_HARDWARE_SEQUENCED_Z_STACK) and self._sequenced_z_available)
+        self.checkbox_sequencedZ.toggled.connect(self.multipointController.set_use_sequenced_z_stack)
+        self.multipointController.set_use_sequenced_z_stack(self.checkbox_sequencedZ.isChecked())
+
+    def _add_sequenced_z_checkbox(self, layout):
+        # Only placed (and so only ever shown) when the controller offers it: a parentless widget made
+        # visible would become a top-level window of its own.
+        if self._sequenced_z_available:
+            layout.addWidget(self.checkbox_sequencedZ)
+
+    def _connect_sequenced_z_hint(self):
+        refresh = lambda *_: self._refresh_sequenced_z_hint()
+        self.checkbox_sequencedZ.toggled.connect(refresh)
+        self.entry_NZ.valueChanged.connect(refresh)
+        self.combobox_z_order.currentIndexChanged.connect(refresh)
+        self.checkbox_usePiezo.toggled.connect(refresh)
+        self.checkbox_withReflectionAutofocus.toggled.connect(refresh)
+        self.checkbox_applyChannelOffset.toggled.connect(refresh)
+        self.list_configurations.itemSelectionChanged.connect(refresh)
+        self._refresh_sequenced_z_hint()
+
+    def _sequenced_z_block_reason(self) -> Optional[str]:
+        return self.multipointController.sequenced_z_stack_block_reason(
+            nz=self.entry_NZ.value(),
+            n_channels=len(self.channel_sequence.ordered_selected_names()),
+            z_stack_order=_z_stack_order_to_start(self.combobox_z_order),
+            use_piezo=self.checkbox_usePiezo.isChecked(),
+            channel_offsets_applied=(
+                self.checkbox_applyChannelOffset.isChecked() and self.checkbox_withReflectionAutofocus.isChecked()
+            ),
+        )
+
+    def _refresh_sequenced_z_hint(self) -> Optional[str]:
+        """Update the label/tooltip; returns the reason the controller would not be used (None if it would,
+        or when the box is unchecked, unavailable, or there is no z-stack at all)."""
+        if not self._sequenced_z_available:
+            return None
+        reason = None
+        if self.checkbox_sequencedZ.isChecked() and self.entry_NZ.value() > 1:
+            reason = self._sequenced_z_block_reason()
+        self.checkbox_sequencedZ.setText(self._SEQUENCED_Z_LABEL + (" - not used" if reason else ""))
+        self.checkbox_sequencedZ.setToolTip(
+            self._SEQUENCED_Z_TOOLTIP + (f"\n\nNot used with the current settings: {reason}." if reason else "")
+        )
+        return reason
+
+
 class AcquisitionYAMLMismatchDialog(QDialog):
     """Dialog shown when hardware configuration doesn't match loaded YAML settings."""
 
@@ -6636,7 +6705,7 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _SequencedZStackMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -6852,6 +6921,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
         self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
 
+        self._create_sequenced_z_checkbox()
+
         self.checkbox_stitchOutput = QCheckBox("Stitch Scans")
         self.checkbox_stitchOutput.setChecked(False)
 
@@ -7035,6 +7106,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             if IS_PIEZO_ONLY:
                 self.checkbox_usePiezo.setChecked(True)
                 self.checkbox_usePiezo.setVisible(False)
+        self._add_sequenced_z_checkbox(grid_af)
         grid_af.addWidget(self.checkbox_set_z_range)
         grid_af.addWidget(self.checkbox_skipSaving)
 
@@ -7108,6 +7180,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
+        self._connect_sequenced_z_hint()
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
@@ -7427,6 +7500,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
+        self.multipointController.set_use_sequenced_z_stack(self.checkbox_sequencedZ.isChecked())
         self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
         self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
         self.multipointController.set_base_path(self.lineEdit_savingDir.text())
@@ -7461,6 +7535,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 error_dialog(problem)
                 self.btn_startAcquisition.setChecked(False)
                 return
+            self._refresh_sequenced_z_hint()  # the trigger mode has no signal of its own
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
             if self.checkbox_skipSaving.isChecked():
@@ -8057,6 +8132,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
+            if yaml_data.use_sequenced_z_stack is not None and self._sequenced_z_available:
+                self.checkbox_sequencedZ.setChecked(yaml_data.use_sequenced_z_stack)
 
             # Time series settings
             self.entry_Nt.setValue(yaml_data.nt)
@@ -8081,6 +8158,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
             # Update FOV positions to reflect new NX, NY, delta values
             self.update_fov_positions()
+            # Signals were blocked, so nothing above refreshed the Fast Z-stack label
+            self._refresh_sequenced_z_hint()
 
     def _load_positions(self, positions):
         """Load positions from YAML into the location list."""
@@ -8157,7 +8236,7 @@ def _warn_if_coordinates_stale(widget, stamp):
         QMessageBox.warning(widget, "Coordinates may be stale", stale)
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _SequencedZStackMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
@@ -8405,6 +8484,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
         self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
 
+        self._create_sequenced_z_checkbox()
+
         self.checkbox_stitchOutput = QCheckBox("Stitch Scans")
         self.checkbox_stitchOutput.setChecked(False)
 
@@ -8641,6 +8722,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             if IS_PIEZO_ONLY:
                 self.checkbox_usePiezo.setChecked(True)
                 self.checkbox_usePiezo.setVisible(False)
+        self._add_sequenced_z_checkbox(options_layout)
         options_layout.addWidget(self.checkbox_skipSaving)
 
         button_layout = QVBoxLayout()
@@ -8713,6 +8795,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_useFocusMap.toggled.connect(self.multipointController.set_manual_focus_map_flag)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
+        self._connect_sequenced_z_hint()
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
@@ -9857,6 +9940,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
+        self.multipointController.set_use_sequenced_z_stack(self.checkbox_sequencedZ.isChecked())
         self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
         self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
         self.multipointController.set_base_path(self.lineEdit_savingDir.text())
@@ -9891,6 +9975,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 QMessageBox.warning(self, "Warning", problem)
                 self.btn_startAcquisition.setChecked(False)
                 return
+            self._refresh_sequenced_z_hint()  # the trigger mode has no signal of its own
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
             if self.checkbox_skipSaving.isChecked():
@@ -10259,6 +10344,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
+            if yaml_data.use_sequenced_z_stack is not None and self._sequenced_z_available:
+                self.checkbox_sequencedZ.setChecked(yaml_data.use_sequenced_z_stack)
 
             # Time series settings
             self.checkbox_time.setChecked(yaml_data.nt > 1)
@@ -10309,6 +10396,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.update_control_visibility()
             self.update_tab_styles()
             self.update_coordinates()
+            # Signals were blocked, so nothing above refreshed the Fast Z-stack label
+            self._refresh_sequenced_z_hint()
 
     def _load_well_regions(self, regions):
         """Load well regions from YAML and select them in the well selector."""

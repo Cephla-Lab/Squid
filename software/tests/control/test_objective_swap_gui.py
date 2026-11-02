@@ -15,6 +15,9 @@ import control.gui_hcs
 import control.microscope
 import squid.abc
 
+# A rare spurious Qt-loop TypeError while the GUI is built on CI (see the fixture).
+pytestmark = pytest.mark.usefixtures("ignore_stray_qevent_call")
+
 
 class _GatedFocusServo:
     """A V-308 stand-in whose retract and restore block until the test opens their gates."""

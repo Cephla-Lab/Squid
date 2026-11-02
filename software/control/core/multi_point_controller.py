@@ -17,7 +17,13 @@ import pandas as pd
 from control import utils, utils_acquisition
 import control._def
 from control.core.auto_focus_controller import AutoFocusController
-from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
+from control.core.multi_point_utils import (
+    MultiPointControllerFunctions,
+    ScanPositionInformation,
+    AcquisitionParameters,
+    sequenced_z_stack_block_reason,
+    stage_offers_sequenced_z_stack,
+)
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
@@ -91,6 +97,7 @@ def _save_acquisition_yaml(
             "order": params.z_stack_order,
             "z_range_mm": _serialize_for_yaml(params.z_range) if params.z_range else None,
             "use_piezo": params.use_piezo,
+            "use_sequenced_z_stack": params.use_sequenced_z_stack,
         },
         "time_series": {
             "nt": params.Nt,
@@ -231,6 +238,8 @@ class MultiPointController:
         self.apply_channel_offset = False
         self.display_resolution_scaling = control._def.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.use_piezo = control._def.MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
+        # Controller-sequenced z-stacks: the GUI checkbox (seeded from the ini) sets this per acquisition.
+        self.use_sequenced_z_stack = bool(control._def.USE_HARDWARE_SEQUENCED_Z_STACK)
         self.experiment_ID = None
         # Outcome of the last run_acquisition(): None while in flight; "completed" |
         # "completed_with_errors" | "user_abort" | "error" from the worker, or "failed_to_start" when the
@@ -393,6 +402,38 @@ class MultiPointController:
         if z_stacking_config_index in control._def.Z_STACKING_CONFIG_MAP:
             self.z_stacking_config = control._def.Z_STACKING_CONFIG_MAP[z_stacking_config_index]
         self._log.info(f"z-stacking configuration set to {self.z_stacking_config}")
+
+    def set_use_sequenced_z_stack(self, checked: bool):
+        self.use_sequenced_z_stack = bool(checked)
+
+    def sequenced_z_stack_available(self) -> bool:
+        """The stage can run z-stacks on its controller (the GUI shows the checkbox only then)."""
+        return stage_offers_sequenced_z_stack(self.stage)
+
+    def sequenced_z_stack_block_reason(
+        self,
+        *,
+        nz: Optional[int] = None,
+        n_channels: Optional[int] = None,
+        z_stack_order: Optional[str] = None,
+        use_piezo: Optional[bool] = None,
+        channel_offsets_applied: Optional[bool] = None,
+    ) -> Optional[str]:
+        """Why an acquisition with these settings would step Z from the host instead of letting the
+        controller run the stacks (None: the controller runs them). Each argument left None is taken from
+        this controller; the GUI passes its widgets' values before they reach the controller."""
+        if channel_offsets_applied is None:
+            channel_offsets_applied = bool(self.apply_channel_offset and self.do_reflection_af)
+        return sequenced_z_stack_block_reason(
+            self.stage,
+            nz=self.NZ if nz is None else nz,
+            use_piezo=bool(self.use_piezo if use_piezo is None else use_piezo),
+            hardware_trigger=self.liveController.trigger_mode == control._def.TriggerMode.HARDWARE,
+            n_channels=len(self.selected_configurations or []) if n_channels is None else n_channels,
+            z_stack_order=self.z_stack_order if z_stack_order is None else z_stack_order,
+            channel_offsets_applied=channel_offsets_applied,
+            scan_unit_triggers_camera=self.microscope.addons.nl5 is not None and bool(control._def.NL5_USE_DOUT),
+        )
 
     def set_z_stack_order(self, z_stack_order: str):
         if z_stack_order not in control._def.Z_STACK_ORDERS:
@@ -1060,6 +1101,7 @@ class MultiPointController:
             do_reflection_autofocus=self.do_reflection_af,
             apply_channel_offset=self.apply_channel_offset,
             use_piezo=self.use_piezo,
+            use_sequenced_z_stack=self.use_sequenced_z_stack,
             display_resolution_scaling=self.display_resolution_scaling,
             z_stacking_config=self.z_stacking_config,
             z_stack_order=self.z_stack_order,

@@ -881,6 +881,9 @@ class CAMERA_CONFIG:
     # None keeps the camera's own setting; "rising", "falling", "high" or "low" sets the trigger
     # input activation (SET_INPUTACTIVATION) for the selected source.
     TOUPCAM_TRIGGER_INPUT_ACTIVATION = None
+    # GPIO1 is driven as an output carrying "frame trigger wait" (camera ready for the next trigger).
+    # False: active high (the driver's long-standing setting); True: inverted (active low).
+    TOUPCAM_GPIO1_READY_INVERTED = False
     # Hardware-trigger exposure: True (default) means the controller strobes the light for the requested
     # exposure inside a longer sensor exposure, so the driver adds the rolling-shutter strobe time to the
     # sensor exposure (Cephla). False means the light is continuous and nothing strobes it (the Zmotion

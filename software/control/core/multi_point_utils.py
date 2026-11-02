@@ -76,6 +76,46 @@ class AcquisitionParameters:
     # in which case each FOV in a region targets that region's offset instead of 0.
     region_laser_af_offsets: Dict[str, float] = field(default_factory=dict)
 
+    # Let the stage's controller run each z-stack (sequenced_z_stack()) when the acquisition allows it;
+    # see sequenced_z_stack_block_reason() for when it does not.
+    use_sequenced_z_stack: bool = False
+
+
+def stage_offers_sequenced_z_stack(stage) -> bool:
+    """The stage can run a z-stack on its controller and that controller triggers a real camera."""
+    seq = stage.sequenced_z_stack() if stage is not None else None
+    return seq is not None and not seq.simulated
+
+
+def sequenced_z_stack_block_reason(
+    stage,
+    *,
+    nz: int,
+    use_piezo: bool,
+    hardware_trigger: bool,
+    n_channels: int,
+    z_stack_order: str,
+    channel_offsets_applied: bool,
+    scan_unit_triggers_camera: bool = False,
+) -> Optional[str]:
+    """Why a controller-sequenced z-stack cannot run with these settings (None: it can). Shared by the
+    worker (which then steps Z itself) and the GUI (which shows the reason)."""
+    if not stage_offers_sequenced_z_stack(stage):
+        return "the stage controller cannot run z-stacks"
+    if nz < 2:
+        return "Nz is 1"
+    if use_piezo:
+        return "piezo z-stack is selected"
+    if not hardware_trigger:
+        return "the camera is not in hardware trigger mode"
+    if scan_unit_triggers_camera:
+        return "the confocal scan unit triggers the camera"
+    if channel_offsets_applied:
+        return "per-channel z offsets are applied (laser AF)"
+    if n_channels > 1 and z_stack_order != "Z FIRST":
+        return f"{n_channels} channels in channel-first order (one channel per stack, or Z first)"
+    return None
+
 
 @dataclass
 class OverallProgressUpdate:

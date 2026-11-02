@@ -30,6 +30,8 @@ class AcquisitionYAMLData:
     z_stacking_config: str = "FROM BOTTOM"
     z_stack_order: str = "CHANNEL FIRST"
     use_piezo: bool = False
+    # Controller-sequenced z-stacks; None when the file predates the setting (the current choice is kept).
+    use_sequenced_z_stack: Optional[bool] = None
 
     # Time series
     nt: int = 1
@@ -96,6 +98,14 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
             if not region.get("fovs") and region.get("name") in by_name:
                 region["fovs"] = by_name[region["name"]]
     return parsed
+
+
+def parse_optional_bool(value, name: str) -> Optional[bool]:
+    """A saved true/false setting that older files may lack: None stays None (keep the current choice);
+    a real bool passes; anything else raises ValueError rather than guessing."""
+    if value is None or isinstance(value, bool):
+        return value
+    raise ValueError(f"Invalid {name} '{value}'. Must be true or false")
 
 
 def parse_z_stack_order(value) -> str:
@@ -175,6 +185,9 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
         z_stacking_config=z_stack.get("config", "FROM BOTTOM"),
         z_stack_order=parse_z_stack_order(z_stack.get("order")),
         use_piezo=z_stack.get("use_piezo", False),
+        use_sequenced_z_stack=parse_optional_bool(
+            z_stack.get("use_sequenced_z_stack"), "z_stack.use_sequenced_z_stack"
+        ),
         # Time series
         nt=time_series.get("nt", 1),
         delta_t_s=time_series.get("delta_t_s", 0.0),
