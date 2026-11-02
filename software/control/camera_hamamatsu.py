@@ -98,9 +98,12 @@ class HamamatsuCamera(AbstractCamera):
         self._read_thread_running.clear()
 
         # Held across every capture transition (stop_streaming, start_streaming) and by the read thread
-        # from its DCAM read through frame publication, so a read never straddles two captures.
-        # stop_streaming() leaves the read thread running, so nothing else keeps them apart.
-        # Taken after _trigger_lock, before _frame_lock.
+        # for its DCAM read, so a read never straddles two captures. It does NOT cover publication: the
+        # read thread publishes a batch after releasing it, so frames it had already read are delivered
+        # after a restart - stamped with the capture they came from (_stream_generation, bumped per
+        # cap_start under this lock), which is how a consumer tells them apart. stop_streaming() leaves
+        # the read thread running, so nothing else keeps them apart. Taken after _trigger_lock, before
+        # _frame_lock.
         self._capture_lock = threading.Lock()
         self._frame_lock = threading.Lock()
         self._current_frame: Optional[CameraFrame] = None
@@ -187,7 +190,8 @@ class HamamatsuCamera(AbstractCamera):
         DCAM counts the stamp from 0 at every cap_start; _frame_id_base keeps ids increasing across
         restarts, and the very first id is still 1.
         """
-        # Finish publishing an in-flight frame before a restart can rebase its IDs.
+        # A restart rebases the ids and bumps the stream generation under this lock, so the frame is read
+        # against one capture.
         with self._capture_lock:
             # The dcam driver handles setting the correct width and height, so we can use the
             # np frame directly. buf_getframe(-1) is what buf_getlastframedata() calls; it also
@@ -213,6 +217,7 @@ class HamamatsuCamera(AbstractCamera):
                 frame=processed_frame,
                 frame_format=self.get_frame_format(),
                 frame_pixel_format=self.get_pixel_format(),
+                stream_generation=self._stream_generation,
             )
             self._current_frame = camera_frame
         return camera_frame
@@ -237,7 +242,8 @@ class HamamatsuCamera(AbstractCamera):
             frame = self._read_newest_frame()
             return [] if frame is None else [frame]
 
-        # Finish publishing in-flight frames before a restart can rebase their IDs.
+        # A restart rebases the ids and bumps the stream generation under this lock, so the batch is read
+        # against one capture.
         with self._capture_lock:
             info = self._camera.cap_transferinfo()
             if isinstance(info, bool):
@@ -657,6 +663,7 @@ class HamamatsuCamera(AbstractCamera):
                 # DCAM's frame stamp starts over at 0; ids must not.
                 self._frame_id_base = self._current_frame.frame_id + 1 if self._current_frame else 1
                 self._last_frame_number = -1  # and the numbering of this capture starts over with it
+            self._stream_generation += 1  # frames read from this capture say so (CameraFrame.stream_generation)
             if not self._camera.cap_start():
                 self._log.error(f"Failed to start streaming: {self._last_dcam_error_string()}")
                 return False

@@ -112,6 +112,7 @@ def make_camera(ring):
     cam._read_every_frame = False
     cam._trigger_sent = threading.Event()
     cam._is_streaming = threading.Event()
+    cam._stream_generation = 0
     cam._ensure_read_thread_running = lambda: None  # no thread: the test drives the reads itself
     cam._process_raw_frame = lambda raw: raw
     cam.get_frame_format = lambda: None
