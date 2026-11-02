@@ -240,9 +240,11 @@ def test_cache_missing_a_shipped_format_keeps_the_calibrations_it_has(migration_
     assert not os.path.exists(os.path.join("cache", CSV)) and os.path.exists(os.path.join("cache", CSV + ".migrated"))
 
 
-def test_a_calibrated_glass_slide_does_not_stop_the_migration(migration_tree, caplog):
-    """Bench 2026-10-30: a cache whose glass slide row carried a measured a1 made from_settings reject the
-    pitchless 1x1 format, which aborted the WHOLE migration on every start-up."""
+def test_a_legacy_glass_slide_row_is_dropped_and_the_rest_migrates(migration_tree, caplog):
+    """Bench 2026-10-30: a cache whose glass slide row differed from the shipped one (an old build had written
+    an a1 for it) made from_settings reject the pitchless format, which aborted the WHOLE migration on every
+    start-up. A pitchless format has nothing to calibrate - its well is wherever the stage is - so the row
+    carries nothing to keep."""
 
     def edit(formats):
         formats["glass slide"].update({"a1_x_mm": 20.5, "a1_y_mm": 15.25})
@@ -250,11 +252,12 @@ def test_a_calibrated_glass_slide_does_not_stop_the_migration(migration_tree, ca
 
     write_legacy_cache(migration_tree, edit)
 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.INFO):
         _def.load_formats()
 
-    assert not any("Migration" in r.getMessage() and "failed" in r.getMessage() for r in caplog.records)
+    assert not any("failed" in r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
+    assert any("glass slide" in r.getMessage() and "nothing to calibrate" in r.getMessage() for r in caplog.records)
     formats = load_user_sample_formats().formats
-    assert formats["glass slide"].a1_x_mm == 20.5 and formats["glass slide"].is_measured
+    assert "glass slide" not in formats
     assert formats["96 well plate"].a1_x_mm == 11.604
     assert os.path.exists(os.path.join("cache", CSV + ".migrated"))
