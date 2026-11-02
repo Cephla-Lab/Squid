@@ -516,7 +516,10 @@ class ToupcamCamera(AbstractCamera):
             pixel_size=self._get_pixel_size_in_bytes(),
             exposure_time_ms=camera_exposure_time_ms,
             capabilities=self._capabilities,
-            global_reset=self._global_reset_enabled,
+            # Two opt-ins put the sensor in global reset, with different strobe models: ENABLE_TOUPCAM_GLOBAL_RESET
+            # fires the illumination at the trigger (no delay at all); HARDWARE_TRIGGER_GLOBAL_RESET keeps the
+            # camera's trigger latency (see get_strobe_time).  Each keeps its model until the bench settles it.
+            global_reset=bool(self._global_reset_enabled and ENABLE_TOUPCAM_GLOBAL_RESET),
         )
         if self._hw_set_strobe_delay_ms_fn and self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
             self._hw_set_strobe_delay_ms_fn(self.get_strobe_time())
@@ -585,8 +588,11 @@ class ToupcamCamera(AbstractCamera):
 
     def _set_global_reset(self, acquisition_mode: CameraAcquisitionMode):
         """
-        Global reset mode, if ENABLE_TOUPCAM_GLOBAL_RESET is set and the camera supports it, is on in hardware
-        trigger mode and off otherwise.
+        Global reset mode, if the camera supports it and either opt-in asks for it, is on in hardware trigger mode
+        and off otherwise.  The opt-ins are ENABLE_TOUPCAM_GLOBAL_RESET, and HARDWARE_TRIGGER_GLOBAL_RESET with a
+        LEVEL trigger (the sequenced-acquisition exposure model, which _apply_global_reset_mode then verifies on
+        the camera).  This is the only place the option is written, so _global_reset_enabled always says what the
+        sensor is in - and leaving hardware trigger mode turns it off whichever opt-in turned it on.
 
         With global reset every row starts exposing at once, so the illumination needs no strobe delay.  But the rows
         keep integrating until they're read out, so the image is only flat if the light is off before the readout
@@ -596,7 +602,9 @@ class ToupcamCamera(AbstractCamera):
         bottom and halve the frame rate (measured on an ITR10CMOS26000KMA).  The option is changed with the stream
         stopped, so a change costs a stream restart.
         """
-        enabled = acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER and ENABLE_TOUPCAM_GLOBAL_RESET
+        enabled = acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER and (
+            ENABLE_TOUPCAM_GLOBAL_RESET or control._def.use_level_trigger_global_reset()
+        )
         if enabled == self._global_reset_enabled or not self._global_reset_supported:
             return
         with self._pause_streaming():
@@ -616,7 +624,7 @@ class ToupcamCamera(AbstractCamera):
                 self._global_reset_enabled = False
                 return
         self._global_reset_enabled = enabled
-        self._log.info(f"Global reset mode {'enabled, strobe delay is 0' if enabled else 'disabled'}.")
+        self._log.info(f"Global reset mode {'enabled' if enabled else 'disabled'}.")
 
     def _change_pixel_format(self, pixel_format: CameraPixelFormat):
         """Switch the SDK mode and re-send the black level, whose scale depends on the mode.  Call with the stream stopped."""
@@ -966,11 +974,12 @@ class ToupcamCamera(AbstractCamera):
         return self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER
 
     def _apply_global_reset_mode(self):
-        """Put the sensor in global reset mode, or raise.
+        """Verify that the sensor is in global reset mode, or raise.
 
-        Called only from the HARDWARE_TRIGGER branch of _set_acquisition_mode_imp; it is a
-        no-op unless the HARDWARE_TRIGGER_GLOBAL_RESET opt-in is on AND the trigger mode is
-        LEVEL (global reset is meaningless with a fixed-width EDGE trigger).
+        Called only from the HARDWARE_TRIGGER branch of _set_acquisition_mode_imp, after
+        _set_global_reset wrote the option; it is a no-op unless the HARDWARE_TRIGGER_GLOBAL_RESET
+        opt-in is on AND the trigger mode is LEVEL (global reset is meaningless with a
+        fixed-width EDGE trigger).
 
         There is deliberately no fallback: if the camera does not confirm the mode, the
         rolling get_strobe_time() below would fire the illumination before the last rows
@@ -979,8 +988,13 @@ class ToupcamCamera(AbstractCamera):
         if not control._def.use_level_trigger_global_reset():
             return
 
+        if not self._global_reset_enabled:
+            # _set_global_reset's write was refused: the option is not supported (its log line has the SDK's answer).
+            raise CameraError(
+                "This camera rejected global reset mode (TOUPCAM_OPTION_GLOBAL_RESET_MODE). "
+                "Turn off HARDWARE_TRIGGER_GLOBAL_RESET or use a camera that supports it."
+            )
         try:
-            self._camera.put_Option(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 1)
             read_back = self._camera.get_Option(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE)
         except toupcam.HRESULTException as ex:
             raise CameraError(

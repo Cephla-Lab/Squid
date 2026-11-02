@@ -175,6 +175,13 @@ def _make_toupcam(sdk, strobe_time_us=5000.0, trigger_delay_us=120.0):
     cam._log = squid.logging.get_logger("test_camera_global_reset.toupcam")
     cam._strobe_info = camera_toupcam.StrobeInfo(strobe_time_us=strobe_time_us, trigger_delay_us=trigger_delay_us)
     cam._exposure_time = 20.0
+    # The state after production startup: _configure_camera wrote the global reset option off once (the
+    # ENABLE_TOUPCAM_GLOBAL_RESET path), and the camera accepted it. The option is written with the
+    # stream paused, which takes the trigger lock and asks whether the camera is streaming.
+    cam._global_reset_enabled = False
+    cam._global_reset_supported = True
+    cam._trigger_lock = threading.RLock()
+    cam.get_is_streaming = lambda: False
     # set_exposure_time() re-derives the strobe info from the live camera, which is far
     # outside what these tests fake. _set_acquisition_mode_imp's trailing call to it is
     # not the behavior under test, so record it instead of running it.
@@ -260,6 +267,23 @@ def test_toupcam_global_reset_not_applied_in_edge_mode(monkeypatch):
     cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
 
     assert _global_reset_writes(sdk) == []
+
+
+def test_toupcam_global_reset_is_turned_off_again_on_return_to_software_trigger(monkeypatch):
+    """Two opt-ins put the sensor in global reset (this one and ENABLE_TOUPCAM_GLOBAL_RESET). Whichever
+    turned it on, leaving hardware trigger mode must turn it off: in software trigger mode the illumination
+    stays on through the readout, and under global reset that shades the image top to bottom."""
+    _enable_global_reset(monkeypatch)
+    monkeypatch.setattr(camera_toupcam, "ENABLE_TOUPCAM_GLOBAL_RESET", False)
+    sdk = FakeToupcamSdk()
+    cam = _make_toupcam(sdk)
+
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert sdk.get_Option(_GLOBAL_RESET_OPTION) == 1 and cam._global_reset_enabled is True
+
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+    assert sdk.get_Option(_GLOBAL_RESET_OPTION) == 0 and cam._global_reset_enabled is False
+    assert _global_reset_writes(sdk) == [(_GLOBAL_RESET_OPTION, 1), (_GLOBAL_RESET_OPTION, 0)]
 
 
 def test_toupcam_strobe_time_default_is_rolling_model(monkeypatch):
