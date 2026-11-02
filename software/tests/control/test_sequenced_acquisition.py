@@ -233,8 +233,10 @@ def test_a_plain_fluorescence_piezo_stack_is_eligible():
         (dict(camera_gains=[10.0, 12.0]), "gain"),
         (dict(channels=[plan(), plan(name="Fluorescence 638 nm Ex", source_code=13, z_offset_um=1.5)]), "z offset"),
         (dict(burst_bytes=3_000_000_000), "memory"),
-        # Two bursts can be in memory at once: one being handed to the save jobs, one just validated.
+        # Three bursts can be in memory at once: one being handed to the save jobs, one waiting behind it
+        # (the dispatcher queues one), and the one being acquired meanwhile.
         (dict(burst_bytes=1_200_000_000), "memory"),
+        (dict(burst_bytes=700_000_000), "memory"),  # 2 x 700 MB fits the 2 GB budget; 3 x 700 MB does not
         (dict(channels=[], camera_gains=[]), "no channels"),
         # An NL5 scan unit triggers the camera itself and takes its channel and laser power at every channel
         # switch; a burst does neither.
@@ -251,6 +253,10 @@ def test_a_plain_fluorescence_piezo_stack_is_eligible():
 def test_each_ineligibility_names_its_reason(overrides, fragment):
     reason = ineligibility_reason(**eligible_kwargs(**overrides))
     assert reason is not None and fragment in reason
+
+
+def test_three_bursts_that_fit_the_budget_are_eligible():
+    assert ineligibility_reason(**eligible_kwargs(burst_bytes=600_000_000, byte_budget=2_000_000_000)) is None
 
 
 def test_no_byte_budget_means_no_memory_limit():

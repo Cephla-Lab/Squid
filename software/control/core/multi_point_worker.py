@@ -1199,8 +1199,14 @@ class MultiPointWorker:
             self.prepare_z_stack()
 
         if self._sequenced_bursts:
-            # The microcontroller runs the stack, one burst per plan, and returns the piezo after each.
+            # The microcontroller runs the stack, one burst per plan, and returns the piezo after each
+            # to the stack bottom, where prepare_z_stack() put it.
             self._acquire_sequenced_stack(region_id, current_path, fov, af_succeeded)
+            if self.NZ > 1 and self.z_stacking_config == "FROM CENTER":
+                # Climb back to the centre the stack was anchored at, as the software stack does.
+                # The next FOV's From Center move starts from the cached piezo position: left at
+                # the bottom, every FOV would start half a stack below the previous one.
+                self.move_z_back_after_stack(0)
             self._timepoint_fov_count += 1
             return
 
@@ -1524,7 +1530,7 @@ class MultiPointWorker:
         Returns (frames, None) only if the burst is provably complete and in order; otherwise
         (None, why), and NOTHING of it has reached a save job."""
         if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
-            return None, "a frame from before the hardware sequence never arrived"
+            return self._discard_failed_burst("a frame from before the hardware sequence never arrived")
 
         collected: List[Tuple[CameraFrame, CaptureInfo]] = []
 
@@ -1560,9 +1566,22 @@ class MultiPointWorker:
         if reason is None and run_error is not None:
             reason = f"the controller reported an error: {run_error}"
         if reason is not None:
-            self._log.warning(f"Hardware-sequenced burst failed and was discarded (nothing saved): {reason}.")
-            return None, reason
+            return self._discard_failed_burst(reason)
         return collected, None
+
+    def _discard_failed_burst(self, reason: str) -> Tuple[None, str]:
+        """Nothing of a failed burst reaches a save job - and nothing of it may reach the NEXT burst.
+
+        A frame the controller fired can still be on its way (a late frame is one of the ways a burst
+        fails), and a frame carries nothing that tells it from the retry's first frame: paired with the
+        retry's first capture it would be saved under the wrong z, and the retry's count and
+        consecutive-id checks would still pass. Restarting the camera stream drops what is in flight
+        (the drivers lose in-flight frames with the stream), so the next burst starts from a quiet camera.
+        """
+        self._log.warning(f"Hardware-sequenced burst failed and was discarded (nothing saved): {reason}.")
+        self.camera.stop_streaming()
+        self.camera.start_streaming()
+        return None, reason
 
     def _wait_for_fired_frames(self, collected: list, *, expected: int) -> None:
         """Wait, up to the frame timeout, for the frames the controller says it fired."""

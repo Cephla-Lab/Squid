@@ -312,11 +312,13 @@ def ineligibility_reason(
             return f"channel '{channel.name}' is not strobed from an MCU TTL port (source code {channel.source_code})"
     if one_burst_for_all_channels and len(set(camera_gains)) > 1:
         return f"the channels use different camera gain values ({sorted(set(camera_gains))}); gain is a camera register write"
-    if byte_budget is not None and 2 * burst_bytes > byte_budget:
+    if byte_budget is not None and 3 * burst_bytes > byte_budget:
+        # The burst dispatcher holds one burst in flight and queues one behind it (submit() blocks beyond
+        # that), and the worker collects the next one meanwhile: three bursts can be resident at once.
         return (
-            f"one burst needs {burst_bytes / 1e6:.0f} MB of memory and two can be held at once (one being handed "
-            f"to the save jobs while the next is acquired), but the acquisition's image budget is "
-            f"{byte_budget / 1e6:.0f} MB"
+            f"one burst needs {burst_bytes / 1e6:.0f} MB of memory and three can be held at once (one being handed "
+            f"to the save jobs, one waiting behind it, and the one being acquired), but the acquisition's image "
+            f"budget is {byte_budget / 1e6:.0f} MB"
         )
     return None
 
