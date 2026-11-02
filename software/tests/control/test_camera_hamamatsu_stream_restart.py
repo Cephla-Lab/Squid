@@ -100,11 +100,11 @@ def test_a_frame_read_before_the_restart_is_not_paired_with_the_retried_burst():
     reader = threading.Thread(target=cam._read_frames_when_available, daemon=True)
     reader.start()
     try:
-        frames, reason = w._run_sequenced_burst(_captures(3), 1000)
+        frames, reason = w._run_sequenced_burst(_captures(3), 1000, None)
         assert frames is None and "2 of 3" in reason
         assert cam.stream_generation() == 2 and cam._frame_id_base == 4  # restarted; ids continue at 4
 
-        frames, reason = w._run_sequenced_burst(_captures(3), 1000)
+        frames, reason = w._run_sequenced_burst(_captures(3), 1000, None)
         assert reason is None
         # (id, DCAM frame number within its capture, z): the retry's own three frames, in order.
         assert [(f.frame_id, int(f.frame[0, 0]), info.z_index) for f, info in frames] == [
