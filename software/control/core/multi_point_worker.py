@@ -1191,8 +1191,14 @@ class MultiPointWorker:
             self.prepare_z_stack()
 
         if self._sequenced_program is not None:
-            # The microcontroller runs the whole z x channel block (and returns the piezo).
+            # The microcontroller runs the whole z x channel block and returns the piezo to the
+            # stack bottom, where prepare_z_stack() put it.
             self._acquire_sequenced_stack(region_id, current_path, fov)
+            if self.NZ > 1 and self.z_stacking_config == "FROM CENTER":
+                # Climb back to the centre the stack was anchored at, as the software stack does.
+                # The next FOV's From Center move starts from the cached piezo position: left at
+                # the bottom, every FOV would start half a stack below the previous one.
+                self.move_z_back_after_stack(0)
             self._timepoint_fov_count += 1
             return
 
