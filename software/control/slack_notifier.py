@@ -41,6 +41,9 @@ class TimepointStats:
     laser_af_successes: int
     laser_af_failures: int
     laser_af_failure_reasons: List[str]
+    # Z First "AF per stack": laser AF re-runs before later channels' stacks, counted apart from the per-FOV AF.
+    laser_af_per_stack_successes: int = 0
+    laser_af_per_stack_failures: int = 0
 
 
 @dataclass
@@ -509,6 +512,16 @@ class SlackNotifier:
             if stats.laser_af_failures > 0:
                 af_text += f" ({stats.laser_af_failures} failed)"
             blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": af_text}})
+
+        # Laser AF re-runs before later channels' stacks (Z First "AF per stack"), kept apart from the FOV figure
+        total_per_stack = stats.laser_af_per_stack_successes + stats.laser_af_per_stack_failures
+        if total_per_stack > 0:
+            per_stack_text = (
+                f"*Laser AF per stack:* {stats.laser_af_per_stack_successes}/{total_per_stack} stacks succeeded"
+            )
+            if stats.laser_af_per_stack_failures > 0:
+                per_stack_text += f" ({stats.laser_af_per_stack_failures} failed)"
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": per_stack_text}})
 
         experiment_block = self._make_experiment_context_block()
         if experiment_block:

@@ -1,3 +1,8 @@
+import errno
+import os
+import sys
+from configparser import ConfigParser
+
 import control.utils
 import tests.tools
 import pathlib
@@ -250,3 +255,146 @@ def test_focus_measure_lape_independent_of_dtype_for_identical_values():
     assert control.utils.calculate_focus_measure(as_uint8, FocusMeasureOperator.LAPE) == pytest.approx(
         control.utils.calculate_focus_measure(as_uint16, FocusMeasureOperator.LAPE), rel=1e-9
     )
+
+
+@pytest.mark.parametrize("rotate", [None, 0, 90, -90, 180])
+@pytest.mark.parametrize("flip", [None, *control.utils.FlipVariant])
+@pytest.mark.parametrize("shape", [(6, 4), (6, 4, 3)])
+def test_rotate_and_flip_image_matches_opencv_and_never_aliases_the_input(rotate, flip, shape):
+    image = np.arange(np.prod(shape), dtype=np.uint16).reshape(shape)
+    original = image.copy()
+    expected = image.copy()
+    if rotate:
+        expected = cv2.rotate(
+            expected, {90: cv2.ROTATE_90_CLOCKWISE, -90: cv2.ROTATE_90_COUNTERCLOCKWISE, 180: cv2.ROTATE_180}[rotate]
+        )
+    if flip is not None:
+        expected = cv2.flip(expected, {"Vertical": 0, "Horizontal": 1, "Both": -1}[flip.value])
+
+    result = control.utils.rotate_and_flip_image(image, rotate_image_angle=rotate, flip_image=flip)
+
+    np.testing.assert_array_equal(result, expected)
+    assert result.flags.c_contiguous
+    assert not np.may_share_memory(result, image)  # callers pass views of driver memory
+    np.testing.assert_array_equal(image, original)
+
+
+def _ini(**general):
+    config = ConfigParser()
+    config["GENERAL"] = general
+    return config
+
+
+def _read_general(path):
+    saved = ConfigParser()
+    saved.read(path)
+    return dict(saved["GENERAL"])
+
+
+def test_write_ini_atomically_replaces_the_file_and_leaves_no_temp_file(tmp_path):
+    path = tmp_path / "machine.ini"
+    path.write_text("[GENERAL]\nold = 1\n")
+    control.utils.write_ini_atomically(_ini(new="2"), str(path))
+    assert _read_general(path) == {"new": "2"}
+    assert os.listdir(tmp_path) == ["machine.ini"]
+
+
+def test_a_failed_ini_write_leaves_the_file_as_it_was(tmp_path):
+    path = tmp_path / "machine.ini"
+    path.write_text("[GENERAL]\nold = 1\n")
+
+    class DiskFull(ConfigParser):
+        def write(self, fp, space_around_delimiters=True):
+            fp.write("[GENERAL]\n")  # cut off part way
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    with pytest.raises(OSError):
+        control.utils.write_ini_atomically(DiskFull(), str(path))
+    assert path.read_text() == "[GENERAL]\nold = 1\n"
+    assert os.listdir(tmp_path) == ["machine.ini"]
+
+
+def test_a_save_made_while_another_is_part_way_publishes_only_its_own_text(tmp_path):
+    # A shared ini saved from another user or host while this save is part way, which then runs out of space.
+    path = tmp_path / "machine.ini"
+    path.write_text("[GENERAL]\nold = 1\n")
+
+    class DiskFullAfterAnotherSave(ConfigParser):
+        def write(self, fp, space_around_delimiters=True):
+            fp.write("[GENERAL]\n")
+            control.utils.write_ini_atomically(_ini(other="2"), str(path))
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    with pytest.raises(OSError):
+        control.utils.write_ini_atomically(DiskFullAfterAnotherSave(), str(path))
+    assert path.read_text() == "[GENERAL]\nother = 2\n\n"  # the other save, whole
+    assert os.listdir(tmp_path) == ["machine.ini"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows files have no group/other permission bits")
+def test_a_new_ini_gets_the_usual_permissions(tmp_path):
+    # Not the owner-only 0600 of a tempfile.mkstemp file, which would shut other users out of a shared ini.
+    plain = tmp_path / "plain.txt"
+    plain.write_text("")
+    path = tmp_path / "machine.ini"
+    control.utils.write_ini_atomically(_ini(new="2"), str(path))
+    assert path.stat().st_mode & 0o777 == plain.stat().st_mode & 0o777
+
+
+def test_a_shared_ini_keeps_its_group(tmp_path, monkeypatch):
+    # Written in place, the ini kept its group; the replacement is given it too, before it replaces the ini.
+    path = tmp_path / "machine.ini"
+    path.write_text("[GENERAL]\nold = 1\n")
+    chowned = []
+
+    def chown(new_path, uid, gid):
+        assert _read_general(path) == {"old": "1"}
+        chowned.append((os.path.basename(new_path), uid, gid))
+
+    monkeypatch.setattr(os, "chown", chown, raising=False)  # also on Windows, which has no os.chown
+    control.utils.write_ini_atomically(_ini(new="2"), str(path))
+    [(name, uid, gid)] = chowned
+    assert name.startswith("machine.ini.") and name.endswith(".tmp")
+    assert (uid, gid) == (-1, path.stat().st_gid)
+    assert _read_general(path) == {"new": "2"}
+
+
+def test_an_ini_whose_group_this_user_cannot_set_is_still_saved(tmp_path, monkeypatch):
+    path = tmp_path / "machine.ini"
+    path.write_text("[GENERAL]\nold = 1\n")
+
+    def chown(new_path, uid, gid):
+        raise PermissionError(errno.EPERM, "Operation not permitted", new_path)  # not a member of that group
+
+    monkeypatch.setattr(os, "chown", chown, raising=False)
+    control.utils.write_ini_atomically(_ini(new="2"), str(path))
+    assert _read_general(path) == {"new": "2"}
+    assert os.listdir(tmp_path) == ["machine.ini"]
+
+
+def test_a_read_only_ini_is_not_replaced(tmp_path):
+    path = tmp_path / "machine.ini"
+    path.write_text("[GENERAL]\nold = 1\n")
+    os.chmod(path, 0o444)
+    if os.access(path, os.W_OK):
+        os.chmod(path, 0o644)
+        pytest.skip("running as root, which may write a read-only file")
+    try:
+        with pytest.raises(PermissionError):
+            control.utils.write_ini_atomically(_ini(new="2"), str(path))
+        assert path.read_text() == "[GENERAL]\nold = 1\n"
+    finally:
+        os.chmod(path, 0o644)
+
+
+def test_an_ini_reached_through_a_symlink_keeps_the_link(tmp_path):
+    target = tmp_path / "machine.ini"
+    target.write_text("[GENERAL]\nold = 1\n")
+    link = tmp_path / "current.ini"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("this account can't create symlinks (Windows without developer mode)")
+    control.utils.write_ini_atomically(_ini(new="2"), str(link))
+    assert link.is_symlink()
+    assert _read_general(target) == {"new": "2"}

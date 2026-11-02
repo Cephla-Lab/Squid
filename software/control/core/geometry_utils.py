@@ -7,6 +7,14 @@ These functions are pure geometry calculations with no UI dependencies.
 import math
 
 
+def default_scan_shape(well_shape: str) -> str:
+    """The scan shape a well of this shape gets by default. Two vocabularies on
+    purpose: well_shape ("circle" | "rectangle") is what the well IS; the scan
+    shape ("Circle" | "Square" | "Rectangle" | "Manual") is what the user scans,
+    and a Square scan in a round well is a legitimate pair."""
+    return "Circle" if well_shape == "circle" else "Square"
+
+
 def get_effective_well_size(well_size_mm, fov_size_mm, shape, is_round_well=True):
     """Calculate the default scan size for a well based on shape.
 

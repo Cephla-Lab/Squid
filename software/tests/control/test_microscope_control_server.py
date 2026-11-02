@@ -141,6 +141,13 @@ class TestRunAcquisitionFromYAML:
         with pytest.raises(RuntimeError, match="Hardware configuration mismatch"):
             mock_server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file)
 
+    def test_hardware_mismatch_piezo(self, mock_server, yaml_file):
+        """A YAML whose z-stack ran on the piezo is refused on a microscope without one."""
+        mock_server.multipoint_controller.piezo = None  # SAMPLE_WELLPLATE_YAML has use_piezo: true
+
+        with pytest.raises(RuntimeError, match="(?s)Hardware configuration mismatch.*no piezo"):
+            mock_server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file)
+
     def test_hardware_mismatch_binning(self, mock_server, yaml_file):
         """Test error when camera binning doesn't match YAML."""
         mock_server.microscope.camera.get_binning.return_value = (2, 2)  # Different from YAML's (1,1)

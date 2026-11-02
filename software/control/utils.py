@@ -1,5 +1,6 @@
 import collections
 import enum
+import errno
 import inspect
 import pathlib
 import sys
@@ -7,6 +8,7 @@ import shutil
 import statistics
 import time
 import threading
+import uuid
 from dataclasses import dataclass
 
 import cv2
@@ -111,7 +113,12 @@ class FlipVariant(enum.Enum):
 
 
 def rotate_and_flip_image(image, rotate_image_angle: float, flip_image: Optional[FlipVariant]):
-    ret_image = image.copy()
+    """Returns a new C-contiguous array, never a view of `image` (callers may pass a view of driver memory).
+
+    Flips are taken as views and materialized by a single copy at the end, so a flip costs one pass over the
+    frame instead of a copy plus a flip (about 5 ms instead of 14 ms for a 3200x3200 16-bit frame).
+    """
+    ret_image = image
     if rotate_image_angle and rotate_image_angle != 0:
         """
         # ROTATE_90_CLOCKWISE
@@ -128,12 +135,14 @@ def rotate_and_flip_image(image, rotate_image_angle: float, flip_image: Optional
 
     if flip_image is not None:
         if flip_image == FlipVariant.VERTICAL:
-            ret_image = cv2.flip(ret_image, 0)
+            ret_image = ret_image[::-1]
         elif flip_image == FlipVariant.HORIZONTAL:
-            ret_image = cv2.flip(ret_image, 1)
+            ret_image = ret_image[:, ::-1]
         elif flip_image == FlipVariant.BOTH:
-            ret_image = cv2.flip(ret_image, -1)
+            ret_image = ret_image[::-1, ::-1]
 
+    if np.may_share_memory(ret_image, image) or not ret_image.flags.c_contiguous:
+        ret_image = ret_image.copy(order="C")
     return ret_image
 
 
@@ -226,6 +235,58 @@ def ensure_directory_exists(raw_string_path: str):
     path: pathlib.Path = pathlib.Path(raw_string_path)
     _log.debug(f"Making sure directory '{path}' exists.")
     path.mkdir(parents=True, exist_ok=True)
+
+
+def write_ini_atomically(config, path: str):
+    """Write a ConfigParser to path so that a failed write (a full disk, say) leaves the file as it was, rather than
+    emptied or cut off: the text goes to a temp file next to it, which then replaces it. Squid reads the machine ini
+    at start-up, so a half-written one stops it starting. A read-only file still raises PermissionError, as writing
+    it in place did (replacing it would succeed on Linux)."""
+    path = os.path.realpath(path)  # an ini reached through a symlink keeps the link
+    if os.path.exists(path) and not os.access(path, os.W_OK):
+        raise PermissionError(errno.EACCES, "Permission denied", path)
+    # A temp file of this save's own: a shared ini may be saved from another user or host at the same time. "x"
+    # creates it or fails, so this save never writes to, publishes or deletes another one's. (tempfile.mkstemp would
+    # make a new ini readable by its owner only; this gets the usual permissions.)
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    f = open(tmp_path, "x")
+    try:
+        with f:
+            if os.path.exists(path):  # before the fsync below, so it covers these too
+                _give_the_access_of(path, tmp_path)
+            config.write(f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    # The new name itself only survives a power cut once its directory is synced (POSIX). The ini is replaced by now,
+    # so a failure here isn't reported as a failed save.
+    if hasattr(os, "O_DIRECTORY"):
+        try:
+            dir_fd = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+
+
+def _give_the_access_of(path: str, new_path: str):
+    """Give new_path the group and permission bits of path, so a shared ini stays as usable to its other users as
+    writing it in place left it. The group goes only where this user may set it (a member of that group); otherwise
+    the file keeps this user's group, as any new file would."""
+    if hasattr(os, "chown"):  # POSIX
+        try:
+            os.chown(new_path, -1, os.stat(path).st_gid)
+        except OSError:
+            pass
+    shutil.copymode(path, new_path)  # after chown, which may clear setuid/setgid bits
 
 
 def serialize_for_yaml(obj):
@@ -681,6 +742,14 @@ def parse_well_id(well_id: str) -> Tuple[str, str]:
         else:
             number_part += char
     return (letter_part, number_part)
+
+
+def within_travel(x_mm: float, y_mm: float) -> bool:
+    """Is this XY inside the software travel limits? Read live: the limits
+    class is mutated at runtime (Preferences), and nothing below this layer
+    clamps an XY move - the firmware truncates silently."""
+    limits = control._def.SOFTWARE_POS_LIMIT
+    return limits.X_NEGATIVE <= x_mm <= limits.X_POSITIVE and limits.Y_NEGATIVE <= y_mm <= limits.Y_POSITIVE
 
 
 def row_to_index(row: str) -> int:

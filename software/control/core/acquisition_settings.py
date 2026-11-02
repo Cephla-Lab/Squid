@@ -11,7 +11,13 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import control._def
-from control.acquisition_yaml_loader import AcquisitionYAMLData
+import control.utils
+from control.acquisition_yaml_loader import (
+    AcquisitionYAMLData,
+    parse_laser_af_per_stack,
+    parse_range,
+    parse_z_stack_order,
+)
 from control.utils import serialize_for_yaml
 
 
@@ -23,17 +29,15 @@ class AppliedSettings:
     nz: int
 
 
-def parse_wells(wells: str, wellplate_settings: dict) -> Dict[str, Tuple[float, float]]:
-    """'A1:B3' (range) or 'A1,A2,B1' (list) -> {well_id: (x_mm, y_mm)} from a1_x_mm/a1_y_mm/well_spacing_mm.
+def parse_wells(wells: str, wellplate_format: str) -> Dict[str, Tuple[float, float]]:
+    """'A1:B3' (range) or 'A1,A2,B1' (list) -> {well_id: (x_mm, y_mm)} for the named plate format.
 
-    Descriptors that do not look like a well are skipped (the TCP command's historical behaviour).
+    Resolves through plate_transform_for(wellplate_format), so WELLPLATE_OFFSET (and any measured
+    placement) is applied exactly as at every other well->stage site. An unknown format raises via
+    get_wellplate_settings instead of silently falling back to invented geometry. Descriptors that do
+    not look like a well are skipped (the TCP command's historical behaviour).
     """
-
-    def row_to_index(row: str) -> int:
-        index = 0
-        for char in row.upper():
-            index = index * 26 + (ord(char) - ord("A") + 1)
-        return index - 1
+    from control.core.plate_transform import plate_transform_for
 
     def index_to_row(index: int) -> str:
         index += 1
@@ -44,9 +48,7 @@ def parse_wells(wells: str, wellplate_settings: dict) -> Dict[str, Tuple[float, 
             index //= 26
         return row
 
-    a1_x = wellplate_settings.get("a1_x_mm", 0)
-    a1_y = wellplate_settings.get("a1_y_mm", 0)
-    spacing = wellplate_settings.get("well_spacing_mm", 9)
+    transform = plate_transform_for(wellplate_format)
 
     well_coords: Dict[str, Tuple[float, float]] = {}
     pattern = r"([A-Za-z]+)(\d+):?([A-Za-z]*)(\d*)"
@@ -57,21 +59,21 @@ def parse_wells(wells: str, wellplate_settings: dict) -> Dict[str, Tuple[float, 
             continue
 
         start_row, start_col, end_row, end_col = match.groups()
-        start_row_idx = row_to_index(start_row)
+        start_row_idx = control.utils.row_to_index(start_row)
         start_col_idx = int(start_col) - 1
 
         if end_row and end_col:
             # Range like A1:B3
-            end_row_idx = row_to_index(end_row)
+            end_row_idx = control.utils.row_to_index(end_row)
             end_col_idx = int(end_col) - 1
             for row_idx in range(start_row_idx, end_row_idx + 1):
                 for col_idx in range(start_col_idx, end_col_idx + 1):
                     well_id = index_to_row(row_idx) + str(col_idx + 1)
-                    well_coords[well_id] = (a1_x + col_idx * spacing, a1_y + row_idx * spacing)
+                    well_coords[well_id] = transform.well_center_mm(row_idx, col_idx)
         else:
             # Single well like A1
             well_id = start_row.upper() + start_col
-            well_coords[well_id] = (a1_x + start_col_idx * spacing, a1_y + start_row_idx * spacing)
+            well_coords[well_id] = transform.well_center_mm(start_row_idx, start_col_idx)
 
     return well_coords
 
@@ -97,8 +99,7 @@ def _configure_regions(scan_coordinates, microscope, data: AcquisitionYAMLData, 
     regions = data.wellplate_regions if data.widget_type == "wellplate" else data.flexible_positions
 
     if wells:
-        wellplate_settings = control._def.get_wellplate_settings(data.wellplate_format or "96 well plate")
-        well_coords = parse_wells(wells, wellplate_settings)
+        well_coords = parse_wells(wells, data.wellplate_format or "96 well plate")
         if not well_coords:
             raise ValueError(f"Could not parse wells: {wells}")
         for well_id, (well_x, well_y) in well_coords.items():
@@ -166,6 +167,10 @@ def apply_acquisition_settings(
         raise ValueError(
             f"Unknown z_stacking_config '{data.z_stacking_config}'; expected one of {sorted(valid_z_configs)}"
         )
+    if data.z_stack_order not in control._def.Z_STACK_ORDERS:
+        raise ValueError(
+            f"Unknown z_stack_order '{data.z_stack_order}'; expected one of {list(control._def.Z_STACK_ORDERS)}"
+        )
     _configure_regions(scan_coordinates, microscope, data, wells)
 
     controller.set_NX(1)  # grids are expanded into FOVs by the region builders
@@ -176,12 +181,15 @@ def apply_acquisition_settings(
     controller.set_deltat(data.delta_t_s)
     controller.set_af_flag(data.contrast_af)
     controller.set_reflection_af_flag(data.laser_af)
+    controller.set_laser_af_per_stack(data.laser_af_per_stack)
     controller.set_use_piezo(data.use_piezo)
     controller.z_stacking_config = data.z_stacking_config
+    controller.set_z_stack_order(data.z_stack_order)
     if data.z_range_mm:
         controller.set_z_range(float(data.z_range_mm[0]), float(data.z_range_mm[1]))
     else:
         controller.z_range = None  # run_acquisition derives it from the current z and the stack
+    controller.set_piezo_z_range_um(data.piezo_z_range_um)
     controller.set_focus_map(None)
     controller.set_region_laser_af_offsets({})
     controller.set_skip_saving(data.skip_saving)
@@ -231,10 +239,18 @@ def export_acquisition_settings(controller, scan_coordinates, objective_store, c
             "nz": int(controller.NZ),
             "delta_z_um": float(controller.deltaZ) * 1000.0,
             "config": serialize_for_yaml(controller.z_stacking_config),
+            "order": controller.z_stack_order,
             "use_piezo": bool(controller.use_piezo),
             "z_range_mm": [float(v) for v in controller.z_range] if controller.z_range else None,
+            "piezo_z_range_um": (
+                [float(v) for v in controller.piezo_z_range_um] if controller.piezo_z_range_um else None
+            ),
         },
-        "autofocus": {"contrast_af": bool(controller.do_autofocus), "laser_af": bool(controller.do_reflection_af)},
+        "autofocus": {
+            "contrast_af": bool(controller.do_autofocus),
+            "laser_af": bool(controller.do_reflection_af),
+            "laser_af_per_stack": bool(controller.laser_af_per_stack),
+        },
         "widget_type": controller.widget_type,
         "xy_mode": controller.xy_mode,
         "scan_size_mm": float(controller.scan_size_mm),
@@ -263,9 +279,9 @@ def acquisition_data_from_blocks(settings: dict, coordinates: dict) -> Acquisiti
     z_stack = settings.get("z_stack") or {}
     autofocus = settings.get("autofocus") or {}
     binning = objective.get("camera_binning")
-    z_range = z_stack.get("z_range_mm")
     widget_type = settings.get("widget_type", "wellplate")
     regions = [dict(r) for r in (coordinates.get("regions") or [])]
+    z_stack_order = parse_z_stack_order(z_stack.get("order"))
     return AcquisitionYAMLData(
         widget_type=widget_type,
         xy_mode=settings.get("xy_mode", "Load Coordinates"),
@@ -276,18 +292,25 @@ def acquisition_data_from_blocks(settings: dict, coordinates: dict) -> Acquisiti
         nz=int(z_stack.get("nz", 1)),
         delta_z_um=float(z_stack.get("delta_z_um", 1.0)),
         z_stacking_config=str(z_stack.get("config", "FROM CENTER")),
+        z_stack_order=z_stack_order,
         use_piezo=bool(z_stack.get("use_piezo", False)),
         nt=1,
         delta_t_s=0.0,
         channel_names=list(settings.get("channels") or []),
         contrast_af=bool(autofocus.get("contrast_af", False)),
         laser_af=bool(autofocus.get("laser_af", False)),
+        laser_af_per_stack=parse_laser_af_per_stack(
+            autofocus.get("laser_af_per_stack"),
+            laser_af=bool(autofocus.get("laser_af", False)),
+            z_stack_order=z_stack_order,
+        ),
         scan_size_mm=settings.get("scan_size_mm"),
         overlap_percent=float(settings.get("overlap_percent", 10.0)),
         scan_shape=None,
         wellplate_regions=regions if widget_type == "wellplate" else None,
         flexible_positions=regions if widget_type != "wellplate" else None,
         wellplate_format=coordinates.get("wellplate_format"),
-        z_range_mm=(float(z_range[0]), float(z_range[1])) if z_range and len(z_range) == 2 else None,
+        z_range_mm=parse_range(z_stack.get("z_range_mm")),
+        piezo_z_range_um=parse_range(z_stack.get("piezo_z_range_um")),
         skip_saving=bool(settings.get("skip_saving", False)),
     )
