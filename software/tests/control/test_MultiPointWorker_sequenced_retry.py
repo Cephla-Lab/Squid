@@ -1,11 +1,12 @@
 """A failed hardware-sequenced burst must not leak a frame into the retry.
 
 A burst fails, among other ways, when a frame the controller fired is late. That frame can still
-arrive during the retry, and a frame carries nothing that tells it from the retry's first frame:
-paired with the retry's first capture it is saved under the wrong z, and the retry's count and
-consecutive-id checks still pass. The worker resynchronizes the camera before giving up on a burst
-(it restarts the stream, which drops what is in flight, as the drivers do), so the retry starts
-from a quiet camera.
+arrive during the retry; paired with the retry's first capture it is saved under the wrong z, and
+the retry's count and consecutive-id checks still pass. The worker restarts the camera stream before
+giving up on a burst: what is still in the camera or its SDK is lost with the stream, and a frame the
+driver had already read (the Hamamatsu read thread publishes a batch AFTER its DCAM read, outside the
+capture lock) is delivered afterwards stamped with the run of the stream it was read in, which the
+worker refuses.
 
 Worker-level: a bare MultiPointWorker with the camera, controller and timing faked.
 """
@@ -23,17 +24,23 @@ from control.sequencer_program import SeqError, SeqState, SequencerStatus
 
 
 class FakeCamera:
-    """Delivers frames to the worker's callback. A frame can be left IN FLIGHT (fired, not delivered yet);
-    it is delivered on the next call to the camera unless the stream was stopped meanwhile, which drops
-    it - as the real drivers do (ToupCam Stop(), Hamamatsu cap_stop + buf_release)."""
+    """Delivers frames to the worker's callback, each stamped with the run of the stream it was read in.
+
+    A frame can be left IN FLIGHT: already read by the driver, not yet delivered (a frame callback ahead
+    of the worker's is slow). Restarting the stream does NOT drop it - it is already in Python - so it is
+    delivered during the next burst, carrying the number of the run before."""
 
     def __init__(self, callback):
         self._callback = callback
+        self.generation = 1
         self.in_flight = []
         self.stream_restarts = 0
 
+    def stream_generation(self) -> int:
+        return self.generation
+
     def emit(self, frame_id: int, origin: str, *, in_flight: bool = False) -> None:
-        frame = SimpleNamespace(frame_id=frame_id, frame=origin)
+        frame = SimpleNamespace(frame_id=frame_id, frame=origin, stream_generation=self.generation)
         if in_flight:
             self.in_flight.append(frame)
         else:
@@ -45,9 +52,10 @@ class FakeCamera:
         self.in_flight = []
 
     def stop_streaming(self) -> None:
-        self.in_flight = []
+        pass  # what the driver had already read stays in Python
 
     def start_streaming(self) -> None:
+        self.generation += 1
         self.stream_restarts += 1
 
 
@@ -102,7 +110,7 @@ def test_a_frame_still_in_flight_from_a_failed_burst_is_not_paired_with_the_retr
             camera.emit(101, "attempt1-z1")
             camera.emit(102, "attempt1-z2", in_flight=True)  # still on its way past the frame timeout
         else:
-            camera.deliver_in_flight()  # whatever the first attempt left in the pipe arrives first
+            camera.deliver_in_flight()  # the first attempt's late frame, read before the restart, arrives first
             camera.emit(103, "attempt2-z0")
             camera.emit(104, "attempt2-z1")
             camera.emit(105, "attempt2-z2")
@@ -120,6 +128,7 @@ def test_a_frame_still_in_flight_from_a_failed_burst_is_not_paired_with_the_retr
         ("attempt2-z1", 1),
         ("attempt2-z2", 2),
     ]
+    assert any("Ignoring frame 102" in str(call) for call in w._log.warning.call_args_list)
     w._abort_due_to_error.assert_not_called()
 
 

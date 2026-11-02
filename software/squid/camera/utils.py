@@ -324,6 +324,7 @@ class SimulatedCamera(AbstractCamera):
                 if self._streaming_thread.is_alive():
                     raise CameraError("Cannot start streaming, camera is inconsisten state")
 
+        self._stream_generation += 1  # frames of this run say so (CameraFrame.stream_generation)
         self._continue_streaming = True
         self._start_streaming_thread()
 
@@ -457,6 +458,7 @@ class SimulatedCamera(AbstractCamera):
             frame=self._process_raw_frame(self._current_raw_frame),
             frame_format=self.get_frame_format(),
             frame_pixel_format=self.get_pixel_format(),
+            stream_generation=self._stream_generation,
         )
 
         self._propogate_frame(self._current_frame)
