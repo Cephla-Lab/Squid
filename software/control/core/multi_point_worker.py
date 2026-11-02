@@ -1555,10 +1555,10 @@ class MultiPointWorker:
         """Nothing of a failed burst reaches a save job - and nothing of it may reach the NEXT burst.
 
         A frame the controller fired can still be on its way (a late frame is one of the ways a burst
-        fails), and a frame carries nothing that tells it from the retry's first frame: paired with the
-        retry's first capture it would be saved under the wrong z, and the retry's count and
-        consecutive-id checks would still pass. Restarting the camera stream drops what is in flight
-        (the drivers lose in-flight frames with the stream), so the next burst starts from a quiet camera.
+        fails); paired with the retry's first capture it would be saved under the wrong z, and the retry's
+        count and consecutive-id checks would still pass. Restarting the camera stream loses what is still
+        in the camera or its SDK, and bumps the stream run: a frame the driver had already read is delivered
+        afterwards stamped with the run before, and _image_callback refuses it.
         """
         self._log.warning(f"Hardware-sequenced burst failed and was discarded (nothing saved): {reason}.")
         self.camera.stop_streaming()
@@ -1957,6 +1957,14 @@ class MultiPointWorker:
 
     def _image_callback(self, camera_frame: CameraFrame):
         try:
+            if camera_frame.stream_generation != self.camera.stream_generation():
+                # The driver had already read it when the stream was restarted (a failed burst's resync): a
+                # frame of the run before, delivered after. Nothing of that run may be paired with a capture.
+                self._log.warning(
+                    f"Ignoring frame {camera_frame.frame_id}: it is from run {camera_frame.stream_generation} of the "
+                    f"camera stream, which was restarted since (now run {self.camera.stream_generation()})."
+                )
+                return
             if self._ready_for_next_trigger.is_set():
                 self._log.warning(
                     "Got an image in the image callback, but we didn't send a trigger.  Ignoring the image."

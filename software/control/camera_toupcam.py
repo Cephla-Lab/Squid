@@ -372,6 +372,7 @@ class ToupcamCamera(AbstractCamera):
         """
         try:
             self._log.debug("Starting raw stream in PullModeWithCallback.")
+            self._stream_generation += 1  # frames pulled from this stream say so (CameraFrame.stream_generation)
             self._camera.StartPullModeWithCallback(self._event_callback, self)
             self._raw_camera_stream_started = True
         except toupcam.HRESULTException as ex:
@@ -385,6 +386,9 @@ class ToupcamCamera(AbstractCamera):
         """
         callback_start_ns = time.perf_counter_ns()
         with self._raw_frame_callback_lock:
+            # The run of the stream this frame belongs to, read before the pull: a restart during the pull must
+            # not relabel a frame of the run before as one of the run after.
+            stream_generation = self._stream_generation
             # Since we are receiving a frame callback, we know things are setup properly.
             self._raw_camera_stream_started = True
 
@@ -441,6 +445,7 @@ class ToupcamCamera(AbstractCamera):
                 frame=frame,
                 frame_format=this_frame_format,
                 frame_pixel_format=this_pixel_format,
+                stream_generation=stream_generation,
             )
             process_done_ns = time.perf_counter_ns()
 
