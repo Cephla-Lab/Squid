@@ -51,12 +51,6 @@ def firmware_sim_nonstrict():
     sim.close()
 
 
-@pytest.fixture(autouse=True)
-def _watchdog_state_to_tmp(tmp_path, monkeypatch):
-    # Keep acquisition breadcrumbs out of the real user state dir during tests.
-    monkeypatch.setenv("SQUID_WATCHDOG_STATE_DIR", str(tmp_path / "watchdog"))
-
-
 @pytest.fixture
 def format_catalog(tmp_path, monkeypatch):
     """Isolated cwd holding the shipped catalog: sidecar writes (machine_configs/,

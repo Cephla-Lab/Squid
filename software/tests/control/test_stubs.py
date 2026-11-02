@@ -1,7 +1,11 @@
+import json
 import os
 import shutil
 import tempfile
+import threading
 import warnings
+from pathlib import Path
+from typing import Optional
 
 from control._def import OBJECTIVES, DEFAULT_OBJECTIVE
 from control.core.auto_focus_controller import AutoFocusController
@@ -81,6 +85,62 @@ def get_test_scan_coordinates(
     camera: AbstractCamera,
 ):
     return ScanCoordinates(objectiveStore=objective_store, stage=stage, camera=camera)
+
+
+def zarr_squid_attrs(root) -> list[dict]:
+    """The _squid attributes of every OME group zarr.json under root (array zarr.json files carry none)."""
+    out = []
+    for p in Path(root).rglob("zarr.json"):
+        with open(p) as f:
+            attrs = json.load(f).get("attributes", {}).get("_squid")
+        if attrs is not None:
+            out.append(attrs)
+    return out
+
+
+class GatedFuture:
+    """A write future that completes once `release` is set, raising `error` then if given."""
+
+    def __init__(self, release: threading.Event, error: Optional[BaseException] = None):
+        self._release = release
+        self._error = error
+
+    def done(self):
+        return self._release.is_set()
+
+    def result(self):
+        self._release.wait()
+        if self._error is not None:
+            raise self._error
+
+
+def stub_zarr_writer_io(monkeypatch, submit_frame):
+    """A ZarrWriter that touches no disk: open/seal are no-ops and `submit_frame(self, image, t, c, z, fov=None)`
+    stands in for the write (return a future with done()/result())."""
+    from control.core.zarr_writer import ZarrWriter
+
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "submit_frame", submit_frame)
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
+
+
+def make_zarr_writes_fail(monkeypatch, message="disk full"):
+    """Every SaveZarrJob opens its store as usual (so there is a zarr.json to inspect) but its write fails."""
+    import concurrent.futures
+    from control.core.job_processing import SaveZarrJob
+
+    real_submit = SaveZarrJob.submit
+
+    def failing_submit(self):
+        future, result = real_submit(self)
+        if future is not None:
+            future.result()
+        failed = concurrent.futures.Future()
+        failed.set_exception(RuntimeError(message))
+        return failed, result
+
+    monkeypatch.setattr(SaveZarrJob, "submit", failing_submit)
 
 
 def get_test_objective_store():

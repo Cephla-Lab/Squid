@@ -586,6 +586,28 @@ def test_user_abort_reports_user_abort():
     assert mpc.last_end_reason == "user_abort"
 
 
+def test_frame_timeout_ends_the_run_as_error_and_logs_how_long_it_waited(monkeypatch, caplog):
+    """A software trigger whose frame never arrives must end the run as an error, and the log line must carry
+    the timeout it waited (it was not an f-string, so it printed the placeholder name instead of the seconds)."""
+    import logging
+    import re
+
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.scanCoordinates.remove_region("region_2")  # one FOV, one channel: the run pays the timeout once
+    mpc.scanCoordinates.remove_region("region_grid")
+    mpc.selected_configurations = mpc.selected_configurations[:1]
+    monkeypatch.setattr(scope.camera, "_send_trigger_imp", lambda illumination_time=None: None)  # no frame, ever
+    with caplog.at_level(logging.ERROR):
+        mpc.run_acquisition()
+        assert tt.finished_event.wait(60)
+    mpc.thread.join(10)
+
+    assert mpc.last_end_reason == "error"
+    timeout_lines = [r.getMessage() for r in caplog.records if "Timed out waiting" in r.getMessage()]
+    assert timeout_lines, "the frame timeout was not logged"
+    assert re.search(r"Timed out waiting \d+(\.\d+)? \[s\] for a frame", timeout_lines[0]), timeout_lines[0]
+
+
 def test_validation_failure_reports_failed_to_start_exactly_once():
     scope, tt, mpc = _controller_with_tracker()
     mpc.laserAutoFocusController.laser_af_properties.has_reference = False
@@ -740,17 +762,10 @@ def test_start_blocker_refuses_an_acquisition_before_anything_moves():
 
 
 def _zarr_jsons_with_squid(mpc):
-    """The _squid attributes of every OME group zarr.json of the run just finished (array zarr.json files carry none)."""
-    import json
+    """The _squid attributes of every OME group zarr.json of the run just finished."""
     from pathlib import Path
 
-    out = []
-    for p in (Path(mpc.base_path) / mpc.experiment_ID).rglob("zarr.json"):
-        with open(p) as f:
-            attrs = json.load(f).get("attributes", {}).get("_squid")
-        if attrs is not None:
-            out.append(attrs)
-    return out
+    return ts.zarr_squid_attrs(Path(mpc.base_path) / mpc.experiment_ID)
 
 
 def _zarr_v3_controller(monkeypatch):
@@ -764,24 +779,6 @@ def _zarr_v3_controller(monkeypatch):
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)
     return mpc, tt
-
-
-def _make_zarr_writes_fail(monkeypatch, message="disk full"):
-    """Every SaveZarrJob opens its store as usual (so there is a zarr.json to inspect) but its write fails."""
-    import concurrent.futures
-    from control.core.job_processing import SaveZarrJob
-
-    real_submit = SaveZarrJob.submit
-
-    def failing_submit(self):
-        future, result = real_submit(self)
-        if future is not None:
-            future.result()
-        failed = concurrent.futures.Future()
-        failed.set_exception(RuntimeError(message))
-        return failed, result
-
-    monkeypatch.setattr(SaveZarrJob, "submit", failing_submit)
 
 
 def test_zarr_v3_multipoint_saves_in_process_and_seals(monkeypatch):
@@ -831,14 +828,14 @@ def test_zarr_v3_run_leaves_the_warm_subprocess_for_tiff(monkeypatch):
     from control.core import job_processing
 
     mpc, tt = _zarr_v3_controller(monkeypatch)
-    warm_before = mpc._prewarmed_job_runner
+    warm_before = mpc._prewarm._runner
     assert warm_before is not None
     started = []  # only subprocesses started from here on count; the controller's own pre-warm is above
     monkeypatch.setattr(job_processing.JobRunner, "start", lambda self: started.append(self))
     mpc.run_acquisition()
     assert tt.finished_event.wait(120)
     assert started == [], "a Zarr v3 run must not start a save subprocess"
-    assert mpc._prewarmed_job_runner is warm_before
+    assert mpc._prewarm._runner is warm_before
 
 
 def test_three_zarr_runs_in_one_session_all_sealed(monkeypatch):
@@ -859,7 +856,7 @@ def test_zarr_write_error_ends_the_run_as_error(monkeypatch, caplog):
     import logging
 
     mpc, tt = _zarr_v3_controller(monkeypatch)
-    _make_zarr_writes_fail(monkeypatch)
+    ts.make_zarr_writes_fail(monkeypatch)
     with caplog.at_level(logging.ERROR):
         mpc.run_acquisition()
         assert tt.finished_event.wait(120)
@@ -904,8 +901,7 @@ def test_close_shuts_down_in_process_runner_instead_of_terminating_it():
 
     mpc = MultiPointController.__new__(MultiPointController)  # close() only needs the fields set below
     mpc._log = logging.getLogger("squid.MultiPointController")
-    mpc._prewarmed_job_runner = None
-    mpc._prewarmed_bp_values = None
+    mpc._prewarm = MagicMock()  # PrewarmedJobRunnerSlot stand-in
     mpc._memory_monitor = None
     mpc.thread = None
     runner = MagicMock(spec=InProcessZarrRunner)
@@ -936,7 +932,7 @@ def test_zarr_write_error_surfacing_at_the_end_ends_the_run_as_error(monkeypatch
         return real_summarize(self, drain_all=drain_all)
 
     mpc, tt = _zarr_v3_controller(monkeypatch)
-    _make_zarr_writes_fail(monkeypatch)
+    ts.make_zarr_writes_fail(monkeypatch)
     monkeypatch.setattr(MultiPointWorker, "_summarize_runner_outputs", final_drain_only)
     with caplog.at_level(logging.ERROR):
         mpc.run_acquisition()

@@ -5,7 +5,6 @@ from control.core.multi_point_worker import MultiPointWorker
 def _make_worker():
     # Bypass __init__; we only exercise _compute_end_reason()'s pure logic.
     w = MultiPointWorker.__new__(MultiPointWorker)
-    w._run_state_fatal = False
     w._abort_cause = None
     w._acquisition_error_count = 0
     w.abort_requested_fn = lambda: False
@@ -29,9 +28,13 @@ def test_reason_error_on_timeout_abort():
     assert w._compute_end_reason() == "error"
 
 
-def test_reason_error_on_fatal_exception():
+def test_reason_error_after_abort_due_to_error():
+    """The crash path and the failed-job path both go through _abort_due_to_error()."""
     w = _make_worker()
-    w._run_state_fatal = True
+    requested = []
+    w.request_abort_fn = lambda: requested.append(True)
+    w.abort_requested_fn = lambda: bool(requested)
+    w._abort_due_to_error()
     assert w._compute_end_reason() == "error"
 
 
