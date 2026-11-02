@@ -253,11 +253,12 @@ def test_a_legacy_glass_slide_row_is_dropped_and_the_rest_migrates(migration_tre
     write_legacy_cache(migration_tree, edit)
 
     with caplog.at_level(logging.INFO):
-        _def.load_formats()
+        _, loaded = _def.load_formats()
 
     assert not any("failed" in r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
     assert any("glass slide" in r.getMessage() and "nothing to calibrate" in r.getMessage() for r in caplog.records)
     formats = load_user_sample_formats().formats
-    assert "glass slide" not in formats
+    assert "glass slide" not in formats  # no user definition for it ...
+    assert loaded["glass slide"]["rows"] == 1 and loaded["glass slide"]["a1_x_mm"] == 0.0  # ... the shipped one serves
     assert formats["96 well plate"].a1_x_mm == 11.604
     assert os.path.exists(os.path.join("cache", CSV + ".migrated"))
