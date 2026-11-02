@@ -1208,7 +1208,7 @@ class FLIRCamera(AbstractCamera):
         self._last_trigger_timestamp = time.time()
         self._trigger_sent.set()
 
-    def get_ready_for_trigger(self) -> bool:
+    def _get_ready_for_trigger_imp(self) -> bool:
         """Returns true if the camera is ready for another trigger."""
         if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):
             self._trigger_sent.clear()

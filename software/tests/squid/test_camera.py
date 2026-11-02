@@ -169,3 +169,24 @@ def test_send_trigger_dropped_while_settings_change_in_flight():
     sim_cam.send_trigger()
     assert sim_cam.read_frame() is not None
     assert sim_cam.get_frame_id() == frame_id_before + 1
+
+
+def test_not_ready_for_trigger_while_settings_change_in_flight():
+    """get_ready_for_trigger from another thread must say not-ready while the trigger lock is
+    held (a streaming-pausing settings change), without consulting the driver, and be ready
+    again afterwards."""
+    sim_cam = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+    sim_cam.start_streaming()
+    assert sim_cam.get_ready_for_trigger()
+
+    answers = []
+    with sim_cam._trigger_lock:
+        worker = threading.Thread(target=lambda: answers.append(sim_cam.get_ready_for_trigger()))
+        worker.start()
+        worker.join(2.0)
+    assert answers == [False]
+
+    assert sim_cam.get_ready_for_trigger()  # and reentrant from the trigger path, which holds the lock:
+    with sim_cam._trigger_lock:
+        assert sim_cam.get_ready_for_trigger()
+    sim_cam.stop_streaming()

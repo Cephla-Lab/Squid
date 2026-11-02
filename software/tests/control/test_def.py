@@ -1,7 +1,12 @@
 """Tests for control._def module, specifically ZMotorConfig enum, HardwareTriggerMode and conf_attribute_reader."""
 
 import pytest
-from control._def import ZMotorConfig, HardwareTriggerMode, conf_attribute_reader
+from control._def import (
+    ZMotorConfig,
+    HardwareTriggerMode,
+    conf_attribute_reader,
+    tiff_compression_level_from_config,
+)
 
 
 class TestZMotorConfig:
@@ -62,6 +67,17 @@ class TestHardwareTriggerMode:
         assert HardwareTriggerMode.EDGE in (0, 1)
         assert HardwareTriggerMode.LEVEL in (0, 1)
         assert HardwareTriggerMode.EDGE != HardwareTriggerMode.LEVEL
+
+
+class TestTiffCompressionLevelFromConfig:
+    @pytest.mark.parametrize("value, expected", [(0, 0), (6, 6), (6.5, 6), (12, 9), (-1, 0)])
+    def test_limited_to_the_zlib_levels(self, value, expected):
+        assert tiff_compression_level_from_config(value) == expected
+
+    @pytest.mark.parametrize("value", ["fast", "", None])
+    def test_not_a_number_means_uncompressed(self, value):
+        """A bad value in the machine config must not keep the software from starting."""
+        assert tiff_compression_level_from_config(value) == 0
 
 
 class TestConfAttributeReader:

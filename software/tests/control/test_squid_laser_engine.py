@@ -536,3 +536,14 @@ class TestSquidLaserEngineRealClass:
         assert time.time() - t0 < 1.0
         assert engine.is_connection_lost() is True
         assert any("simulated write timeout" in s for s in signals)
+
+
+def test_open_matches_a_numeric_serial_number(monkeypatch):
+    import control.squid_laser_engine as engine_mod
+
+    port = type("Port", (), {"device": "/dev/ttyACM3", "serial_number": "12769990"})()
+    opened = []
+    monkeypatch.setattr(engine_mod.list_ports, "comports", lambda: [port])
+    monkeypatch.setattr(engine_mod.serial, "Serial", lambda path, **kw: opened.append(path) or _FakeSerial())
+    SquidLaserEngine(sn=12769990)._open_serial()  # the .ini reader turns an all-digit serial number into an int
+    assert opened == ["/dev/ttyACM3"]

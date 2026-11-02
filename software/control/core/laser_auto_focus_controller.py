@@ -147,6 +147,17 @@ class LaserAutofocusController(QObject):
         """
         self.camera.set_region_of_interest(0, 0, 3088, 2064)
 
+        # The crop sizes have no control in the settings panel, so take them from the machine configuration.
+        # A loaded profile still holds the sizes it was saved with.
+        self.laser_af_properties = self.laser_af_properties.model_copy(
+            update={
+                "width": control._def.LASER_AF_CROP_WIDTH,
+                "height": control._def.LASER_AF_CROP_HEIGHT,
+                "initialize_crop_width": control._def.LASER_AF_INITIALIZE_CROP_WIDTH,
+                "initialize_crop_height": control._def.LASER_AF_INITIALIZE_CROP_HEIGHT,
+            }
+        )
+
         # update camera settings
         self.camera.set_exposure_time(self.laser_af_properties.focus_camera_exposure_time_ms)
         try:
@@ -603,9 +614,9 @@ class LaserAutofocusController(QObject):
                 spot_detection_params = {
                     "y_window": self.laser_af_properties.y_window,
                     "x_window": self.laser_af_properties.x_window,
-                    "peak_width": self.laser_af_properties.min_peak_width,
-                    "peak_distance": self.laser_af_properties.min_peak_distance,
-                    "peak_prominence": self.laser_af_properties.min_peak_prominence,
+                    "min_peak_width": self.laser_af_properties.min_peak_width,
+                    "min_peak_distance": self.laser_af_properties.min_peak_distance,
+                    "min_peak_prominence": self.laser_af_properties.min_peak_prominence,
                     "spot_spacing": self.laser_af_properties.spot_spacing,
                 }
                 result = utils.find_spot_location(

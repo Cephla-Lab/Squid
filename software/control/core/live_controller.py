@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import time
 import threading
-from typing import List, Optional, TYPE_CHECKING
+from typing import Dict, Iterable, List, Optional, TYPE_CHECKING
 
 from qtpy.QtCore import QObject, Signal
 
 import squid.logging
 from control.microcontroller import Microcontroller
-from squid.abc import CameraAcquisitionMode, AbstractCamera
+from control.serial_peripherals import SerialDeviceError
+from squid.abc import CameraAcquisitionMode, AbstractCamera, LightSourceHold
+from control.rcm_scan_trigger import ConfocalScanFailedError
 
 from control._def import *
 from control.core.config.utils import apply_confocal_override
@@ -51,6 +53,10 @@ class LiveController(QObject):
         self.fps_trigger = 1
         self.timer_trigger_interval = (1.0 / self.fps_trigger) * 1000
         self._trigger_skip_count = 0
+        self._confocal_scan_failed = False  # log a confocal-unit trigger failure once, not on every frame
+        self._channel_holds: Dict[str, LightSourceHold] = {}  # hold_current_channel(): they follow set_microscope_mode
+        # Live runs on the GUI thread and each TCP client on its own: one lock for making, releasing and moving them
+        self._channel_holds_lock = threading.RLock()
         self.timer_trigger: Optional[threading.Timer] = None
 
         self.trigger_ID = -1
@@ -58,8 +64,6 @@ class LiveController(QObject):
         self.fps_real = 0
         self.counter = 0
         self.timestamp_last = 0
-
-        self.display_resolution_scaling = 1
 
         self.enable_channel_auto_filter_switching: bool = True
 
@@ -131,6 +135,48 @@ class LiveController(QObject):
             engine.wake_up(k)
         self._log.warning(f"Squid laser engine not ready for channel(s) {needed}; live started anyway")
         self.signal_warning.emit(f"Laser engine warming up (channel {','.join(needed)}); image may be dim")
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Declared use of the light source (IlluminationController.use)
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    def _current_wavelengths(self) -> List[int]:
+        """The current channel's wavelength; [] for a channel without one (LED matrix)."""
+        wavelength = self._get_illumination_wavelength()
+        return [] if wavelength is None else [wavelength]
+
+    def use_current_channel(self, name: str) -> LightSourceHold:
+        """`name` images with the current channel until the hold is released (or its `with` ends). The light source acts on
+        it: laser engine v2 wakes the line, keeps the 560 from idling off and opens its mechanical shutter. Does nothing
+        on a controller that does not drive the illumination (the laser AF camera's)."""
+        if not self.control_illumination:
+            return LightSourceHold()
+        return self.microscope.illumination_controller.use(name, self._current_wavelengths())
+
+    def use_channels(self, name: str, configurations: Iterable["AcquisitionChannel"]) -> LightSourceHold:
+        """As use_current_channel, for every channel in `configurations` (e.g. tracking's)."""
+        if not self.control_illumination:
+            return LightSourceHold()
+        ill_config = self._get_illumination_config()
+        wavelengths = []
+        for configuration in configurations if ill_config is not None else []:
+            wavelength = configuration.get_illumination_wavelength(ill_config)
+            if wavelength is not None:
+                wavelengths.append(wavelength)
+        return self.microscope.illumination_controller.use(name, wavelengths)
+
+    def hold_current_channel(self, name: str) -> None:
+        """Hold the current channel for `name` (live, the TCP illumination commands) until release_current_channel(name).
+        set_microscope_mode moves the hold to each new channel, so it never stays on an old one."""
+        with self._channel_holds_lock:  # two clients at once must not both make one: the orphan would never be released
+            if name not in self._channel_holds:
+                self._channel_holds[name] = self.use_current_channel(name)
+
+    def release_current_channel(self, name: str) -> None:
+        with self._channel_holds_lock:
+            hold = self._channel_holds.pop(name, None)
+            if hold is not None:
+                hold.release()
 
     # ─────────────────────────────────────────────────────────────────────────────
     # Confocal mode
@@ -340,23 +386,32 @@ class LiveController(QObject):
                     )
             except Exception as e:
                 self._log.warning(f"Not setting emission filter position: {e}")
-            # Apply per-channel iris values
+            # Apply per-channel iris values. A channel without its own value gets the default, which
+            # is what the confocal widget shows for it.
             hw_settings = self.currentConfiguration.confocal_hardware_settings
-            if hw_settings is not None:
-                xlight = self.microscope.addons.xlight
+            xlight = self.microscope.addons.xlight
+            if xlight.has_illumination_iris_diaphragm:
+                iris_val = getattr(hw_settings, "illumination_iris", None)
                 try:
-                    if hw_settings.illumination_iris is not None and xlight.has_illumination_iris_diaphragm:
-                        xlight.set_illumination_iris(int(hw_settings.illumination_iris))
-                    if hw_settings.emission_iris is not None and xlight.has_emission_iris_diaphragm:
-                        xlight.set_emission_iris(int(hw_settings.emission_iris))
-                except (OSError, ValueError) as e:
-                    self._log.warning(f"Not setting iris values: {e}")
+                    xlight.set_illumination_iris(
+                        int(iris_val if iris_val is not None else XLIGHT_ILLUMINATION_IRIS_DEFAULT)
+                    )
+                except (OSError, ValueError, SerialDeviceError) as e:
+                    self._log.error(f"Not setting illumination iris: {e}")
+            if xlight.has_emission_iris_diaphragm:
+                iris_val = getattr(hw_settings, "emission_iris", None)
+                try:
+                    xlight.set_emission_iris(int(iris_val if iris_val is not None else XLIGHT_EMISSION_IRIS_DEFAULT))
+                except (OSError, ValueError, SerialDeviceError) as e:
+                    self._log.error(f"Not setting emission iris: {e}")
         elif ENABLE_SPINNING_DISK_CONFOCAL and USE_DRAGONFLY and self.microscope.addons.dragonfly:
             try:
-                self.microscope.addons.dragonfly.set_emission_filter(
-                    self.microscope.addons.dragonfly.get_camera_port(),
-                    self.currentConfiguration.emission_filter_position,
-                )
+                if self.currentConfiguration.emission_filter_position:
+                    # The channel's filter position applies to the wheel on the port the camera is on
+                    self.microscope.addons.dragonfly.set_emission_filter(
+                        self.microscope.addons.dragonfly.get_camera_port(),
+                        self.currentConfiguration.emission_filter_position,
+                    )
             except Exception as e:
                 self._log.warning(f"Not setting emission filter position: {e}")
 
@@ -366,14 +421,19 @@ class LiveController(QObject):
                     self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(0)
                 elif self.trigger_mode == TriggerMode.HARDWARE:
                     self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(-self.camera.get_strobe_time())
-                self.microscope.addons.emission_filter_wheel.set_filter_wheel_position(
-                    {1: self.currentConfiguration.emission_filter_position}
-                )
+                # The channel's position applies to the first configured wheel (EMISSION_FILTER_WHEEL_INDICES),
+                # which is not always index 1: an Optospin wheel may sit on rotor port 2.
+                wheel = self.microscope.addons.emission_filter_wheel
+                if wheel.available_filter_wheels:
+                    wheel.set_filter_wheel_position(
+                        {wheel.available_filter_wheels[0]: self.currentConfiguration.emission_filter_position}
+                    )
             except Exception as e:
                 self._log.warning(f"Not setting emission filter position: {e}")
 
     def start_live(self):
         self._check_laser_engine_warn_only()
+        self.hold_current_channel("live")
         self.is_live = True
         self.camera.start_streaming()
         if self.trigger_mode == TriggerMode.SOFTWARE or (
@@ -392,6 +452,7 @@ class LiveController(QObject):
             self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
 
     def stop_live(self):
+        self._confocal_scan_failed = False
         if self.is_live:
             self.is_live = False
             if self.trigger_mode == TriggerMode.SOFTWARE:
@@ -404,6 +465,7 @@ class LiveController(QObject):
                 self._stop_triggerred_acquisition()
             if self.control_illumination:
                 self.turn_off_illumination()
+            self.release_current_channel("live")
             # if controlling the laser displacement measurement camera
             if self.for_displacement_measurement:
                 self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
@@ -422,6 +484,14 @@ class LiveController(QObject):
         """
         if self.is_live:
             self._log.debug("snap() called while live is running, ignoring.")
+            return False
+
+        # Same wedge-avoidance as trigger_acquisition(): never fire a trigger while
+        # the MCU is mid-command. A stage move finishes well within this wait.
+        try:
+            self.microscope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.warning("Microcontroller still busy; not snapping.")
             return False
 
         self._check_laser_engine_warn_only()
@@ -444,6 +514,7 @@ class LiveController(QObject):
         callback_id = self.camera.add_frame_callback(lambda _frame: frame_propagated.set())
         self._is_snapping = True
         got_frame = False
+        snap_hold = self.use_current_channel("snap")
         try:
             # In HARDWARE mode the microcontroller strobes the illumination for the
             # exposure, so don't also turn it on here. In CONTINUOUS mode it stays on
@@ -454,7 +525,11 @@ class LiveController(QObject):
             # CONTINUOUS free-runs, so there is no trigger to send.
             if self.trigger_mode in (TriggerMode.HARDWARE, TriggerMode.SOFTWARE):
                 self.trigger_ID = self.trigger_ID + 1
-                self.camera.send_trigger(self.camera.get_exposure_time())
+                try:
+                    self.camera.send_trigger(self.camera.get_exposure_time())
+                except ConfocalScanFailedError as e:
+                    self._log.error(f"Snap: {e}")
+                    return False
 
             got_frame = self.camera.read_frame() is not None
             if not got_frame:
@@ -464,6 +539,7 @@ class LiveController(QObject):
             # Light off first, then let the frame finish its trip to the display.
             if self.control_illumination and self.illumination_on:
                 self.turn_off_illumination()
+            snap_hold.release()
             if self.for_displacement_measurement:
                 self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
             if got_frame:
@@ -484,18 +560,33 @@ class LiveController(QObject):
         return self.is_live or self._is_snapping
 
     def _trigger_acquisition_timer_fn(self):
-        if self.trigger_acquisition():
-            if self.is_live:
-                self._start_new_timer()
+        trigger_start = time.monotonic()
+        triggered = self.trigger_acquisition()
+        if not self.is_live:
+            return
+        if triggered:
+            # The live FPS is a trigger rate, so the interval runs from the start of this trigger. A trigger can
+            # block for a whole frame (a confocal scan on NL5/AION takes ~90 ms), and waiting the full interval
+            # after it returned gave about half the set rate.
+            elapsed_ms = (time.monotonic() - trigger_start) * 1000
+            self._start_new_timer(maybe_custom_interval_ms=max(0.0, self.timer_trigger_interval - elapsed_ms))
+        elif self.microscope.low_level_drivers.microcontroller.is_busy():
+            # A busy MCU (a stage move) resolves on a 100 ms-to-seconds scale, and every
+            # re-check spins up a fresh Timer thread: poll at frame cadence, not every 10 ms.
+            self._start_new_timer()
         else:
-            if self.is_live:
-                # It failed, try again real soon
-                # Use a short period so we get back here fast and check again.
-                re_check_period_ms = 10
-                self._start_new_timer(maybe_custom_interval_ms=re_check_period_ms)
+            self._start_new_timer(maybe_custom_interval_ms=10)  # camera not ready yet: retry soon
 
     # software trigger related
     def trigger_acquisition(self):
+        if self.microscope.low_level_drivers.microcontroller.is_busy():
+            # Don't trigger while the MCU executes a command (usually a stage move):
+            # triggering mid-command corrupts the firmware's single command-status
+            # slot and wedges it - the firmware keeps executing commands but reports
+            # IN_PROGRESS for everything until the trigger stream stops for a few
+            # seconds. Callers must treat False as "not triggered"; the live trigger
+            # timer re-checks on its own schedule, so live resumes after the move.
+            return False
         if not self.camera.get_ready_for_trigger():
             # TODO(imo): Before, send_trigger would pass silently for this case.  Now
             # we do the same here.  Should this warn?  I didn't add a warning because it seems like
@@ -515,7 +606,17 @@ class LiveController(QObject):
 
         self.trigger_ID = self.trigger_ID + 1
 
-        self.camera.send_trigger(self.camera.get_exposure_time())
+        try:
+            self.camera.send_trigger(self.camera.get_exposure_time())
+        except ConfocalScanFailedError as e:
+            # Keep live view going (the timer only reschedules when this returns) and say why it is blank.
+            if not self._confocal_scan_failed:
+                self._log.error(f"Live view: {e}")
+                self._confocal_scan_failed = True
+            return True
+        if self._confocal_scan_failed:
+            self._log.info("Live view: confocal triggering works again")
+            self._confocal_scan_failed = False
 
         if self.trigger_mode == TriggerMode.SOFTWARE:
             if self.control_illumination and self.illumination_on == False:
@@ -530,7 +631,7 @@ class LiveController(QObject):
 
     def _start_new_timer(self, maybe_custom_interval_ms=None):
         self._stop_existing_timer()
-        if maybe_custom_interval_ms:
+        if maybe_custom_interval_ms is not None:
             interval_s = maybe_custom_interval_ms / 1000.0
         else:
             interval_s = self.timer_trigger_interval / 1000.0
@@ -555,6 +656,7 @@ class LiveController(QObject):
 
     # trigger mode and settings
     def set_trigger_mode(self, mode):
+        self._confocal_scan_failed = False
         if mode == TriggerMode.SOFTWARE:
             if self.is_live and (
                 self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
@@ -619,10 +721,17 @@ class LiveController(QObject):
         # set illumination
         if self.control_illumination:
             self.update_illumination()
+        # every hold on the current channel (live, the TCP illumination commands) moves to the new one, live or not
+        with self._channel_holds_lock:
+            for hold in self._channel_holds.values():
+                hold.update(self._current_wavelengths())
 
         # restart live
         if self.is_live is True:
             if self.control_illumination:
+                # as at Live start: an unchanged intensity reaches no light source, so a laser engine line that went
+                # off meanwhile (the 560 idle-off, Sleep all) is woken here
+                self._check_laser_engine_warn_only()
                 self.turn_on_illumination()
             self._start_new_timer()
         self._log.info("Done setting microscope mode.")
@@ -635,6 +744,3 @@ class LiveController(QObject):
         if self.fps_trigger <= 5:
             if self.control_illumination and self.illumination_on == True:
                 self.turn_off_illumination()
-
-    def set_display_resolution_scaling(self, display_resolution_scaling):
-        self.display_resolution_scaling = display_resolution_scaling / 100

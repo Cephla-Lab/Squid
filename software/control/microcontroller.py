@@ -4,7 +4,7 @@ import struct
 import threading
 import time
 from abc import abstractmethod
-from typing import Callable
+from typing import Callable, Tuple
 
 import numpy as np
 import serial
@@ -13,6 +13,7 @@ from crc import CrcCalculator, Crc8
 from serial.serialutil import SerialException
 
 import squid.logging
+import control._def
 from control._def import *
 
 # add user to the dialout group to avoid the need to use sudo
@@ -50,7 +51,7 @@ _CMD_NAMES = {
     CMD_SET.SET_ILLUMINATION_INTENSITY_FACTOR: "SET_ILLUMINATION_INTENSITY_FACTOR",
     CMD_SET.MOVETO_W: "MOVETO_W",
     CMD_SET.MOVETO_W2: "MOVETO_W2",
-    CMD_SET.SET_LIM_SWITCH_POLARITY: "SET_LIM_SWITCH_POLARITY",
+    CMD_SET.SET_LIMIT_SWITCH_CONFIG: "SET_LIMIT_SWITCH_CONFIG",
     CMD_SET.CONFIGURE_STEPPER_DRIVER: "CONFIGURE_STEPPER_DRIVER",
     CMD_SET.SET_MAX_VELOCITY_ACCELERATION: "SET_MAX_VELOCITY_ACCELERATION",
     CMD_SET.SET_LEAD_SCREW_PITCH: "SET_LEAD_SCREW_PITCH",
@@ -120,6 +121,20 @@ class CommandAborted(RuntimeError):
         super().__init__(reason)
         self.command_id = command_id
         self.recoverable = recoverable
+
+
+class LimitSwitchConfigError(RuntimeError):
+    """The configuration's [LIMIT_SWITCHES] section is invalid, or asks for settings the controller's firmware
+    cannot apply.
+
+    Raised by the Microcontroller constructor before anything is sent that could move a stage; the controller
+    link is closed by then.
+    """
+
+
+def decode_z_limits(byte18: int) -> Tuple[bool, bool]:
+    """(left, right) Z limit switch triggered, from status byte 18."""
+    return bool(byte18 & (1 << BIT_POS_Z_LIMIT_LEFT)), bool(byte18 & (1 << BIT_POS_Z_LIMIT_RIGHT))
 
 
 # NOTE(imo): We'll want to pull this out into a common serial impl shared with serial_peripheral.py at some point, but
@@ -639,6 +654,13 @@ class Microcontroller:
         self.z_pos = 0  # unit: microstep or encoder resolution
         self.w_pos = 0  # unit: microstep or encoder resolution
         self.theta_pos = 0  # unit: microstep or encoder resolution
+        # Encoder reporting (firmware >= 1.6, set_encoder_reporting). Updated only by packets whose
+        # byte 19 has ENC_FLAG.REPORTING set; they keep their last values otherwise.
+        self.encoder_pos = 0  # ENC_POS of the reported axis, microsteps
+        self.encoder_deviation = 0  # int16 ENC_POS - XACTUAL of that axis, microsteps, clipped
+        self.encoder_flags = 0  # raw status byte 19 while reporting, else 0
+        # Focus wheel ticks since SET_FOCUS_WHEEL_MODE TO_HOST (wrapping int32); None while the packet carries none.
+        self.focus_wheel_count = None
         self.button_and_switch_state = 0
         self.joystick_button_pressed = 0
         # This is used to keep track of whether or not we should emit joystick events to the joystick listeners,
@@ -653,6 +675,8 @@ class Microcontroller:
         # These are called in our busy loop, and so should return immediately!
         self.joystick_event_listeners = []
         self.switch_state = 0
+        self.z_limit_left_triggered = False
+        self.z_limit_right_triggered = False
 
         # Firmware version (major, minor) - detected from response byte 22
         # (0, 0) indicates legacy firmware without version reporting
@@ -675,22 +699,47 @@ class Microcontroller:
         self.new_packet_callback_external = None
         self.terminate_reading_received_packet_thread = False
         self._received_packet_cv = threading.Condition()
+        # The command id the last parsed packet echoed (under _received_packet_cv), for _detect_firmware_version.
+        self._cmd_id_at_last_packet = None
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
         self.thread_read_received_packet.start()
 
-        if reset_and_initialize:
-            self.log.debug("Resetting and initializing microcontroller.")
-            self.reset()
-            time.sleep(0.5)
-            self.initialize_drivers()
-            time.sleep(0.5)
-            self.configure_actuators()
-            self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
-            time.sleep(0.5)
+        try:
+            # Detect the firmware version first by sending a harmless command: supports_multi_port() needs it right
+            # after construction, and the limit-switch check needs it before anything else is sent.
+            self._detect_firmware_version()
+            # Refuse before reset/initialize/actuator setup, so that nothing moves with the limit switches read
+            # wrong and an unsupported current in the same config cannot end startup first.
+            self.check_limit_switch_compatibility()
 
-        # Detect firmware version early by sending a harmless command
-        # This ensures supports_multi_port() returns accurate results immediately
-        self._detect_firmware_version()
+            if reset_and_initialize:
+                self.log.debug("Resetting and initializing microcontroller.")
+                self.reset()
+                time.sleep(0.5)
+                self.initialize_drivers()
+                time.sleep(0.5)
+                self.configure_actuators()
+                self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
+                time.sleep(0.5)
+
+            # On both startup paths (--skip-init skips the block above).
+            self.apply_limit_switch_config()
+            self.apply_focus_wheel_power_up_mode()
+            self.unlock_panel()  # a lock left by an earlier session (closed at the loading position, a crash)
+        except BaseException:
+            # A failed constructor leaves no reader thread or open port behind: headless callers may catch this
+            # and keep their process.
+            try:
+                self.close()
+            except Exception:
+                self.log.exception("Failed to close the microcontroller link after a failed start")
+            raise
+
+    @property
+    def is_simulated(self) -> bool:
+        """True when this controller talks to SimSerial instead of a real one. Callers that need the hardware to
+        answer truthfully - the filter-wheel tuner needs the wheel's encoder - ask this before they start."""
+        return self._is_simulated
 
     def _warn_if_reads_stale(self):
         if self._is_simulated:
@@ -1043,6 +1092,120 @@ class Microcontroller:
         cmd[3] = status
         self.send_command(cmd)
 
+    def set_completion_window(self, axis, window_mm):
+        """Report a move on `axis` complete once |position - target| <= window_mm, while the ramp is still
+        finishing (firmware >= 1.6; older firmware does not know the command, so callers gate on the version).
+        0 restores completion at the exact target with the ramp stopped. Encoded in 0.1 um, range 0 .. 6.5535 mm.
+        For the filter wheels one "mm" is one revolution: pass degrees / 360.
+        """
+        u = int(round(window_mm * 10000))
+        if not (0 <= u <= 0xFFFF):
+            raise ValueError("completion window must be 0 .. 6.5535 mm (or rev)")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_COMPLETION_WINDOW
+        cmd[2] = int(axis)
+        cmd[3] = (u >> 8) & 0xFF
+        cmd[4] = u & 0xFF
+        self.send_command(cmd)
+
+    def set_encoder_reporting(self, axis, mode=ENCODER_REPORTING.ENC_IN_THETA):
+        """Put `axis`'s encoder into the status packet (firmware >= 1.6; callers gate on the version).
+
+        A read-only diagnostic: it moves nothing. The encoder must have been set up with
+        configure_stage_pid() (scale and direction; that engages nothing) for the values to be in
+        microsteps. Afterwards encoder_pos / encoder_deviation / encoder_flags update every packet.
+        ENCODER_REPORTING.OFF restores the shipping packet; RESET and INITIALIZE do too.
+        """
+        if mode not in (ENCODER_REPORTING.OFF, ENCODER_REPORTING.ENC_IN_THETA, ENCODER_REPORTING.ENC_AS_POSITION):
+            raise ValueError("encoder reporting mode must be ENCODER_REPORTING.OFF, ENC_IN_THETA or ENC_AS_POSITION")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_ENCODER_REPORTING
+        cmd[2] = int(axis)
+        cmd[3] = int(mode)
+        self.send_command(cmd)
+
+    def set_focus_wheel_mode(self, mode: int, save_as_power_up: bool = False):
+        """Route the control panel's focus wheel (firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE; callers gate on it).
+
+        FOCUS_WHEEL_MODE.TO_HOST stops the wheel moving the Z stepper and reports its ticks in focus_wheel_count;
+        DRIVES_Z lets it move the Z stepper. With save_as_power_up the controller also stores the mode (EEPROM, written
+        only when it changes) and uses it at power-up and after RESET and INITIALIZE.
+        """
+        if mode not in (FOCUS_WHEEL_MODE.DRIVES_Z, FOCUS_WHEEL_MODE.TO_HOST):
+            raise ValueError("focus wheel mode must be FOCUS_WHEEL_MODE.DRIVES_Z or TO_HOST")
+        saved = " (saved as the power-up mode)" if save_as_power_up else ""
+        self.log.info(f"Set focus wheel mode: {mode}{saved}")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_FOCUS_WHEEL_MODE
+        cmd[2] = int(mode)
+        cmd[3] = FOCUS_WHEEL_SAVE_AS_POWER_UP if save_as_power_up else 0
+        self.send_command(cmd)
+
+    def set_panel_lock(self, locked: bool):
+        """Lock (or unlock) the control panel: locked, its joystick reads centred and its wheel turns are dropped, so
+        nothing on the panel moves the stage (firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE; callers gate on
+        supports_panel_lock()). Locking also stops a joystick move under way. Not saved: RESET, INITIALIZE and a
+        controller power cycle unlock."""
+        self.log.info(f"Set control panel lock: {locked}")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PANEL_LOCK
+        cmd[2] = 1 if locked else 0
+        self.send_command(cmd)
+
+    def supports_panel_lock(self) -> bool:
+        return tuple(self.firmware_version) >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE
+
+    def unlock_panel(self) -> None:
+        """Unlock the control panel on connect (--skip-init too, which sends no RESET), if the firmware has the lock."""
+        if self.supports_panel_lock():
+            self.set_panel_lock(False)
+            self.wait_till_operation_is_completed()
+
+    def apply_focus_wheel_power_up_mode(self) -> None:
+        """Save the focus wheel's power-up mode for this configuration, if the firmware supports it.
+
+        On a Z lift system whose wheel drives the V-308 (USE_Z_LIFT_STAGE and Z_LIFT_FOCUS_WHEEL_DRIVES_PI) the wheel
+        must never move the lift, so TO_HOST is saved: it then moves nothing whenever Squid is not driving the V-308
+        with it (before start-up, after close, after a crash). Every other configuration saves DRIVES_Z, the
+        firmware's own default, so a controller moved from a lift system back to a stock one gets the stock wheel.
+        Run on every connect, --skip-init included; the controller writes EEPROM only when the mode changes.
+        """
+        if not self.supports_focus_wheel_to_host():
+            return
+        lift_wheel = control._def.USE_Z_LIFT_STAGE and control._def.Z_LIFT_FOCUS_WHEEL_DRIVES_PI
+        mode = FOCUS_WHEEL_MODE.TO_HOST if lift_wheel else FOCUS_WHEEL_MODE.DRIVES_Z
+        self.set_focus_wheel_mode(mode, save_as_power_up=True)
+        self.wait_till_operation_is_completed()
+
+    def supports_focus_wheel_to_host(self) -> bool:
+        """True if the firmware has SET_FOCUS_WHEEL_MODE."""
+        return tuple(self.firmware_version) >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE
+
+    def get_encoder_state(self):
+        """The last reported encoder reading: reporting / pid_enabled / axis (from byte 19),
+        encoder_pos and deviation (ENC_POS - XACTUAL) in microsteps. `reporting` is False when the
+        last packet carried no encoder; the two values are then the last ones seen."""
+        flags = self.encoder_flags
+        return {
+            "reporting": bool(flags & (1 << ENC_FLAG.REPORTING)),
+            "pid_enabled": bool(flags & (1 << ENC_FLAG.PID_ENABLED)),
+            "axis": (flags >> ENC_FLAG.AXIS_SHIFT) & 0x07,
+            "encoder_pos": self.encoder_pos,
+            "deviation": self.encoder_deviation,
+        }
+
+    def set_ramp_profile(self, axis, profile):
+        """S-shaped (RAMP_PROFILE.SSHAPE, the firmware default) or trapezoidal ramp for `axis`
+        (firmware >= 1.6; callers gate on the version). Takes effect at once; a RESET returns
+        every axis to the S-shape."""
+        if profile not in (RAMP_PROFILE.TRAPEZOID, RAMP_PROFILE.SSHAPE):
+            raise ValueError("ramp profile must be RAMP_PROFILE.TRAPEZOID or RAMP_PROFILE.SSHAPE")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_RAMP_PROFILE
+        cmd[2] = int(axis)
+        cmd[3] = int(profile)
+        self.send_command(cmd)
+
     def set_trigger_mode(self, mode):
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_TRIGGER_MODE
@@ -1295,11 +1458,13 @@ class Microcontroller:
         cmd[6] = payload & 0xFF
         self.send_command(cmd)
 
-    def set_limit_switch_polarity(self, axis, polarity):
+    def set_limit_switch_config(self, axis: int, config: int):
+        """Send one axis's limit-switch config nibble (LIMIT_SWITCH_BITS); the firmware stores it in EEPROM."""
+        self.log.info(f"Set limit switch config: {axis=}, config=0x{config:02X}")
         cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.SET_LIM_SWITCH_POLARITY
+        cmd[1] = CMD_SET.SET_LIMIT_SWITCH_CONFIG
         cmd[2] = axis
-        cmd[3] = polarity
+        cmd[3] = config
         self.send_command(cmd)
 
     def set_home_safety_margin(self, axis, margin):
@@ -1373,13 +1538,6 @@ class Microcontroller:
         self.wait_till_operation_is_completed()
         self.set_max_velocity_acceleration(AXIS.Z, MAX_VELOCITY_Z_mm, MAX_ACCELERATION_Z_mm)
         self.wait_till_operation_is_completed()
-        # home switch
-        self.set_limit_switch_polarity(AXIS.X, X_HOME_SWITCH_POLARITY)
-        self.wait_till_operation_is_completed()
-        self.set_limit_switch_polarity(AXIS.Y, Y_HOME_SWITCH_POLARITY)
-        self.wait_till_operation_is_completed()
-        self.set_limit_switch_polarity(AXIS.Z, Z_HOME_SWITCH_POLARITY)
-        self.wait_till_operation_is_completed()
         # home safety margin
         self.set_home_safety_margin(AXIS.X, int(X_HOME_SAFETY_MARGIN_UM))
         self.wait_till_operation_is_completed()
@@ -1391,6 +1549,11 @@ class Microcontroller:
     def configure_squidfilter(self, axis=AXIS.W):
         """Configure a filter wheel motor.
 
+        The microstepping, current and velocity/acceleration are read through control._def rather than from the
+        `from control._def import *` binding at the top of this module: that binding is taken at import time, so a
+        profile changed while the software runs (the filter-wheel tuner's "Apply and save") would be ignored here
+        while the host's slot arithmetic used the new value. They must be the same number.
+
         Args:
             axis: The axis to configure (AXIS.W or AXIS.W2). Defaults to AXIS.W.
         """
@@ -1398,9 +1561,14 @@ class Microcontroller:
             raise ValueError(f"Unsupported filter wheel axis: {axis}. Expected AXIS.W or AXIS.W2.")
         self.set_leadscrew_pitch(axis, SCREW_PITCH_W_MM)
         self.wait_till_operation_is_completed()
-        self.configure_motor_driver(axis, MICROSTEPPING_DEFAULT_W, W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD)
+        self.configure_motor_driver(
+            axis,
+            int(control._def.MICROSTEPPING_DEFAULT_W),
+            control._def.W_MOTOR_RMS_CURRENT_mA,
+            control._def.W_MOTOR_I_HOLD,
+        )
         self.wait_till_operation_is_completed()
-        self.set_max_velocity_acceleration(axis, MAX_VELOCITY_W_mm, MAX_ACCELERATION_W_mm)
+        self.set_max_velocity_acceleration(axis, control._def.MAX_VELOCITY_W_mm, control._def.MAX_ACCELERATION_W_mm)
         self.wait_till_operation_is_completed()
 
     def ack_joystick_button_pressed(self):
@@ -1640,9 +1808,26 @@ class Microcontroller:
                 self.z_pos = self._payload_to_int(
                     msg[10:14], MicrocontrollerDef.N_BYTES_POS
                 )  # unit: microstep or encoder resolution
-                self.theta_pos = self._payload_to_int(
-                    msg[14:18], MicrocontrollerDef.N_BYTES_POS
-                )  # unit: microstep or encoder resolution
+                theta_field = self._payload_to_int(msg[14:18], MicrocontrollerDef.N_BYTES_POS)
+                # Firmware >= 1.6 with encoder reporting on: the theta field is the reported axis's
+                # ENC_POS, byte 19 its flags and bytes 20-21 the clipped ENC_POS - XACTUAL. It is then
+                # not a theta position, so theta_pos keeps its last value (a stage position readback
+                # must not show a wheel encoder as an angle). With reporting off, and on older
+                # firmware, byte 19 bit 0 is clear and the field is theta as it always was.
+                # Firmware >= 1.8 with the focus wheel routed to the host: the field is the wheel's tick count,
+                # flagged by FOCUS_WHEEL_FLAG_REPORTING (the firmware refuses this and encoder reporting together).
+                if msg[19] & (1 << ENC_FLAG.REPORTING):
+                    self.encoder_flags = msg[19]
+                    self.encoder_pos = theta_field
+                    self.encoder_deviation = self._payload_to_int(msg[20:22], 2)
+                    self.focus_wheel_count = None
+                elif msg[19] & (1 << FOCUS_WHEEL_FLAG_REPORTING):
+                    self.encoder_flags = 0
+                    self.focus_wheel_count = theta_field
+                else:
+                    self.encoder_flags = 0
+                    self.focus_wheel_count = None
+                    self.theta_pos = theta_field  # unit: microstep or encoder resolution
 
                 self.button_and_switch_state = msg[18]
                 # joystick button
@@ -1663,12 +1848,18 @@ class Microcontroller:
                 tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
                 self.switch_state = tmp > 0
 
+                # Z limit switches (firmware >= LIMIT_SWITCH_CONFIG_MIN_FIRMWARE; older firmware leaves the bits 0)
+                self.z_limit_left_triggered, self.z_limit_right_triggered = decode_z_limits(
+                    self.button_and_switch_state
+                )
+
                 # Firmware version from byte 22: high nibble = major, low nibble = minor
                 # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0)
                 version_byte = msg[RESPONSE_BYTE_FIRMWARE_VERSION]
                 self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
 
                 with self._received_packet_cv:
+                    self._cmd_id_at_last_packet = msg[0]
                     self._received_packet_cv.notify_all()
 
                 if self.new_packet_callback_external is not None:
@@ -1679,16 +1870,24 @@ class Microcontroller:
     def get_pos(self):
         return self.x_pos, self.y_pos, self.z_pos, self.theta_pos
 
-    def _detect_firmware_version(self):
+    def _detect_firmware_version(self, timeout_s: float = 5):
         """Detect firmware version by sending a harmless command.
 
-        Sends TURN_OFF_ALL_PORTS (a safe no-op if ports are already off)
-        to trigger a response from which we can read the firmware version.
-        This ensures supports_multi_port() returns accurate results immediately
-        after Microcontroller initialization.
+        Sends TURN_OFF_ALL_PORTS (a safe no-op if ports are already off) and takes the version from the first
+        status packet that echoes the command's id, not from the command's completion: every packet carries the
+        version, and a controller still busy with a move from a previous session answers IN_PROGRESS (with the
+        newest command id) until RESET. A packet queued before the write echoes an older command's id and is never
+        used; one echoing the same id (a previous session's, after the ids wrapped) comes from the same firmware, so
+        its version is right too. This ensures supports_multi_port() returns accurate results immediately after
+        Microcontroller initialization.
         """
         self.turn_off_all_ports()
-        self.wait_till_operation_is_completed()
+        cmd_id = self._cmd_id
+        with self._received_packet_cv:
+            if not self._received_packet_cv.wait_for(lambda: self._cmd_id_at_last_packet == cmd_id, timeout=timeout_s):
+                raise TimeoutError(
+                    f"No status packet within {timeout_s} [s] of asking for the firmware version. {self._mcu_state()}"
+                )
         self.log.debug(f"Detected firmware version: {self.firmware_version}")
 
     def supports_multi_port(self) -> bool:
@@ -1701,6 +1900,62 @@ class Microcontroller:
             True if firmware version >= 1.0, False otherwise.
         """
         return self.firmware_version >= (1, 0)
+
+    def supports_limit_switch_config(self) -> bool:
+        """True if the firmware has SET_LIMIT_SWITCH_CONFIG."""
+        return tuple(self.firmware_version) >= LIMIT_SWITCH_CONFIG_MIN_FIRMWARE
+
+    def check_limit_switch_compatibility(self) -> None:
+        """Raise LimitSwitchConfigError if [LIMIT_SWITCHES] is invalid, or not the default and the firmware cannot
+        apply it.
+
+        Invalid content (an unknown key, a value that is not True or False) is refused first and on every serial
+        device, simulated ones included: it would otherwise be ignored or read by truthiness. Older firmware answers
+        SET_LIMIT_SWITCH_CONFIG with a success that does nothing, so its limit switches would stay at the stock
+        settings while the configuration says otherwise.
+        """
+        problems = limit_switch_config_problems()
+        if problems:
+            raise LimitSwitchConfigError(
+                f"The configuration's [LIMIT_SWITCHES] section is invalid: {'; '.join(problems)}. Its keys are "
+                f"<axis>_<side>_active_high and <axis>_<side>_enabled (axis x, y or z; side left or right), each "
+                f"True or False."
+            )
+        if self.supports_limit_switch_config():
+            return
+        if self._is_simulated:
+            self.log.info(
+                "Simulated controller: skipping the [LIMIT_SWITCHES] firmware check (it models no limit switches)."
+            )
+            return
+        if all(limit_switch_config_byte(axis) == LIMIT_SWITCH_DEFAULT_CONFIG for axis in "xyz"):
+            return
+        settings = []
+        for axis in "XYZ":
+            for side in ("LEFT", "RIGHT"):
+                for setting in ("ENABLED", "ACTIVE_HIGH"):
+                    default = bool(LIMIT_SWITCH_DEFAULT_CONFIG & getattr(LIMIT_SWITCH_BITS, f"{side}_{setting}"))
+                    value = getattr(LIMIT_SWITCHES, f"{axis}_{side}_{setting}")
+                    if bool(value) != default:
+                        settings.append(f"{axis}_{side}_{setting}".lower() + f" = {value}")
+        raise LimitSwitchConfigError(
+            f"The configuration's [LIMIT_SWITCHES] section sets {', '.join(settings)}, but the controller runs "
+            f"firmware {self.firmware_version[0]}.{self.firmware_version[1]}, which cannot apply limit-switch "
+            f"settings. Flash firmware {LIMIT_SWITCH_CONFIG_MIN_FIRMWARE[0]}.{LIMIT_SWITCH_CONFIG_MIN_FIRMWARE[1]} "
+            f"or newer onto the controller."
+        )
+
+    def apply_limit_switch_config(self) -> None:
+        """Send [LIMIT_SWITCHES] for X, Y and Z, defaults included, if the firmware supports it.
+
+        On older firmware this does nothing: check_limit_switch_compatibility() has already refused a non-default
+        configuration there.
+        """
+        if not self.supports_limit_switch_config():
+            return
+        for axis, name in ((AXIS.X, "x"), (AXIS.Y, "y"), (AXIS.Z, "z")):
+            self.set_limit_switch_config(axis, limit_switch_config_byte(name))
+            self.wait_till_operation_is_completed()
 
     def get_button_and_switch_state(self):
         return self.button_and_switch_state

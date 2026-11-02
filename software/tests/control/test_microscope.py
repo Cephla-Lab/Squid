@@ -258,3 +258,37 @@ def test_microscope_close_closes_the_fluidics_service():
     scope.close()
     scope.close()  # second close is a no-op
     assert fake.closed == 1
+
+
+@pytest.mark.parametrize("z_stack_order", ["CHANNEL FIRST", "Z FIRST"])
+def test_acquire_single_fov_z_stack_order(tmp_path, z_stack_order):
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    try:
+        objective = scope.objective_store.current_objective
+        channel_names = [ch.name for ch in scope.live_controller.get_channels(objective)][:3]
+        shots = []
+        real_set_mode = scope.live_controller.set_microscope_mode
+
+        def set_mode(config):
+            shots.append((config.name, round(scope.stage.get_pos().z_mm * 1000, 6)))
+            return real_set_mode(config)
+
+        scope.live_controller.set_microscope_mode = set_mode
+        scope.stage.move_z_to(1.0)  # inside the Z soft limits
+        z_start = scope.stage.get_pos().z_mm
+
+        paths = scope.acquire_single_fov(
+            channel_names, str(tmp_path), NZ=3, deltaZ_mm=0.002, z_stack_order=z_stack_order
+        )
+
+        assert len(paths) == 9
+        if z_stack_order == "Z FIRST":
+            assert [name for name, _ in shots] == [name for name in channel_names for _ in range(3)]
+        else:
+            assert [name for name, _ in shots] == channel_names * 3
+        # Every channel images the same planes, despite the stage rounding each move to microsteps.
+        planes = {name: [z for n, z in shots if n == name] for name in channel_names}
+        assert len({tuple(zs) for zs in planes.values()}) == 1, planes
+        assert scope.stage.get_pos().z_mm == pytest.approx(z_start)
+    finally:
+        scope.close()

@@ -43,12 +43,12 @@ import time
 import csv
 import itertools
 import json
-import math
 import numpy as np
 import pandas as pd
 import cv2
 import imageio as iio
 import squid.abc
+from control.core.plate_transform import resolve_rotation_deg, rotate_deg
 import scipy.ndimage
 
 if ENABLE_NL5:
@@ -65,7 +65,6 @@ class QtStreamHandler(QObject):
 
     def __init__(
         self,
-        display_resolution_scaling=1,
         accept_new_frame_fn: Callable[[], bool] = lambda: True,
         force_display_fn: Callable[[], bool] = lambda: False,
     ):
@@ -78,9 +77,7 @@ class QtStreamHandler(QObject):
             accept_new_frame=accept_new_frame_fn,
             force_display=force_display_fn,
         )
-        self._handler = StreamHandler(
-            handler_functions=functions, display_resolution_scaling=display_resolution_scaling
-        )
+        self._handler = StreamHandler(handler_functions=functions)
 
     def get_frame_callback(self) -> Callable[[CameraFrame], None]:
         return self._handler.on_new_frame
@@ -96,9 +93,6 @@ class QtStreamHandler(QObject):
 
     def set_save_fps(self, fps):
         self._handler.set_save_fps(fps)
-
-    def set_display_resolution_scaling(self, display_resolution_scaling):
-        self._handler.set_display_resolution_scaling(display_resolution_scaling)
 
 
 log = squid.logging.get_logger(__name__)
@@ -503,7 +497,6 @@ class TrackingController(QObject):
 
         self.tracking_time_interval_s = 0
 
-        self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.counter = 0
         self.experiment_ID = None
         self.base_path = None
@@ -677,7 +670,6 @@ class TrackingWorker(QObject):
         self.liveController = self.trackingController.liveController
         self.autofocusController = self.trackingController.autofocusController
         self.imageDisplayWindow = self.trackingController.imageDisplayWindow
-        self.display_resolution_scaling = self.trackingController.display_resolution_scaling
         self.counter = self.trackingController.counter
         self.experiment_ID = self.trackingController.experiment_ID
         self.base_path = self.trackingController.base_path
@@ -699,6 +691,17 @@ class TrackingWorker(QObject):
         self.microcontroller.wait_till_operation_is_completed()
 
     def run(self):
+        # every tracking channel is in use for the whole run: wakes the lines, opens a mechanical shutter
+        with self.liveController.use_channels("tracking", self.selected_configurations) as light:
+            # e.g. the 560 restarting after its idle-off: never track on dark frames
+            if light.wait_until_ready(cancel_fn=lambda: self.trackingController.flag_stop_tracking_requested):
+                self._run_tracking()
+            else:
+                self._log.error("tracking not started: the illumination did not become ready")
+                self.image_saver.close()  # made in __init__ with its own thread; _run_tracking closes it otherwise
+                self.finished.emit()
+
+    def _run_tracking(self):
 
         tracking_frame_counter = 0
         t0 = time.time()
@@ -771,13 +774,7 @@ class TrackingWorker(QObject):
                 # TODO(imo): use illumination controller
                 self.liveController.turn_off_illumination()
                 image_ = np.squeeze(image_)
-                # display image
-                image_to_display_ = utils.crop_image(
-                    image_,
-                    round(image_.shape[1] * self.liveController.display_resolution_scaling),
-                    round(image_.shape[0] * self.liveController.display_resolution_scaling),
-                )
-                self.image_to_display_multi.emit(image_to_display_, config_.illumination_source)
+                self.image_to_display_multi.emit(image_, config_.illumination_source)
                 # save image
                 if self.trackingController.flag_save_image:
                     if camera_frame.is_color():
@@ -843,9 +840,35 @@ class TrackingWorker(QObject):
         self.finished.emit()
 
 
+MAGENTA_COLORMAP = pg.ColorMap(pos=[0.0, 1.0], color=[(0, 0, 0), (255, 0, 255)])
+# One green pixel, stretched over the live image and multiplied into it: keeps only the green channel
+GREEN_TINT_PIXEL = np.array([[[0, 255, 0]]], dtype=np.uint8)
+# Mask overlay: 0 = see-through, 1 = red
+OVEREXPOSURE_LUT = np.array([[0, 0, 0, 0], [255, 0, 0, 255]], dtype=np.uint8)
+# Stacking order above the live image (z = 0): tint multiplies, reference adds, the red mask covers both
+Z_LIVE_TINT, Z_ALIGNMENT_REFERENCE, Z_OVEREXPOSURE, Z_FRAME = 1, 2, 3, 4
+
+
+def _overexposure_mask(image: np.ndarray, saturation: float) -> np.ndarray:
+    """1 where any channel is at or above ``saturation``, else 0."""
+    intensity = image if image.ndim == 2 else image.max(axis=2)
+    return (intensity >= saturation).view(np.uint8)
+
+
+def _dtype_range(dtype):
+    """np.iinfo / np.finfo for the dtype, whichever applies."""
+    return np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else np.finfo(dtype)
+
+
 class ImageDisplayWindow(QMainWindow):
     image_click_coordinates = Signal(int, int, int, int)
     signal_z_um_delta = Signal(float)
+
+    # Line colors, in the order lines are added; the first matches the original single-line profiler
+    LINE_PROFILE_COLORS = ("y", "c", "m", "g", (255, 128, 0), (100, 150, 255))
+    DEFAULT_LINE_WIDTH_PX = 5  # every new line, however wide the selected one is
+    LINE_SELECT_TOLERANCE_PX = 8
+    MAX_BAND_SAMPLES = 256
 
     def __init__(
         self,
@@ -875,7 +898,10 @@ class ImageDisplayWindow(QMainWindow):
         self.has_valid_position = False
 
         # Line profiler state
-        self.line_roi = None
+        self.line_rois: list[pg.LineROI] = []
+        self.selected_line_roi: Optional[pg.LineROI] = None
+        self._line_roi_labels = {}  # roi -> (color, name), fixed for the line's lifetime
+        self._line_count = 0
         self.is_drawing_line = False
         self.line_start_pos = None
         self.line_end_pos = None
@@ -883,6 +909,17 @@ class ImageDisplayWindow(QMainWindow):
         self.normal_cursor = QCursor(Qt.ArrowCursor)  # Normal cursor
         self.preview_line = None
         self.start_point_marker = None
+
+        # Last frame as received (before any on-screen marking), for registration
+        self._current_image: Optional[np.ndarray] = None
+
+        # Overlays on the live view: reference image during alignment, overexposure mask when toggled on
+        self.alignment_reference_item: Optional[pg.ImageItem] = None
+        self.live_tint_item: Optional[pg.ImageItem] = (
+            None  # green multiply over the live image while a reference is shown
+        )
+        self.overexposure_item: Optional[pg.ImageItem] = None
+        self._overexposure_source = None  # (frame id, saturation) the current mask was computed from
 
         # Create main layout
         layout = QVBoxLayout()
@@ -904,6 +941,12 @@ class ImageDisplayWindow(QMainWindow):
         self.stage_position_label.setMinimumWidth(200)
         self.piezo_position_label = QLabel()
         self.piezo_position_label.setMinimumWidth(150)
+        # The Z lift (squid/stage/lift.py), shown only on a system that has one
+        self.lift_position_label = QLabel()
+        self.lift_position_label.setMinimumWidth(120)
+        self.lift_position_label.setVisible(False)
+        self.lift_separator = QLabel(" | ")
+        self.lift_separator.setVisible(False)
 
         # Add line profiler toggle button
         self.btn_line_profiler = QPushButton("Line Profiler")
@@ -911,6 +954,45 @@ class ImageDisplayWindow(QMainWindow):
         self.btn_line_profiler.setChecked(False)
         self.btn_line_profiler.setEnabled(False)
         self.btn_line_profiler.clicked.connect(self.toggle_line_profiler)
+
+        # Line profiler shortcuts, shown while the profiler is on
+        self.btn_line_draw = QPushButton("Draw")
+        self.btn_line_draw.setToolTip("Draw another line: click its start, then its end")
+        self.btn_line_draw.clicked.connect(self.start_drawing_line)
+        self.btn_line_horizontal = QPushButton("H")
+        self.btn_line_horizontal.setToolTip("Add a horizontal line across the full field of view")
+        self.btn_line_horizontal.clicked.connect(self.add_horizontal_line)
+        self.btn_line_vertical = QPushButton("V")
+        self.btn_line_vertical.setToolTip("Add a vertical line across the full field of view")
+        self.btn_line_vertical.clicked.connect(self.add_vertical_line)
+        self.btn_line_full = QPushButton("Full")
+        self.btn_line_full.setToolTip("Extend the selected line to the edges of the field of view")
+        self.btn_line_full.clicked.connect(self.extend_line_to_fov)
+        self.btn_line_fill = QPushButton("Fill FOV")
+        self.btn_line_fill.setToolTip(
+            "Widen the selected line's band to cover the whole field of view: "
+            "the profile becomes the average across the image"
+        )
+        self.btn_line_fill.clicked.connect(self.fill_fov_with_line)
+        self.btn_line_clear = QPushButton("Clear")
+        self.btn_line_clear.setToolTip("Remove all lines (right-click a line to remove just that one)")
+        self.btn_line_clear.clicked.connect(self.clear_line_rois)
+        self.line_shortcut_buttons = (
+            self.btn_line_draw,
+            self.btn_line_horizontal,
+            self.btn_line_vertical,
+            self.btn_line_full,
+            self.btn_line_fill,
+            self.btn_line_clear,
+        )
+        for button in self.line_shortcut_buttons:
+            button.setMaximumWidth(button.fontMetrics().horizontalAdvance(button.text()) + 20)
+            button.hide()
+
+        self.btn_overexposure = QPushButton("Over-exposed Pixels")
+        self.btn_overexposure.setCheckable(True)
+        self.btn_overexposure.setToolTip("Highlight pixels at the camera's maximum value in red")
+        self.btn_overexposure.toggled.connect(self.set_overexposure_indicator)
 
         # Add well selector toggle button
         self.btn_well_selector = QPushButton("Show Well Selector")
@@ -922,12 +1004,18 @@ class ImageDisplayWindow(QMainWindow):
         status_layout.addWidget(self.pixel_value_label)
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.stage_position_label)
+        status_layout.addWidget(self.lift_separator)
+        status_layout.addWidget(self.lift_position_label)
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.piezo_position_label)
         status_layout.addStretch()  # Push labels to the left
         status_layout.addWidget(self.btn_well_selector)  # Add well selector button
         status_layout.addWidget(QLabel(" | "))  # Add separator
+        status_layout.addWidget(self.btn_overexposure)
+        status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.btn_line_profiler)  # Add line profiler button
+        for button in self.line_shortcut_buttons:
+            status_layout.addWidget(button)
 
         status_widget.setLayout(status_layout)
 
@@ -957,15 +1045,21 @@ class ImageDisplayWindow(QMainWindow):
         if self.show_LUT:
             self.graphics_widget.view = pg.ImageView()
             self.graphics_widget.img = self.graphics_widget.view.getImageItem()
-            self.graphics_widget.img.setBorder("w")
             self.graphics_widget.view.ui.roiBtn.hide()
             self.graphics_widget.view.ui.menuBtn.hide()
             self.LUTWidget = self.graphics_widget.view.getHistogramWidget()
             self.LUTWidget.region.sigRegionChanged.connect(self.update_contrast_limits)
             self.LUTWidget.region.sigRegionChangeFinished.connect(self.update_contrast_limits)
+            self.LUTWidget.item.sigLevelsChanged.connect(self._update_overlays)
         else:
-            self.graphics_widget.img = pg.ImageItem(border="w")
+            self.graphics_widget.img = pg.ImageItem()
             self.graphics_widget.view.addItem(self.graphics_widget.img)
+
+        # White frame around the live image, above every overlay so tints and masks never recolor it
+        self.frame_item = QGraphicsRectItem()
+        self.frame_item.setPen(pg.mkPen("w"))
+        self.frame_item.setZValue(Z_FRAME)
+        self._active_view().addItem(self.frame_item)
 
         ## Create ROI
         self.roi_pos = (500, 500)
@@ -1007,7 +1101,8 @@ class ImageDisplayWindow(QMainWindow):
         self.line_profiler_widget = pg.GraphicsLayoutWidget()
         self.line_profiler_plot = self.line_profiler_widget.addPlot()
         self.line_profiler_plot.setLabel("left", "Intensity")
-        self.line_profiler_plot.setLabel("bottom", "Position")
+        self.line_profiler_plot.setLabel("bottom", "Distance (pixels)")
+        self.line_profiler_plot.addLegend()
         self.line_profiler_widget.hide()  # Initially hidden
         self.line_profiler_manual_range = False  # Flag to track if y-range is manually set
         self.line_profiler_plot.sigRangeChanged.connect(self._on_range_changed)
@@ -1047,7 +1142,7 @@ class ImageDisplayWindow(QMainWindow):
             self.graphics_widget.view.scene().sigMouseMoved.connect(self.handle_mouse_move)
 
         # Set up timer for updating stage and piezo positions
-        self.update_timer = QTimer()
+        self.update_timer = QTimer(self.widget)
         self.update_timer.timeout.connect(self.update_stage_piezo_positions)
         self.update_timer.start(100)  # Update every 100ms
 
@@ -1062,6 +1157,12 @@ class ImageDisplayWindow(QMainWindow):
                     )
                 else:
                     self.stage_position_label.setText("Stage: N/A")
+
+                lift = getattr(self.liveController.microscope, "z_lift", None)
+                if lift is not None:
+                    self.lift_position_label.setText(f"Lift: {lift.get_position_mm():.3f} mm")
+                self.lift_position_label.setVisible(lift is not None)
+                self.lift_separator.setVisible(lift is not None)
 
                 piezo = self.liveController.microscope.addons.piezo_stage
                 if piezo:
@@ -1088,33 +1189,113 @@ class ImageDisplayWindow(QMainWindow):
         self.update_timer.stop()
         super().closeEvent(event)
 
+    def set_overexposure_indicator(self, enabled: bool):
+        """Overlay pixels at the camera's maximum value in red, whatever the contrast setting."""
+        if enabled and self.overexposure_item is None:
+            self.overexposure_item = self._add_overlay_item(Z_OVEREXPOSURE, lut=OVEREXPOSURE_LUT)
+            self._update_overlays()
+        elif not enabled and self.overexposure_item is not None:
+            self._active_view().removeItem(self.overexposure_item)
+            self.overexposure_item = None
+            self._overexposure_source = None
+
+    def current_image(self) -> Optional[np.ndarray]:
+        """The most recently received frame, unmodified (None before the first one or after invalidation)."""
+        return self._current_image
+
+    def invalidate_current_image(self):
+        """Forget the last frame, e.g. after a stage move it no longer shows what is under the objective."""
+        self._current_image = None
+
+    def show_alignment_reference(self, image: np.ndarray):
+        """Overlay a reference image in additive magenta on a green live view.
+
+        Misalignment shows as magenta and green fringes; where the two line up the colors add to white.
+        The live image item itself (levels, lookup table, histogram) is left untouched.
+        """
+        if self.alignment_reference_item is None:
+            self.live_tint_item = self._add_overlay_item(Z_LIVE_TINT, QPainter.CompositionMode_Multiply)
+            self.live_tint_item.setImage(GREEN_TINT_PIXEL, levels=(0, 255))
+            self.alignment_reference_item = self._add_overlay_item(
+                Z_ALIGNMENT_REFERENCE, QPainter.CompositionMode_Plus, lut=MAGENTA_COLORMAP.getLookupTable(nPts=256)
+            )
+        # lookup tables do not apply to H x W x 3 data
+        self.alignment_reference_item.setImage(utils.to_grayscale(image), autoLevels=False)
+        self._update_overlays()
+
+    def hide_alignment_reference(self):
+        if self.alignment_reference_item is not None:
+            self._active_view().removeItem(self.alignment_reference_item)
+            self._active_view().removeItem(self.live_tint_item)
+            self.alignment_reference_item = self.live_tint_item = None
+
+    def _add_overlay_item(self, z: int, composition_mode=None, lut: Optional[np.ndarray] = None) -> pg.ImageItem:
+        item = pg.ImageItem()
+        item.setZValue(z)
+        if lut is not None:
+            item.setLookupTable(lut)
+        if composition_mode is not None:
+            item.setCompositionMode(composition_mode)
+        self._active_view().addItem(item)
+        return item
+
+    def _update_overlays(self, *_):
+        """Keep the overlays in step with the live image and its contrast range."""
+        image_rect = self.graphics_widget.img.boundingRect()
+        self.frame_item.setRect(image_rect)
+        if self.live_tint_item is not None:
+            self.live_tint_item.setRect(image_rect)
+        levels = self.graphics_widget.img.getLevels()
+        if levels is None:
+            return
+        reference = self.alignment_reference_item
+        if reference is not None and not np.array_equal(reference.getLevels(), levels):
+            reference.setLevels(levels)
+        if self.overexposure_item is not None and self._current_image is not None:
+            saturation = self._saturation_level(self._current_image)
+            source = (id(self._current_image), saturation)
+            if source != self._overexposure_source:
+                self._overexposure_source = source
+                mask = _overexposure_mask(self._current_image, saturation)
+                self.overexposure_item.setImage(mask, autoLevels=False, levels=(0, 1))
+
+    def _saturation_level(self, image: np.ndarray) -> float:
+        """The camera's maximum pixel value; the dtype's full range when no camera is attached."""
+        if self.liveController is None or not np.issubdtype(image.dtype, np.integer):
+            return _dtype_range(image.dtype).max
+        return self.liveController.camera.get_pixel_format().max_value(image.dtype)
+
     def toggle_line_profiler(self):
         """Toggle the visibility of the line profiler widget."""
+        for button in self.line_shortcut_buttons:
+            button.setVisible(self.btn_line_profiler.isChecked())
         if self.btn_line_profiler.isChecked():
             self.line_profiler_widget.show()
-            if self.line_roi is None:
-                # Start in drawing mode
-                self.is_drawing_line = True
-                self.line_start_pos = None
-                self.line_end_pos = None
-                # Set cross cursor
-                if self.show_LUT:
-                    self.graphics_widget.view.getView().setCursor(self.drawing_cursor)
-                else:
-                    self.graphics_widget.view.setCursor(self.drawing_cursor)
-                self._log.info("Line profiler opened - ready to draw line")
+            if not self.line_rois:
+                self.start_drawing_line()
             else:
-                self.line_roi.show()
+                for roi in self.line_rois:
+                    roi.show()
                 self.update_line_profile()
         else:
             self.line_profiler_widget.hide()
-            if self.line_roi is not None:
-                self.line_roi.hide()
-            self._remove_line_preview_items()
-            self.is_drawing_line = False
-            self.line_start_pos = None
-            self.line_end_pos = None
-            self._active_view().setCursor(self.normal_cursor)
+            for roi in self.line_rois:
+                roi.hide()
+            self._cancel_line_drawing()
+
+    def start_drawing_line(self):
+        """Enter drawing mode: the next two clicks on the image set a new line's start and end."""
+        self._cancel_line_drawing()
+        self.is_drawing_line = True
+        self._active_view().setCursor(self.drawing_cursor)
+        self._log.info("Line profiler ready to draw line")
+
+    def _cancel_line_drawing(self):
+        self._remove_line_preview_items()
+        self.is_drawing_line = False
+        self.line_start_pos = None
+        self.line_end_pos = None
+        self._active_view().setCursor(self.normal_cursor)
 
     def _on_range_changed(self, view_range):
         """Handle manual range changes in the line profiler plot."""
@@ -1133,95 +1314,261 @@ class ImageDisplayWindow(QMainWindow):
             self.start_point_marker = None
 
     def create_line_roi(self):
-        """Create a line ROI for intensity profiling."""
-        if self.line_roi is None and self.line_start_pos is not None and self.line_end_pos is not None:
-            try:
-                # Convert coordinates to Point objects
-                start_point = pg.Point(self.line_start_pos[0], self.line_start_pos[1])
-                end_point = pg.Point(self.line_end_pos[0], self.line_end_pos[1])
+        """Add a line ROI from line_start_pos to line_end_pos (view coordinates) for intensity profiling."""
+        if self.line_start_pos is None or self.line_end_pos is None:
+            return None
+        try:
+            color = self.LINE_PROFILE_COLORS[self._line_count % len(self.LINE_PROFILE_COLORS)]
+            self._line_count += 1
+            roi = pg.LineROI(
+                pos1=pg.Point(*self.line_start_pos),
+                pos2=pg.Point(*self.line_end_pos),
+                width=self.DEFAULT_LINE_WIDTH_PX,
+                pen=pg.mkPen(color, width=2),
+                hoverPen=pg.mkPen(color, width=3),
+                handlePen=pg.mkPen(color, width=2),
+                handleHoverPen=pg.mkPen(color, width=2),
+                movable=True,
+                rotatable=True,
+                resizable=True,
+                removable=True,  # right-click menu offers "Remove ROI"
+            )
+            self._line_roi_labels[roi] = (color, f"Line {self._line_count}")
+            self.line_rois.append(roi)
+            self._active_view().addItem(roi)
 
-                # Create the line ROI with width parameter
-                self.line_roi = pg.LineROI(
-                    pos1=start_point,
-                    pos2=end_point,
-                    width=5,  # Default width in pixels
-                    pen=pg.mkPen("y", width=2),
-                    hoverPen=pg.mkPen("y", width=2),
-                    handlePen=pg.mkPen("y", width=2),
-                    handleHoverPen=pg.mkPen("y", width=2),
-                    movable=True,
-                    rotatable=True,
-                    resizable=True,
-                )
+            roi.sigRegionChanged.connect(self.update_line_profile)
+            roi.sigRegionChangeStarted.connect(self.select_line_roi)
+            roi.sigRemoveRequested.connect(self.remove_line_roi)
+            self.line_profiler_manual_range = False  # fit the plot to the new line
+            self.select_line_roi(roi)
+            self._log.info("Line ROI created successfully")
+            return roi
+        except Exception as e:
+            self._log.error(f"Error creating line ROI: {str(e)}")
+            return None
+        finally:
+            self.line_start_pos = None
+            self.line_end_pos = None
 
-                # Add the ROI to the view
-                if self.show_LUT:
-                    self.graphics_widget.view.getView().addItem(self.line_roi)
-                else:
-                    self.graphics_widget.view.addItem(self.line_roi)
+    def select_line_roi(self, roi):
+        """Make roi the line that shortcuts act on, drawn thicker on the image and in the plot."""
+        self.selected_line_roi = roi
+        for line in self.line_rois:
+            color, _ = self._line_roi_labels[line]
+            line.setPen(pg.mkPen(color, width=4 if line is roi else 2))
+        self.update_line_profile()
 
-                # Connect signal
-                self.line_roi.sigRegionChanged.connect(self.update_line_profile)
-                self.update_line_profile()
-                self._log.info("Line ROI created successfully")
-            except Exception as e:
-                self._log.error(f"Error creating line ROI: {str(e)}")
-                self.line_roi = None
-                self.line_start_pos = None
-                self.line_end_pos = None
+    def _select_line_near(self, scene_pos):
+        """Select the line nearest a click, if within LINE_SELECT_TOLERANCE_PX screen pixels.
+
+        A 5 px line on a zoomed-out camera frame is 1-2 screen pixels thick, too thin to click exactly."""
+        if not self.btn_line_profiler.isChecked():
+            return
+        view = self._active_view()
+        click = np.array([scene_pos.x(), scene_pos.y()])
+        nearest, nearest_distance = None, self.LINE_SELECT_TOLERANCE_PX
+        for roi in self.line_rois:
+            # Scene coordinates are screen pixels
+            a, b = (np.array([q.x(), q.y()]) for q in map(view.mapViewToScene, self._line_roi_endpoints(roi)))
+            ab = b - a
+            t = np.clip(np.dot(click - a, ab) / max(np.dot(ab, ab), 1e-12), 0, 1)
+            distance = np.linalg.norm(click - (a + t * ab))
+            if distance <= nearest_distance:
+                nearest, nearest_distance = roi, distance
+        if nearest is not None and nearest is not self.selected_line_roi:
+            self.select_line_roi(nearest)
+
+    def remove_line_roi(self, roi):
+        """Remove one line ROI; the most recently added remaining line becomes selected."""
+        if roi not in self.line_rois:
+            return
+        self.line_rois.remove(roi)
+        del self._line_roi_labels[roi]
+        self._active_view().removeItem(roi)
+        if self.selected_line_roi is roi:
+            self.selected_line_roi = None
+            if self.line_rois:
+                self.select_line_roi(self.line_rois[-1])
+        self.update_line_profile()
+
+    def clear_line_rois(self):
+        """Remove every line ROI."""
+        for roi in list(self.line_rois):
+            self.remove_line_roi(roi)
 
     def update_line_profile(self):
-        """Update the line profile plot based on the line ROI."""
-        if not self.btn_line_profiler.isChecked() or self.line_roi is None:
+        """Plot one intensity profile per line ROI, in the line's color."""
+        if not self.btn_line_profiler.isChecked():
             return
 
         try:
-            if hasattr(self.graphics_widget.img, "image"):
-                image = self.graphics_widget.img.image
-                if image is not None:
-                    # Get the line ROI state
-                    state = self.line_roi.getState()
-                    pos = state["pos"]
-                    size = state["size"]
-                    angle = state["angle"]
-                    print(angle)
-                    angle = np.radians(angle)
+            self.line_profiler_plot.clear()
+            image = self.graphics_widget.img.image
+            if image is None or not self.line_rois:
+                return
+            for roi in self.line_rois:
+                length, width = roi.size()
+                start, end = self._line_roi_endpoints(roi)
 
-                    # Calculate start and end points
-                    start = (pos[0], pos[1])
-                    end = (pos[0] + size[0] * np.cos(angle), pos[1] + size[0] * np.sin(angle))
+                # Convert ROI coordinates to image coordinates
+                start_img = self.graphics_widget.img.mapFromView(start)
+                end_img = self.graphics_widget.img.mapFromView(end)
+                profile = self.get_line_profile(image, start_img, end_img, width)
 
-                    # Convert ROI coordinates to image coordinates
-                    start_img = self.graphics_widget.img.mapFromView(pg.Point(start[0], start[1]))
-                    end_img = self.graphics_widget.img.mapFromView(pg.Point(end[0], end[1]))
+                pixel_distance = np.linspace(0, length, len(profile))
+                color, name = self._line_roi_labels[roi]
+                pen = pg.mkPen(color, width=2 if roi is self.selected_line_roi else 1)
+                self.line_profiler_plot.plot(pixel_distance, profile, pen=pen, name=name, connect="finite")
 
-                    # Get the profile along the line
-                    profile = self.get_line_profile(image, start_img, end_img, size[1])  # size[1] is the width
-
-                    # Clear previous plots
-                    self.line_profiler_plot.clear()
-
-                    # Calculate pixel distance for x-axis
-                    pixel_distance = np.linspace(0, size[0], len(profile))
-
-                    # Plot the profile
-                    self.line_profiler_plot.plot(pixel_distance, profile, pen="w", name="Intensity Profile")
-
-                    # Set labels
-                    self.line_profiler_plot.setLabel("left", "Intensity")
-                    self.line_profiler_plot.setLabel("bottom", "Distance (pixels)")
-
-                    # Add legend
-                    self.line_profiler_plot.addLegend()
-
-                    # Only auto-range if not manually set
-                    if not self.line_profiler_manual_range:
-                        self.line_profiler_plot.autoRange()
+            # Only auto-range if not manually set
+            if not self.line_profiler_manual_range:
+                self.line_profiler_plot.autoRange()
         except Exception as e:
             self._log.error(f"Error updating line profile: {str(e)}")
 
+    @staticmethod
+    def _line_roi_endpoints(roi):
+        """The line ROI's centerline endpoints in view coordinates.
+
+        The ROI's position is its corner, half a width off the line, so map the centerline instead."""
+        length, width = roi.size()
+        start = roi.mapToParent(pg.Point(0, width / 2))
+        end = roi.mapToParent(pg.Point(length, width / 2))
+        return start, end
+
+    def _add_line_across_image(self, start, end):
+        """Add a line ROI from start to end, given in image coordinates; cancels a line being drawn by hand."""
+        self._cancel_line_drawing()
+        start_view = self.graphics_widget.img.mapToView(pg.Point(*start))
+        end_view = self.graphics_widget.img.mapToView(pg.Point(*end))
+        self.line_start_pos = (start_view.x(), start_view.y())
+        self.line_end_pos = (end_view.x(), end_view.y())
+        self.create_line_roi()
+
+    def _image_size(self):
+        """(width, height) of the displayed image, or None before the first frame."""
+        if self.graphics_widget.img.image is None:
+            return None
+        return self.graphics_widget.img.width(), self.graphics_widget.img.height()
+
+    def add_horizontal_line(self):
+        """Add a horizontal line through the image center, across the full field of view."""
+        size = self._image_size()
+        if size is None:
+            return
+        width, height = size
+        y = (height - 1) / 2
+        self._add_line_across_image((0, y), (width - 1, y))
+
+    def add_vertical_line(self):
+        """Add a vertical line through the image center, across the full field of view."""
+        size = self._image_size()
+        if size is None:
+            return
+        width, height = size
+        x = (width - 1) / 2
+        self._add_line_across_image((x, 0), (x, height - 1))
+
+    def extend_line_to_fov(self):
+        """Extend the selected line along its direction until it meets the edges of the field of view."""
+        size = self._image_size()
+        roi = self.selected_line_roi
+        if size is None or roi is None:
+            return
+        start, end = (self.graphics_widget.img.mapFromView(p) for p in self._line_roi_endpoints(roi))
+        origin = np.array([start.x(), start.y()])
+        direction = np.array([end.x(), end.y()]) - origin
+        if np.linalg.norm(direction) == 0:
+            return
+
+        # Clip the infinite line origin + t * direction to the pixel centers [0, W-1] x [0, H-1]
+        t_min, t_max = -np.inf, np.inf
+        for o, d, upper in zip(origin, direction, (size[0] - 1, size[1] - 1)):
+            if abs(d) < 1e-9:
+                if not 0 <= o <= upper:
+                    return  # parallel to and outside this pair of edges
+                continue
+            t0, t1 = sorted(((0 - o) / d, (upper - o) / d))
+            t_min, t_max = max(t_min, t0), min(t_max, t1)
+        if t_max <= t_min:
+            return  # the line misses the image
+
+        new_start = self.graphics_widget.img.mapToView(pg.Point(*(origin + t_min * direction)))
+        new_end = self.graphics_widget.img.mapToView(pg.Point(*(origin + t_max * direction)))
+        self.line_profiler_manual_range = False  # fit the plot to the longer line
+        self._set_line_roi_endpoints(roi, new_start, new_end)
+
+    def fill_fov_with_line(self):
+        """Center the selected line on the image and widen its band to cover the whole field of view.
+
+        The line keeps its angle; its profile becomes the mean across the image perpendicular to it, e.g. the
+        mean of all rows for a horizontal line."""
+        size = self._image_size()
+        roi = self.selected_line_roi
+        if size is None or roi is None:
+            return
+        start, end = (self.graphics_widget.img.mapFromView(p) for p in self._line_roi_endpoints(roi))
+        direction = np.array([end.x() - start.x(), end.y() - start.y()])
+        if np.linalg.norm(direction) == 0:
+            return
+        along = direction / np.linalg.norm(direction)
+        across = np.array([-along[1], along[0]])
+
+        # Project the corner pixel centers onto the line and its normal
+        width, height = size
+        corners = np.array([(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)], dtype=float)
+        center = corners.mean(axis=0)
+        t = (corners - center) @ along
+        band = (corners - center) @ across
+        new_start = self.graphics_widget.img.mapToView(pg.Point(*(center + t.min() * along)))
+        new_end = self.graphics_widget.img.mapToView(pg.Point(*(center + t.max() * along)))
+        self.line_profiler_manual_range = False  # fit the plot to the new profile
+        # +1: the band covers whole pixels, half a pixel beyond the outermost pixel centers on each side
+        self._set_line_roi_endpoints(roi, new_start, new_end, band.max() - band.min() + 1)
+
+    @staticmethod
+    def _set_line_roi_endpoints(roi, start, end, width=None):
+        """Move a line ROI so its centerline runs from start to end (view coordinates); width defaults to its own."""
+        if width is None:
+            width = roi.size()[1]
+        start, end = pg.Point(start), pg.Point(end)
+        delta = end - start
+        angle = np.arctan2(delta.y(), delta.x())
+        # Same placement as pg.LineROI: the position is the corner half a width off the start point
+        corner = start + pg.Point(width / 2 * np.sin(angle), -width / 2 * np.cos(angle))
+        roi.setState({"pos": corner, "size": pg.Point(delta.length(), width), "angle": np.degrees(angle)})
+
+    @staticmethod
+    def _axis_aligned_line_profile(image, start, end, width):
+        """Exact profile of a horizontal or vertical line: the mean of the whole pixels its band covers.
+
+        Returns None for a tilted line. Columns (rows) off the image read NaN."""
+        if abs(end.y() - start.y()) < 1e-6:
+            pixels, along, across, lo_hi = image, (start.x(), end.x()), start.y(), image.shape[0]
+        elif abs(end.x() - start.x()) < 1e-6:
+            pixels, along, across, lo_hi = image.T, (start.y(), end.y()), start.x(), image.shape[1]
+        else:
+            return None
+        # Pixel i spans [i - 0.5, i + 0.5]: take every pixel whose center lies in the band, at least the nearest one
+        first = max(int(np.ceil(across - width / 2)), 0)
+        last = min(int(np.floor(across + width / 2)), lo_hi - 1)
+        if last < first:
+            first = last = int(round(across))
+        positions = np.arange(int(round(along[0])), int(round(along[1])) + 1)
+        if along[1] < along[0]:
+            positions = np.arange(int(round(along[0])), int(round(along[1])) - 1, -1)
+        profile = np.full(len(positions), np.nan)
+        on_image = (positions >= 0) & (positions < pixels.shape[1])
+        if 0 <= first < lo_hi:
+            profile[on_image] = pixels[first : last + 1, positions[on_image]].mean(axis=0)
+        return profile
+
     def get_line_profile(self, image, start, end, width=1):
         """Get intensity profile along a line with specified width."""
+        exact = self._axis_aligned_line_profile(image, start, end, width)
+        if exact is not None:
+            return exact
         try:
             # Calculate the line vector
             line_vec = np.array([end.x() - start.x(), end.y() - start.y()])
@@ -1240,11 +1587,16 @@ class ImageDisplayWindow(QMainWindow):
             perp_vec = np.array([-line_vec[1], line_vec[0]]) / line_length
 
             # Create meshgrid for width sampling
-            width_points = max(1, int(width))  # Ensure at least 1 point
+            # One sample per pixel across the band, capped so a band as wide as the image (Fill FOV on a tilted
+            # line) stays cheap enough to recompute on every live frame
+            width_points = min(max(1, int(width)), self.MAX_BAND_SAMPLES)
             width_offsets = np.linspace(-width / 2, width / 2, width_points)
 
-            # Initialize profile array
+            # Sum and count only samples on the image: a band wider than the image (Fill FOV on a tilted line)
+            # must not average in made-up values
+            height, width_px = image.shape[:2]
             profile = np.zeros(num_points)
+            counts = np.zeros(num_points)
 
             # Sample points along the width
             for w in width_offsets:
@@ -1252,11 +1604,19 @@ class ImageDisplayWindow(QMainWindow):
                 y_offset = y + perp_vec[1] * w
 
                 # Get values at these points
-                values = scipy.ndimage.map_coordinates(image, [y_offset, x_offset], order=1)
-                profile += values
+                # "nearest" so a sample on the outer half of an edge pixel reads that pixel, not 0
+                values = scipy.ndimage.map_coordinates(
+                    image, [y_offset, x_offset], order=1, output=np.float64, mode="nearest"
+                )
+                on_image = (
+                    (x_offset >= -0.5) & (x_offset <= width_px - 0.5) & (y_offset >= -0.5) & (y_offset <= height - 0.5)
+                )
+                profile += np.where(on_image, values, 0)
+                counts += on_image
 
-            # Average the values
-            profile /= width_points
+            # Average the values; NaN (a gap in the plot) where the line is off the image
+            with np.errstate(invalid="ignore", divide="ignore"):
+                profile /= counts
 
             return profile
 
@@ -1351,6 +1711,8 @@ class ImageDisplayWindow(QMainWindow):
 
         # Handle double clicks for other purposes
         if not evt.double():
+            if evt.button() == Qt.LeftButton:
+                self._select_line_near(evt.scenePos())
             return
 
         try:
@@ -1399,6 +1761,7 @@ class ImageDisplayWindow(QMainWindow):
         if self.first_image:
             self.first_image = False
             self.btn_line_profiler.setEnabled(True)
+        self._current_image = image
 
         if ENABLE_TRACKING:
             image = np.copy(image)
@@ -1407,7 +1770,7 @@ class ImageDisplayWindow(QMainWindow):
                 cv2.rectangle(image, self.ptRect1, self.ptRect2, (255, 255, 255), 4)
                 self.draw_rectangle = False
 
-        info = np.iinfo(image.dtype) if np.issubdtype(image.dtype, np.integer) else np.finfo(image.dtype)
+        info = _dtype_range(image.dtype)
         min_val, max_val = info.min, info.max
 
         if self.liveController is not None and self.contrastManager is not None:
@@ -1428,6 +1791,7 @@ class ImageDisplayWindow(QMainWindow):
                 self.graphics_widget.img.setLevels((min_val, max_val))
 
         self.graphics_widget.img.updateImage()
+        self._update_overlays()
 
         # Update pixel value based on last valid position
         if self.has_valid_position:
@@ -1442,7 +1806,7 @@ class ImageDisplayWindow(QMainWindow):
                 self.cursor_position_label.setText(f"Position: ({self.last_valid_x}, {self.last_valid_y})")
                 self.pixel_value_label.setText(f"Value: {self.last_valid_value}")
 
-        if self.line_roi is not None and self.btn_line_profiler.isChecked():
+        if self.line_rois and self.btn_line_profiler.isChecked():
             self.update_line_profile()
 
     def mark_spot(self, image: np.ndarray, x: float, y: float):
@@ -1517,11 +1881,14 @@ class NavigationViewer(QFrame):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-        self.sample = sample
+        # Catalog identity vs display identity: "4 glass slide" is an image
+        # choice, not a format. Constructors may pass either; normalize to the
+        # format and derive the display name from the ONE owner of the alias.
+        self.format = "glass slide" if sample in ("glass slide", "4 glass slide") else sample
+        self.sample = self._display_sample_for(self.format)
         self.objectiveStore = objectivestore
         self.camera = camera
         self.well_size_mm = WELL_SIZE_MM
-        self.well_spacing_mm = WELL_SPACING_MM
         self.number_of_skip = NUMBER_OF_SKIP
         self.a1_x_mm = A1_X_MM
         self.a1_y_mm = A1_Y_MM
@@ -1547,9 +1914,9 @@ class NavigationViewer(QFrame):
         print("navigation viewer:", sample)
         self.init_ui(invertX)
 
-        self.load_background_image(self.image_paths.get(sample, "images/4 slide carrier_1509x1010.png"))
+        self.load_background_image(self.image_paths.get(self.sample, "images/4 slide carrier_1509x1010.png"))
         self.create_layers()
-        self.update_display_properties(sample)
+        self.update_display_properties(self.sample)
         # self.update_display()
 
     def init_ui(self, invertX):
@@ -1598,7 +1965,13 @@ class NavigationViewer(QFrame):
         """Set the alignment widget to be displayed in the navigation viewer."""
         self.alignment_widget = alignment_widget
         self.alignment_widget.setParent(self.graphics_widget)
+        self.alignment_widget.installEventFilter(self)  # it grows/shrinks as its Auto button toggles
         self.alignment_widget.adjustSize()
+
+    def eventFilter(self, obj, event):
+        if obj is self.alignment_widget and event.type() == QEvent.Resize:
+            self._position_button()
+        return super().eventFilter(obj, event)
         self._position_button()
 
     def resizeEvent(self, event):
@@ -1665,42 +2038,58 @@ class NavigationViewer(QFrame):
     def update_fov_size(self):
         self.fov_size_mm = self.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
 
+    @staticmethod
+    def _display_sample_for(format_: str) -> str:
+        """The display alias for a catalog format - the one owner of the
+        "4 glass slide is how an HCS machine DRAWS a glass slide" rule."""
+        if format_ == "glass slide" and IS_HCS:
+            return "4 glass slide"
+        return format_
+
+    def _current_rotation_deg(self) -> float:
+        """The measured plate rotation, resolved at CALL time (never cached).
+
+        The background image is a NOMINAL drawing - wells on an unrotated grid -
+        so under a measured rotation the stage<->pixel mapping must go through
+        the plate frame: pixels are always nominal, stage coordinates are
+        rotated about A1. Pitch-0 formats (glass slides) resolve to 0.0 in the
+        resolver itself - no sample-name special cases here.
+        """
+        try:
+            return resolve_rotation_deg(self.format)[0]
+        except Exception:
+            self._log.exception(
+                f"Could not resolve plate rotation for {self.format!r}; drawing the navigation view with 0.00 deg."
+            )
+            return 0.0
+
     def redraw_fov(self):
         self.clear_overlay()
         self.update_fov_size()
         self.draw_current_fov(self.x_mm, self.y_mm)
 
-    def update_wellplate_settings(
-        self,
-        sample_format,
-        a1_x_mm,
-        a1_y_mm,
-        a1_x_pixel,
-        a1_y_pixel,
-        well_size_mm,
-        well_spacing_mm,
-        number_of_skip,
-        rows,
-        cols,
-    ):
-        if isinstance(sample_format, QVariant):
-            sample_format = sample_format.value()
+    def update_wellplate_settings(self, settings: "WellplateSettings"):
+        sample_format = settings.format
+        a1_x_mm = settings.a1_x_mm
+        a1_y_mm = settings.a1_y_mm
+        a1_x_pixel = settings.a1_x_pixel
+        a1_y_pixel = settings.a1_y_pixel
+        well_size_mm = settings.well_size_mm
+        number_of_skip = settings.number_of_skip
+        rows = settings.rows
+        cols = settings.cols
 
-        if sample_format == "glass slide":
-            if IS_HCS:
-                sample = "4 glass slide"
-            else:
-                sample = "glass slide"
-        else:
-            sample = sample_format
+        sample = self._display_sample_for(sample_format)
 
         self.sample = sample
+        self.format = sample_format  # catalog identity survives the display renaming
         self.a1_x_mm = a1_x_mm
         self.a1_y_mm = a1_y_mm
         self.a1_x_pixel = a1_x_pixel
         self.a1_y_pixel = a1_y_pixel
         self.well_size_mm = well_size_mm
-        self.well_spacing_mm = well_spacing_mm
+        # settings.well_spacing_mm is deliberately not stored: NavigationViewer's
+        # mm<->pixel mapping never uses the pitch.
         self.number_of_skip = number_of_skip
         self.rows = rows
         self.cols = cols
@@ -1708,13 +2097,20 @@ class NavigationViewer(QFrame):
         # Try to find the image for the wellplate
         image_path = self.image_paths.get(sample)
         if image_path is None or not os.path.exists(image_path):
-            # Look for a custom wellplate image
+            # Custom wellplate image: raw name is the convention; the underscore
+            # variant is a legacy fallback for images generated by older builds,
+            # which wrote spaces as underscores.
             custom_image_path = os.path.join("images", self.sample + ".png")
-            self._log.info(custom_image_path)
+            legacy_image_path = os.path.join("images", self.sample.replace(" ", "_") + ".png")
             if os.path.exists(custom_image_path):
                 image_path = custom_image_path
+            elif os.path.exists(legacy_image_path):
+                image_path = legacy_image_path
             else:
-                self._log.warning(f"Image not found for {sample}. Using default image.")
+                self._log.warning(
+                    f"No plate image for {sample!r} (tried {custom_image_path!r} and {legacy_image_path!r}); "
+                    f"using the default image - the navigation view will not match this plate."
+                )
                 image_path = self.image_paths.get("glass slide")  # Use a default image
 
         self.load_background_image(image_path)
@@ -1734,7 +2130,12 @@ class NavigationViewer(QFrame):
             self.x_mm = x_mm
             self.y_mm = y_mm
 
-    def get_FOV_pixel_coordinates(self, x_mm, y_mm):
+    def get_FOV_pixel_coordinates(self, x_mm, y_mm, rotation_deg=None):
+        """Stage mm -> image pixel corners of the FOV box.
+
+        rotation_deg lets batch callers resolve the rotation once per redraw
+        instead of once per FOV (resolution reads the placement/holder files).
+        """
         if self.sample == "glass slide":
             current_FOV_top_left = (
                 round(self.origin_x_pixel + x_mm / self.mm_per_pixel - self.fov_size_mm / 2 / self.mm_per_pixel),
@@ -1753,13 +2154,29 @@ class NavigationViewer(QFrame):
                 ),
             )
         else:
+            if rotation_deg is None:
+                rotation_deg = self._current_rotation_deg()
+            if rotation_deg == 0.0:
+                # Legacy arithmetic kept verbatim (origin_pixel form) so the
+                # unrotated path is bit-for-bit what it always was.
+                center_x_pixel = self.origin_x_pixel + x_mm / self.mm_per_pixel
+                center_y_pixel = self.origin_y_pixel + y_mm / self.mm_per_pixel
+            else:
+                # Stage -> plate frame (R(-theta) about A1), then the nominal
+                # drawing's anchor. The pivot is the same composed a1 the
+                # planner rotates about, so a planned well-center FOV lands on
+                # the well's drawn (nominal) position.
+                plate_x, plate_y = rotate_deg(-rotation_deg, x_mm - self.a1_x_mm, y_mm - self.a1_y_mm)
+                center_x_pixel = self.a1_x_pixel + plate_x / self.mm_per_pixel
+                center_y_pixel = self.a1_y_pixel + plate_y / self.mm_per_pixel
+            half_fov_pixel = self.fov_size_mm / 2 / self.mm_per_pixel
             current_FOV_top_left = (
-                round(self.origin_x_pixel + x_mm / self.mm_per_pixel - self.fov_size_mm / 2 / self.mm_per_pixel),
-                round((self.origin_y_pixel + y_mm / self.mm_per_pixel) - self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(center_x_pixel - half_fov_pixel),
+                round(center_y_pixel - half_fov_pixel),
             )
             current_FOV_bottom_right = (
-                round(self.origin_x_pixel + x_mm / self.mm_per_pixel + self.fov_size_mm / 2 / self.mm_per_pixel),
-                round((self.origin_y_pixel + y_mm / self.mm_per_pixel) + self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(center_x_pixel + half_fov_pixel),
+                round(center_y_pixel + half_fov_pixel),
             )
         return current_FOV_top_left, current_FOV_bottom_right
 
@@ -1790,6 +2207,7 @@ class NavigationViewer(QFrame):
             return
 
         color = (252, 174, 30, 128)  # Yellow RGBA
+        rotation_deg = self._current_rotation_deg()  # once per batch, not per FOV
         for fov in fov_list:
             # Handle tuple (2D or 3D) and FovCenter object formats
             if isinstance(fov, tuple):
@@ -1798,7 +2216,9 @@ class NavigationViewer(QFrame):
             else:
                 x_mm = fov.x_mm
                 y_mm = fov.y_mm
-            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
+                x_mm, y_mm, rotation_deg=rotation_deg
+            )
             cv2.rectangle(
                 self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, color, self.box_line_thickness
             )
@@ -1815,6 +2235,7 @@ class NavigationViewer(QFrame):
         if not fov_list:
             return
 
+        rotation_deg = self._current_rotation_deg()  # once per batch, not per FOV
         for fov in fov_list:
             # Handle tuple (2D or 3D) and FovCenter object formats
             if isinstance(fov, tuple):
@@ -1823,7 +2244,9 @@ class NavigationViewer(QFrame):
             else:
                 x_mm = fov.x_mm
                 y_mm = fov.y_mm
-            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
+                x_mm, y_mm, rotation_deg=rotation_deg
+            )
             cv2.rectangle(
                 self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, (0, 0, 0, 0), self.box_line_thickness
             )
@@ -1858,6 +2281,25 @@ class NavigationViewer(QFrame):
         self.focus_point_overlay.fill(0)
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
 
+    def pixel_to_stage_mm(self, x_pixel, y_pixel):
+        """Image pixel -> stage mm: the inverse of get_FOV_pixel_coordinates.
+
+        The clicked pixel is a NOMINAL plate position (the drawing is unrotated),
+        so under a measured rotation the plate-frame point rotates forward
+        (R(+theta) about A1) into stage coordinates - a double-click on a drawn
+        well navigates to where that well actually sits.
+        """
+        rotation_deg = self._current_rotation_deg()  # pitch-0 formats resolve to 0.0
+        if rotation_deg == 0.0:
+            # Legacy arithmetic kept verbatim for the unrotated path.
+            x_mm = (x_pixel - self.origin_x_pixel) * self.mm_per_pixel
+            y_mm = (y_pixel - self.origin_y_pixel) * self.mm_per_pixel
+            return x_mm, y_mm
+        plate_x = (x_pixel - self.a1_x_pixel) * self.mm_per_pixel
+        plate_y = (y_pixel - self.a1_y_pixel) * self.mm_per_pixel
+        dx, dy = rotate_deg(rotation_deg, plate_x, plate_y)
+        return (self.a1_x_mm + dx, self.a1_y_mm + dy)
+
     def handle_mouse_click(self, evt):
         if not evt.double():
             return
@@ -1865,9 +2307,7 @@ class NavigationViewer(QFrame):
             # Get mouse position in image coordinates (independent of zoom)
             mouse_point = self.background_item.mapFromScene(evt.scenePos())
 
-            # Subtract origin offset before converting to mm
-            x_mm = (mouse_point.x() - self.origin_x_pixel) * self.mm_per_pixel
-            y_mm = (mouse_point.y() - self.origin_y_pixel) * self.mm_per_pixel
+            x_mm, y_mm = self.pixel_to_stage_mm(mouse_point.x(), mouse_point.y())
 
             self._log.debug(f"Got double click at (x_mm, y_mm) = {x_mm, y_mm}")
             self.signal_coordinates_clicked.emit(x_mm, y_mm)

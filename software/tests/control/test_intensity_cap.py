@@ -103,7 +103,7 @@ def test_update_illumination_clamps_laser_intensity_to_cap(scope, live, intensit
 
 
 def _channel_switch_stub(cap_percent, qtbot):
-    """LiveControlWidget/NapariLiveWidget-shaped stub with real intensity controls."""
+    """LiveControlWidget-shaped stub with real intensity controls."""
     stub = MagicMock()
     stub.is_switching_mode = False
     stub.liveController.get_intensity_cap_percent.return_value = cap_percent
@@ -134,15 +134,6 @@ def test_live_control_widget_caps_intensity_controls_on_channel_switch(qtbot):
 
     assert stub.entry_illuminationIntensity.maximum() == pytest.approx(20.0)
     assert stub.entry_illuminationIntensity.value() == pytest.approx(20.0)
-    stub.slider_illuminationIntensity.setValue(50)
-    assert stub.slider_illuminationIntensity.value() == 20
-
-
-def test_napari_live_widget_caps_intensity_slider_on_channel_switch(qtbot):
-    stub, config = _channel_switch_stub(cap_percent=20.0, qtbot=qtbot)
-    control.widgets.NapariLiveWidget.update_ui_for_mode(stub, config)
-
-    assert stub.slider_illuminationIntensity.value() == 20
     stub.slider_illuminationIntensity.setValue(50)
     assert stub.slider_illuminationIntensity.value() == 20
 

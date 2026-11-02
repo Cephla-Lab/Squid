@@ -9,7 +9,7 @@ import yaml
 from datetime import datetime
 from enum import Enum
 from threading import Thread
-from typing import Optional, Tuple, Any
+from typing import Any, Callable, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,12 @@ import pandas as pd
 from control import utils, utils_acquisition
 import control._def
 from control.core.auto_focus_controller import AutoFocusController
-from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
+from control.core.multi_point_utils import (
+    MultiPointControllerFunctions,
+    ScanPositionInformation,
+    AcquisitionParameters,
+    piezo_z_range_problem,
+)
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
@@ -88,7 +93,9 @@ def _save_acquisition_yaml(
             "nz": params.NZ,
             "delta_z_mm": params.deltaZ,
             "config": params.z_stacking_config,
+            "order": params.z_stack_order,
             "z_range_mm": _serialize_for_yaml(params.z_range) if params.z_range else None,
+            "piezo_z_range_um": _serialize_for_yaml(params.piezo_z_range_um) if params.piezo_z_range_um else None,
             "use_piezo": params.use_piezo,
         },
         "time_series": {
@@ -98,6 +105,7 @@ def _save_acquisition_yaml(
         "autofocus": {
             "contrast_af": params.do_autofocus,
             "laser_af": params.do_reflection_autofocus,
+            "laser_af_per_stack": params.laser_af_per_stack,
         },
         "channels": [_serialize_for_yaml(ch) for ch in params.selected_configurations],
     }
@@ -228,6 +236,7 @@ class MultiPointController:
         # direct-constructor contract for TCP/MCP callers that build AcquisitionParameters
         # without going through this controller.
         self.apply_channel_offset = False
+        self.laser_af_per_stack = False
         self.display_resolution_scaling = control._def.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.use_piezo = control._def.MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
         self.experiment_ID = None
@@ -248,13 +257,18 @@ class MultiPointController:
         self.focus_map = None
         self.region_laser_af_offsets = {}
         self.gen_focus_map = False
+        # Optional check run before every start (GUI widgets, workflow runner, TCP server): returns why the acquisition
+        # must not start now, or None. A Z lift system uses it to refuse a start while the lift is moving.
+        self.start_blocker: Optional[Callable[[], Optional[str]]] = None
         self.focus_map_storage = []
         self.already_using_fmap = False
         self.selected_configurations = []
         self.scanCoordinates = scan_coordinates
         self.old_images_per_page = 1
         self.z_range: Tuple[float, float] = None
+        self.piezo_z_range_um: Optional[Tuple[float, float]] = None
         self.z_stacking_config = control._def.Z_STACKING_CONFIG
+        self.z_stack_order = control._def.Z_STACK_ORDER
 
         self._start_position: Optional[squid.abc.Pos] = None
 
@@ -384,13 +398,26 @@ class MultiPointController:
         if self.multiPointWorker:
             self.multiPointWorker.update_use_piezo(checked)
 
-    def set_z_stacking_config(self, z_stacking_config_index):
-        if z_stacking_config_index in control._def.Z_STACKING_CONFIG_MAP:
-            self.z_stacking_config = control._def.Z_STACKING_CONFIG_MAP[z_stacking_config_index]
+    def set_z_stacking_config(self, z_stacking_config: str):
+        """Where the stack sits relative to each position's z: "FROM BOTTOM", "FROM CENTER" or "FROM TOP"."""
+        valid = set(control._def.Z_STACKING_CONFIG_MAP.values())
+        if z_stacking_config not in valid:
+            raise ValueError(f"Unknown z_stacking_config '{z_stacking_config}'; expected one of {sorted(valid)}")
+        self.z_stacking_config = z_stacking_config
         self._log.info(f"z-stacking configuration set to {self.z_stacking_config}")
+
+    def set_z_stack_order(self, z_stack_order: str):
+        if z_stack_order not in control._def.Z_STACK_ORDERS:
+            raise ValueError(f"Unknown z_stack_order '{z_stack_order}'; expected one of {control._def.Z_STACK_ORDERS}")
+        self.z_stack_order = z_stack_order
+        self._log.info(f"z-stack order set to {self.z_stack_order}")
 
     def set_z_range(self, minZ, maxZ):
         self.z_range = [minZ, maxZ]
+
+    def set_piezo_z_range_um(self, piezo_z_range_um: Optional[Tuple[float, float]]):
+        """Set Z-range on a piezo stack: (min, max) piezo positions in µm, or None to start from the current piezo."""
+        self.piezo_z_range_um = piezo_z_range_um
 
     def set_NX(self, N):
         self.NX = N
@@ -424,6 +451,10 @@ class MultiPointController:
 
     def set_apply_channel_offset(self, flag: bool):
         self.apply_channel_offset = flag
+
+    def set_laser_af_per_stack(self, flag: bool):
+        """Z First only: re-run laser AF before each later channel's stack (opt-in, default off)."""
+        self.laser_af_per_stack = flag
 
     def set_manual_focus_map_flag(self, flag):
         self.use_manual_focus_map = flag
@@ -560,32 +591,6 @@ class MultiPointController:
             # this "not configured" and want it to be a ValueError.
             raise ValueError("Not properly configured for an acquisition, cannot calculate image count.")
 
-    def _temporary_get_an_image_hack(self) -> Tuple[np.array, bool]:
-        was_streaming = self.camera.get_is_streaming()
-        callbacks_were_enabled = self.camera.get_callbacks_enabled()
-        self.camera.enable_callbacks(False)
-        test_frame = None
-        if not was_streaming:
-            self.camera.start_streaming()
-        try:
-            channels = self.liveController.get_channels(self.objectiveStore.current_objective)
-            if not channels:
-                self._log.warning("No channels available in _temporary_get_an_image_hack")
-                return (None, False)
-            # Note: config is currently unused but kept for potential future use
-            config = channels[0]
-            if (
-                self.liveController.trigger_mode == control._def.TriggerMode.SOFTWARE
-                or self.liveController.trigger_mode == control._def.TriggerMode.HARDWARE
-            ):
-                self.camera.send_trigger()
-            test_frame = self.camera.read_camera_frame()
-        finally:
-            self.camera.enable_callbacks(callbacks_were_enabled)
-            if not was_streaming:
-                self.camera.stop_streaming()
-        return (test_frame.frame, test_frame.is_color()) if test_frame else (None, False)
-
     def get_estimated_acquisition_disk_storage(self):
         """
         This does its best to return the number of bytes needed to store the settings for the currently
@@ -597,24 +602,15 @@ class MultiPointController:
             raise ValueError("Cannot calculate disk space requirements without any valid configurations.")
         first_config = self.liveController.get_channels(self.objectiveStore.current_objective)[0]
 
-        # Our best bet is to grab an image, and use that for our size estimate.
-        test_image = None
-        is_color = True
-        try:
-            test_image, is_color = self._temporary_get_an_image_hack()
-        except Exception as e:
-            self._log.exception("Couldn't capture image from camera for size estimate, using worst cast image.")
-            # Not ideal that we need to catch Exception, but the camera implementations vary wildly...
-            pass
-
-        if test_image is None:
-            is_color = squid.abc.CameraPixelFormat.is_color_format(self.camera.get_pixel_format())
-            # Do our best to create a fake image with the correct properties.
-            # TODO(imo): It'd be better to pull this from our camera but need to wait for AbstractCamera for a consistent way to do that.
-            width, height = self.camera.get_crop_size()
-            bytes_per_pixel = 3 if is_color else 2  # Worst case assumptions: 24 bit color, 16 bit grayscale
-
-            test_image = np.random.randint(2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
+        # A worst-case image with the camera's size and format: random 16-bit data, which compression can't shrink.
+        # This used to trigger the camera for a real frame. In hardware trigger mode nothing but the acquisition
+        # delivers that frame (on AION the trigger ran a confocal scan and then timed out, 1.1 s per acquisition
+        # start), and in software trigger mode it was a dark frame, which compresses better than the real images.
+        is_color = squid.abc.CameraPixelFormat.is_color_format(self.camera.get_pixel_format())
+        width, height = self.camera.get_crop_size()
+        # Shaped like the camera's frames: (height, width) monochrome, which pseudocolor saving turns into RGB.
+        shape = (height, width, 3) if is_color else (height, width)
+        test_image = np.random.randint(2**16 - 1, size=shape, dtype=np.uint16)
 
         # Depending on settings, we modify the image before saving.  This means we need to actually save an image
         # to see how much disk space it takes up.  This can be very wrong (eg: if we compress during saving, then
@@ -623,7 +619,14 @@ class MultiPointController:
             file_id = "test_id"
             test_config = first_config
             size_before = utils.get_directory_disk_usage(pathlib.Path(temp_save_dir))
-            saved_image = utils_acquisition.save_image(test_image, file_id, temp_save_dir, test_config, is_color)
+            saved_image = utils_acquisition.save_image(
+                test_image,
+                file_id,
+                temp_save_dir,
+                test_config,
+                is_color,
+                tiff_compression_level=control._def.TIFF_COMPRESSION_LEVEL,
+            )
             size_after = utils.get_directory_disk_usage(pathlib.Path(temp_save_dir))
 
             size_per_image = size_after - size_before
@@ -706,7 +709,10 @@ class MultiPointController:
 
         return mosaic_width * mosaic_height * bytes_per_pixel * num_channels
 
-    def run_acquisition(self, acquire_current_fov=False):
+    _MCU_IDLE_WAIT_S = 15  # a wedged MCU clears a few seconds after live triggers stop
+
+    def run_acquisition(self, acquire_current_fov=False) -> bool:
+        """Start the acquisition worker; returns True once it is running, False if the start was aborted."""
         # Consume the per-region laser-AF offsets for THIS run and clear the sticky controller
         # copy up-front. Any early return below — or a prior GUI abort that pushed offsets but
         # never reached run_acquisition (e.g. aborted on the disk/RAM dialog) — then cannot leak
@@ -723,7 +729,13 @@ class MultiPointController:
             # emit acquisition finished signal to re-enable the UI
             self.last_end_reason = "failed_to_start"
             self.callbacks.signal_acquisition_finished()
-            return
+            return False
+        refusal = self.start_blocker() if self.start_blocker is not None else None
+        if refusal:
+            self._log.error(f"Acquisition not started: {refusal}")
+            self.last_end_reason = "failed_to_start"
+            self.callbacks.signal_acquisition_finished()
+            return False
         self._start_per_acquisition_log()
 
         # Start memory monitoring for the acquisition (if enabled)
@@ -789,9 +801,28 @@ class MultiPointController:
             # stop live
             if self.liveController.is_live:
                 self.liveController_was_live_before_multipoint = True
-                self.liveController.stop_live()  # @@@ to do: also uncheck the live button
+                try:
+                    self.liveController.stop_live()  # @@@ to do: also uncheck the live button
+                except TimeoutError:
+                    # Live is already stopped and its trigger timer cancelled by this
+                    # point; the idle wait below is the recovery, so don't abort here.
+                    self._log.warning(
+                        "Stopping live timed out waiting for the microcontroller; "
+                        "waiting for it to go idle before starting the acquisition."
+                    )
             else:
                 self.liveController_was_live_before_multipoint = False
+
+            # A wedged MCU (see LiveController.trigger_acquisition) clears once live
+            # triggers stop; wait it out rather than timing out the first stage move.
+            try:
+                self.microcontroller.wait_till_operation_is_completed(timeout_limit_s=self._MCU_IDLE_WAIT_S)
+            except TimeoutError:
+                self._log.error(
+                    f"Microcontroller still busy after {self._MCU_IDLE_WAIT_S} s - home the stage or "
+                    "power-cycle the controller. Aborting the acquisition start."
+                )
+                return False
 
             self.camera_callback_was_enabled_before_multipoint = self.camera.get_callbacks_enabled()
             # We need callbacks, because we trigger and then use callbacks for image processing.  This
@@ -816,7 +847,7 @@ class MultiPointController:
                 self._log.info("Generating autofocus plane for multipoint grid")
                 bounds = self.scanCoordinates.get_scan_bounds()
                 if not bounds:
-                    return
+                    return False
                 x_min, x_max = bounds["x"]
                 y_min, y_max = bounds["y"]
 
@@ -877,7 +908,7 @@ class MultiPointController:
 
                 except ValueError:
                     self._log.exception("Invalid coordinates for autofocus plane, aborting.")
-                    return
+                    return False
 
             def finish_fn():
                 try:
@@ -1013,6 +1044,7 @@ class MultiPointController:
                     self.callbacks.signal_acquisition_finished()
                 except Exception:
                     self._log.exception("acquisition_finished callback failed after a failed acquisition start")
+        return thread_started
 
     def build_params(
         self, scan_position_information: ScanPositionInformation, region_laser_af_offsets: Optional[dict] = None
@@ -1047,10 +1079,17 @@ class MultiPointController:
             do_autofocus=self.do_autofocus,
             do_reflection_autofocus=self.do_reflection_af,
             apply_channel_offset=self.apply_channel_offset,
+            # Only meaningful with laser AF in Z First; the snap paths turn reflection AF off before running, so
+            # normalise here or the saved acquisition.yaml could fail the loaders' strict check on reload.
+            laser_af_per_stack=bool(
+                self.laser_af_per_stack and self.do_reflection_af and self.z_stack_order == "Z FIRST"
+            ),
             use_piezo=self.use_piezo,
             display_resolution_scaling=self.display_resolution_scaling,
             z_stacking_config=self.z_stacking_config,
+            z_stack_order=self.z_stack_order,
             z_range=self.z_range,
+            piezo_z_range_um=self.piezo_z_range_um,
             skip_saving=self.skip_saving,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
@@ -1060,23 +1099,32 @@ class MultiPointController:
 
     def _on_acquisition_completed(self):
         self._log.debug("MultiPointController._on_acquisition_completed called")
+        worker = self.multiPointWorker
+        self.last_end_reason = getattr(worker, "end_reason", None) or "completed"
+        self.last_image_count = int(getattr(worker, "image_count", 0) or 0)
+        # Each group runs even when the other one fails, and the end of the run is reported either way: otherwise the
+        # GUI stays in "acquiring" with no acquisition left to abort (e.g. after the stage stopped answering).
+        for restore in (self._restore_software_state_after_acquisition, self._restore_hardware_after_acquisition):
+            try:
+                restore()
+            except Exception:
+                self._log.exception(f"Restoring after the acquisition failed in {restore.__name__}")
+        # emit the acquisition finished signal to enable the UI
+        self.callbacks.signal_acquisition_finished()
+
+    def _restore_software_state_after_acquisition(self):
+        """The steps that talk to no device, so a dead controller cannot stop them."""
         # Note: Plate views are saved per timepoint in the worker's run_single_time_point method
 
-        # restore the previous selected mode
+        # restore the previous focus map
         if self.gen_focus_map:
             self.autofocusController.clear_focus_map()
             for x, y, z in self.focus_map_storage:
                 self.autofocusController.focus_map_coords.append((x, y, z))
             self.autofocusController.use_focus_map = self.already_using_fmap
-        self.callbacks.signal_current_configuration(self.configuration_before_running_multipoint)
-        self.liveController.set_microscope_mode(self.configuration_before_running_multipoint)
 
         # Restore callbacks to pre-acquisition state
         self.camera.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
-
-        # re-enable live if it's previously on
-        if self.liveController_was_live_before_multipoint and control._def.RESUME_LIVE_AFTER_ACQUISITION:
-            self.liveController.start_live()
 
         # Stop memory monitoring and log final report (in background to not delay acquisition finish)
         if self._memory_monitor is not None:
@@ -1093,15 +1141,21 @@ class MultiPointController:
 
             Thread(target=_stop_monitor_background, daemon=True).start()
 
-        # emit the acquisition finished signal to enable the UI
         self._log.info(f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}")
         utils.create_done_file(os.path.join(self.base_path, self.experiment_ID))
-        worker = self.multiPointWorker
-        self.last_end_reason = getattr(worker, "end_reason", None) or "completed"
-        self.last_image_count = int(getattr(worker, "image_count", 0) or 0)
 
         if self.run_acquisition_current_fov:
             self.run_acquisition_current_fov = False
+
+    def _restore_hardware_after_acquisition(self):
+        """In order, stopping at the first failure: the rest would only wait out timeouts on the same dead device."""
+        # restore the previous selected mode
+        self.callbacks.signal_current_configuration(self.configuration_before_running_multipoint)
+        self.liveController.set_microscope_mode(self.configuration_before_running_multipoint)
+
+        # re-enable live if it's previously on
+        if self.liveController_was_live_before_multipoint and control._def.RESUME_LIVE_AFTER_ACQUISITION:
+            self.liveController.start_live()
 
         if self._start_position:
             x_mm = self._start_position.x_mm
@@ -1116,8 +1170,6 @@ class MultiPointController:
         ending_pos = self.stage.get_pos()
         self.callbacks.signal_current_fov(ending_pos.x_mm, ending_pos.y_mm)
 
-        self.callbacks.signal_acquisition_finished()
-
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
 
@@ -1128,6 +1180,24 @@ class MultiPointController:
                 "Laser Autofocus Not Ready - Please set the laser autofocus reference position before starting acquisition with laser AF enabled."
             )
             return False
+        if self.piezo_z_range_um is not None:
+            if not self.use_piezo:
+                self._log.error(
+                    "The Z-range holds piezo positions, but the z-stack is set to run on the stepper - set the range again."
+                )
+                return False
+            if self.do_reflection_af:
+                self._log.error(
+                    "Laser AF can't run with Set Range: the range is absolute piezo positions and laser AF would "
+                    "move the piezo off them at every FOV. Turn laser AF off, or use From Bottom / From Center."
+                )
+                return False
+            problem = piezo_z_range_problem(
+                self.piezo_z_range_um, self.NZ, abs(self.deltaZ) * 1000, self.z_stacking_config, self.piezo.range_um
+            )
+            if problem:
+                self._log.error(problem)
+                return False
         return True
 
     def get_plate_view(self) -> np.ndarray:

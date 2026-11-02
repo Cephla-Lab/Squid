@@ -21,6 +21,7 @@ import squid.logging
 from control.core.acquisition_settings import apply_acquisition_settings, parse_wells
 
 import control._def  # Module import for runtime access to MCP-modifiable settings
+import control.utils
 
 # Qt imports for thread-safe GUI operations
 try:
@@ -68,26 +69,14 @@ except ImportError:
         return {"default": default, "description": description, "ge": ge, "le": le}
 
 
-def resolve_field_value(value, default=None):
-    """
-    Extract actual value from a pydantic FieldInfo object.
-
-    When Field() is used as a default parameter in a regular Python function,
-    the default becomes the FieldInfo object itself. This helper extracts
-    the actual default value.
-    """
-    if PYDANTIC_AVAILABLE and isinstance(value, FieldInfo):
-        field_default = value.default
-        # Check for PydanticUndefined or Ellipsis (required field)
-        if field_default is ... or (
-            hasattr(field_default, "__class__") and "PydanticUndefinedType" in field_default.__class__.__name__
-        ):
-            return default
-        return field_default
-    elif isinstance(value, dict) and "default" in value:
-        # Fallback Field dict
-        return value.get("default", default)
-    return value
+def _call_default(default):
+    """The value a parameter takes when a call leaves it out, given its declared default: a Field()'s own default,
+    or inspect.Parameter.empty when the parameter is required."""
+    if PYDANTIC_AVAILABLE and isinstance(default, FieldInfo):
+        return inspect.Parameter.empty if default.is_required() else default.get_default(call_default_factory=True)
+    if not PYDANTIC_AVAILABLE and isinstance(default, dict):  # the fallback Field() above
+        return inspect.Parameter.empty if default["default"] is ... else default["default"]
+    return default
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -114,14 +103,20 @@ def schema_method(func: Callable) -> Callable:
             param2: float = Field(0.0, description="Optional float", ge=0, le=100),
         ) -> Dict[str, Any]:
             ...
+
+    A parameter the call leaves out gets its Field()'s default, and a required one left out is a TypeError naming
+    it. (Python alone would hand the method the FieldInfo object itself.)
     """
+    sig = inspect.signature(func)
+    call_sig = sig.replace(parameters=[p.replace(default=_call_default(p.default)) for p in sig.parameters.values()])
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
+        bound = call_sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        return func(*bound.args, **bound.kwargs)
 
     # Extract schema information from function signature
-    sig = inspect.signature(func)
     hints = get_type_hints(func) if hasattr(func, "__annotations__") else {}
 
     schema = {
@@ -188,15 +183,6 @@ def schema_method(func: Callable) -> Callable:
                     param_info["minimum"] = meta.ge
                 if hasattr(meta, "le") and meta.le is not None:
                     param_info["maximum"] = meta.le
-            # Check if field is required (default is PydanticUndefined or Ellipsis)
-            field_default = default.default
-            is_required = field_default is ... or (
-                hasattr(field_default, "__class__") and "PydanticUndefinedType" in field_default.__class__.__name__
-            )
-            if is_required:
-                schema["required"].append(param_name)
-            elif field_default is not None:
-                param_info["default"] = field_default
         elif isinstance(default, dict) and "description" in default:
             # Fallback Field dict
             if default.get("description"):
@@ -205,19 +191,23 @@ def schema_method(func: Callable) -> Callable:
                 param_info["minimum"] = default["ge"]
             if default.get("le") is not None:
                 param_info["maximum"] = default["le"]
-            if default.get("default") not in (None, ...):
-                param_info["default"] = default["default"]
-            else:
-                schema["required"].append(param_name)
-        elif default is inspect.Parameter.empty:
+
+        call_default = call_sig.parameters[param_name].default
+        if call_default is inspect.Parameter.empty:
             schema["required"].append(param_name)
-        elif default is not None:
-            param_info["default"] = default
+        elif call_default is not None:
+            param_info["default"] = call_default
 
         schema["parameters"][param_name] = param_info
 
     wrapper._schema = schema
     return wrapper
+
+
+_ACQUISITION_NOT_STARTED = (
+    "Acquisition did not start: the microcontroller stayed busy (home the stage or power-cycle the "
+    "controller) or the run was aborted before its worker launched; see the microscope log."
+)
 
 
 class MicroscopeControlServer:
@@ -580,6 +570,7 @@ class MicroscopeControlServer:
     @schema_method
     def _cmd_turn_on_illumination(self) -> Dict[str, Any]:
         """Turn on the illumination for the current channel."""
+        self.microscope.live_controller.hold_current_channel("tcp")  # wakes the line; opens a mechanical shutter
         self.microscope.live_controller.turn_on_illumination()
         return {"illumination": "on"}
 
@@ -587,6 +578,7 @@ class MicroscopeControlServer:
     def _cmd_turn_off_illumination(self) -> Dict[str, Any]:
         """Turn off all illumination."""
         self.microscope.live_controller.turn_off_illumination()
+        self.microscope.live_controller.release_current_channel("tcp")
         return {"illumination": "off"}
 
     @schema_method
@@ -698,14 +690,6 @@ class MicroscopeControlServer:
 
         import control._def
 
-        # Resolve FieldInfo objects to actual values (fixes bug when params not provided)
-        nx = resolve_field_value(nx, 2)
-        ny = resolve_field_value(ny, 2)
-        experiment_id = resolve_field_value(experiment_id, None)
-        base_path = resolve_field_value(base_path, None)
-        wellplate_format = resolve_field_value(wellplate_format, "96 well plate")
-        overlap_percent = resolve_field_value(overlap_percent, 10.0)
-
         # Check requirements
         if not self.multipoint_controller:
             raise RuntimeError(
@@ -721,9 +705,8 @@ class MicroscopeControlServer:
         if self.multipoint_controller.acquisition_in_progress():
             raise RuntimeError("Acquisition already in progress")
 
-        # Parse well coordinates
-        wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
-        well_coords = self._parse_wells(wells, wellplate_settings)
+        # Parse well coordinates (raises on unknown formats)
+        well_coords = self._parse_wells(wells, wellplate_format)
 
         if not well_coords:
             raise ValueError(f"Could not parse wells: {wells}")
@@ -788,7 +771,8 @@ class MicroscopeControlServer:
             total_images = total_fovs * len(channels)
 
             # Run the acquisition (non-blocking - runs in worker thread)
-            self.multipoint_controller.run_acquisition()
+            if not self.multipoint_controller.run_acquisition():
+                raise RuntimeError(_ACQUISITION_NOT_STARTED)
 
             return {
                 "started": True,
@@ -809,9 +793,13 @@ class MicroscopeControlServer:
             self._log.error(traceback.format_exc())
             raise RuntimeError(f"Failed to start acquisition: {str(e)}") from e
 
-    def _parse_wells(self, wells: str, wellplate_settings: dict) -> Dict[str, tuple]:
-        """Parse 'A1:B3' / 'A1,A2,B1' into {well_id: (x_mm, y_mm)} (shared with the acquisition-settings module)."""
-        return parse_wells(wells, wellplate_settings)
+    def _parse_wells(self, wells: str, wellplate_format: str) -> Dict[str, tuple]:
+        """Parse 'A1:B3' / 'A1,A2,B1' into {well_id: (x_mm, y_mm)} (shared with the acquisition-settings module).
+
+        Resolves through plate_transform_for(wellplate_format), so WELLPLATE_OFFSET is applied like at
+        every other site and an unknown format raises instead of falling back to invented geometry.
+        """
+        return parse_wells(wells, wellplate_format)
 
     @schema_method
     def _cmd_get_acquisition_status(self) -> Dict[str, Any]:
@@ -984,11 +972,6 @@ class MicroscopeControlServer:
 
         self._log.info(f"Starting acquisition from YAML: {yaml_path}")
 
-        # Resolve FieldInfo objects to actual values
-        wells = resolve_field_value(wells, None)
-        experiment_id = resolve_field_value(experiment_id, None)
-        base_path = resolve_field_value(base_path, None)
-
         # Validate file exists
         if not os.path.exists(yaml_path):
             raise FileNotFoundError(f"YAML file not found: {yaml_path}")
@@ -1014,7 +997,7 @@ class MicroscopeControlServer:
         except Exception as e:
             raise ValueError(f"Failed to parse YAML file: {e}") from e
 
-        # Validate hardware configuration (objective, binning)
+        # Validate hardware configuration (objective, binning, piezo)
         current_binning = None
         try:
             camera = getattr(self.microscope, "camera", None)
@@ -1028,7 +1011,13 @@ class MicroscopeControlServer:
             current_binning = (1, 1)  # Default for validation (will skip binning check)
 
         current_objective = self.microscope.objective_store.current_objective
-        validation = validate_hardware(yaml_data, current_objective, current_binning)
+        piezo = self.multipoint_controller.piezo
+        validation = validate_hardware(
+            yaml_data,
+            current_objective,
+            current_binning,
+            piezo_travel_um=piezo.range_um if piezo is not None else None,
+        )
 
         if not validation.is_valid:
             raise RuntimeError(f"Hardware configuration mismatch:\n{validation.message}")
@@ -1071,7 +1060,9 @@ class MicroscopeControlServer:
             self._set_gui_acquisition_state(yaml_data, is_running=True)
 
             # Run the acquisition (non-blocking - runs in worker thread)
-            self.multipoint_controller.run_acquisition()
+            if not self.multipoint_controller.run_acquisition():
+                self._set_gui_acquisition_state(yaml_data, is_running=False)
+                raise RuntimeError(_ACQUISITION_NOT_STARTED)
 
             self._log.info(
                 f"Acquisition started: {total_fovs} FOVs, {len(yaml_data.channel_names)} channels, "
@@ -1204,8 +1195,7 @@ class MicroscopeControlServer:
         """Set multiple view settings at once for RAM debugging (mosaic view: immediate; others: next acquisition)."""
         changes = []
 
-        # Note: Use isinstance(x, bool) instead of "x is not None" because Field(None, ...)
-        # returns a FieldInfo object (not None) when called directly without JSON parsing.
+        # isinstance, not "is not None": a value that is not a boolean leaves the setting as it is
         if isinstance(save_downsampled_overview, bool):
             control._def.SAVE_DOWNSAMPLED_OVERVIEW = save_downsampled_overview
             changes.append(f"save_downsampled_overview={'enabled' if save_downsampled_overview else 'disabled'}")
