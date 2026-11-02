@@ -109,11 +109,11 @@ def test_a_frame_still_in_flight_from_a_failed_burst_is_not_paired_with_the_retr
 
     w.microcontroller.seq_run.side_effect = run
 
-    frames, reason = w._run_sequenced_burst(_captures(3), 1000)
+    frames, reason = w._run_sequenced_burst(_captures(3), 1000, None)
     assert frames is None and "2 of 3" in reason
     assert camera.stream_restarts == 1, "the camera is resynchronized before the burst can be retried"
 
-    frames, reason = w._run_sequenced_burst(_captures(3), 1000)
+    frames, reason = w._run_sequenced_burst(_captures(3), 1000, None)
     assert reason is None
     assert [(frame.frame, info.z_index) for frame, info in frames] == [
         ("attempt2-z0", 0),
@@ -128,7 +128,7 @@ def test_a_burst_the_controller_refused_also_resynchronizes_the_camera():
     w = _bare_worker()
     w.microcontroller.seq_status = SequencerStatus(SeqState.FAILED, SeqError.INTERLOCK_OPEN, 0, 0)
 
-    frames, reason = w._run_sequenced_burst(_captures(3), 1000)
+    frames, reason = w._run_sequenced_burst(_captures(3), 1000, None)
 
     assert frames is None and "interlock" in reason
     assert w.camera.stream_restarts == 1
