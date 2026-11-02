@@ -206,16 +206,20 @@ def test_a_from_top_stack_steps_the_piezo_down_in_the_program_as_in_the_metadata
     assert piezo_um[len(FLUORESCENCE)] - piezo_um[0] == pytest.approx(-DZ_UM)  # the metadata steps down too
 
 
-def test_a_from_center_stack_leaves_the_piezo_where_the_software_stack_does(sequencing_setup, monkeypatch):
-    """After a From Center stack the controller leaves the piezo at the stack BOTTOM. The host must climb back
-    to the centre, as the software stack does: the next FOV's From Center move starts from where the piezo
-    was left, so left at the bottom every FOV would start half a stack below the previous one."""
-    kwargs = dict(monkeypatch=monkeypatch, z_stacking_config="FROM CENTER", n_regions=2, binning=(4, 4))
+@pytest.mark.parametrize("order", ["CHANNEL FIRST", "Z FIRST"])
+def test_a_from_center_stack_leaves_the_piezo_where_the_software_stack_does(sequencing_setup, monkeypatch, order):
+    """After a From Center stack the controller leaves the piezo at the stack BOTTOM (of the last burst, in Z
+    FIRST). The host must climb back to the centre, as the software stack does: the next FOV's From Center
+    move starts from where the piezo was left, so left at the bottom every FOV would start half a stack
+    below the previous one."""
+    kwargs = dict(
+        monkeypatch=monkeypatch, z_stacking_config="FROM CENTER", z_stack_order=order, n_regions=2, binning=(4, 4)
+    )
     software, _, software_final_um = run_acquisition(FLUORESCENCE, sequenced=False, **kwargs)
     sequenced, _, sequenced_final_um = run_acquisition(FLUORESCENCE, sequenced=True, **kwargs)
 
     software_um = [z_um for _, _, _, z_um in software.images]
-    assert software_um[: NZ * len(FLUORESCENCE)] == pytest.approx([18.5, 18.5, 20.0, 20.0, 21.5, 21.5])
+    assert sorted(software_um[: NZ * len(FLUORESCENCE)]) == pytest.approx([18.5, 18.5, 20.0, 20.0, 21.5, 21.5])
     assert [z_um for _, _, _, z_um in sequenced.images] == pytest.approx(software_um)
     assert sequenced_final_um == pytest.approx(software_final_um) == pytest.approx(20)
 
