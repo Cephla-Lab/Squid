@@ -1,6 +1,6 @@
 import threading
 from collections import deque
-from typing import Deque, Generic, List, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Callable, Deque, Generic, List, Optional, Sequence, Tuple, TypeVar
 
 T = TypeVar("T")
 
@@ -20,16 +20,29 @@ class PendingCaptures(Generic[T]):
 
     One batch may be outstanding at a time: queueing a second one would make "which capture does
     this frame belong to" depend on timing.
+
+    A batch belongs to one run of the camera stream, and says where its paired frames go. The
+    worker gives a batch up when its burst fails, restarts the stream and queues the retry's batch
+    for the new run - possibly while a frame callback of the old run is still on its way to pairing.
+    That frame is refused by take() under the same lock that replaced the batch, so it can neither
+    consume the retry's captures nor, if it was paired before the batch was given up, be delivered
+    anywhere but to the sink of its own batch.
     """
 
     def __init__(self):
         self._lock = threading.Lock()
         self._queue: Deque[T] = deque()
+        self._stream_generation = 0
+        self._deliver: Optional[Callable[[Any, T], None]] = None
         self._next_frame_id: Optional[int] = None
         self._first_gap: Optional[Tuple[int, int]] = None
 
-    def expect(self, captures: Sequence[T]) -> None:
-        """Queue the captures the next frames belong to. Called before the trigger / SEQ_RUN."""
+    def expect(self, captures: Sequence[T], *, stream_generation: int, deliver: Callable[[Any, T], None]) -> None:
+        """Queue the captures the next frames belong to. Called before the trigger / SEQ_RUN.
+
+        stream_generation: the run of the camera stream the frames will be read in.
+        deliver: where each (frame, capture) pair goes.
+        """
         if not captures:
             raise ValueError("expect() needs at least one capture")
         with self._lock:
@@ -39,21 +52,25 @@ class PendingCaptures(Generic[T]):
                     "their frames arrived or drop_remaining() was called"
                 )
             self._queue.extend(captures)
+            self._stream_generation = stream_generation
+            self._deliver = deliver
             self._next_frame_id = None
             self._first_gap = None
 
-    def take(self, frame_id: int) -> Optional[T]:
+    def take(self, frame_id: int, *, stream_generation: int) -> Optional[Tuple[T, Callable[[Any, T], None]]]:
         """Pair an arriving frame with the next expected capture (camera thread).
 
-        Returns None when no capture is expected - the frame belongs to nothing.
+        Returns (capture, deliver) for the batch the frame belongs to, or None when it belongs to
+        nothing: no capture is expected, or the queued batch is for another run of the camera
+        stream than the one the frame was read in (it does not count as a gap either).
         """
         with self._lock:
-            if not self._queue:
+            if not self._queue or stream_generation != self._stream_generation:
                 return None
             if self._next_frame_id is not None and frame_id != self._next_frame_id and self._first_gap is None:
                 self._first_gap = (self._next_frame_id, frame_id)
             self._next_frame_id = frame_id + 1
-            return self._queue.popleft()
+            return self._queue.popleft(), self._deliver
 
     def drop_remaining(self) -> List[T]:
         """Forget the captures whose frames will never come (cancel, failed run)."""

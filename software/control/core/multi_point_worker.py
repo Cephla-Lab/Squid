@@ -234,13 +234,12 @@ class MultiPointWorker:
         # in flux and we need to make sure the object doesn't disappear.
         self._image_callback_idle = threading.Event()
         self._image_callback_idle.set()
-        # This is protected by the threading event above (aka set after clear, take copy before set)
         # The captures whose frames are still to arrive, in order: one for an ordinary capture, N
-        # for a hardware-sequenced burst. Invariant: empty <=> _ready_for_next_trigger is set.
+        # for a hardware-sequenced burst. Each batch says which run of the camera stream its frames
+        # are read in and where a paired frame goes (an ordinary capture dispatches at once; a burst
+        # collects, so nothing is saved until the whole burst is validated).
+        # Invariant: _ready_for_next_trigger set => empty.
         self._pending_captures: PendingCaptures[CaptureInfo] = PendingCaptures()
-        # Where a paired frame goes. Ordinary captures dispatch immediately; a hardware-sequenced
-        # burst swaps in a collecting sink for its duration (frames are validated before saving).
-        self._frame_sink: Callable[[CameraFrame, CaptureInfo], None] = self._dispatch_frame
         # The uploaded MCU program when this acquisition is hardware-sequenced, else None.
         # Decided once, in _prepare_sequenced_acquisition().
         self._sequenced_program: Optional[SequencerProgram] = None
@@ -1521,10 +1520,9 @@ class MultiPointWorker:
 
         run_error: Optional[Exception] = None
         first_gap = None
-        self._frame_sink = collect
         try:
-            self._pending_captures.expect(captures)
             self._ready_for_next_trigger.clear()
+            self._pending_captures.expect(captures, stream_generation=self.camera.stream_generation(), deliver=collect)
             try:
                 self.microcontroller.seq_run(stack_start)
                 self._wait_for_sequence(self._sequenced_burst_timeout_s())
@@ -1535,9 +1533,11 @@ class MultiPointWorker:
             # open, stack out of range) fired nothing, and waiting for "the last expected frame"
             # of a burst that never started only burns the frame timeout.
             self._wait_for_fired_frames(collected, expected=len(captures))
-            self._image_callback_idle.wait(self._frame_wait_timeout_s())
+            if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
+                # The burst is given up regardless: once its batch is dropped below, a callback still on its
+                # way to pairing finds no batch (or the retry's, for a later run) and pairs with nothing.
+                self._log.warning("Timed out waiting for the frame callback to finish after the hardware sequence.")
         finally:
-            self._frame_sink = self._dispatch_frame
             first_gap = self._pending_captures.first_gap
             self._pending_captures.drop_remaining()
             self._ready_for_next_trigger.set()
@@ -1558,7 +1558,8 @@ class MultiPointWorker:
         fails); paired with the retry's first capture it would be saved under the wrong z, and the retry's
         count and consecutive-id checks would still pass. Restarting the camera stream loses what is still
         in the camera or its SDK, and bumps the stream run: a frame the driver had already read is delivered
-        afterwards stamped with the run before, and _image_callback refuses it.
+        afterwards stamped with the run before, and the retry's batch (queued for the new run) refuses it
+        at pairing - also when its callback was already running when this burst was given up.
         """
         self._log.warning(f"Hardware-sequenced burst failed and was discarded (nothing saved): {reason}.")
         self.camera.stop_streaming()
@@ -1957,33 +1958,25 @@ class MultiPointWorker:
 
     def _image_callback(self, camera_frame: CameraFrame):
         try:
-            if camera_frame.stream_generation != self.camera.stream_generation():
-                # The driver had already read it when the stream was restarted (a failed burst's resync): a
-                # frame of the run before, delivered after. Nothing of that run may be paired with a capture.
-                self._log.warning(
-                    f"Ignoring frame {camera_frame.frame_id}: it is from run {camera_frame.stream_generation} of the "
-                    f"camera stream, which was restarted since (now run {self.camera.stream_generation()})."
-                )
-                return
-            if self._ready_for_next_trigger.is_set():
-                self._log.warning(
-                    "Got an image in the image callback, but we didn't send a trigger.  Ignoring the image."
-                )
-                return
-
             self._image_callback_idle.clear()
             with self._timing.get_timer("_image_callback"):
                 self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
-                info = self._pending_captures.take(camera_frame.frame_id)
+                # One decision, under the batch's own lock: the frame is paired with the next capture of the
+                # batch queued for the run of the camera stream it was read in, or with nothing. The worker may
+                # give a batch up, restart the stream and queue the retry's batch while this callback is already
+                # running (a failed burst's resync); the frame then finds a batch of a later run and is refused.
+                pairing = self._pending_captures.take(
+                    camera_frame.frame_id, stream_generation=camera_frame.stream_generation
+                )
+                if pairing is None:
+                    self._log_unpaired_frame(camera_frame)
+                    return
+                info, deliver = pairing
 
                 # Ready for the next trigger once every expected frame arrived: the one frame of
                 # an ordinary capture, or all N of a hardware-sequenced burst.
                 if self._pending_captures.empty:
                     self._ready_for_next_trigger.set()
-                if not info:
-                    self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
-                    self._abort_due_to_error()
-                    return
 
                 image = camera_frame.frame
                 if not camera_frame or image is None:
@@ -1991,12 +1984,29 @@ class MultiPointWorker:
                     self._abort_due_to_error()
                     return
 
-                # One sink per frame: an ordinary capture dispatches at once; a hardware-sequenced
-                # burst collects, so nothing is saved until the whole burst is validated.
-                self._frame_sink(camera_frame, info)
+                # To the sink of the batch the frame was paired from: an ordinary capture dispatches at once; a
+                # hardware-sequenced burst collects, so nothing is saved until the whole burst is validated.
+                deliver(camera_frame, info)
 
         finally:
             self._image_callback_idle.set()
+
+    def _log_unpaired_frame(self, camera_frame: CameraFrame) -> None:
+        """A frame no capture was waiting for is ignored; say why."""
+        current_run = self.camera.stream_generation()
+        if camera_frame.stream_generation != current_run:
+            # The driver had already read it when the stream was restarted (a failed burst's resync): a
+            # frame of the run before, delivered after. Nothing of that run may be paired with a capture.
+            self._log.warning(
+                f"Ignoring frame {camera_frame.frame_id}: it is from run {camera_frame.stream_generation} of the "
+                f"camera stream, which was restarted since (now run {current_run})."
+            )
+        elif self._ready_for_next_trigger.is_set():
+            self._log.warning("Got an image in the image callback, but we didn't send a trigger.  Ignoring the image.")
+        else:
+            # Between the worker giving the captures up (a failed burst, the end of the acquisition) and it
+            # marking itself ready: the frame is late for a batch that no longer exists.
+            self._log.warning(f"Ignoring frame {camera_frame.frame_id}: the capture it was for was given up.")
 
     def _dispatch_frame(self, camera_frame: CameraFrame, info: CaptureInfo):
         """Hand one paired frame to the save / display pipeline (the default frame sink)."""
@@ -2113,7 +2123,9 @@ class MultiPointWorker:
                 configuration_idx=config_idx,
                 time_point=self.time_point,
             )
-            self._pending_captures.expect([current_capture_info])
+            self._pending_captures.expect(
+                [current_capture_info], stream_generation=self.camera.stream_generation(), deliver=self._dispatch_frame
+            )
         with self._timing.get_timer("send_trigger"):
             try:
                 self.camera.send_trigger(illumination_time=camera_illumination_time)
@@ -2121,7 +2133,7 @@ class MultiPointWorker:
                 # No frame will come for this image: abort now, with the reason, rather than waiting out the
                 # frame timeout. Returning (not raising) keeps the z stack's cleanup, so Z still goes back.
                 self._log.error(f"Aborting the acquisition: {e}")
-                self._current_capture_info = None
+                self._pending_captures.drop_remaining()
                 self._ready_for_next_trigger.set()
                 self._abort_due_to_error()
                 return
