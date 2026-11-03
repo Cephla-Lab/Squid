@@ -41,11 +41,29 @@ cd firmware/joystick
 pio run -t upload
 ```
 
-**Important:** Before uploading, verify only one Teensy is connected:
+### Choosing the board by serial number
+
+With one Teensy connected, `pio run -t upload` flashes it. With two or more connected (a controller
+and a joystick panel, or two controllers), the upload is refused until you name the board by its
+serial number:
+
 ```bash
-pio device list
+pio run -e teensy41 -t upload --upload-port 12345678
 ```
-If multiple devices appear, disconnect the extras before uploading. The upload tool may not warn you and could flash the wrong board.
+
+The refusal lists every connected Teensy with its serial number, model and USB location. Use the
+number the Teensy Loader shows, or the USB serial number that `pio device list` and Squid's
+`CONTROLLER_SN` show. (Teensy firmware reports serial numbers below 10,000,000 multiplied by 10 over
+USB, so `1234567` and `12345670` name the same board; both are accepted.)
+
+The upload is also refused when the chosen board is a different model from the one the environment
+builds for (for example, a joystick image aimed at the controller). After programming, the board must
+reboot and come back running with the same serial number within 30 seconds, or the upload is
+reported as failed. The checks live in [`tools/teensy_select_upload.py`](tools/teensy_select_upload.py).
+
+Selecting by serial number needs the Teensy Loader application. On platforms that fall back to
+`teensy_loader_cli` (Linux ARM), `--upload-port` is refused and a bare upload flashes the first board
+found, so connect only one there.
 
 ### Choosing the controller at upload time
 
