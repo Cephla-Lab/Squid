@@ -5,6 +5,9 @@ up front into one MCU program; when a burst may run at all; and when a finished 
 import pytest
 
 from control.core.sequenced_acquisition import (
+    BurstPlan,
+    build_bursts,
+    burst_plans,
     MAX_ATTEMPTS_PER_FOV,
     PIEZO_DAC_ID,
     BurstOutcome,
@@ -236,8 +239,6 @@ def test_a_plain_fluorescence_piezo_stack_is_eligible():
         (dict(burst_bytes=1_200_000_000), "memory"),
         (dict(burst_bytes=700_000_000), "memory"),  # 2 x 700 MB fits the 2 GB budget; 3 x 700 MB does not
         (dict(channels=[], camera_gains=[]), "no channels"),
-        # Z FIRST writes the same files in a different physical order (bleaching, drift and timing differ).
-        (dict(z_stack_order="Z FIRST"), "z-stack order"),
         # An NL5 scan unit triggers the camera itself and takes its channel and laser power at every channel
         # switch; a burst does neither.
         (dict(nl5_configured=True), "NL5"),
@@ -263,8 +264,73 @@ def test_no_byte_budget_means_no_memory_limit():
     assert ineligibility_reason(**eligible_kwargs(burst_bytes=10**12, byte_budget=None)) is None
 
 
-def test_the_z_stack_order_does_not_matter_for_a_single_plane():
-    assert ineligibility_reason(**eligible_kwargs(z_stack_order="Z FIRST", nz=1)) is None
+def test_z_first_is_eligible():
+    # Hongquan, 2026-11-01: Z FIRST runs as one single-channel burst per channel.
+    assert ineligibility_reason(**eligible_kwargs(z_stack_order="Z FIRST")) is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        dict(camera_gains=[10.0, 12.0]),
+        dict(emission_filter_unit=WHEEL, channels=[plan(source_code=11, filter_position=1), plan(filter_position=2)]),
+        dict(
+            emission_filter_unit=XLIGHT,
+            channels=[plan(source_code=11, filter_position=3, iris=(30.0, None)), plan(filter_position=3)],
+        ),
+    ],
+)
+def test_in_z_first_each_burst_is_one_channel_so_its_gain_filter_and_iris_are_its_own(overrides):
+    # These are CHANNEL FIRST ineligibilities: a burst cannot change them between its frames. In
+    # Z FIRST the host applies each channel's own settings before that channel's burst.
+    assert ineligibility_reason(**eligible_kwargs(z_stack_order="CHANNEL FIRST", **overrides)) is not None
+    assert ineligibility_reason(**eligible_kwargs(z_stack_order="Z FIRST", **overrides)) is None
+
+
+def test_in_z_first_a_channel_z_offset_still_falls_back():
+    channels = [plan(), plan(name="Fluorescence 638 nm Ex", source_code=13, z_offset_um=1.5)]
+    reason = ineligibility_reason(**eligible_kwargs(z_stack_order="Z FIRST", channels=channels))
+    assert reason is not None and "z offset" in reason
+
+
+def test_channel_first_is_one_burst_with_every_channel():
+    assert burst_plans("CHANNEL FIRST", 3) == [BurstPlan(channel_indices=(0, 1, 2))]
+
+
+def test_z_first_is_one_single_channel_burst_per_channel():
+    assert burst_plans("Z FIRST", 3) == [BurstPlan((0,)), BurstPlan((1,)), BurstPlan((2,))]
+
+
+PROGRAM_KWARGS = dict(
+    n_layers=3,
+    dz_um=1.5,
+    piezo_range_um=300,
+    piezo_flip=False,
+    z_settle_ms=20,
+    intensity_factor=1.0,
+    camera=CAMERA,
+    wait_timeout_s=5.0,
+)
+
+
+def test_build_bursts_gives_each_z_first_burst_its_own_one_channel_program():
+    channels = [plan(source_code=11), plan(source_code=12)]
+    bursts = build_bursts(channels, "Z FIRST", **PROGRAM_KWARGS)
+    assert [(b.channel_indices, [c.illum_ttl_mask for c in p.channels]) for b, p in bursts] == [
+        ((0,), [1 << 0]),
+        ((1,), [1 << 1]),
+    ]
+    assert all(p.loop.n_layers == PROGRAM_KWARGS["n_layers"] and p.loop.return_to_start for _, p in bursts)
+
+
+def test_build_bursts_gives_channel_first_one_program_with_every_channel():
+    channels = [plan(source_code=11), plan(source_code=12)]
+    bursts = build_bursts(channels, "CHANNEL FIRST", **PROGRAM_KWARGS)
+    assert [(b.channel_indices, [c.illum_ttl_mask for c in p.channels]) for b, p in bursts] == [((0, 1), [1, 2])]
+
+
+def test_a_single_channel_is_one_burst_in_either_order():
+    assert burst_plans("CHANNEL FIRST", 1) == burst_plans("Z FIRST", 1) == [BurstPlan((0,))]
 
 
 def test_the_emission_filter_reason_counts_the_positions_and_names_the_unit():

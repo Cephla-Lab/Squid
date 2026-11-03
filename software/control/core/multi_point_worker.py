@@ -4,7 +4,7 @@ import os
 import queue
 import threading
 import time
-from typing import Callable, Dict, List, NamedTuple, Optional, Tuple, Type
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Type
 from datetime import datetime
 
 import imageio as iio
@@ -39,9 +39,11 @@ import control.core.job_processing
 from control.core.pending_captures import PendingCaptures
 from control.core.burst_dispatcher import BurstDispatcher
 from control.core.sequenced_acquisition import (
+    BurstPlan,
+    build_bursts,
+    burst_plans,
     BurstOutcome,
     ChannelPlan,
-    build_program,
     burst_failure_reason,
     camera_record,
     ineligibility_reason,
@@ -240,9 +242,14 @@ class MultiPointWorker:
         # collects, so nothing is saved until the whole burst is validated).
         # Invariant: _ready_for_next_trigger set => empty.
         self._pending_captures: PendingCaptures[CaptureInfo] = PendingCaptures()
-        # The uploaded MCU program when this acquisition is hardware-sequenced, else None.
-        # Decided once, in _prepare_sequenced_acquisition().
+        # The bursts one FOV's stack is split into when this acquisition is hardware-sequenced (empty
+        # otherwise), each a program and the channels it images: CHANNEL FIRST is one burst, Z FIRST
+        # one per channel. Decided once, in _prepare_sequenced_acquisition().
+        self._sequenced_bursts: List[Tuple[BurstPlan, SequencerProgram]] = []
+        # The program the controller holds now (it holds one): a burst with another one uploads first.
         self._sequenced_program: Optional[SequencerProgram] = None
+        # The channels the camera and the emission filter were last set up for (_set_up_for_burst).
+        self._burst_configs: Optional[tuple] = None
         # Hands validated bursts to the save jobs while the worker moves on (see burst_dispatcher.py).
         self._burst_dispatcher: Optional[BurstDispatcher] = None
         # This is only touched via the image callback path.  Don't touch it outside of there!
@@ -1189,10 +1196,10 @@ class MultiPointWorker:
         if self.NZ > 1:
             self.prepare_z_stack()
 
-        if self._sequenced_program is not None:
-            # The microcontroller runs the whole z x channel block and returns the piezo to the
-            # stack bottom, where prepare_z_stack() put it.
-            self._acquire_sequenced_stack(region_id, current_path, fov)
+        if self._sequenced_bursts:
+            # The microcontroller runs the stack, one burst per plan, and returns the piezo after each
+            # to the stack bottom, where prepare_z_stack() put it.
+            self._acquire_sequenced_stack(region_id, current_path, fov, af_succeeded)
             if self.NZ > 1 and self.z_stacking_config == "FROM CENTER":
                 # Climb back to the centre the stack was anchored at, as the software stack does.
                 # The next FOV's From Center move starts from the cached piezo position: left at
@@ -1393,12 +1400,16 @@ class MultiPointWorker:
         Asking for the feature on firmware that cannot do it raises (it would answer the
         sequencer commands with success and do nothing).
         """
+        self._sequenced_bursts = []
         self._sequenced_program = None
         if not control._def.USE_HARDWARE_SEQUENCED_ACQUISITION:
             return
 
         plans = self._channel_plans()
         width, height = self.camera.get_resolution()
+        frames_per_burst = self.NZ * max(
+            (len(plan.channel_indices) for plan in burst_plans(self.z_stack_order, len(plans))), default=0
+        )
         reason = ineligibility_reason(
             firmware_supports_sequencer=self.microcontroller.supports_hardware_sequencer(),
             trigger_is_hardware=self.liveController.trigger_mode == TriggerMode.HARDWARE,
@@ -1408,7 +1419,7 @@ class MultiPointWorker:
             shutter_is_mcu_ttl=self.microscope.illumination_controller.shutter_is_mcu_ttl,
             channels=plans,
             camera_gains=self._camera_gains_that_matter(),
-            burst_bytes=self.NZ * len(plans) * width * height * 2,
+            burst_bytes=frames_per_burst * width * height * 2,
             byte_budget=int(control._def.ACQUISITION_MAX_PENDING_MB * 1024 * 1024),
             use_ready_line=control._def.SEQUENCER_USE_CAMERA_READY_LINE,
             camera_drives_ready_line=control._def.CAMERA_TRIGGER_READY_OUTPUT,
@@ -1429,15 +1440,14 @@ class MultiPointWorker:
             )
             return
 
-        self._set_up_for_bursts()
-
         camera_spec = camera_record(
             use_ready_line=control._def.SEQUENCER_USE_CAMERA_READY_LINE,
             strobe_delay_ms=self.camera.get_strobe_time(),
             readout_ms=control._def.SEQUENCER_CAMERA_READOUT_MS,
         )
-        program = build_program(
+        bursts = build_bursts(
             plans,
+            self.z_stack_order,
             n_layers=self.NZ,
             dz_um=self.deltaZ * 1000,
             piezo_range_um=self.piezo.range_um,
@@ -1448,30 +1458,43 @@ class MultiPointWorker:
             wait_timeout_s=control._def.SEQUENCER_WAIT_TIMEOUT_S,
             illum_lead_us=control._def.SEQUENCER_ILLUMINATION_LEAD_US,
         )
-        self.wait_till_operation_is_completed()
-        self.microcontroller.seq_upload(program)
-        self._sequenced_program = program
+        # The first burst's program is uploaded now, so firmware that refuses it fails the acquisition
+        # here, before any FOV. Z FIRST uploads each later channel's program before its burst.
+        first_plan, first_program = bursts[0]
+        self._set_up_for_burst([self.selected_configurations[index] for index in first_plan.channel_indices])
+        self._ensure_uploaded(first_program)
+        self._sequenced_bursts = bursts
         self._burst_dispatcher = BurstDispatcher(self._dispatch_burst, on_error=lambda e: self._abort_due_to_error())
         self._burst_dispatcher.start()
         self._log.info(
-            f"Hardware-sequenced acquisition: {self.NZ} layers x {len(plans)} channels per position "
-            f"({len(program.pack())} byte program uploaded)."
+            f"Hardware-sequenced acquisition: {self.NZ} layers x {len(plans)} channels per position in "
+            f"{len(bursts)} burst(s) ({self.z_stack_order}; {len(first_program.pack())} byte program uploaded)."
         )
 
-    def _set_up_for_bursts(self) -> None:
+    def _ensure_uploaded(self, program: SequencerProgram) -> None:
+        """The controller holds one program: upload this burst's unless it is the one held."""
+        if self._sequenced_program is not program:
+            self.wait_till_operation_is_completed()
+            self.microcontroller.seq_upload(program)
+            self._sequenced_program = program
+
+    def _ensure_set_up_for_burst(self, configs: Sequence[AcquisitionChannel]) -> None:
+        """Again after a channel was selected at this position (contrast autofocus: its own exposure,
+        gain and filter), and whenever the burst's channels differ from the last setup (Z FIRST)."""
+        if self._applied_config is not None or self._burst_configs != tuple(configs):
+            self._set_up_for_burst(configs)
+
+    def _set_up_for_burst(self, configs: Sequence[AcquisitionChannel]) -> None:
         """What a burst runs with and cannot change between its frames: the camera's exposure and
-        gain, and the emission filter.
+        gain, and the emission filter - for the channels of this burst.
 
         No camera register write is possible inside a burst: the pulse width sets each channel's
         exposure (LEVEL trigger), so the camera gets the longest one and its timeouts cover every
-        frame; the gain is the same for all channels (an eligibility condition). Nothing moves the
-        emission filter inside a burst either, so the one position the channels share (another
-        eligibility condition) is set here, where the software path sets it per channel.
-
-        Runs once per acquisition, and again before a burst whenever a channel was selected since:
-        contrast autofocus selects its own channel per FOV, with its own exposure, gain and filter.
+        frame; the gain is the same for all of a burst's channels (an eligibility condition). Nothing
+        moves the emission filter inside a burst either, so the one position the burst's channels
+        share (another eligibility condition) is set here, where the software path sets it per channel.
+        A Z FIRST burst has one channel: this is that channel's own exposure, gain and filter.
         """
-        configs = self.selected_configurations
         self.camera.set_exposure_time(max(config.exposure_time for config in configs))
         try:
             self.camera.set_analog_gain(configs[0].analog_gain)
@@ -1480,6 +1503,7 @@ class MultiPointWorker:
         self.liveController.apply_emission_filter(
             next((config for config in configs if config.filter_position), configs[0])
         )
+        self._burst_configs = tuple(configs)
         self._applied_config = None
 
     def _sequenced_burst_timeout_s(self) -> float:
@@ -1608,66 +1632,84 @@ class MultiPointWorker:
         self.callbacks.signal_user_intervention_needed(message)
         self._abort_due_to_error()
 
-    def _acquire_sequenced_stack(self, region_id, current_path, fov) -> None:
-        if self._applied_config is not None:  # a channel was selected at this position (contrast autofocus)
-            self._set_up_for_bursts()
+    def _acquire_sequenced_stack(self, region_id, current_path, fov, af_succeeded: bool) -> None:
+        """One FOV's stack as hardware-sequenced bursts: one (CHANNEL FIRST) or one per channel (Z FIRST).
+
+        Between Z FIRST bursts the host does what the software Z FIRST loop does between channels:
+        that channel's exposure, gain and emission filter, and laser AF per stack when asked for. The
+        controller returns the piezo to the stack start after every burst, so each burst starts there
+        (or where the per-stack AF left it). The per-z bookkeeping (coordinates rows, AF counter) is
+        written after the first burst only, as the software loop does in its first channel's pass.
+        """
         configs = self.selected_configurations
-        start_um = self.z_piezo_um
         dz_um = self.deltaZ * 1000
-        stack_start = piezo_um_to_dac(start_um, self.piezo.range_um, control._def.OBJECTIVE_PIEZO_FLIP_DIR)
         acquire_pos = self.stage.get_pos()
         if (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
             self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
 
-        def captures() -> List[CaptureInfo]:
-            return [
-                CaptureInfo(
-                    position=acquire_pos,
-                    z_index=z_level,
-                    capture_time=time.time(),
-                    z_piezo_um=start_um + z_level * dz_um,
-                    configuration=config,
-                    save_directory=current_path,
-                    file_id=f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}",
-                    region_id=region_id,
-                    fov=fov,
-                    configuration_idx=config_idx,
-                    time_point=self.time_point,
-                )
-                for z_level in range(self.NZ)
-                for config_idx, config in enumerate(configs)
-            ]
-
-        frames = None
-        attempt = 0
-        while frames is None:
-            attempt += 1
-            self._log.info(f"Hardware sequence: region {region_id} fov {fov}, attempt {attempt}.")
-            frames, reason = self._run_sequenced_burst(captures(), stack_start)
-            if frames is not None or self.abort_requested_fn():
-                break
-            # O1 (Hongquan, 2026-09-20): retry, retry again, then ask the user to intervene.
-            if outcome_after_failed_burst(attempt) == BurstOutcome.ASK_USER:
-                self._ask_user_to_intervene(
-                    intervention_message(region_id=region_id, fov=fov, attempts=attempt, last_reason=reason)
-                )
+        for burst_index, (plan, program) in enumerate(self._sequenced_bursts):
+            if self.abort_requested_fn():
+                self.handle_acquisition_abort(current_path)
                 return
-            self._log.warning(f"Retrying region {region_id} fov {fov} (hardware-sequenced), attempt {attempt + 1}.")
+            burst_configs = [configs[index] for index in plan.channel_indices]
+            if burst_index > 0 and self.laser_af_per_stack and self.do_reflection_af:
+                af_succeeded = self._re_anchor_before_stack(burst_configs[0], region_id, fov, af_succeeded)
+            start_um = self.z_piezo_um
+            stack_start = piezo_um_to_dac(start_um, self.piezo.range_um, control._def.OBJECTIVE_PIEZO_FLIP_DIR)
+            self._ensure_set_up_for_burst(burst_configs)
+            self._ensure_uploaded(program)
 
-        if frames is None:  # user abort during the burst
-            self.handle_acquisition_abort(current_path)
-            return
+            def captures() -> List[CaptureInfo]:
+                return [
+                    CaptureInfo(
+                        position=acquire_pos,
+                        z_index=z_level,
+                        capture_time=time.time(),
+                        z_piezo_um=start_um + z_level * dz_um,
+                        configuration=configs[config_idx],
+                        save_directory=current_path,
+                        file_id=f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}",
+                        region_id=region_id,
+                        fov=fov,
+                        configuration_idx=config_idx,
+                        time_point=self.time_point,
+                    )
+                    for z_level in range(self.NZ)
+                    for config_idx in plan.channel_indices
+                ]
 
-        # The burst is validated: only now do its frames reach the save / display pipeline - on the
-        # dispatcher's thread, so the stage move, autofocus and the next burst do not wait for the
-        # save queue (it blocks: the pending-jobs cap is smaller than a burst).
-        self._burst_dispatcher.submit((frames, fov * self.NZ * len(configs)))
+            which = f"region {region_id} fov {fov} burst {burst_index + 1}/{len(self._sequenced_bursts)}"
+            frames = None
+            attempt = 0
+            while frames is None:
+                attempt += 1
+                self._log.info(f"Hardware sequence: {which}, attempt {attempt}.")
+                frames, reason = self._run_sequenced_burst(captures(), stack_start)
+                if frames is not None or self.abort_requested_fn():
+                    break
+                # O1 (Hongquan, 2026-09-20): retry, retry again, then ask the user to intervene.
+                if outcome_after_failed_burst(attempt) == BurstOutcome.ASK_USER:
+                    self._ask_user_to_intervene(
+                        intervention_message(region_id=region_id, fov=fov, attempts=attempt, last_reason=reason)
+                    )
+                    return
+                self._log.warning(f"Retrying {which} (hardware-sequenced), attempt {attempt + 1}.")
 
-        for z_level in range(self.NZ):
-            self.z_piezo_um = start_um + z_level * dz_um  # the coordinates table records the piezo z per level
-            self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov)
-            self.af_fov_count = self.af_fov_count + 1
-        self.z_piezo_um = start_um  # the controller returned the piezo to the start of the stack
+            if frames is None:  # user abort during the burst
+                self.handle_acquisition_abort(current_path)
+                return
+
+            # The burst is validated: only now do its frames reach the save / display pipeline - on the
+            # dispatcher's thread, so the stage move, autofocus and the next burst do not wait for the
+            # save queue (it blocks: the pending-jobs cap is smaller than a burst).
+            self._burst_dispatcher.submit((frames, fov * self.NZ * len(configs) + plan.channel_indices[0] * self.NZ))
+
+            if burst_index == 0:
+                for z_level in range(self.NZ):
+                    self.z_piezo_um = start_um + z_level * dz_um  # the coordinates table records the piezo z per level
+                    self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov)
+                    self.af_fov_count = self.af_fov_count + 1
+            self.z_piezo_um = start_um  # the controller returned the piezo to the start of the burst
         self.callbacks.signal_current_fov(acquire_pos.x_mm, acquire_pos.y_mm)
 
         if self.abort_requested_fn():
