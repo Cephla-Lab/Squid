@@ -4,6 +4,8 @@
 
 #include "trigger_pins.h"
 
+#include "trigger_pins.h"
+
 void set_DAC8050x_gain(uint8_t div, uint8_t gains) 
 {
   uint16_t value = 0;
