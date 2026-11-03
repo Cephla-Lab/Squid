@@ -1568,6 +1568,12 @@ def _migrate_legacy_format_cache(cached, shipped, cached_formats_path):
             if field != "format"
         ):
             continue  # untouched example: nothing of the user's to carry over
+        if cached_settings["well_spacing_x_mm"] == 0.0 or cached_settings["well_spacing_y_mm"] == 0.0:
+            # The rule of plate_transform.has_well_grid (not importable here: it imports this module):
+            # a pitchless format's only well is wherever the stage is, so an a1 means nothing for it,
+            # the GUI never calibrates one, and the user-format model refuses to store one.
+            log.info(f"Legacy cache row '{format_key}' dropped: a pitchless format has nothing to calibrate")
+            continue
 
         a1_measured = shipped_settings is None or (
             cached_settings["a1_x_mm"] != shipped_settings["a1_x_mm"]
