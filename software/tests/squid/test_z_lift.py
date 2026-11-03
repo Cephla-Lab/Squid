@@ -289,9 +289,14 @@ def _recording_stage(events, z_mm=2.5, **lift_kwargs):
     stage.lift = _RecordingLift(events, **lift_kwargs)
     stage._scanning_position_lift_mm = None
     stage._scanning_position_z_mm = None
+    stage._scanning_position_xy_mm = None
+    stage.get_config.return_value.X_AXIS.MIN_POSITION = 0.0
+    stage.get_config.return_value.X_AXIS.MAX_POSITION = 120.0
+    stage.get_config.return_value.Y_AXIS.MIN_POSITION = 0.0
+    stage.get_config.return_value.Y_AXIS.MAX_POSITION = 80.0
     stage.get_config.return_value.Z_AXIS.MIN_POSITION = 0.0
     stage.get_config.return_value.Z_AXIS.MAX_POSITION = 6.0
-    stage.get_pos.return_value = Pos(x_mm=20.0, y_mm=20.0, z_mm=z_mm, theta_rad=None)
+    stage.get_pos.return_value = Pos(x_mm=47.5, y_mm=31.25, z_mm=z_mm, theta_rad=None)
     stage.move_x_to.side_effect = lambda mm, *a, **k: events.append("x")
     stage.move_y_to.side_effect = lambda mm, *a, **k: events.append("y")
     stage.move_z_to.side_effect = lambda mm, *a, **k: events.append(f"z_to_{mm}")
@@ -307,13 +312,14 @@ def _load_then_unload(stage, events, change_format_to=None, is_wellplate=False):
         stage.lift.sample_format = change_format_to
     squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=is_wellplate)
     assert stage._scanning_position_lift_mm is None and stage._scanning_position_z_mm is None
+    assert stage._scanning_position_xy_mm is None
 
 
 def test_unloading_raises_the_lift_to_the_sample_format_height_then_lowers_the_objective():
     events = []
     stage = _recording_stage(events, heights={"96 well plate": 6.25})
     _load_then_unload(stage, events)
-    assert events == ["y", "x", "lift_to_6.25", "z_to_2.5"]
+    assert events == ["y", "x", "x", "y", "lift_to_6.25", "z_to_2.5"]
 
 
 def test_a_well_plate_with_a_lift_also_raises_the_lift_before_lowering_the_objective():
@@ -327,19 +333,19 @@ def test_unloading_uses_the_new_format_height_after_a_format_change():
     events = []
     stage = _recording_stage(events, heights={"96 well plate": 6.25, "glass slide": 5.5})
     _load_then_unload(stage, events, change_format_to="glass slide")
-    assert events == ["y", "x", "lift_to_5.5", "z_to_2.5"]
+    assert events == ["y", "x", "x", "y", "lift_to_5.5", "z_to_2.5"]
 
 
 def test_unloading_without_a_saved_height_goes_back_for_the_same_format_only():
     events = []
     stage = _recording_stage(events)
     _load_then_unload(stage, events)
-    assert events == ["y", "x", "lift_to_4.0", "z_to_2.5"]
+    assert events == ["y", "x", "x", "y", "lift_to_4.0", "z_to_2.5"]
 
     events.clear()
     stage = _recording_stage(events)
     _load_then_unload(stage, events, change_format_to="glass slide")
-    assert events == ["y", "x", "z_to_2.5"]  # a different sample with no height of its own: stays lowered
+    assert events == ["y", "x", "x", "y", "z_to_2.5"]  # a different sample with no height of its own: stays lowered
 
 
 def test_unloading_can_leave_the_objective_retracted():
@@ -348,7 +354,7 @@ def test_unloading_can_leave_the_objective_retracted():
     squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
     events.clear()
     squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False, restore_z=False)
-    assert events == ["y", "x", "lift_to_6.25"]  # the lift still rises; the objective stays up
+    assert events == ["y", "x", "x", "y", "lift_to_6.25"]  # the lift still rises; the objective stays up
     assert stage._scanning_position_z_mm is None
 
 
@@ -366,11 +372,91 @@ def test_an_objective_at_or_above_the_retracted_position_is_not_moved_for_loadin
     assert events == ["lift_lower", "y", "x"]
 
 
-def test_loading_without_a_lift_is_unchanged():
-    stage = MagicMock(spec=["move_x_to", "move_y_to"])
+# --- the return goes back to the XY the stage left from -----------------------------------------------------------
+
+_SCANNING_X_MM = _def.SLIDE_POSITION.SCANNING_X_MM
+_SCANNING_Y_MM = _def.SLIDE_POSITION.SCANNING_Y_MM
+
+
+def _record_xy_targets(stage, events):
+    stage.move_x_to.side_effect = lambda mm, *a, **k: events.append(("x", mm))
+    stage.move_y_to.side_effect = lambda mm, *a, **k: events.append(("y", mm))
+    return stage
+
+
+@pytest.mark.parametrize(
+    "is_wellplate, scanning_point",
+    [
+        (False, [("y", _SCANNING_Y_MM), ("x", _SCANNING_X_MM)]),
+        (True, [("x", _SCANNING_X_MM), ("y", _SCANNING_Y_MM)]),
+    ],
+)
+def test_the_return_goes_back_to_the_xy_before_loading_by_way_of_the_scanning_point(is_wellplate, scanning_point):
+    events = []
+    stage = _record_xy_targets(_recording_stage(events, heights={"96 well plate": 6.25}), events)  # at (47.5, 31.25)
+    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=is_wellplate)
+    events.clear()
+    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=is_wellplate)
+    # out of the loading area by the proven path, then back to (47.5, 31.25), all before the lift rises
+    assert events == scanning_point + [("x", 47.5), ("y", 31.25), "lift_to_6.25", "z_to_2.5"]
+
+
+def test_without_a_lift_the_return_also_goes_back_to_the_xy_before_loading():
+    events = []
+    stage = MagicMock(spec=["move_x_to", "move_y_to", "get_pos"])
+    stage.get_pos.return_value = Pos(x_mm=41.5, y_mm=12.25, z_mm=1.0, theta_rad=None)
+    _record_xy_targets(stage, events)
     squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
+    events.clear()
     squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)
-    assert stage.move_x_to.call_count == 2 and stage.move_y_to.call_count == 2
+    assert events == [("y", _SCANNING_Y_MM), ("x", _SCANNING_X_MM), ("x", 41.5), ("y", 12.25)]
+
+
+def test_a_return_that_fails_on_the_way_back_goes_back_to_the_same_xy_on_the_retry():
+    events = []
+    stage = _record_xy_targets(_recording_stage(events, heights={"96 well plate": 6.25}), events)
+    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
+
+    def x_stalls_on_the_way_back(mm, *a, **k):
+        events.append(("x", mm))
+        if mm == 47.5:
+            raise TimeoutError("x stalled")
+
+    stage.move_x_to.side_effect = x_stalls_on_the_way_back
+    events.clear()
+    with pytest.raises(TimeoutError):
+        squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)
+    assert "lift_to_6.25" not in events  # the lift stays down and the objective up
+
+    _record_xy_targets(stage, events)
+    events.clear()
+    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)  # the retry
+    assert events == [
+        ("y", _SCANNING_Y_MM),
+        ("x", _SCANNING_X_MM),
+        ("x", 47.5),
+        ("y", 31.25),
+        "lift_to_6.25",
+        "z_to_2.5",
+    ]
+
+
+def test_after_a_failed_lift_the_retry_still_goes_back_to_the_xy_before_loading():
+    events = []
+    stage = _record_xy_targets(_recording_stage(events, heights={"96 well plate": 6.25}), events)
+    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
+    real_move_to = stage.lift.move_to
+
+    def failing_once(mm, blocking=True):
+        stage.lift.move_to = real_move_to
+        raise TimeoutError("lift move timed out")
+
+    stage.lift.move_to = failing_once
+    with pytest.raises(TimeoutError):
+        squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)
+    events.clear()
+    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)  # the retry
+    assert events[:4] == [("y", _SCANNING_Y_MM), ("x", _SCANNING_X_MM), ("x", 47.5), ("y", 31.25)]
 
 
 # --- XY homing interlock ------------------------------------------------------------------------------------------
@@ -658,12 +744,12 @@ def test_a_failed_lift_restore_is_retried_on_the_next_return():
     with pytest.raises(TimeoutError):
         squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)
     assert stage._scanning_position_lift_mm is not None  # kept for the retry
-    assert events == ["y", "x"]  # and the objective stays retracted over a lift that did not get there
+    assert events == ["y", "x", "x", "y"]  # and the objective stays retracted over a lift that did not get there
     assert stage._scanning_position_z_mm == 2.5
 
     events.clear()
     squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)  # the retry
-    assert events == ["y", "x", "lift_to_6.25", "z_to_2.5"]
+    assert events == ["y", "x", "x", "y", "lift_to_6.25", "z_to_2.5"]
     assert stage._scanning_position_lift_mm is None and stage._scanning_position_z_mm is None
 
 
@@ -675,7 +761,13 @@ def test_the_loading_position_is_recorded_with_what_to_return_to():
     stage = _recording_stage(events, heights={"96 well plate": 6.25})
     squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
     state = squid.stage.utils.load_loading_state()
-    assert state == {"scanning_z_mm": 2.5, "lift_mm": 4.0, "lift_format": "96 well plate"}
+    assert state == {
+        "scanning_x_mm": 47.5,
+        "scanning_y_mm": 31.25,
+        "scanning_z_mm": 2.5,
+        "lift_mm": 4.0,
+        "lift_format": "96 well plate",
+    }
     squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)
     assert squid.stage.utils.load_loading_state() is None  # back at scanning: forgotten
 
@@ -694,22 +786,58 @@ def test_a_failed_return_keeps_the_loading_state():
     assert squid.stage.utils.load_loading_state() is not None  # still at the loading position
 
 
-def test_after_a_restart_the_return_to_scanning_works_as_before():
+def test_after_a_restart_the_return_goes_back_to_the_recorded_xy():
     events = []
     stage = _recording_stage(events, heights={"96 well plate": 6.25})
+    stage.get_pos.return_value = Pos(x_mm=41.5, y_mm=12.25, z_mm=2.5, theta_rad=None)
     squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
     state = squid.stage.utils.load_loading_state()
 
     events.clear()
     restarted = _recording_stage(events, heights={"96 well plate": 6.25})  # a new Squid: nothing in memory
-    squid.stage.utils.restore_loading_state(restarted, state)
+    _record_xy_targets(restarted, events)
+    assert squid.stage.utils.restore_loading_state(restarted, state) is True
     squid.stage.utils.move_to_scanning_position(restarted, blocking=True, is_wellplate=False)
-    assert events == ["y", "x", "lift_to_6.25", "z_to_2.5"]
+    assert events == [
+        ("y", _SCANNING_Y_MM),
+        ("x", _SCANNING_X_MM),
+        ("x", 41.5),
+        ("y", 12.25),
+        "lift_to_6.25",
+        "z_to_2.5",
+    ]
     assert squid.stage.utils.load_loading_state() is None
 
 
+@pytest.mark.parametrize(
+    "x_mm, y_mm",
+    [
+        (None, None),  # recorded before the XY was kept
+        ("bad", 20.0),
+        (20.0, float("nan")),
+        (121.0, 20.0),  # beyond the X travel
+        (20.0, -1.0),
+        (True, 20.0),
+    ],
+)
+def test_an_unknown_recorded_xy_leaves_the_stage_at_the_scanning_point(x_mm, y_mm):
+    events = []
+    stage = _record_xy_targets(_recording_stage(events, heights={"96 well plate": 6.25}), events)
+    state = {
+        "scanning_x_mm": x_mm,
+        "scanning_y_mm": y_mm,
+        "scanning_z_mm": 2.5,
+        "lift_mm": 4.0,
+        "lift_format": "96 well plate",
+    }
+    assert squid.stage.utils.restore_loading_state(stage, state) is False
+    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)
+    assert events == [("y", _SCANNING_Y_MM), ("x", _SCANNING_X_MM), "lift_to_6.25", "z_to_2.5"]
+
+
 def test_no_loading_state_without_a_lift():
-    stage = MagicMock(spec=["move_x_to", "move_y_to"])
+    stage = MagicMock(spec=["move_x_to", "move_y_to", "get_pos"])
+    stage.get_pos.return_value = Pos(x_mm=20.0, y_mm=20.0, z_mm=1.0, theta_rad=None)
     squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
     assert squid.stage.utils.load_loading_state() is None
 
@@ -725,7 +853,16 @@ def test_the_loading_state_is_recorded_before_xy_moves():
     stage = _recording_stage(events)
     stage.move_y_to.side_effect = lambda mm, *a, **k: events.append(("y", squid.stage.utils.load_loading_state()))
     squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
-    assert events[2] == ("y", {"scanning_z_mm": 2.5, "lift_mm": 4.0, "lift_format": "96 well plate"})
+    assert events[2] == (
+        "y",
+        {
+            "scanning_x_mm": 47.5,
+            "scanning_y_mm": 31.25,
+            "scanning_z_mm": 2.5,
+            "lift_mm": 4.0,
+            "lift_format": "96 well plate",
+        },
+    )
 
 
 @pytest.mark.parametrize(
@@ -769,9 +906,16 @@ def test_an_invalid_z_leaves_the_objective_retracted(z_mm):
 
 def test_a_valid_state_restores_completely():
     stage = _recording_stage([])
-    state = {"scanning_z_mm": None, "lift_mm": 4, "lift_format": "96 well plate"}  # Z None: was already retracted
+    state = {
+        "scanning_x_mm": 20,
+        "scanning_y_mm": 30.5,
+        "scanning_z_mm": None,  # was already retracted
+        "lift_mm": 4,
+        "lift_format": "96 well plate",
+    }
     assert squid.stage.utils.restore_loading_state(stage, state) is True
     assert stage._scanning_position_z_mm is None and stage._scanning_position_lift_mm == (4, "96 well plate")
+    assert stage._scanning_position_xy_mm == (20, 30.5)
 
 
 def test_xy_to_the_loading_position_moves_nothing_else():
