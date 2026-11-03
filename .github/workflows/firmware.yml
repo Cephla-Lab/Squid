@@ -64,6 +64,9 @@ jobs:
           done
         working-directory: ./firmware/controller
 
+      - name: Test the upload board selector (teensy_select_upload.py)
+        run: python -m unittest discover -s firmware/tools -v
+
       - name: Build joystick firmware (Teensy LC)
         run: pio run -e teensyLC
         working-directory: ./firmware/joystick
