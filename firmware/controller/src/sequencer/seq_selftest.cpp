@@ -66,7 +66,7 @@ void seq_selftest_tick() {
     if (!loaded || seq_running()) return;
     if (millis() - last_start_ms < kPeriodMs) return;
     last_start_ms = millis();
-    seq_start(kStackStart);
+    seq_start(kStackStart, seq::kAllChannels);
 }
 
 #endif  // SEQ_SELFTEST

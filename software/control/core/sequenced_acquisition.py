@@ -222,16 +222,6 @@ def build_program(
     return program
 
 
-def build_bursts(
-    channels: Sequence[ChannelPlan], z_stack_order: str, **program_kwargs
-) -> List[Tuple[BurstPlan, SequencerProgram]]:
-    """The bursts of one FOV's stack with their programs (burst_plans + build_program)."""
-    return [
-        (plan, build_program([channels[index] for index in plan.channel_indices], **program_kwargs))
-        for plan in burst_plans(z_stack_order, len(channels))
-    ]
-
-
 def ineligibility_reason(
     *,
     firmware_supports_sequencer: bool,

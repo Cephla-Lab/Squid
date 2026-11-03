@@ -127,7 +127,7 @@ static const int FOCUS_WHEEL_SAVE_AS_POWER_UP = 1;  // also store [2] as the pow
 // Hardware sequencer. Wire contract: src/sequencer/seq_wire.h. 60-63; 64-66 are taken above.
 static const int SEQ_WRITE = 60;              // [2]=word index, [3..6]=4 bytes of the staged program (absolute, idempotent)
 static const int SEQ_COMMIT = 61;             // [2..3]=byte length, [4..5]=CRC-16/CCITT-FALSE of the staged bytes; parse + validate
-static const int SEQ_RUN = 62;                // [2..5]=int32 stack start; stays IN_PROGRESS until the sequence is terminal
+static const int SEQ_RUN = 62;                // [2..5]=int32 stack start; [6]=channel selector (0 = every channel, n = channel n-1 alone); stays IN_PROGRESS until the sequence is terminal
 static const int SEQ_CANCEL = 63;             // finish the current exposure, then wind down
 static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import squid.abc
 from control.core.multi_point_worker import MultiPointWorker
-from control.core.sequenced_acquisition import ChannelPlan, build_bursts, camera_record, piezo_um_to_dac
+from control.core.sequenced_acquisition import ChannelPlan, build_program, burst_plans, camera_record, piezo_um_to_dac
 from control.piezo import PiezoStage
 
 NZ = 3
@@ -64,9 +64,10 @@ def _worker(channels, z_stack_order, *, failing=(), laser_af_per_stack=False):
         ChannelPlan(name=ch.name, exposure_ms=ch.exposure_time, source_code=11 + i, dac_percent=50.0, z_offset_um=0.0)
         for i, ch in enumerate(channels)
     ]
-    w._sequenced_bursts = build_bursts(
+    w._sequenced_bursts = burst_plans(z_stack_order, len(channels))
+    # uploaded once, in the preparation; a Z FIRST burst selects one channel of it (SEQ_RUN channel selector)
+    w._sequenced_program = build_program(
         plans,
-        z_stack_order,
         n_layers=NZ,
         dz_um=DZ_UM,
         piezo_range_um=PIEZO_RANGE_UM,
@@ -85,16 +86,14 @@ def _worker(channels, z_stack_order, *, failing=(), laser_af_per_stack=False):
     w.runs = []  # one record per _run_sequenced_burst call
     attempts = {}
 
-    def run(captures, stack_start):
+    def run(captures, stack_start, channel):
         key = captures[0].configuration.name
         attempts[key] = attempts.get(key, 0) + 1
-        program = w.microcontroller.seq_upload.call_args[0][0]
         w.runs.append(
             dict(
                 captures=[(c.z_index, c.configuration.name, c.configuration_idx, c.z_piezo_um) for c in captures],
                 stack_start=stack_start,
-                uploads=w.microcontroller.seq_upload.call_count,
-                program_channels=len(program.channels),
+                channel=channel,
                 exposure_ms=w.camera.set_exposure_time.call_args[0][0],
                 filter_for=w.liveController.apply_emission_filter.call_args[0][0].name,
             )
@@ -126,14 +125,22 @@ def test_z_first_runs_one_single_channel_burst_per_channel_in_channel_order():
     assert w.z_piezo_um == START_UM
 
 
-def test_z_first_uploads_a_one_channel_program_and_applies_that_channels_settings_before_each_burst():
+def test_z_first_runs_each_channel_of_the_one_uploaded_program_with_its_own_settings():
     w = _worker([A, B], "Z FIRST")
 
     w._acquire_sequenced_stack("A1", "/tmp", 0, af_succeeded=True)
 
-    assert [(r["uploads"], r["program_channels"]) for r in w.runs] == [(1, 1), (2, 1)]
+    assert [r["channel"] for r in w.runs] == [0, 1]  # SEQ_RUN's channel selector, no program per burst
+    assert w.microcontroller.seq_upload.call_count == 0  # uploaded once, in the preparation
     assert [r["exposure_ms"] for r in w.runs] == [5, 20]
     assert [r["filter_for"] for r in w.runs] == ["A", "B"]
+
+
+def test_a_single_channel_acquisition_runs_the_whole_program_in_either_order():
+    for order in ("Z FIRST", "CHANNEL FIRST"):
+        w = _worker([A], order)
+        w._acquire_sequenced_stack("A1", "/tmp", 0, af_succeeded=True)
+        assert [r["channel"] for r in w.runs] == [None]
 
 
 def test_z_first_hands_each_burst_to_the_dispatcher_with_its_place_in_the_acquisition():
@@ -154,7 +161,7 @@ def test_z_first_writes_the_per_z_bookkeeping_once_not_per_channel():
     assert w.af_fov_count == NZ
 
 
-def test_channel_first_is_one_burst_uploaded_once_for_the_whole_acquisition():
+def test_channel_first_is_one_burst_of_every_channel():
     w = _worker([A, B], "CHANNEL FIRST")
 
     w._acquire_sequenced_stack("A1", "/tmp", 0, af_succeeded=True)
@@ -163,7 +170,8 @@ def test_channel_first_is_one_burst_uploaded_once_for_the_whole_acquisition():
     assert [r["captures"] for r in w.runs] == [
         [(z, name, idx, START_UM + z * DZ_UM) for z in range(NZ) for idx, name in enumerate("AB")]
     ] * 2
-    assert [(r["uploads"], r["program_channels"]) for r in w.runs] == [(1, 2), (1, 2)]
+    assert [r["channel"] for r in w.runs] == [None, None]
+    assert w.microcontroller.seq_upload.call_count == 0
     assert [r["exposure_ms"] for r in w.runs] == [20, 20]  # the longest, set once
     assert w.camera.set_exposure_time.call_count == 1
 

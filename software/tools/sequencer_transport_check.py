@@ -177,9 +177,9 @@ class Checker:
             problems.append(f"frames_fired {status.frames_fired}")
         return "; ".join(problems)
 
-    def run_and_wait(self, stack_start: int, timeout_s: float) -> float:
+    def run_and_wait(self, stack_start: int, timeout_s: float, channel: Optional[int] = None) -> float:
         started = time.time()
-        self.mcu.seq_run(stack_start)
+        self.mcu.seq_run(stack_start, channel)
         self.mcu.wait_till_operation_is_completed(timeout_s)
         return time.time() - started
 
@@ -226,6 +226,20 @@ class Checker:
     def run_again_new_start(self) -> str:
         self.run_and_wait(MID_RANGE + 1000, 10)
         return self.expect_status(SeqState.DONE, SeqError.NONE, lambda n: n == 6)
+
+    def run_one_channel(self) -> str:
+        # SEQ_RUN channel selector (wire v3): channel 1 of the 2-channel program alone - 3 frames.
+        elapsed = self.run_and_wait(MID_RANGE, 10, channel=1)
+        problem = self.expect_status(SeqState.DONE, SeqError.NONE, lambda n: n == 3)
+        print(f"         3 layers x 1 selected channel took {elapsed * 1000:.0f} ms")
+        return problem
+
+    def run_bad_channel(self) -> str:
+        try:
+            self.run_and_wait(MID_RANGE, 5, channel=2)  # the program has channels 0 and 1
+        except CommandAborted:
+            return self.expect_status(SeqState.FAILED, SeqError.BAD_CHANNEL, lambda n: n == 0)
+        return "a channel past the program was accepted"
 
     def corrupted_upload(self) -> str:
         staged = make_program(self.stack_dac, 3).pack()
@@ -397,6 +411,9 @@ class Checker:
         self.check("upload + commit a 3-layer x 2-channel program", self.upload(3))
         self.check("run: Done, 6 frames fired, plausible duration", self.normal_run)
         self.check("run again with a new stack start, no re-upload", self.run_again_new_start)
+        self.check("run channel 1 alone (SEQ_RUN channel selector): Done, 3 frames fired", self.run_one_channel)
+        self.check("a channel past the program is refused before anything moves (BAD_CHANNEL)", self.run_bad_channel)
+        self.check("the controller recovers: a run of every channel is Done again", self.run_again_new_start)
         self.check("a commit with a wrong CRC is refused (BAD_PROGRAM, detail 3)", self.corrupted_upload)
         self.check("SEQ_RUN after a failed commit is refused (NOT_COMMITTED)", self.run_without_commit)
         self.check("re-upload after the failed commit", self.upload(3))

@@ -155,7 +155,7 @@ void test_wire_numbers_are_frozen(void) {
 // software/tests/control/test_sequencer_program.py disagree, the wire contract has forked.
 void test_golden_program_bytes_match_the_host_mirror(void) {
     static const char* kGoldenHex =
-        "02010000404b4c000107780000000a0000204e0000010200ff0000000001ff00e80310270000010000000000"
+        "03010000404b4c000107780000000a0000204e0000010200ff0000000001ff00e80310270000010000000000"
         "00000000ff0000000002ff01e903204e000001000000000064000000010001012c010000a861000000000000";
     uint8_t buf[kStagingBytes];
     const uint16_t len = build(buf, 2, 1);
@@ -164,7 +164,7 @@ void test_golden_program_bytes_match_the_host_mirror(void) {
     char hex[177];
     for (uint16_t i = 0; i < len; i++) snprintf(hex + 2 * i, 3, "%02x", buf[i]);
     TEST_ASSERT_EQUAL_STRING(kGoldenHex, hex);
-    TEST_ASSERT_EQUAL_HEX16(0xB921, protocol::crc16_ccitt(buf, len));
+    TEST_ASSERT_EQUAL_HEX16(0xEB4E, protocol::crc16_ccitt(buf, len));
 }
 
 int main(int, char**) {

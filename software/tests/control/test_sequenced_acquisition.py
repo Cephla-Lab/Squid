@@ -6,7 +6,6 @@ import pytest
 
 from control.core.sequenced_acquisition import (
     BurstPlan,
-    build_bursts,
     burst_plans,
     MAX_ATTEMPTS_PER_FOV,
     PIEZO_DAC_ID,
@@ -299,34 +298,6 @@ def test_channel_first_is_one_burst_with_every_channel():
 
 def test_z_first_is_one_single_channel_burst_per_channel():
     assert burst_plans("Z FIRST", 3) == [BurstPlan((0,)), BurstPlan((1,)), BurstPlan((2,))]
-
-
-PROGRAM_KWARGS = dict(
-    n_layers=3,
-    dz_um=1.5,
-    piezo_range_um=300,
-    piezo_flip=False,
-    z_settle_ms=20,
-    intensity_factor=1.0,
-    camera=CAMERA,
-    wait_timeout_s=5.0,
-)
-
-
-def test_build_bursts_gives_each_z_first_burst_its_own_one_channel_program():
-    channels = [plan(source_code=11), plan(source_code=12)]
-    bursts = build_bursts(channels, "Z FIRST", **PROGRAM_KWARGS)
-    assert [(b.channel_indices, [c.illum_ttl_mask for c in p.channels]) for b, p in bursts] == [
-        ((0,), [1 << 0]),
-        ((1,), [1 << 1]),
-    ]
-    assert all(p.loop.n_layers == PROGRAM_KWARGS["n_layers"] and p.loop.return_to_start for _, p in bursts)
-
-
-def test_build_bursts_gives_channel_first_one_program_with_every_channel():
-    channels = [plan(source_code=11), plan(source_code=12)]
-    bursts = build_bursts(channels, "CHANNEL FIRST", **PROGRAM_KWARGS)
-    assert [(b.channel_indices, [c.illum_ttl_mask for c in p.channels]) for b, p in bursts] == [((0, 1), [1, 2])]
 
 
 def test_a_single_channel_is_one_burst_in_either_order():
