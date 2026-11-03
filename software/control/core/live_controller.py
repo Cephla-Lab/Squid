@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import threading
-from typing import Dict, Iterable, List, Optional, TYPE_CHECKING
+from typing import Dict, Iterable, List, Optional, TYPE_CHECKING, Tuple
 
 from qtpy.QtCore import QObject, Signal
 
@@ -14,6 +14,7 @@ from control.rcm_scan_trigger import ConfocalScanFailedError
 
 from control._def import *
 from control.core.config.utils import apply_confocal_override
+from control.core.sequenced_acquisition import EmissionFilterUnit
 from control.models import merge_channel_configs
 
 if TYPE_CHECKING:
@@ -95,6 +96,24 @@ class LiveController(QObject):
         if not ill_config:
             return None
         return self.currentConfiguration.get_illumination_wavelength(ill_config)
+
+    def resolve_mcu_illumination(self, channel_config: "AcquisitionChannel") -> Tuple[int, float]:
+        """(illumination source code, DAC percent) update_illumination() would send to the
+        controller for this channel: the intensity cap, then the calibration LUT, then the
+        wavelength -> TTL port mapping.
+
+        A channel that is not a wavelength-addressed source (LED matrix, no illumination
+        config) comes back as (its source code, 0.0); the source code tells the caller it is
+        not an MCU TTL port. Used by the hardware sequencer to resolve a burst up front.
+        """
+        ill_config = self._get_illumination_config()
+        if not ill_config:
+            return 0, 0.0
+        wavelength = channel_config.get_illumination_wavelength(ill_config)
+        if not wavelength:
+            return channel_config.get_illumination_source_code(ill_config), 0.0
+        intensity = min(channel_config.illumination_intensity, self.get_intensity_cap_percent(channel_config))
+        return self.microscope.illumination_controller.resolve_mcu_illumination(wavelength, intensity)
 
     def _is_led_matrix(self) -> bool:
         """Check if current configuration is LED matrix (source code 0-9)."""
@@ -375,12 +394,33 @@ class LiveController(QObject):
                     if self.microscope.addons.cellx and ENABLE_CELLX:
                         self.microscope.addons.cellx.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
 
-        # set emission filter position and iris values
+        self.apply_emission_filter(self.currentConfiguration)
+
+    def emission_filter_unit(self) -> Optional[EmissionFilterUnit]:
+        """The emission filter unit apply_emission_filter() moves for a channel, or None when a channel
+        switch moves nothing (no unit, or automatic filter switching is off). The conditions are the
+        branches of apply_emission_filter()."""
+        if ENABLE_SPINNING_DISK_CONFOCAL and self.microscope.addons.xlight and not USE_DRAGONFLY:
+            return EmissionFilterUnit("XLight", applies_iris=True)
+        if ENABLE_SPINNING_DISK_CONFOCAL and USE_DRAGONFLY and self.microscope.addons.dragonfly:
+            return EmissionFilterUnit("Dragonfly", applies_iris=False)
+        if self.microscope.addons.emission_filter_wheel and self.enable_channel_auto_filter_switching:
+            return EmissionFilterUnit(f"{EMISSION_FILTER_WHEEL_TYPE} emission filter wheel", applies_iris=False)
+        return None
+
+    def apply_emission_filter(self, configuration: "AcquisitionChannel") -> None:
+        """Set the emission filter position (and the X-Light's iris values) a channel asks for.
+
+        Part of every channel switch (update_illumination). A hardware-sequenced acquisition calls
+        it on its own: its burst cannot switch filters, so the one position its channels share is
+        set before the burst - without selecting a channel, which would also rewrite the camera
+        exposure the burst was set up with.
+        """
         if ENABLE_SPINNING_DISK_CONFOCAL and self.microscope.addons.xlight and not USE_DRAGONFLY:
             try:
-                if self.currentConfiguration.emission_filter_position:
+                if configuration.emission_filter_position:
                     self.microscope.addons.xlight.set_emission_filter(
-                        self.currentConfiguration.emission_filter_position,
+                        configuration.emission_filter_position,
                         extraction=False,
                         validate=XLIGHT_VALIDATE_WHEEL_POS,
                     )
@@ -388,7 +428,7 @@ class LiveController(QObject):
                 self._log.warning(f"Not setting emission filter position: {e}")
             # Apply per-channel iris values. A channel without its own value gets the default, which
             # is what the confocal widget shows for it.
-            hw_settings = self.currentConfiguration.confocal_hardware_settings
+            hw_settings = configuration.confocal_hardware_settings
             xlight = self.microscope.addons.xlight
             if xlight.has_illumination_iris_diaphragm:
                 iris_val = getattr(hw_settings, "illumination_iris", None)
@@ -406,11 +446,11 @@ class LiveController(QObject):
                     self._log.error(f"Not setting emission iris: {e}")
         elif ENABLE_SPINNING_DISK_CONFOCAL and USE_DRAGONFLY and self.microscope.addons.dragonfly:
             try:
-                if self.currentConfiguration.emission_filter_position:
+                if configuration.emission_filter_position:
                     # The channel's filter position applies to the wheel on the port the camera is on
                     self.microscope.addons.dragonfly.set_emission_filter(
                         self.microscope.addons.dragonfly.get_camera_port(),
-                        self.currentConfiguration.emission_filter_position,
+                        configuration.emission_filter_position,
                     )
             except Exception as e:
                 self._log.warning(f"Not setting emission filter position: {e}")
@@ -426,7 +466,7 @@ class LiveController(QObject):
                 wheel = self.microscope.addons.emission_filter_wheel
                 if wheel.available_filter_wheels:
                     wheel.set_filter_wheel_position(
-                        {wheel.available_filter_wheels[0]: self.currentConfiguration.emission_filter_position}
+                        {wheel.available_filter_wheels[0]: configuration.emission_filter_position}
                     )
             except Exception as e:
                 self._log.warning(f"Not setting emission filter position: {e}")

@@ -10,12 +10,14 @@ import squid.logging
 from squid.abc import (
     AbstractCamera,
     CameraAcquisitionMode,
+    CameraError,
     CameraGainRange,
     CameraFrameFormat,
     CameraPixelFormat,
     CameraFrame,
 )
 from squid.config import CameraConfig, ToupcamCameraModel
+import control._def
 from control._def import *
 
 import threading
@@ -370,6 +372,7 @@ class ToupcamCamera(AbstractCamera):
         """
         try:
             self._log.debug("Starting raw stream in PullModeWithCallback.")
+            self._stream_generation += 1  # frames pulled from this stream say so (CameraFrame.stream_generation)
             self._camera.StartPullModeWithCallback(self._event_callback, self)
             self._raw_camera_stream_started = True
         except toupcam.HRESULTException as ex:
@@ -383,6 +386,9 @@ class ToupcamCamera(AbstractCamera):
         """
         callback_start_ns = time.perf_counter_ns()
         with self._raw_frame_callback_lock:
+            # The run of the stream this frame belongs to, read before the pull: a restart during the pull must
+            # not relabel a frame of the run before as one of the run after.
+            stream_generation = self._stream_generation
             # Since we are receiving a frame callback, we know things are setup properly.
             self._raw_camera_stream_started = True
 
@@ -439,6 +445,7 @@ class ToupcamCamera(AbstractCamera):
                 frame=frame,
                 frame_format=this_frame_format,
                 frame_pixel_format=this_pixel_format,
+                stream_generation=stream_generation,
             )
             process_done_ns = time.perf_counter_ns()
 
@@ -514,7 +521,10 @@ class ToupcamCamera(AbstractCamera):
             pixel_size=self._get_pixel_size_in_bytes(),
             exposure_time_ms=camera_exposure_time_ms,
             capabilities=self._capabilities,
-            global_reset=self._global_reset_enabled,
+            # Two opt-ins put the sensor in global reset, with different strobe models: ENABLE_TOUPCAM_GLOBAL_RESET
+            # fires the illumination at the trigger (no delay at all); HARDWARE_TRIGGER_GLOBAL_RESET keeps the
+            # camera's trigger latency (see get_strobe_time).  Each keeps its model until the bench settles it.
+            global_reset=bool(self._global_reset_enabled and ENABLE_TOUPCAM_GLOBAL_RESET),
         )
         if self._hw_set_strobe_delay_ms_fn and self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
             self._hw_set_strobe_delay_ms_fn(self.get_strobe_time())
@@ -583,8 +593,11 @@ class ToupcamCamera(AbstractCamera):
 
     def _set_global_reset(self, acquisition_mode: CameraAcquisitionMode):
         """
-        Global reset mode, if ENABLE_TOUPCAM_GLOBAL_RESET is set and the camera supports it, is on in hardware
-        trigger mode and off otherwise.
+        Global reset mode, if the camera supports it and either opt-in asks for it, is on in hardware trigger mode
+        and off otherwise.  The opt-ins are ENABLE_TOUPCAM_GLOBAL_RESET, and HARDWARE_TRIGGER_GLOBAL_RESET with a
+        LEVEL trigger (the sequenced-acquisition exposure model, which _apply_global_reset_mode then verifies on
+        the camera).  This is the only place the option is written, so _global_reset_enabled always says what the
+        sensor is in - and leaving hardware trigger mode turns it off whichever opt-in turned it on.
 
         With global reset every row starts exposing at once, so the illumination needs no strobe delay.  But the rows
         keep integrating until they're read out, so the image is only flat if the light is off before the readout
@@ -594,7 +607,9 @@ class ToupcamCamera(AbstractCamera):
         bottom and halve the frame rate (measured on an ITR10CMOS26000KMA).  The option is changed with the stream
         stopped, so a change costs a stream restart.
         """
-        enabled = acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER and ENABLE_TOUPCAM_GLOBAL_RESET
+        enabled = acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER and (
+            ENABLE_TOUPCAM_GLOBAL_RESET or control._def.use_level_trigger_global_reset()
+        )
         if enabled == self._global_reset_enabled or not self._global_reset_supported:
             return
         with self._pause_streaming():
@@ -614,7 +629,7 @@ class ToupcamCamera(AbstractCamera):
                 self._global_reset_enabled = False
                 return
         self._global_reset_enabled = enabled
-        self._log.info(f"Global reset mode {'enabled, strobe delay is 0' if enabled else 'disabled'}.")
+        self._log.info(f"Global reset mode {'enabled' if enabled else 'disabled'}.")
 
     def _change_pixel_format(self, pixel_format: CameraPixelFormat):
         """Switch the SDK mode and re-send the black level, whose scale depends on the mode.  Call with the stream stopped."""
@@ -953,7 +968,112 @@ class ToupcamCamera(AbstractCamera):
         else:
             pass
 
+    def _global_reset_active(self) -> bool:
+        """True when this camera is actually running LEVEL trigger + global reset.
+
+        Short-circuits on the opt-in setting, so with the setting off this costs no SDK
+        call at all and the driver behaves exactly as it does today.
+        """
+        if not control._def.use_level_trigger_global_reset():
+            return False
+        return self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER
+
+    def _apply_global_reset_mode(self):
+        """Verify that the sensor is in global reset mode, or raise.
+
+        Called only from the HARDWARE_TRIGGER branch of _set_acquisition_mode_imp, after
+        _set_global_reset wrote the option; it is a no-op unless the HARDWARE_TRIGGER_GLOBAL_RESET
+        opt-in is on AND the trigger mode is LEVEL (global reset is meaningless with a
+        fixed-width EDGE trigger).
+
+        There is deliberately no fallback: if the camera does not confirm the mode, the
+        rolling get_strobe_time() below would fire the illumination before the last rows
+        have started exposing, which silently ruins the images.
+        """
+        if not control._def.use_level_trigger_global_reset():
+            return
+
+        if not self._global_reset_enabled:
+            # _set_global_reset's write was refused: the option is not supported (its log line has the SDK's answer).
+            raise CameraError(
+                "This camera rejected global reset mode (TOUPCAM_OPTION_GLOBAL_RESET_MODE). "
+                "Turn off HARDWARE_TRIGGER_GLOBAL_RESET or use a camera that supports it."
+            )
+        try:
+            read_back = self._camera.get_Option(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE)
+        except toupcam.HRESULTException as ex:
+            raise CameraError(
+                "This camera rejected global reset mode "
+                f"(TOUPCAM_OPTION_GLOBAL_RESET_MODE): {control.toupcam_exceptions.explain(ex)}. "
+                "Turn off HARDWARE_TRIGGER_GLOBAL_RESET or use a camera that supports it."
+            ) from ex
+
+        if read_back != 1:
+            raise CameraError(
+                "This camera accepted the global reset mode write but reports "
+                f"TOUPCAM_OPTION_GLOBAL_RESET_MODE={read_back} instead of 1. "
+                "Refusing to acquire with rolling-shutter strobe timing."
+            )
+
+        self._log.info("Camera is in LEVEL trigger + global reset mode.")
+
+    def _apply_trigger_ready_output(self):
+        """Drive GPIO1 as the trigger-ready signal ("Frame Trigger Wait"), active low, or raise.
+
+        Called only from the HARDWARE_TRIGGER branch of _set_acquisition_mode_imp, and a
+        no-op unless the CAMERA_TRIGGER_READY_OUTPUT opt-in is on. Without it the driver
+        configures GPIO1 only in EDGE trigger mode; in LEVEL mode -- the one a controller that
+        gates on this line needs -- the output is left as it was.
+
+        ACTIVE LOW (inverter on): the controller's ready input is pulled up on the board
+        (measured on the new controller: about 4.7 k to 3.3 V), so an unplugged or broken
+        cable reads HIGH. HIGH therefore has to mean NOT ready.
+
+        Read back or raise: a line that is not what the controller expects would either stall
+        the sequence or let it trigger without waiting for the camera.
+        """
+        if not control._def.CAMERA_TRIGGER_READY_OUTPUT:
+            return
+
+        gpio1 = 3  # IoControl line numbers: 0 opto-isolated in, 1 opto-isolated out, 2 GPIO0, 3 GPIO1
+        frame_trigger_wait = 0
+        try:
+            self._camera.IoControl(gpio1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE, frame_trigger_wait)
+            self._camera.IoControl(gpio1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER, 1)
+            mode = self._camera.IoControl(gpio1, toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTMODE, 0)
+            inverter = self._camera.IoControl(gpio1, toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTINVERTER, 0)
+        except toupcam.HRESULTException as ex:
+            raise CameraError(
+                "This camera rejected the trigger-ready output setup on GPIO1: "
+                f"{control.toupcam_exceptions.explain(ex)}. Turn off CAMERA_TRIGGER_READY_OUTPUT "
+                "or use a camera that supports it."
+            ) from ex
+
+        if mode != frame_trigger_wait:
+            raise CameraError(
+                f"This camera reports GPIO1 output mode {mode} instead of 0 (Frame Trigger Wait). "
+                "Refusing to let a controller gate triggers on a line that is not trigger-ready."
+            )
+        if inverter != 1:
+            raise CameraError(
+                f"This camera reports the GPIO1 output inverter as {inverter} instead of 1 (active low). "
+                "An unplugged ready cable would read as ready."
+            )
+
+        self._log.info("Camera GPIO1 is configured as trigger ready (Frame Trigger Wait), active low.")
+
     def get_strobe_time(self) -> float:
+        if self._global_reset_active():
+            # In global reset every row starts exposing at the trigger, so there is no
+            # "wait until the last row starts" term: what is left is the camera's own
+            # latency between seeing the trigger and starting the exposure.
+            #
+            # NOTE: trigger_delay_us is derived from the rolling-shutter model in
+            # _calculate_strobe_info (it is the SHR/line-length term). It is the best
+            # estimate the driver has of that residual latency, but whether it is exactly
+            # right in global reset has to be measured on a scope -- see the bench checks.
+            return self._strobe_info.trigger_delay_us / 1000.0
+
         # Use both strobe_time_us and trigger_delay_us here because our notion of "strobe time" is when the
         # last row first starts exposing.  For the toupcam, this happens after trigger delay + strobe time.
         #
@@ -1109,6 +1229,11 @@ class ToupcamCamera(AbstractCamera):
                     error_type = hresult_checker(ex)
                     self._log.exception("Unable to set GPIO1 for trigger ready: " + error_type)
                     raise
+
+            # Before the exposure/strobe refresh below, so the strobe delay pushed to the
+            # microcontroller is the global-reset one and not the rolling-shutter one.
+            self._apply_global_reset_mode()
+            self._apply_trigger_ready_output()
         # Re-set exposure time to force strobe to get set to the remote.
         self.set_exposure_time(self.get_exposure_time())
 

@@ -2,6 +2,8 @@
 #include "utils/limit_switch_config.h"
 #include "utils/focus_wheel.h"
 
+#include "commands/sequence_commands.h"  // seq_command_refused, seq_fill_status
+
 void process_serial_message()
 {
   while (SerialUSB.available())
@@ -37,6 +39,15 @@ void process_serial_message()
       if (buffer_rx[1] != HEARTBEAT)
       {
           mcu_cmd_execution_status = COMPLETED_WITHOUT_ERRORS;
+      }
+
+      // While a hardware sequence runs the MCU owns the stage, the light and the camera
+      // trigger: everything but the keepalive, cancel and the safety commands is refused
+      // here, at one choke point, instead of by guards in every callback.
+      if (seq_command_refused(buffer_rx[1]))
+      {
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+        continue;
       }
 
       CommandCallback p_callback = cmd_map[buffer_rx[1]];
@@ -118,10 +129,20 @@ void send_position_update()
     buffer_tx[18] &= ~((1 << BIT_POS_Z_LIMIT_LEFT) | (1 << BIT_POS_Z_LIMIT_RIGHT));
     buffer_tx[18] |= lsc_status_bits(tmc4361A_readLimitSwitches(&tmc4361[z]));
 
-    // Bytes 14-17 (theta - no instrument has a theta axis) and 19-21 (reserved)
-    // are zero unless encoder reporting is on. The host ignores all of them
-    // unless it asked, so the shipping packet is byte-identical to 1.5.
-    if (encoder_report_axis != 0xFF)
+    // Bytes 14-17 (theta - no instrument has a theta axis) and 19-21 (reserved) are a
+    // multiplexed field, byte 19 saying who owns it: the hardware sequencer while a sequence runs
+    // and briefly after (its state|error, detail, frames fired - the host reads a terminal status
+    // or a refusal there), else the encoder of the reported axis, else the focus wheel's count,
+    // else zero. The host ignores all of them unless it asked, so the shipping packet is
+    // byte-identical to 1.5.
+    if (seq_status_owned(millis()))
+    {
+      seq_fill_status(&buffer_tx[14]);
+      buffer_tx[19] = (1 << SEQ_FLAG_STATUS);
+      buffer_tx[20] = 0;
+      buffer_tx[21] = 0;
+    }
+    else if (encoder_report_axis != 0xFF)
     {
       uint32_t enc_u = uint32_t(enc_pos);
       buffer_tx[14] = byte(enc_u >> 24);
