@@ -57,7 +57,10 @@ number the Teensy Loader shows, or the USB serial number that `pio device list` 
 USB, so `1234567` and `12345670` name the same board; both are accepted.)
 
 The upload is also refused when the chosen board is a different model from the one the environment
-builds for (for example, a joystick image aimed at the controller). After programming, the board must
+builds for (for example, a joystick image aimed at the controller), and while any *other* Teensy is
+in the bootloader: `--upload-port` only decides which board is asked to reboot, while the Teensy
+Loader programs whichever board is in the bootloader, so a second board waiting there could receive
+the image. Unplug or power-cycle that board first. After programming, the board must
 reboot and come back running with the same serial number within 30 seconds, or the upload is
 reported as failed. The checks live in [`tools/teensy_select_upload.py`](tools/teensy_select_upload.py).
 

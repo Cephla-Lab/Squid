@@ -13,6 +13,9 @@ Rules:
     numbers are listed.
   * --upload-port given: exactly that board is flashed. Refused if it is not connected.
   * The board must be the model the environment builds for (no joystick image on a controller).
+  * Refused while any OTHER board is in the bootloader: -port= only aims the reboot request, and
+    the Teensy Loader programs whichever board is in the bootloader. A board that enters the
+    bootloader during the upload fails the upload afterwards (it may have been programmed).
   * After the upload, the board must leave and come back running with the same serial number
     within UPLOAD_RETURN_TIMEOUT_S, or the upload is reported as failed.
 
@@ -129,7 +132,24 @@ def select_board(boards, wanted_sn, expected_name):
         raise SelectionError(
             f"Teensy SN {board.get('iserial')} is a {name}, but this environment builds for a {expected_name}."
         )
+    # -port= only aims the reboot request. The Teensy Loader then programs whichever board is in
+    # the bootloader (its automatic mode), so a second board already sitting in HalfKay could
+    # receive this image instead of, or as well as, the chosen one.
+    stray = [b for b in boards.values() if b is not board and is_bootloader(b)]
+    if stray:
+        sns = ", ".join(str(b.get("iserial", "?")) for b in stray)
+        raise SelectionError(
+            f"Teensy SN {sns} is in the bootloader. The Teensy Loader programs any board in the bootloader, "
+            "so it could receive this image. Unplug it, or power-cycle it so it runs its firmware, then retry."
+        )
     return board
+
+
+def boards_entering_bootloader(history, chosen_address, since):
+    """Addresses other than the chosen one that entered the bootloader at or after `since`."""
+    return sorted(
+        {ev["address"] for t, ev in history if t >= since and ev["address"] != chosen_address and is_bootloader(ev)}
+    )
 
 
 # ---------------------------------------------------------------------------------------------
@@ -279,6 +299,7 @@ def _install(env):
 
     def after_upload(source, target, env):
         monitor, board = state["monitor"], state["board"]
+        errors = []
         try:
             back = wait_for_return(
                 monitor,
@@ -289,10 +310,24 @@ def _install(env):
                 started_in_bootloader=is_bootloader(board),
             )
         except SelectionError as e:
-            sys.stderr.write(f"\n*** Teensy upload FAILED: {e}\n")
-            env.Exit(1)
+            back = None
+            errors.append(str(e))
         finally:
             monitor.close()
+        # A board that reached the bootloader during the upload (someone pressed its button) may have
+        # been programmed by the Loader's automatic mode. Too late to stop, but never silent.
+        others = boards_entering_bootloader(monitor.history, board["address"], state["start"])
+        if others:
+            sns = ", ".join(
+                str(next((ev.get("iserial") for _, ev in monitor.history if ev["address"] == a), a)) for a in others
+            )
+            errors.append(
+                f"Teensy SN {sns} entered the bootloader during this upload and may have been programmed "
+                "with this image. Check it before use."
+            )
+        if errors:
+            sys.stderr.write("".join(f"\n*** Teensy upload FAILED: {e}\n" for e in errors))
+            env.Exit(1)
         print(f"Teensy SN {back.get('iserial')} is running the new firmware.")
 
     env.AddPreAction("upload", before_upload)

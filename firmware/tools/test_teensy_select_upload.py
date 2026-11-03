@@ -90,6 +90,29 @@ class SelectTests(unittest.TestCase):
         with self.assertRaisesRegex(t.SelectionError, "more than one"):
             t.select_board(boards, "12345670", "Teensy 4.1")
 
+    def test_other_board_in_bootloader_refused(self):
+        # -port= only aims the reboot; the Loader programs any board in HalfKay.
+        boards = t.apply_events({}, [board("usb:1", 1111111), board("usb:2", 2222222, pid="0478")])
+        with self.assertRaisesRegex(t.SelectionError, "SN 2222222 is in the bootloader"):
+            t.select_board(boards, "1111111", "Teensy 4.1")
+
+    def test_chosen_board_in_bootloader_allowed(self):
+        boards = t.apply_events({}, [board("usb:1", 1111111, pid="0478"), board("usb:2", 2222222)])
+        self.assertEqual(t.select_board(boards, "1111111", "Teensy 4.1")["address"], "usb:1")
+
+    def test_single_board_in_bootloader_allowed(self):
+        boards = t.apply_events({}, [board("usb:1", 1111111, pid="0478")])
+        self.assertEqual(t.select_board(boards, "", "Teensy 4.1")["address"], "usb:1")
+
+    def test_boards_entering_bootloader_during_upload(self):
+        history = [
+            (0.0, board("usb:2", 2222222, pid="0478")),  # before the upload: ignored
+            (5.0, board("usb:1", 1111111, pid="0478")),  # the chosen board: expected
+            (5.1, board("usb:3", 3333333, pid="0478")),  # another board: flagged
+            (5.2, board("usb:2", 2222222)),  # running, not bootloader
+        ]
+        self.assertEqual(t.boards_entering_bootloader(history, "usb:1", since=1.0), ["usb:3"])
+
     def test_no_boards(self):
         with self.assertRaisesRegex(t.SelectionError, "No Teensy"):
             t.select_board({}, "", "Teensy 4.1")
