@@ -1,4 +1,5 @@
 import abc
+import copy
 import multiprocessing
 import queue
 import os
@@ -6,6 +7,7 @@ import time
 import json
 from datetime import datetime
 from contextlib import contextmanager
+from multiprocessing import shared_memory
 from typing import ClassVar, Dict, Generic, List, Optional, Set, Tuple, TypeVar, Union
 from uuid import uuid4
 
@@ -81,9 +83,33 @@ class CaptureInfo:
     time_point: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class SharedFrameRef:
+    """Where JobRunner.dispatch() put a job's frame in the runner's SharedFramePool."""
+
+    shm_name: str
+    slot: int
+    offset: int
+    shape: Tuple[int, ...]
+    dtype: str
+    nbytes: int
+
+
 @dataclass()
 class JobImage:
     image_array: Optional[np.array]
+    # Set instead of image_array while the job sits in a JobRunner's queue (see SharedFramePool).
+    shared_frame: Optional[SharedFrameRef] = None
+
+
+def _job_image_nbytes(job: "Job") -> int:
+    if job.capture_image is None:
+        return 0
+    if job.capture_image.image_array is not None:
+        return job.capture_image.image_array.nbytes
+    if job.capture_image.shared_frame is not None:
+        return job.capture_image.shared_frame.nbytes
+    return 0
 
 
 @dataclass(frozen=True)
@@ -774,6 +800,141 @@ class ThrowImmediatelyJob(Job):
         raise ThrowImmediatelyJobException("ThrowImmediatelyJob threw")
 
 
+SHARED_FRAME_POOL_SLOTS = 8
+
+
+class SharedFramePool:
+    """Shared-memory slots that carry frames from the acquisition process to a JobRunner subprocess.
+
+    Putting a frame on a multiprocessing.Queue pickles it in the queue's feeder thread while holding the GIL:
+    ~8 ms for a contiguous 2200x2200 uint16 frame, ~27 ms for the non-contiguous center-crop view the camera
+    hands out. Every other thread in the acquisition process, including the one about to send the next trigger,
+    is frozen for that long. dispatch() instead copies the frame into a free slot and sends only a SharedFrameRef;
+    the subprocess copies the frame out and frees the slot before running the job.
+
+    The shared memory is created on the first put(), sized for that frame. Slot states live in a lock-protected
+    multiprocessing.Array created up front so the subprocess inherits it. put() returns None (the caller then
+    pickles the frame as before) when no slot is free, the frame does not fit, or anything goes wrong.
+    """
+
+    FREE = 0
+    IN_USE = 1
+
+    def __init__(self, n_slots: int = SHARED_FRAME_POOL_SLOTS):
+        self._n_slots = n_slots
+        self._slot_state = multiprocessing.Array("b", n_slots)
+        self._slot_nbytes = 0
+        self._shm: Optional[shared_memory.SharedMemory] = None  # creating process only
+        self._owner_pid: Optional[int] = None
+        self._attached: Optional[shared_memory.SharedMemory] = None  # subprocess only
+        self._disabled = False
+        self._warned_too_big = False
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # Only the creating process owns (and unlinks) the shared memory; the subprocess attaches by name.
+        state["_shm"] = None
+        state["_attached"] = None
+        return state
+
+    def put(self, image: np.ndarray) -> Optional[SharedFrameRef]:
+        """Copy image into a free slot and return where it is, or None if the caller should pickle it instead."""
+        if self._disabled or not isinstance(image, np.ndarray) or image.dtype.hasobject or image.nbytes == 0:
+            return None
+        try:
+            if self._shm is None:
+                self._shm = shared_memory.SharedMemory(create=True, size=image.nbytes * self._n_slots)
+                self._owner_pid = os.getpid()
+                self._slot_nbytes = image.nbytes
+            if image.nbytes > self._slot_nbytes:
+                if not self._warned_too_big:
+                    self._log.warning(
+                        f"Frame of {image.nbytes} bytes is larger than the {self._slot_nbytes}-byte shared-memory "
+                        f"slots; pickling such frames instead."
+                    )
+                    self._warned_too_big = True
+                return None
+        except Exception:
+            self._log.exception("Could not set up shared memory for frames; pickling frames instead.")
+            self._disabled = True
+            return None
+
+        slot = self._claim_free_slot()
+        if slot is None:
+            return None
+        offset = slot * self._slot_nbytes
+        try:
+            dst = np.ndarray(image.shape, dtype=image.dtype, buffer=self._shm.buf, offset=offset)
+            np.copyto(dst, image)
+            del dst
+        except Exception:
+            self._log.exception("Could not copy a frame into shared memory; pickling it instead.")
+            self.release(slot)
+            return None
+        return SharedFrameRef(
+            shm_name=self._shm.name,
+            slot=slot,
+            offset=offset,
+            shape=tuple(image.shape),
+            dtype=image.dtype.str,
+            nbytes=image.nbytes,
+        )
+
+    def take(self, ref: SharedFrameRef) -> np.ndarray:
+        """Copy a frame out of its slot and free the slot (in the subprocess)."""
+        try:
+            if self._attached is None or self._attached.name != ref.shm_name:
+                self._close_attached()
+                self._attached = shared_memory.SharedMemory(name=ref.shm_name)
+            view = np.ndarray(ref.shape, dtype=np.dtype(ref.dtype), buffer=self._attached.buf, offset=ref.offset)
+            image = view.copy()
+            del view
+            return image
+        finally:
+            self.release(ref.slot)
+
+    def release(self, slot: int) -> None:
+        with self._slot_state.get_lock():
+            self._slot_state.get_obj()[slot] = self.FREE
+
+    def free_slot_count(self) -> int:
+        with self._slot_state.get_lock():
+            return sum(1 for state in self._slot_state.get_obj() if state == self.FREE)
+
+    def close(self) -> None:
+        """Release this process's handle; the creating process also unlinks the memory."""
+        self._close_attached()
+        if self._shm is not None:
+            shm, self._shm = self._shm, None
+            try:
+                shm.close()
+                # A forked subprocess inherits the handle but must not unlink the parent's memory.
+                if self._owner_pid == os.getpid():
+                    shm.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                self._log.exception("Error releasing the frame shared memory.")
+
+    def _claim_free_slot(self) -> Optional[int]:
+        with self._slot_state.get_lock():
+            states = self._slot_state.get_obj()
+            for slot in range(self._n_slots):
+                if states[slot] == self.FREE:
+                    states[slot] = self.IN_USE
+                    return slot
+        return None
+
+    def _close_attached(self) -> None:
+        if self._attached is not None:
+            attached, self._attached = self._attached, None
+            try:
+                attached.close()
+            except Exception:
+                self._log.exception("Error closing the attached frame shared memory.")
+
+
 class JobRunner(multiprocessing.Process):
     def __init__(
         self,
@@ -805,6 +966,10 @@ class JobRunner(multiprocessing.Process):
         self._ready_event: multiprocessing.Event = multiprocessing.Event()  # Signals subprocess is ready
         # Track jobs in flight (dispatched but not yet completed)
         self._pending_count = multiprocessing.Value("i", 0)
+        # Frames reach the subprocess through shared memory instead of being pickled (see SharedFramePool).
+        self._frame_pool: Optional[SharedFramePool] = (
+            SharedFramePool() if _def.Acquisition.USE_SHARED_MEMORY_FRAME_HANDOFF else None
+        )
 
         # Backpressure tracking (shared with BackpressureController)
         self._bp_pending_jobs = bp_pending_jobs
@@ -855,9 +1020,13 @@ class JobRunner(multiprocessing.Process):
             with self._bp_pending_bytes.get_lock():
                 self._bp_pending_bytes.value += image_bytes
 
+        queued_job = job
         try:
-            self._input_queue.put_nowait(job)
+            # Inside the try so that a failure here (e.g. MemoryError copying the frame) also rolls the counters back.
+            queued_job = self._job_for_queue(job)
+            self._input_queue.put_nowait(queued_job)
         except Exception as original_exc:
+            self._release_shared_frame(queued_job)
             # Roll back ALL counters if enqueue fails
             try:
                 with self._pending_count.get_lock():
@@ -874,6 +1043,33 @@ class JobRunner(multiprocessing.Process):
                 )
             raise original_exc
         return True
+
+    def _job_for_queue(self, job: Job) -> Job:
+        """The job to put on the queue: its frame moved to shared memory, or at least made contiguous, so that
+        pickling the job in the queue's feeder thread holds the GIL as briefly as possible."""
+        image = job.capture_image.image_array if job.capture_image is not None else None
+        if not isinstance(image, np.ndarray):
+            return job
+        # Copy the job before claiming a slot, so that nothing after a successful put() can fail and leak the slot.
+        queued_job = copy.copy(job)
+        ref = self._frame_pool.put(image) if self._frame_pool is not None else None
+        if ref is not None:
+            queued_job.capture_image = JobImage(image_array=None, shared_frame=ref)
+        elif not image.flags.c_contiguous:
+            queued_job.capture_image = JobImage(image_array=np.ascontiguousarray(image))
+        else:
+            return job
+        return queued_job
+
+    def _release_shared_frame(self, job: Job) -> None:
+        if self._frame_pool is not None and job.capture_image is not None and job.capture_image.shared_frame:
+            self._frame_pool.release(job.capture_image.shared_frame.slot)
+
+    def _receive_shared_frame(self, job: Job) -> None:
+        """In the subprocess: give the job its frame back as a private array and free the shared-memory slot."""
+        ref = job.capture_image.shared_frame if job.capture_image is not None else None
+        if ref is not None:
+            job.capture_image = JobImage(image_array=self._frame_pool.take(ref))
 
     def output_queue(self) -> multiprocessing.Queue:
         return self._output_queue
@@ -940,6 +1136,8 @@ class JobRunner(multiprocessing.Process):
         self._input_queue.join_thread()
         self._output_queue.close()
         self._output_queue.join_thread()
+        if self._frame_pool is not None:
+            self._frame_pool.close()
         # Clear references to allow garbage collection of Event and Value semaphores
         self._input_queue = None
         self._output_queue = None
@@ -991,6 +1189,8 @@ class JobRunner(multiprocessing.Process):
                 if job is None:
                     continue
 
+                self._receive_shared_frame(job)
+
                 self._log.info(f"Running job {job.job_id} (waited {(t_got_job - t_wait_start)*1000:.1f}ms in queue)...")
 
                 # Set operation context for memory tracking
@@ -1033,8 +1233,8 @@ class JobRunner(multiprocessing.Process):
                             self._bp_pending_jobs.value = max(0, self._bp_pending_jobs.value - 1)
 
                         # Decrement image bytes
-                        if job.capture_image and job.capture_image.image_array is not None:
-                            image_bytes = job.capture_image.image_array.nbytes
+                        image_bytes = _job_image_nbytes(job)
+                        if image_bytes:
                             with self._bp_pending_bytes.get_lock():
                                 self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - image_bytes)
 
@@ -1049,6 +1249,9 @@ class JobRunner(multiprocessing.Process):
                 self._log.error("ZARR FINALIZATION INCOMPLETE - Some data may not be saved correctly")
         except Exception as e:
             self._log.error(f"Error finalizing zarr writers during shutdown: {e}")
+
+        if self._frame_pool is not None:
+            self._frame_pool.close()
 
         # Stop memory monitoring and log final report
         log_memory("WORKER_SHUTDOWN", include_children=False)
