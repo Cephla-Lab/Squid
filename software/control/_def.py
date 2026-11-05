@@ -3,7 +3,7 @@ import sys
 import glob
 from pathlib import Path
 from configparser import ConfigParser
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 import json
 import csv
 import squid.logging
@@ -519,20 +519,40 @@ class CMD_EXECUTION_STATUS:
 
 
 class SpotDetectionMode(Enum):
-    """Specifies which spot to detect when multiple spots are present.
+    """Which spot to use when several reflections land on the focus camera.
 
-    SINGLE: Expect and detect single spot
-    DUAL_RIGHT: In dual-spot case, use rightmost spot
-    DUAL_LEFT: In dual-spot case, use leftmost spot
-    MULTI_RIGHT: In multi-spot case, use rightmost spot
-    MULTI_SECOND_RIGHT: In multi-spot case, use spot immediately left of rightmost spot
+    SINGLE: expect exactly one spot; detection fails when more are found
+    NTH_FROM_LEFT: the N-th spot counted from the left edge (N = spot_index, 1 = leftmost)
+    NTH_FROM_RIGHT: the N-th spot counted from the right edge (N = spot_index, 1 = rightmost)
     """
 
     SINGLE = "single"
-    DUAL_RIGHT = "dual_right"
-    DUAL_LEFT = "dual_left"
-    MULTI_RIGHT = "multi_right"
-    MULTI_SECOND_RIGHT = "multi_second_right"
+    NTH_FROM_LEFT = "nth_from_left"
+    NTH_FROM_RIGHT = "nth_from_right"
+
+    @classmethod
+    def parse(cls, value) -> Tuple["SpotDetectionMode", Optional[int]]:
+        """A stored mode as (mode, implied spot index).
+
+        Accepts the enum, a current name, or a name from before N was a setting. The implied index
+        is the one a legacy name stood for; it is None for current names, which carry their index
+        separately.
+        """
+        if isinstance(value, cls):
+            return value, None
+        if value in _LEGACY_SPOT_DETECTION_MODES:
+            return _LEGACY_SPOT_DETECTION_MODES[value]
+        return cls(value), None
+
+
+# Mode names written by configs before spot_index existed; each picked a fixed spot on one side.
+# (multi_second_right was never implemented; it now reads as the 2nd spot from the right.)
+_LEGACY_SPOT_DETECTION_MODES = {
+    "dual_left": (SpotDetectionMode.NTH_FROM_LEFT, 1),
+    "dual_right": (SpotDetectionMode.NTH_FROM_RIGHT, 1),
+    "multi_right": (SpotDetectionMode.NTH_FROM_RIGHT, 1),
+    "multi_second_right": (SpotDetectionMode.NTH_FROM_RIGHT, 2),
+}
 
 
 class FileSavingOption(Enum):
@@ -1040,7 +1060,8 @@ LASER_AF_AVERAGING_N = 3
 LASER_AF_DISPLAY_SPOT_IMAGE = True
 LASER_AF_CROP_WIDTH = 1536
 LASER_AF_CROP_HEIGHT = 256
-LASER_AF_SPOT_DETECTION_MODE = SpotDetectionMode.DUAL_LEFT.value
+LASER_AF_SPOT_DETECTION_MODE = SpotDetectionMode.NTH_FROM_LEFT.value
+LASER_AF_SPOT_INDEX = 1
 LASER_AF_RANGE = 100
 DISPLACEMENT_SUCCESS_WINDOW_UM = 1.0
 SPOT_CROP_SIZE = 100

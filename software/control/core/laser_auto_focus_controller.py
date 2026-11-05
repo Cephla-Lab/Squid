@@ -9,6 +9,7 @@ from qtpy.QtCore import QObject, Signal
 
 from control import utils
 import control._def
+from control._def import SpotDetectionMode
 from control.core.config import ConfigRepository
 from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
@@ -25,6 +26,7 @@ class LaserAutofocusController(QObject):
     signal_cross_correlation = Signal(float)
     signal_piezo_position_update = Signal()  # Signal to emit piezo position updates
     signal_reference_changed = Signal(bool)  # emitted with new has_reference state
+    signal_full_sensor_view_changed = Signal(bool)  # the focus camera now streams the whole sensor (True) / the strip
 
     def __init__(
         self,
@@ -46,6 +48,7 @@ class LaserAutofocusController(QObject):
         self.characterization_mode = control._def.LASER_AF_CHARACTERIZATION_MODE
 
         self.is_initialized = False
+        self._full_sensor_view = False
 
         self.laser_af_properties = LaserAFConfig()
         self.reference_crop = None
@@ -86,14 +89,9 @@ class LaserAutofocusController(QObject):
         if self.laser_af_properties.has_reference:
             self.reference_crop = self.laser_af_properties.reference_image_cropped
 
-        self.camera.set_region_of_interest(
-            self.laser_af_properties.x_offset,
-            self.laser_af_properties.y_offset,
-            self.laser_af_properties.width,
-            self.laser_af_properties.height,
-        )
-
+        self._use_detection_strip()
         self.is_initialized = True
+        self._announce_full_sensor_view(False)
 
         # Update cache if objective store and profile is available
         if self.objectiveStore and self._current_profile and self.objectiveStore.current_objective:
@@ -145,7 +143,7 @@ class LaserAutofocusController(QObject):
         Returns:
             bool: True if initialization successful, False if any step fails
         """
-        self.camera.set_region_of_interest(0, 0, 3088, 2064)
+        self._use_full_sensor()
 
         # The crop sizes have no control in the settings panel, so take them from the machine configuration.
         # A loaded profile still holds the sizes it was saved with.
@@ -155,6 +153,7 @@ class LaserAutofocusController(QObject):
                 "height": control._def.LASER_AF_CROP_HEIGHT,
                 "initialize_crop_width": control._def.LASER_AF_INITIALIZE_CROP_WIDTH,
                 "initialize_crop_height": control._def.LASER_AF_INITIALIZE_CROP_HEIGHT,
+                "strip_spot_index": None,  # learned again below, for the strip this run places
             }
         )
 
@@ -175,6 +174,7 @@ class LaserAutofocusController(QObject):
                 self.laser_af_properties.initialize_crop_width,
                 self.laser_af_properties.initialize_crop_height,
             ),
+            spot_index=self.laser_af_properties.spot_index,  # the user's N counts reflections on the sensor
         )
         if result is None:
             self._log.error("Failed to find laser spot during initialization")
@@ -201,9 +201,28 @@ class LaserAutofocusController(QObject):
 
         self.initialize_manual(config)
 
+        # The strip can crop neighbouring reflections away, so the chosen one may hold a different rank
+        # inside it than on the sensor. Every strip measurement from here on uses the rank found here.
+        mode = self.laser_af_properties.spot_detection_mode
+        if mode != SpotDetectionMode.SINGLE:
+            from_left = mode == SpotDetectionMode.NTH_FROM_LEFT
+            strip_spot_index = self._rank_within_strip(x, from_left=from_left)
+            if strip_spot_index is None:
+                self._log.error("The chosen reflection was not found on the detection strip")
+                self.is_initialized = False
+                return False
+            self.laser_af_properties = self.laser_af_properties.model_copy(
+                update={"strip_spot_index": strip_spot_index}
+            )
+            self._log.info(
+                f"The chosen reflection is #{strip_spot_index} from the {'left' if from_left else 'right'} "
+                f"inside the detection strip"
+            )
+
         # Calibrate pixel-to-um conversion
         if not self._calibrate_pixel_to_um():
             self._log.error("Failed to calibrate pixel-to-um conversion")
+            self.is_initialized = False
             return False
 
         # Save configuration
@@ -213,6 +232,83 @@ class LaserAutofocusController(QObject):
             )
 
         return True
+
+    @property
+    def full_sensor_view(self) -> bool:
+        """True while the focus camera streams its whole sensor instead of the detection strip."""
+        return self._full_sensor_view
+
+    def set_full_sensor_view(self, enabled: bool) -> None:
+        """Stream the whole focus-camera sensor (to see where the reflections fall), or the strip again.
+
+        Measurements always run on the strip, because x_reference is relative to it: measure_displacement,
+        set_reference and initialization switch back on their own. Every change, including those, is
+        announced on signal_full_sensor_view_changed so the GUI stays in step.
+        """
+        if enabled == self._full_sensor_view:
+            return
+        if enabled:
+            self._use_full_sensor()
+        elif self.is_initialized:
+            self._use_detection_strip()
+        self._announce_full_sensor_view(enabled)
+
+    def _use_full_sensor(self) -> None:
+        width, height = self.camera.get_resolution()
+        self.camera.set_region_of_interest(0, 0, width, height)
+
+    def _use_detection_strip(self) -> None:
+        self.camera.set_region_of_interest(
+            self.laser_af_properties.x_offset,
+            self.laser_af_properties.y_offset,
+            self.laser_af_properties.width,
+            self.laser_af_properties.height,
+        )
+
+    def _rank_within_strip(self, x_sensor: float, from_left: bool) -> Optional[int]:
+        """Rank, counted from the chosen side, of the reflection at sensor column x_sensor among the peaks
+        one strip frame shows; None when no strip peak lies within x_window of it."""
+        self.microcontroller.turn_on_AF_laser()
+        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            frame = self.get_new_frame()
+        finally:
+            self.microcontroller.turn_off_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        if frame is None:
+            self._log.error("Failed to read a frame from the detection strip")
+            return None
+        try:
+            peaks = utils.find_spot_peaks(
+                frame, params=self._spot_detection_params(), filter_sigma=self.laser_af_properties.filter_sigma
+            )
+        except ValueError as e:
+            self._log.error(f"No reflection found on the detection strip: {e}")
+            return None
+        peaks_on_sensor = peaks + self.laser_af_properties.x_offset
+        nearest = int(np.argmin(np.abs(peaks_on_sensor - x_sensor)))
+        if abs(peaks_on_sensor[nearest] - x_sensor) > self.laser_af_properties.x_window:
+            self._log.error(
+                f"The reflection chosen at sensor x={x_sensor:.0f} is not among the strip's peaks "
+                f"(sensor x = {np.round(peaks_on_sensor).astype(int).tolist()})"
+            )
+            return None
+        return nearest + 1 if from_left else len(peaks) - nearest
+
+    def _spot_detection_params(self) -> dict:
+        return {
+            "y_window": self.laser_af_properties.y_window,
+            "x_window": self.laser_af_properties.x_window,
+            "min_peak_width": self.laser_af_properties.min_peak_width,
+            "min_peak_distance": self.laser_af_properties.min_peak_distance,
+            "min_peak_prominence": self.laser_af_properties.min_peak_prominence,
+            "spot_spacing": self.laser_af_properties.spot_spacing,
+        }
+
+    def _announce_full_sensor_view(self, enabled: bool) -> None:
+        if enabled != self._full_sensor_view:
+            self._full_sensor_view = enabled
+            self.signal_full_sensor_view_changed.emit(enabled)
 
     def _calibrate_pixel_to_um(self) -> bool:
         """Calibrate pixel-to-um conversion.
@@ -321,6 +417,8 @@ class LaserAutofocusController(QObject):
             self.signal_displacement_um.emit(um)
             return um
 
+        self.set_full_sensor_view(False)
+
         try:
             # turn on the laser
             self.microcontroller.turn_on_AF_laser()
@@ -428,6 +526,8 @@ class LaserAutofocusController(QObject):
         if not self.is_initialized:
             self._log.error("Laser autofocus is not initialized, cannot set reference")
             return False
+
+        self.set_full_sensor_view(False)
 
         # turn on the laser
         try:
@@ -574,12 +674,19 @@ class LaserAutofocusController(QObject):
         return self.camera.read_frame()
 
     def _get_laser_spot_centroid(
-        self, remove_background: bool = False, use_center_crop: Optional[Tuple[int, int]] = None
+        self,
+        remove_background: bool = False,
+        use_center_crop: Optional[Tuple[int, int]] = None,
+        spot_index: Optional[int] = None,
     ) -> Optional[Tuple[float, float]]:
         """Get the centroid location of the laser spot.
 
         Averages multiple measurements to improve accuracy. The number of measurements
         is controlled by LASER_AF_AVERAGING_N.
+
+        Args:
+            spot_index: which reflection to rank, for the NTH_FROM_* modes; by default the rank inside the
+                detection strip that Initialize found (the user's N before Initialize has placed the strip)
 
         Returns:
             Optional[Tuple[float, float]]: (x,y) coordinates of spot centroid, or None if detection fails
@@ -611,18 +718,13 @@ class LaserAutofocusController(QObject):
                     image = cv2.morphologyEx(image, cv2.MORPH_TOPHAT, kernel)
 
                 # calculate centroid
-                spot_detection_params = {
-                    "y_window": self.laser_af_properties.y_window,
-                    "x_window": self.laser_af_properties.x_window,
-                    "min_peak_width": self.laser_af_properties.min_peak_width,
-                    "min_peak_distance": self.laser_af_properties.min_peak_distance,
-                    "min_peak_prominence": self.laser_af_properties.min_peak_prominence,
-                    "spot_spacing": self.laser_af_properties.spot_spacing,
-                }
                 result = utils.find_spot_location(
                     image,
                     mode=self.laser_af_properties.get_spot_detection_mode(),
-                    params=spot_detection_params,
+                    spot_index=(
+                        spot_index if spot_index is not None else self.laser_af_properties.spot_index_within_strip()
+                    ),
+                    params=self._spot_detection_params(),
                     filter_sigma=self.laser_af_properties.filter_sigma,
                 )
                 if result is None:
@@ -632,10 +734,9 @@ class LaserAutofocusController(QObject):
                     continue
 
                 if use_center_crop is not None:
-                    x, y = (
-                        result[0] + (full_width - use_center_crop[0]) // 2,
-                        result[1] + (full_height - use_center_crop[1]) // 2,
-                    )
+                    # back to full-frame coordinates; the crop is clamped to the frame when it is larger
+                    crop_left, crop_top = utils.center_crop_origin(full_width, full_height, *use_center_crop)
+                    x, y = result[0] + crop_left, result[1] + crop_top
                 else:
                     x, y = result
 
