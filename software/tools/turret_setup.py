@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """One-time setup of the NiMotion objective-turret drive: factory parameters + EEPROM.
 
-Writes the register values ObjectiveTurret4PosController expects (INIT_PARAMS) plus the
-power-cycle-only microstep register (POWER_CYCLE_PARAMS), saves them to the drive's
+Writes the register values ObjectiveTurret4PosController expects (INIT_PARAMS and this
+machine's homing/polarity rows from homing_params()) plus the power-cycle-only microstep
+register (POWER_CYCLE_PARAMS), saves them to the drive's
 EEPROM, reads everything back, and tells you to power-cycle the drive. Run it once per
 new drive, or whenever the GUI refuses to start with "Turret microstep register reads N
 ... 16 microsteps is required".
@@ -43,7 +44,19 @@ import control._def  # noqa: E402
 import control.objective_turret_controller as otc  # noqa: E402
 from control.modbus_rtu import ModbusError, ModbusRTUClient  # noqa: E402
 
-SETUP_PARAMS = otc.POWER_CYCLE_PARAMS + otc.INIT_PARAMS
+
+def setup_params() -> list:
+    """Everything the drive must carry: the power-cycle register, the factory set and the
+    per-machine homing / DI1-polarity rows, from the same .ini flags the controller reads
+    (at call time, so an edited .ini is picked up without restarting the tool)."""
+    return (
+        otc.POWER_CYCLE_PARAMS
+        + otc.INIT_PARAMS
+        + otc.homing_params(
+            direction_inverted=control._def.OBJECTIVE_TURRET_DIRECTION_INVERTED,
+            di_invert=control._def.OBJECTIVE_TURRET_DI_INVERT,
+        )
+    )
 
 
 class Row(NamedTuple):
@@ -64,7 +77,7 @@ class Row(NamedTuple):
 
 def _read_rows(modbus, slave_id: int) -> list:
     rows = []
-    for addr, expected, label, kwargs in SETUP_PARAMS:
+    for addr, expected, label, kwargs in setup_params():
         current, desired, _ = otc.calibrate_register(modbus, slave_id, addr, expected, label, write=False, **kwargs)
         rows.append(Row(label, addr, current, desired, kwargs.get("is_32bit", False), kwargs.get("mask")))
     return rows
