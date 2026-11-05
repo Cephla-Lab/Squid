@@ -9,7 +9,8 @@ from squid.config import StageConfig, AxisConfig
 
 
 class CephlaStage(AbstractStage):
-    _BACKLASH_COMPENSATION_DISTANCE_MM = 0.005
+    # Below zero the final approach would come from above, so it counts as zero (no backlash move).
+    _BACKLASH_COMPENSATION_DISTANCE_MM = max(0.0, _def.Z_BACKLASH_COMPENSATION_UM) / 1000.0
 
     @staticmethod
     def _calc_move_timeout(distance, max_speed):
