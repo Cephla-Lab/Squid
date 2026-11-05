@@ -13,6 +13,7 @@ software/
 │   ├── cameras.yaml                      # Optional: camera registry
 │   ├── filter_wheels.yaml                # Optional: standalone filter wheels
 │   ├── hardware_bindings.yaml            # Optional: camera→wheel mappings
+│   ├── objectives.yaml                   # Optional: per-machine mounted objective list
 │   ├── confocal_config.yaml              # Optional: confocal settings + wheels
 │   ├── fluidics_config.yaml              # Optional: Squid-Fluidics FluidicsConfig (see docs/fluidics-protocol.md)
 │   └── intensity_calibrations/           # Optional: power calibration CSVs
@@ -278,6 +279,50 @@ If `hardware_bindings.yaml` doesn't exist and the system has exactly one camera 
 - Systems where camera 1 should use a confocal wheel and camera 2 a standalone wheel
 - Any setup where automatic binding won't work correctly
 
+### objectives.yaml (Optional)
+
+The per-machine list of the objectives actually **mounted** on this microscope: one entry per
+changer slot (installed = mounted). When present, it replaces
+`objective_and_sample_formats/objectives.csv` and the .ini's `OBJECTIVE_TURRET_POSITIONS` /
+`XERYON_OBJECTIVE_SWITCHER_POS_1/2` as the runtime source of the objective list and changer slot
+maps for this machine.
+
+```yaml
+version: 1
+changer:
+  kind: nimotion_turret      # nimotion_turret | xeryon | none
+objectives:
+  - name: 4x                 # unique key: channel configs, laser AF configs and calibration key on it
+    magnification: 4
+    na: 0.13
+    tube_lens_f_mm: 180
+    slot: 1                  # 1..N, N from the changer kind's slot count; null for kind: none
+    model: ""                # optional, e.g. "Olympus PLN4X"
+    serial: ""                # optional
+  - {name: 10x, magnification: 10, na: 0.3, tube_lens_f_mm: 180, slot: 2}
+  - {name: 20x, magnification: 20, na: 0.8, tube_lens_f_mm: 180, slot: 3}
+```
+
+**Fields:**
+
+| Field | Description |
+|-------|-------------|
+| `version` | Schema version (currently `1`) |
+| `changer.kind` | `nimotion_turret`, `xeryon` or `none`; must agree with this machine's `USE_OBJECTIVE_TURRET` / `USE_XERYON` .ini flags |
+| `objectives[].name` | Unique (case-insensitively) identifier; becomes `channel_configs/<name>.yaml`'s file stem |
+| `objectives[].magnification`, `.na`, `.tube_lens_f_mm` | The objective's optics |
+| `objectives[].slot` | 1..N (N from the changer kind); omitted/null when `changer.kind` is `none` |
+| `objectives[].model`, `.serial` | Optional free text |
+
+**Usage:**
+- If `objectives.yaml` doesn't exist, the objective list and changer slot maps come from
+  `objectives.csv` and the machine .ini, exactly as before.
+- Edit through **Settings > Advanced > Objectives...** in the GUI, not by hand where possible: the
+  editor validates the file and copies channel settings for a newly added objective. A restart is
+  required to apply changes.
+- An invalid file stops startup with a message naming the file, the field and the fix.
+- See `machine_configs/objectives.yaml.example`.
+
 ---
 
 ## User Profiles
@@ -491,7 +536,7 @@ When a profile has no existing configs, the system auto-generates defaults:
    - Creates one acquisition channel per illumination channel
    - Sets display colors based on wavelength (fluorescence) or white (LED)
    - Uses default exposure (20ms), gain (10), intensity (20% fluorescence, 5% LED)
-   - Creates objective files for standard objectives (2x, 4x, 10x, 20x, 40x, 50x, 60x)
+   - Creates objective files for the machine's objective list (`control._def.OBJECTIVES`: `objectives.yaml` if present, otherwise `objectives.csv`)
 
 **Note**: Default generation is skipped if legacy XML configs exist (migration should run first).
 
