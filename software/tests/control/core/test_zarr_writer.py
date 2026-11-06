@@ -601,6 +601,96 @@ class TestHCSMetadata:
         assert not [f for f in os.listdir(w) if f.endswith(".tmp")]
 
 
+def squid_of(group_path: str) -> dict:
+    with open(os.path.join(group_path, "zarr.json")) as f:
+        return json.load(f)["attributes"]["_squid"]
+
+
+def run_save_job(info: ZarrWriterInfo, region: str, fov: int, c: int, z: int, t: int = 0) -> None:
+    """Send one plane through SaveZarrJob.run the way the save subprocess does."""
+    from control._def import FileSavingOption
+
+    job = SaveZarrJob(
+        capture_info=make_test_capture_info(region_id=region, fov=fov, z_index=z, config_idx=c, time_point=t),
+        capture_image=JobImage(image_array=np.full((16, 16), 7, np.uint16)),
+        save_settings=SaveSettings(file_saving_option=FileSavingOption.ZARR_V3),
+    )
+    job.zarr_writer_info = info
+    job.run()
+
+
+class TestSaveZarrJobWrittenFields:
+    """The user-abort path: jobs stop arriving, then finalize_all_writers() runs on shutdown."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
+
+    @pytest.fixture(autouse=True)
+    def real_disk_and_clean_writers(self, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "SIMULATED_DISK_IO_ENABLED", False)
+        SaveZarrJob.clear_writers()
+        yield
+        SaveZarrJob.clear_writers()
+
+    def test_user_abort_path_lists_only_written_fields(self, temp_dir):
+        info = ZarrWriterInfo(
+            base_path=temp_dir,
+            t_size=1,
+            c_size=2,
+            z_size=2,
+            is_hcs=True,
+            region_fov_counts={"B3": 3, "D5": 1},
+            pixel_size_um=0.65,
+            channel_names=["a", "b"],
+        )
+        for c in range(2):
+            for z in range(2):
+                run_save_job(info, "B3", 0, c, z)  # field 0 complete
+        run_save_job(info, "B3", 1, 0, 0)  # field 1: one plane; field 2 and D5 never start
+        assert SaveZarrJob.finalize_all_writers()
+
+        plate = os.path.join(temp_dir, "plate.ome.zarr")
+        assert [w["path"] for w in plate_attrs(plate)["plate"]["wells"]] == ["B/3"]
+        assert [r["name"] for r in plate_attrs(plate)["plate"]["rows"]] == ["B", "D"]  # planned rows stay
+        assert [i["path"] for i in well_attrs(os.path.join(plate, "B", "3"))["well"]["images"]] == ["0", "1"]
+        f0 = squid_of(os.path.join(plate, "B", "3", "0"))
+        f1 = squid_of(os.path.join(plate, "B", "3", "1"))
+        assert f0["acquisition_complete"] is True and f0["planes_written"] == 4
+        assert f1["acquisition_complete"] is False
+        assert (f1["planes_written"], f1["planes_expected"]) == (1, 4)
+        assert not os.path.exists(os.path.join(plate, "B", "3", "2"))
+        assert not os.path.exists(os.path.join(plate, "D", "5"))
+
+    def test_failed_registration_is_retried_on_the_next_frame(self, temp_dir, monkeypatch):
+        import control.core.zarr_writer as zw
+
+        real = zw.add_well_image
+        calls = []
+
+        def flaky(well_path, field):
+            calls.append(field)
+            if len(calls) == 1:
+                raise RuntimeError("disk hiccup")
+            real(well_path, field)
+
+        # The hook looks the helper up on control.core.zarr_writer at call time
+        monkeypatch.setattr(zw, "add_well_image", flaky)
+        info = ZarrWriterInfo(
+            base_path=temp_dir, t_size=1, c_size=1, z_size=2, is_hcs=True, region_fov_counts={"B3": 1}
+        )
+        with pytest.raises(RuntimeError):
+            run_save_job(info, "B3", 0, 0, 0)
+        run_save_job(info, "B3", 0, 0, 1)  # second frame: registration retried, write proceeds
+        assert SaveZarrJob.finalize_all_writers()
+        assert calls == [0, 0]
+        well = os.path.join(temp_dir, "plate.ome.zarr", "B", "3")
+        assert [i["path"] for i in well_attrs(well)["well"]["images"]] == ["0"]
+
+
 class TestZarrWriterInfo:
     """Tests for ZarrWriterInfo dataclass."""
 
