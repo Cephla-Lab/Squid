@@ -15,7 +15,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -243,6 +243,15 @@ def _dtype_to_zarr(dtype: np.dtype) -> str:
 # HCS Plate Metadata Functions
 
 
+def _atomic_write_json(path: str, obj: dict) -> None:
+    """Write obj as JSON to path so a reader never sees a half-written file: temp file in the same directory, then
+    os.replace (atomic on POSIX and Windows)."""
+    tmp_path = f"{path}.{os.getpid()}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(obj, f, indent=2)
+    os.replace(tmp_path, path)
+
+
 def _write_group_metadata(path: str, ome_metadata: dict, description: str) -> None:
     """Write OME-NGFF group metadata to zarr.json.
 
@@ -266,77 +275,149 @@ def _write_group_metadata(path: str, ome_metadata: dict, description: str) -> No
         raise RuntimeError(f"Failed to write {description} metadata: {e}") from e
 
 
+def _update_group_attributes(path: str, mutate: Callable[[dict], None], description: str) -> None:
+    """Edit the attributes of a group's zarr.json in place and write it back atomically.
+
+    Creates the group (an empty-attributes group node) when it does not exist yet. mutate() receives the
+    attributes dict and changes it; whatever it raises propagates.
+
+    Raises:
+        RuntimeError: If the metadata file cannot be read or written
+    """
+    zarr_json_path = os.path.join(path, "zarr.json")
+    try:
+        os.makedirs(path, exist_ok=True)
+        if os.path.exists(zarr_json_path):
+            with open(zarr_json_path, "r") as f:
+                zarr_json = json.load(f)
+        else:
+            zarr_json = {"zarr_format": 3, "node_type": "group", "attributes": {}}
+        attrs = zarr_json.setdefault("attributes", {})
+        mutate(attrs)
+        _atomic_write_json(zarr_json_path, zarr_json)
+    except (OSError, json.JSONDecodeError) as e:
+        log.error(f"Failed to update {description} metadata at {zarr_json_path}: {e}")
+        raise RuntimeError(f"Failed to update {description} metadata: {e}") from e
+
+
 def write_plate_metadata(
     plate_path: str,
     rows: List[str],
     cols: List[int],
-    wells: List[Tuple[str, int]],
     plate_name: str = "plate",
 ) -> None:
-    """Write OME-NGFF HCS plate metadata.
+    """Write OME-NGFF HCS plate metadata with an empty well list, plus a group zarr.json per row.
 
-    Creates the plate-level zarr.json with well references in attributes, and a
-    group zarr.json for each row (Zarr v3 has no implicit groups, so readers that
-    walk plate -> row -> well find nothing under a row without one).
+    The plate's rows and columns are the planned set; wells are added one by one with add_plate_well() as
+    their first image is written, so the list always names what is on disk. An existing plate zarr.json is
+    left as it is (its well list is the record of what was written so far). Zarr v3 has no implicit groups,
+    so readers that walk plate -> row -> well find nothing under a row without its own zarr.json.
 
     Args:
         plate_path: Path to plate.ome.zarr directory
         rows: List of row names (e.g., ["A", "B", "C"])
         cols: List of column numbers (e.g., [1, 2, 3])
-        wells: List of (row, col) tuples for wells with data
         plate_name: Name for the plate
 
     Raises:
         RuntimeError: If metadata files cannot be written
     """
-    well_entries = [
-        {"path": f"{row}/{col}", "rowIndex": rows.index(row), "columnIndex": cols.index(col)} for row, col in wells
-    ]
-
-    plate_metadata = {
-        "ome": {
-            "version": "0.5",
-            "plate": {
+    plate_json_path = os.path.join(plate_path, "zarr.json")
+    if os.path.exists(plate_json_path):
+        log.debug(f"Plate metadata already present at {plate_json_path}; keeping its well list")
+    else:
+        plate_metadata = {
+            "ome": {
                 "version": "0.5",
-                "name": plate_name,
-                "rows": [{"name": r} for r in rows],
-                "columns": [{"name": str(c)} for c in cols],
-                "wells": well_entries,
-            },
+                "plate": {
+                    "version": "0.5",
+                    "name": plate_name,
+                    "rows": [{"name": r} for r in rows],
+                    "columns": [{"name": str(c)} for c in cols],
+                    "wells": [],
+                },
+            }
         }
-    }
-
-    _write_group_metadata(plate_path, plate_metadata, "plate")
+        _write_group_metadata(plate_path, plate_metadata, "plate")
     for row in rows:
-        _write_group_metadata(os.path.join(plate_path, row), {}, f"row {row}")
+        if not os.path.exists(os.path.join(plate_path, row, "zarr.json")):
+            _write_group_metadata(os.path.join(plate_path, row), {}, f"row {row}")
 
 
-def write_well_metadata(
-    well_path: str,
-    fields: List[int],
-) -> None:
-    """Write OME-NGFF HCS well metadata.
+def add_plate_well(plate_path: str, row: str, col: str) -> None:
+    """List a well in the plate metadata (idempotent; wells stay sorted by row, then column).
 
-    Creates the well-level zarr.json with field references in attributes.
+    rowIndex / columnIndex come from the plate's own rows and columns lists, so they stay consistent with
+    whatever write_plate_metadata() wrote.
+
+    Raises:
+        RuntimeError: If the well is not among the plate's rows/columns, or the metadata cannot be updated
+    """
+    path = f"{row}/{col}"
+
+    def mutate(attrs: dict) -> None:
+        try:
+            plate = attrs["ome"]["plate"]
+            row_names = [r["name"] for r in plate["rows"]]
+            col_names = [c["name"] for c in plate["columns"]]
+        except (KeyError, TypeError) as e:
+            raise RuntimeError(f"{plate_path} does not hold plate metadata: {e}") from e
+        if row not in row_names or str(col) not in col_names:
+            raise RuntimeError(f"Well {path} is not in the plate's rows {row_names} / columns {col_names}")
+        wells = [w for w in plate["wells"] if w.get("path") != path]
+        wells.append({"path": path, "rowIndex": row_names.index(row), "columnIndex": col_names.index(str(col))})
+        plate["wells"] = sorted(wells, key=lambda w: (w["rowIndex"], w["columnIndex"]))
+
+    _update_group_attributes(plate_path, mutate, f"plate well {path}")
+
+
+def write_well_metadata(well_path: str) -> None:
+    """Write OME-NGFF HCS well metadata with an empty image list.
+
+    Fields are added with add_well_image() as their first image is written. An existing well zarr.json is
+    left as it is.
 
     Args:
         well_path: Path to well directory (e.g., plate.ome.zarr/A/1)
-        fields: List of field indices (FOVs) in this well
 
     Raises:
         RuntimeError: If metadata files cannot be written
     """
+    well_json_path = os.path.join(well_path, "zarr.json")
+    if os.path.exists(well_json_path):
+        log.debug(f"Well metadata already present at {well_json_path}; keeping its image list")
+        return
     well_metadata = {
         "ome": {
             "version": "0.5",
             "well": {
                 "version": "0.5",
-                "images": [{"path": str(f)} for f in fields],
+                "images": [],
             },
         }
     }
-
     _write_group_metadata(well_path, well_metadata, "well")
+
+
+def add_well_image(well_path: str, field: int) -> None:
+    """List a field in the well metadata (idempotent; images stay sorted numerically by path).
+
+    Raises:
+        RuntimeError: If the well metadata cannot be updated
+    """
+
+    def mutate(attrs: dict) -> None:
+        try:
+            images = attrs["ome"]["well"]["images"]
+        except (KeyError, TypeError) as e:
+            raise RuntimeError(f"{well_path} does not hold well metadata: {e}") from e
+        if not any(image.get("path") == str(field) for image in images):
+            images.append({"path": str(field)})
+            images.sort(
+                key=lambda image: (not image["path"].isdigit(), int(image["path"]) if image["path"].isdigit() else 0)
+            )
+
+    _update_group_attributes(well_path, mutate, f"well image {field}")
 
 
 # Synchronous wrapper for use in job processing
@@ -358,6 +439,9 @@ class ZarrWriter:
         self._config = config
         self._dataset = None
         self._pending_futures: List[Any] = []
+        # Plane indices ((t, c, z) or (fov, t, c, z)) whose write_frame returned: the writer's own record of what is on
+        # disk, so finalize() can say whether the array is complete whatever ended the run.
+        self._written_planes: Set[Tuple[int, ...]] = set()
         self._initialized = False
         self._finalized = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -621,6 +705,9 @@ class ZarrWriter:
                 "dtype": str(config.dtype),
                 "is_hcs": config.is_hcs,
                 "acquisition_complete": False,
+                "aborted": False,
+                "planes_written": 0,
+                "planes_expected": self.planes_expected,
             },
         }
 
@@ -714,6 +801,7 @@ class ZarrWriter:
         # Wait for write to complete (blocking)
         # TensorStore futures have a .result() method that blocks until complete
         future.result()
+        self._written_planes.add((fov, t, c, z) if config.ndim == 6 else (t, c, z))
         if config.ndim == 5:
             log.debug(f"Write complete for frame t={t}, c={c}, z={z}")
         else:
@@ -751,6 +839,33 @@ class ZarrWriter:
         """Number of writes currently pending."""
         return len(self._pending_futures)
 
+    @property
+    def planes_written(self) -> int:
+        """Distinct planes whose write_frame returned (a plane written twice counts once)."""
+        return len(self._written_planes)
+
+    @property
+    def planes_expected(self) -> int:
+        """Planes the allocated array holds: the product of its non-spatial extents."""
+        return int(np.prod(self._config.shape[:-2]))
+
+    def _update_squid_attrs(self, **fields: Any) -> None:
+        """Update the _squid block of the metadata zarr.json in place (atomic write). Metadata failures are logged, not
+        raised: the pixel data is already on disk."""
+        zarr_json_path = self._get_metadata_zarr_json_path()
+        try:
+            if not os.path.exists(zarr_json_path):
+                return
+            with open(zarr_json_path, "r") as f:
+                zarr_json = json.load(f)
+            attrs = zarr_json.get("attributes", {})
+            if "_squid" in attrs:
+                attrs["_squid"].update(fields)
+                zarr_json["attributes"] = attrs
+            _atomic_write_json(zarr_json_path, zarr_json)
+        except (OSError, json.JSONDecodeError) as e:
+            log.error(f"Failed to update zarr metadata at {zarr_json_path}: {e}")
+
     def finalize(self) -> None:
         """Finalize the dataset (blocking)."""
         if self._finalized:
@@ -762,21 +877,12 @@ class ZarrWriter:
         # Wait for all pending writes
         self.wait_for_pending()
 
-        # Update metadata with completion status (in zarr.json attributes)
-        zarr_json_path = self._get_metadata_zarr_json_path()
-        try:
-            if os.path.exists(zarr_json_path):
-                with open(zarr_json_path, "r") as f:
-                    zarr_json = json.load(f)
-                attrs = zarr_json.get("attributes", {})
-                if "_squid" in attrs:
-                    attrs["_squid"]["acquisition_complete"] = True
-                    zarr_json["attributes"] = attrs
-                with open(zarr_json_path, "w") as f:
-                    json.dump(zarr_json, f, indent=2)
-        except (OSError, json.JSONDecodeError) as e:
-            log.error(f"Failed to finalize zarr metadata at {zarr_json_path}: {e}")
-            # Don't raise - data is already written, just log the metadata issue
+        # Completion comes from the writer's own count, whatever ended the run (a user abort finalises too).
+        self._update_squid_attrs(
+            acquisition_complete=self.planes_written == self.planes_expected,
+            planes_written=self.planes_written,
+            planes_expected=self.planes_expected,
+        )
 
         self._finalized = True
         self._cleanup_event_loop()
@@ -795,20 +901,12 @@ class ZarrWriter:
             self._pending_futures.clear()
 
             # Mark as incomplete in metadata (in zarr.json attributes)
-            zarr_json_path = self._get_metadata_zarr_json_path()
-            try:
-                if os.path.exists(zarr_json_path):
-                    with open(zarr_json_path, "r") as f:
-                        zarr_json = json.load(f)
-                    attrs = zarr_json.get("attributes", {})
-                    if "_squid" in attrs:
-                        attrs["_squid"]["acquisition_complete"] = False
-                        attrs["_squid"]["aborted"] = True
-                        zarr_json["attributes"] = attrs
-                    with open(zarr_json_path, "w") as f:
-                        json.dump(zarr_json, f, indent=2)
-            except (OSError, json.JSONDecodeError) as e:
-                log.error(f"Failed to update abort metadata at {zarr_json_path}: {e}")
+            self._update_squid_attrs(
+                acquisition_complete=False,
+                aborted=True,
+                planes_written=self.planes_written,
+                planes_expected=self.planes_expected,
+            )
         finally:
             # Always mark as finalized and cleanup resources
             self._finalized = True

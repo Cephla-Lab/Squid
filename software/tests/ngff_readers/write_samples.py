@@ -6,6 +6,10 @@ Writes, with fixed save settings whatever the loaded config file says:
   (fast compression, one chunk per plane, no shards);
 - a per-FOV image with best compression and 256-pixel tiles, so each z-level
   is one shard holding 2 channels x 4 tiles;
+- an aborted HCS plate: three fields planned in B3 and one in D5, but only B3
+  field 0 written in full and B3 field 1 given a single plane before the
+  writers are finalized the way a user abort reaches them, so its plate and
+  well metadata must list exactly the written fields;
 plus expected.json describing what a reader should find. read_samples.py then
 opens them with ngff-zarr and iohub, which need a newer Python than the Squid
 environment.
@@ -17,6 +21,7 @@ import json
 import os
 import sys
 import time
+from typing import Optional
 
 import numpy as np
 
@@ -68,7 +73,11 @@ def capture_info(region_id: str, fov: int, z_index: int, config_idx: int) -> Cap
     )
 
 
-def write_acquisition(base_path: str, is_hcs: bool, region_fov_counts: dict, settings: SaveSettings) -> None:
+def write_acquisition(
+    base_path: str, is_hcs: bool, region_fov_counts: dict, settings: SaveSettings, written: Optional[dict] = None
+) -> None:
+    """Send every plane of every planned field through SaveZarrJob, or only the planes in `written`:
+    a map of (region_id, fov) -> list of (c, z) planes; fields not in the map get nothing."""
     info = ZarrWriterInfo(
         base_path=base_path,
         t_size=T_SIZE,
@@ -82,17 +91,18 @@ def write_acquisition(base_path: str, is_hcs: bool, region_fov_counts: dict, set
         channel_colors=["#FFFFFF", "#1FFF00"],
         channel_wavelengths=[None, 488],
     )
+    all_planes = [(c, z) for c in range(len(CHANNELS)) for z in range(Z_SIZE)]
     for region_id, fov_count in region_fov_counts.items():
         for fov in range(fov_count):
-            for c in range(len(CHANNELS)):
-                for z in range(Z_SIZE):
-                    job = SaveZarrJob(
-                        capture_info=capture_info(region_id, fov, z, c),
-                        capture_image=JobImage(image_array=np.full(IMAGE_SHAPE, pixel_value(c, z), dtype=np.uint16)),
-                        save_settings=settings,
-                    )
-                    job.zarr_writer_info = info
-                    job.run()
+            planes = all_planes if written is None else written.get((region_id, fov), [])
+            for c, z in planes:
+                job = SaveZarrJob(
+                    capture_info=capture_info(region_id, fov, z, c),
+                    capture_image=JobImage(image_array=np.full(IMAGE_SHAPE, pixel_value(c, z), dtype=np.uint16)),
+                    save_settings=settings,
+                )
+                job.zarr_writer_info = info
+                job.run()
     if not SaveZarrJob.finalize_all_writers():
         raise RuntimeError(f"Failed to finalize zarr writers under {base_path}")
 
@@ -115,6 +125,11 @@ def main(out_dir: str) -> None:
     write_acquisition(hcs_base, True, {"B3": 2, "D5": 1}, DEFAULT_SETTINGS)
     write_acquisition(per_fov_base, False, {"region_0": 1}, DEFAULT_SETTINGS)
     write_acquisition(sharded_base, False, {"region_0": 1}, SHARDED_TILED_SETTINGS)
+    aborted_base = os.path.join(out_dir, "hcs_aborted")
+    all_planes = [(c, z) for c in range(len(CHANNELS)) for z in range(Z_SIZE)]
+    write_acquisition(
+        aborted_base, True, {"B3": 3, "D5": 1}, DEFAULT_SETTINGS, written={("B3", 0): all_planes, ("B3", 1): [(0, 0)]}
+    )
     sharded_image = os.path.join(sharded_base, "zarr", "region_0", "fov_0.ome.zarr")
     check_sharded_and_tiled(os.path.join(sharded_image, "0"))
 
@@ -132,6 +147,13 @@ def main(out_dir: str) -> None:
         ],
         # Step along each spatial axis, in micrometers
         "scale": {"z": Z_STEP_UM, "y": PIXEL_SIZE_UM, "x": PIXEL_SIZE_UM},
+        # The aborted plate: readers must see exactly the written fields, and the arrays must say whether they are
+        # complete (B/3/0 got every plane, B/3/1 got one of six)
+        "aborted_plate": {
+            "path": os.path.join(aborted_base, "plate.ome.zarr"),
+            "fields": ["B/3/0", "B/3/1"],
+            "complete": {"B/3/0": True, "B/3/1": False},
+        },
     }
     with open(os.path.join(out_dir, "expected.json"), "w") as f:
         json.dump(expected, f, indent=2)

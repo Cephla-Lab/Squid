@@ -417,96 +417,295 @@ class TestZarrWriter:
         assert dataset_transforms == [{"type": "scale", "scale": [1.0, 1.0, 1.5, 0.5, 0.5]}]
 
 
-class TestHCSMetadata:
-    """Tests for HCS plate metadata functions."""
+def squid_attrs(writer) -> dict:
+    """The _squid block of the zarr.json the writer keeps its completion status in."""
+    with open(writer._get_metadata_zarr_json_path()) as f:
+        return json.load(f)["attributes"]["_squid"]
+
+
+class TestZarrWriterCompletion:
+    """acquisition_complete comes from the planes the writer actually wrote, whatever ended the run."""
 
     @pytest.fixture
     def temp_dir(self):
-        """Create a temporary directory for test outputs."""
         with tempfile.TemporaryDirectory() as tmpdir:
             yield tmpdir
 
-    def test_write_plate_metadata(self, temp_dir):
-        from control.core.zarr_writer import write_plate_metadata
+    def _writer(self, temp_dir, shape=(1, 2, 3, 16, 16)):
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
-        plate_path = os.path.join(temp_dir, "plate.zarr")
-        write_plate_metadata(
-            plate_path=plate_path,
-            rows=["A", "B", "C"],
-            cols=[1, 2, 3],
-            wells=[("A", 1), ("B", 2)],
-            plate_name="test_plate",
+        writer = ZarrWriter(
+            ZarrAcquisitionConfig(
+                output_path=os.path.join(temp_dir, "t.zarr"), shape=shape, dtype=np.uint16, pixel_size_um=1.0
+            )
+        )
+        writer.initialize()
+        return writer
+
+    def test_initial_metadata_has_counts(self, temp_dir):
+        w = self._writer(temp_dir)
+        s = squid_attrs(w)
+        assert (s["acquisition_complete"], s["planes_written"], s["planes_expected"]) == (False, 0, 6)
+        assert s["aborted"] is False
+
+    def test_partial_write_is_not_complete(self, temp_dir):
+        w = self._writer(temp_dir)
+        img = np.zeros((16, 16), np.uint16)
+        w.write_frame(img, t=0, c=0, z=0)
+        w.write_frame(img, t=0, c=1, z=2)
+        w.finalize()
+        s = squid_attrs(w)
+        assert (s["acquisition_complete"], s["planes_written"], s["planes_expected"]) == (False, 2, 6)
+
+    def test_full_write_is_complete(self, temp_dir):
+        w = self._writer(temp_dir)
+        img = np.zeros((16, 16), np.uint16)
+        for c in range(2):
+            for z in range(3):
+                w.write_frame(img, t=0, c=c, z=z)
+        w.finalize()
+        s = squid_attrs(w)
+        assert (s["acquisition_complete"], s["planes_written"]) == (True, 6)
+
+    def test_duplicate_plane_counts_once(self, temp_dir):
+        w = self._writer(temp_dir)
+        img = np.zeros((16, 16), np.uint16)
+        w.write_frame(img, t=0, c=0, z=0)
+        w.write_frame(img, t=0, c=0, z=0)
+        w.finalize()
+        assert squid_attrs(w)["planes_written"] == 1
+
+    def test_abort_marks_aborted_with_counts(self, temp_dir):
+        w = self._writer(temp_dir)
+        w.write_frame(np.zeros((16, 16), np.uint16), t=0, c=0, z=0)
+        w.abort()
+        s = squid_attrs(w)
+        assert (s["aborted"], s["acquisition_complete"], s["planes_written"], s["planes_expected"]) == (
+            True,
+            False,
+            1,
+            6,
         )
 
-        # Check zarr.json with OME-NGFF 0.5 namespace in attributes
-        zarr_json_path = os.path.join(plate_path, "zarr.json")
-        assert os.path.exists(zarr_json_path)
+    def test_6d_counts_fov_planes(self, temp_dir):
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
 
+        w = ZarrWriter(
+            ZarrAcquisitionConfig(
+                output_path=os.path.join(temp_dir, "6d.zarr"),
+                shape=(2, 1, 1, 2, 8, 8),
+                dtype=np.uint16,
+                pixel_size_um=1.0,
+                is_hcs=False,
+            )
+        )
+        w.initialize()
+        img = np.zeros((8, 8), np.uint16)
+        w.write_frame(img, t=0, c=0, z=0, fov=0)
+        w.write_frame(img, t=0, c=0, z=1, fov=0)
+        w.finalize()
+        s = squid_attrs(w)
+        assert (s["acquisition_complete"], s["planes_written"], s["planes_expected"]) == (False, 2, 4)
+
+    def test_rewrite_leaves_no_temp_file(self, temp_dir):
+        w = self._writer(temp_dir)
+        w.finalize()
+        metadata_dir = os.path.dirname(w._get_metadata_zarr_json_path())
+        assert not [f for f in os.listdir(metadata_dir) if f.endswith(".tmp")]
+
+
+import control.core.zarr_writer as zarr_writer
+
+
+def plate_attrs(plate_path: str) -> dict:
+    with open(os.path.join(plate_path, "zarr.json")) as f:
+        return json.load(f)["attributes"]["ome"]
+
+
+def well_attrs(well_path: str) -> dict:
+    with open(os.path.join(well_path, "zarr.json")) as f:
+        return json.load(f)["attributes"]["ome"]
+
+
+class TestHCSMetadata:
+    """Plate and well lists start empty and grow, sorted and idempotently, as fields are written."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
+
+    def test_write_plate_metadata_starts_with_no_wells(self, temp_dir):
+        p = os.path.join(temp_dir, "plate.ome.zarr")
+        zarr_writer.write_plate_metadata(p, ["B", "D"], [3, 5])
+        plate = plate_attrs(p)["plate"]
+        assert plate["wells"] == []
+        assert [r["name"] for r in plate["rows"]] == ["B", "D"]
+        assert [c["name"] for c in plate["columns"]] == ["3", "5"]
+        assert os.path.exists(os.path.join(p, "B", "zarr.json")) and os.path.exists(os.path.join(p, "D", "zarr.json"))
+
+    def test_add_plate_well_is_sorted_and_idempotent(self, temp_dir):
+        p = os.path.join(temp_dir, "plate.ome.zarr")
+        zarr_writer.write_plate_metadata(p, ["B", "D"], [3, 5])
+        zarr_writer.add_plate_well(p, "D", "5")
+        zarr_writer.add_plate_well(p, "B", "3")
+        zarr_writer.add_plate_well(p, "B", "3")
+        assert plate_attrs(p)["plate"]["wells"] == [
+            {"path": "B/3", "rowIndex": 0, "columnIndex": 0},
+            {"path": "D/5", "rowIndex": 1, "columnIndex": 1},
+        ]
+
+    def test_add_plate_well_uses_the_plate_lists(self, temp_dir):
+        p = os.path.join(temp_dir, "plate.ome.zarr")
+        zarr_writer.write_plate_metadata(p, ["A", "B", "P"], [1, 12])
+        zarr_writer.add_plate_well(p, "P", "12")
+        assert plate_attrs(p)["plate"]["wells"] == [{"path": "P/12", "rowIndex": 2, "columnIndex": 1}]
+
+    def test_add_plate_well_rejects_an_unplanned_well(self, temp_dir):
+        p = os.path.join(temp_dir, "plate.ome.zarr")
+        zarr_writer.write_plate_metadata(p, ["B"], [3])
+        with pytest.raises(RuntimeError):
+            zarr_writer.add_plate_well(p, "C", "3")
+
+    def test_write_plate_metadata_does_not_reset_an_existing_plate(self, temp_dir):
+        p = os.path.join(temp_dir, "plate.ome.zarr")
+        zarr_writer.write_plate_metadata(p, ["B"], [3])
+        zarr_writer.add_plate_well(p, "B", "3")
+        zarr_writer.write_plate_metadata(p, ["B"], [3])
+        assert [w["path"] for w in plate_attrs(p)["plate"]["wells"]] == ["B/3"]
+
+    def test_write_well_metadata_starts_with_no_images(self, temp_dir):
+        w = os.path.join(temp_dir, "plate.ome.zarr", "B", "3")
+        zarr_writer.write_well_metadata(w)
+        assert well_attrs(w) == {"version": "0.5", "well": {"version": "0.5", "images": []}}
+
+    def test_add_well_image_is_numeric_sorted_and_idempotent(self, temp_dir):
+        w = os.path.join(temp_dir, "plate.ome.zarr", "B", "3")
+        zarr_writer.write_well_metadata(w)
+        zarr_writer.add_well_image(w, 10)
+        zarr_writer.add_well_image(w, 2)
+        zarr_writer.add_well_image(w, 2)
+        assert well_attrs(w)["well"]["images"] == [{"path": "2"}, {"path": "10"}]
+
+    def test_rewrite_keeps_other_attributes_and_leaves_no_temp_file(self, temp_dir):
+        w = os.path.join(temp_dir, "plate.ome.zarr", "B", "3")
+        zarr_writer.write_well_metadata(w)
+        zarr_json_path = os.path.join(w, "zarr.json")
         with open(zarr_json_path) as f:
-            zarr_json = json.load(f)
-
-        # Verify Zarr v3 structure
-        assert zarr_json["zarr_format"] == 3
-        assert zarr_json["node_type"] == "group"
-        assert "attributes" in zarr_json
-
-        attrs = zarr_json["attributes"]
-
-        # Verify OME-NGFF 0.5 namespace structure
-        assert "ome" in attrs
-        assert attrs["ome"]["version"] == "0.5"
-        assert "plate" in attrs["ome"]
-        assert attrs["ome"]["plate"]["version"] == "0.5"
-        assert attrs["ome"]["plate"]["name"] == "test_plate"
-        assert len(attrs["ome"]["plate"]["wells"]) == 2
-
-    def test_write_plate_metadata_makes_each_row_a_group(self, temp_dir):
-        """Zarr v3 has no implicit groups: without row zarr.json, iohub finds no fields in the plate."""
-        from control.core.zarr_writer import write_plate_metadata
-
-        plate_path = os.path.join(temp_dir, "plate.ome.zarr")
-        write_plate_metadata(
-            plate_path=plate_path,
-            rows=["A", "C"],
-            cols=[1, 3],
-            wells=[("A", 1), ("C", 3)],
-        )
-
-        for row in ["A", "C"]:
-            with open(os.path.join(plate_path, row, "zarr.json")) as f:
-                row_meta = json.load(f)
-            assert row_meta["zarr_format"] == 3
-            assert row_meta["node_type"] == "group"
-
-    def test_write_well_metadata(self, temp_dir):
-        from control.core.zarr_writer import write_well_metadata
-
-        well_path = os.path.join(temp_dir, "plate.zarr", "A", "1")
-        write_well_metadata(
-            well_path=well_path,
-            fields=[0, 1, 2],
-        )
-
-        # Check zarr.json with OME-NGFF 0.5 namespace in attributes
-        zarr_json_path = os.path.join(well_path, "zarr.json")
-        assert os.path.exists(zarr_json_path)
-
+            j = json.load(f)
+        j["attributes"]["_custom"] = {"x": 1}
+        zarr_writer._atomic_write_json(zarr_json_path, j)
+        zarr_writer.add_well_image(w, 0)
         with open(zarr_json_path) as f:
-            zarr_json = json.load(f)
+            j = json.load(f)
+        assert j["attributes"]["_custom"] == {"x": 1}
+        assert not [f for f in os.listdir(w) if f.endswith(".tmp")]
 
-        # Verify Zarr v3 structure
-        assert zarr_json["zarr_format"] == 3
-        assert zarr_json["node_type"] == "group"
-        assert "attributes" in zarr_json
 
-        attrs = zarr_json["attributes"]
+def squid_of(group_path: str) -> dict:
+    with open(os.path.join(group_path, "zarr.json")) as f:
+        return json.load(f)["attributes"]["_squid"]
 
-        # Verify OME-NGFF 0.5 namespace structure
-        assert "ome" in attrs
-        assert attrs["ome"]["version"] == "0.5"
-        assert "well" in attrs["ome"]
-        assert attrs["ome"]["well"]["version"] == "0.5"
-        assert len(attrs["ome"]["well"]["images"]) == 3
+
+def run_save_job(info: ZarrWriterInfo, region: str, fov: int, c: int, z: int, t: int = 0) -> None:
+    """Send one plane through SaveZarrJob.run the way the save subprocess does."""
+    from control._def import FileSavingOption
+
+    job = SaveZarrJob(
+        capture_info=make_test_capture_info(region_id=region, fov=fov, z_index=z, config_idx=c, time_point=t),
+        capture_image=JobImage(image_array=np.full((16, 16), 7, np.uint16)),
+        save_settings=SaveSettings(file_saving_option=FileSavingOption.ZARR_V3),
+    )
+    job.zarr_writer_info = info
+    job.run()
+
+
+class TestSaveZarrJobWrittenFields:
+    """The user-abort path: jobs stop arriving, then finalize_all_writers() runs on shutdown."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
+
+    @pytest.fixture(autouse=True)
+    def real_disk_and_clean_writers(self, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "SIMULATED_DISK_IO_ENABLED", False)
+        SaveZarrJob.clear_writers()
+        yield
+        SaveZarrJob.clear_writers()
+
+    def test_user_abort_path_lists_only_written_fields(self, temp_dir):
+        info = ZarrWriterInfo(
+            base_path=temp_dir,
+            t_size=1,
+            c_size=2,
+            z_size=2,
+            is_hcs=True,
+            region_fov_counts={"B3": 3, "D5": 1},
+            pixel_size_um=0.65,
+            channel_names=["a", "b"],
+        )
+        for c in range(2):
+            for z in range(2):
+                run_save_job(info, "B3", 0, c, z)  # field 0 complete
+        run_save_job(info, "B3", 1, 0, 0)  # field 1: one plane; field 2 and D5 never start
+        assert SaveZarrJob.finalize_all_writers()
+
+        plate = os.path.join(temp_dir, "plate.ome.zarr")
+        assert [w["path"] for w in plate_attrs(plate)["plate"]["wells"]] == ["B/3"]
+        assert [r["name"] for r in plate_attrs(plate)["plate"]["rows"]] == ["B", "D"]  # planned rows stay
+        assert [i["path"] for i in well_attrs(os.path.join(plate, "B", "3"))["well"]["images"]] == ["0", "1"]
+        f0 = squid_of(os.path.join(plate, "B", "3", "0"))
+        f1 = squid_of(os.path.join(plate, "B", "3", "1"))
+        assert f0["acquisition_complete"] is True and f0["planes_written"] == 4
+        assert f1["acquisition_complete"] is False
+        assert (f1["planes_written"], f1["planes_expected"]) == (1, 4)
+        assert not os.path.exists(os.path.join(plate, "B", "3", "2"))
+        assert not os.path.exists(os.path.join(plate, "D", "5"))
+
+    def test_zero_padded_well_id_saves_and_lists_the_well(self, temp_dir):
+        """Region ids loaded from a CSV can be zero-padded ("A01"); the well must save and be listed at the
+        directory that exists, since the plate's column names, the well path and the directory must agree."""
+        info = ZarrWriterInfo(
+            base_path=temp_dir, t_size=1, c_size=1, z_size=1, is_hcs=True, region_fov_counts={"A01": 1}
+        )
+        run_save_job(info, "A01", 0, 0, 0)
+        assert SaveZarrJob.finalize_all_writers()
+        plate = os.path.join(temp_dir, "plate.ome.zarr")
+        wells = plate_attrs(plate)["plate"]["wells"]
+        assert [w["path"] for w in wells] == ["A/1"]
+        assert [c["name"] for c in plate_attrs(plate)["plate"]["columns"]] == ["1"]
+        assert os.path.isdir(os.path.join(plate, "A", "1", "0", "0"))
+        assert [i["path"] for i in well_attrs(os.path.join(plate, "A", "1"))["well"]["images"]] == ["0"]
+        assert squid_of(os.path.join(plate, "A", "1", "0"))["planes_written"] == 1
+
+    def test_failed_registration_is_retried_on_the_next_frame(self, temp_dir, monkeypatch):
+        import control.core.zarr_writer as zw
+
+        real = zw.add_well_image
+        calls = []
+
+        def flaky(well_path, field):
+            calls.append(field)
+            if len(calls) == 1:
+                raise RuntimeError("disk hiccup")
+            real(well_path, field)
+
+        # The hook looks the helper up on control.core.zarr_writer at call time
+        monkeypatch.setattr(zw, "add_well_image", flaky)
+        info = ZarrWriterInfo(
+            base_path=temp_dir, t_size=1, c_size=1, z_size=2, is_hcs=True, region_fov_counts={"B3": 1}
+        )
+        with pytest.raises(RuntimeError):
+            run_save_job(info, "B3", 0, 0, 0)
+        run_save_job(info, "B3", 0, 0, 1)  # second frame: registration retried, write proceeds
+        assert SaveZarrJob.finalize_all_writers()
+        assert calls == [0, 0]
+        well = os.path.join(temp_dir, "plate.ome.zarr", "B", "3")
+        assert [i["path"] for i in well_attrs(well)["well"]["images"]] == ["0"]
 
 
 class TestZarrWriterInfo:
@@ -1480,7 +1679,9 @@ class TestZarrWriterEmptyDataset:
         assert "attributes" in zarr_json
         attrs = zarr_json["attributes"]
         assert "_squid" in attrs
-        assert attrs["_squid"]["acquisition_complete"] is True
+        # Nothing was written: 0 of 1 planes, so the array is not complete even though finalize() ran
+        assert attrs["_squid"]["acquisition_complete"] is False
+        assert attrs["_squid"]["planes_written"] == 0
 
 
 class TestZarrWriterDtypeAutoConversion:
