@@ -1176,7 +1176,7 @@ class _OpenInViewerButtonMixin:
 
     def _create_open_in_viewer_button(self) -> QPushButton:
         self._finished_run_dir: Optional[str] = None
-        button = QPushButton("Open in\n Viewer ")
+        button = QPushButton("Open in Viewer")  # one line: a two-line label squeezes the button column
         button.setEnabled(False)
         button.setToolTip(self.NO_RUN_TOOLTIP)
         button.clicked.connect(self._open_in_viewer)
