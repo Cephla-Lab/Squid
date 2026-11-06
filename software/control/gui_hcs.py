@@ -49,6 +49,7 @@ from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.mosaic_utils import parse_well_id
+from control.core.open_in_viewer import RunSnapshot, finished_run_dir
 from control.core.multi_point_utils import (
     MultiPointControllerFunctions,
     AcquisitionParameters,
@@ -280,6 +281,8 @@ class QtMultiPointController(MultiPointController, QObject):
         self._ndviewer_region_idx_offset: list = []  # [0, 5, ...] region_idx -> flat FOV offset
         self._ndviewer_mode: NDViewerMode = NDViewerMode.INACTIVE  # Current viewer mode
         self._ndviewer_region_index_map: dict = {}  # {region_name: region_idx} for 6D mode
+        # The run's folder and skip-saving state, captured at start for the Open in Viewer button
+        self.open_in_viewer_snapshot: Optional[RunSnapshot] = None
 
     def _signal_acquisition_start_fn(self, parameters: AcquisitionParameters):
         # TODO mpc napari signals
@@ -297,6 +300,9 @@ class QtMultiPointController(MultiPointController, QObject):
         base = parameters.base_path
         exp_id = parameters.experiment_ID
         save_target = os.path.join(base, exp_id) if (base and exp_id) else None
+        # Captured now, not read back at finish: the fluidics imaging port restores base_path in its own
+        # acquisition_finished slot, so the controller's fields at finish time can name the wrong folder.
+        self.open_in_viewer_snapshot = RunSnapshot(save_target, bool(parameters.skip_saving))
         self.signal_acquisition_save_target.emit(save_target)
 
         # NDViewer push-based API: emit start_acquisition signal
@@ -1603,6 +1609,9 @@ class HighContentScreeningGui(QMainWindow):
         # RAM monitor widget connections - use controller signals which fire AFTER memory monitor is created
         self.multipointController.signal_acquisition_start.connect(self._connect_ram_monitor_widget)
         self.multipointController.acquisition_finished.connect(self._disconnect_ram_monitor_widget)
+        # Open in Viewer button: disabled while a run is in flight, pointed at the run's folder once it ends
+        self.multipointController.signal_acquisition_start.connect(self._clear_open_in_viewer_target)
+        self.multipointController.acquisition_finished.connect(self._set_open_in_viewer_target)
 
         # Backpressure monitor widget connections - fires AFTER worker is created
         self.multipointController.signal_acquisition_start.connect(self._connect_backpressure_monitor_widget)
@@ -1879,6 +1888,28 @@ class HighContentScreeningGui(QMainWindow):
         if self.unifiedMosaicWidget is not None:
             self.unifiedMosaicWidget.set_acquisition_save_target(save_target)
 
+    def _multipoint_tabs(self):
+        return [
+            tab
+            for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget)
+            if tab is not None
+        ]
+
+    def _set_open_in_viewer_target(self) -> None:
+        """After a run: point every multipoint tab's Open in Viewer button at the run's folder (or disable it).
+
+        Reads the snapshot taken at start and the end reason only, never the controller's base_path /
+        experiment_ID: the fluidics imaging port's acquisition_finished slot restores those and may run first.
+        """
+        controller = self.multipointController
+        run_dir = finished_run_dir(controller.open_in_viewer_snapshot, controller.last_end_reason)
+        for tab in self._multipoint_tabs():
+            tab.set_finished_run_dir(run_dir)
+
+    def _clear_open_in_viewer_target(self) -> None:
+        for tab in self._multipoint_tabs():
+            tab.set_finished_run_dir(None)
+
     def _on_timepoint_finished(self, time_point: int):
         if self.unifiedMosaicWidget is not None:
             self.unifiedMosaicWidget.save_for_timepoint(time_point)
@@ -2006,6 +2037,7 @@ class HighContentScreeningGui(QMainWindow):
             for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget):
                 if tab is not None:
                     dialog.signal_config_changed.connect(tab.update_z_order_dropdown_visibility)
+                    dialog.signal_config_changed.connect(tab.update_open_in_viewer_visibility)
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")

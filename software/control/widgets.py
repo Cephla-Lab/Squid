@@ -22,6 +22,7 @@ from control.core.config import ConfigRepository
 from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.mosaic_utils import format_well_id
+from control.core.open_in_viewer import check_viewer, launch_viewer, software_dir
 from control.core.geometry_utils import calculate_well_coverage, default_scan_shape, get_effective_well_size
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
@@ -1161,6 +1162,48 @@ class _ZRangeMixin:
         else:
             self.multipointController.set_z_range(self.entry_minZ.value() / 1000, self.entry_maxZ.value() / 1000)
             self.multipointController.set_piezo_z_range_um(None)
+
+
+class _OpenInViewerButtonMixin:
+    """The opt-in "Open in Viewer" button beside Start Acquisition (SHOW_OPEN_IN_VIEWER_BUTTON).
+
+    After a run finishes the GUI hands every multipoint tab the run's folder (set_finished_run_dir) and the
+    button opens it in ndviewer_light, in a separate process. Hidden while the setting is off; disabled until
+    a run has finished. The Qt-free rules and the launch live in control.core.open_in_viewer.
+    """
+
+    NO_RUN_TOOLTIP = "No finished acquisition yet"
+
+    def _create_open_in_viewer_button(self) -> QPushButton:
+        self._finished_run_dir: Optional[str] = None
+        button = QPushButton("Open in\n Viewer ")
+        button.setEnabled(False)
+        button.setToolTip(self.NO_RUN_TOOLTIP)
+        button.clicked.connect(self._open_in_viewer)
+        button.setVisible(control._def.SHOW_OPEN_IN_VIEWER_BUTTON)
+        return button
+
+    def update_open_in_viewer_visibility(self) -> None:
+        """Re-apply the opt-in setting, e.g. after Preferences changed it at runtime; nothing else changes."""
+        self.btn_openInViewer.setVisible(control._def.SHOW_OPEN_IN_VIEWER_BUTTON)
+
+    def set_finished_run_dir(self, run_dir: Optional[str]) -> None:
+        """The folder the button opens (a finished run), or None to disable it (a run just started)."""
+        self._finished_run_dir = run_dir
+        self.btn_openInViewer.setEnabled(bool(run_dir))
+        self.btn_openInViewer.setToolTip(run_dir or self.NO_RUN_TOOLTIP)
+
+    def _open_in_viewer(self) -> None:
+        if not self._finished_run_dir:
+            return
+        preflight = check_viewer(software_dir())
+        if not preflight.ok:
+            QMessageBox.warning(self, "Open in Viewer", preflight.problem())
+            return
+        try:
+            launch_viewer(self._finished_run_dir, software_dir())
+        except Exception as e:
+            QMessageBox.critical(self, "Open in Viewer", str(e))
 
 
 class _LaserAfPerStackMixin:
@@ -7098,7 +7141,9 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, QFrame):
+class FlexibleMultiPointWidget(
+    AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, _OpenInViewerButtonMixin, QFrame
+):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -7346,6 +7391,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
+        self.btn_openInViewer = self._create_open_in_viewer_button()
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         # Add snap images button
@@ -7476,6 +7522,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
+        button_layout.addWidget(self.btn_openInViewer)
 
         grid_acquisition = QHBoxLayout()
         grid_acquisition.addSpacing(EDGE_SPACING)
@@ -8508,7 +8555,12 @@ def _warn_if_coordinates_stale(widget, stamp):
 
 
 class WellplateMultiPointWidget(
-    AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, _ZRangeMixin, QFrame
+    AcquisitionYAMLDropMixin,
+    _ApplyChannelOffsetMixin,
+    _LaserAfPerStackMixin,
+    _ZRangeMixin,
+    _OpenInViewerButtonMixin,
+    QFrame,
 ):
 
     signal_acquisition_started = Signal(bool)
@@ -8763,6 +8815,7 @@ class WellplateMultiPointWidget(
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
+        self.btn_openInViewer = self._create_open_in_viewer_button()
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.progress_label = QLabel("Region -/-")
@@ -9000,6 +9053,7 @@ class WellplateMultiPointWidget(
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
+        button_layout.addWidget(self.btn_openInViewer)
 
         bottom_right = QHBoxLayout()
         bottom_right.addLayout(options_layout)
