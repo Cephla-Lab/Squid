@@ -20,6 +20,8 @@ _log = squid.logging.get_logger(__name__)
 VIEWER_PACKAGES: Tuple[str, ...] = ("ndv", "vispy", "tensorstore", "xarray", "dask", "superqt")
 VIEWER_MODULE = "control.ndviewer_light.ndviewer_light"
 SUBMODULE_HINT = "git submodule update --init software/control/ndviewer_light"
+# What the pip hint installs for a missing package: the bundled viewer requires ndv>=0.4,<0.5
+_PIP_SPECS = {"ndv": '"ndv>=0.4,<0.5"'}
 
 
 def software_dir() -> str:
@@ -51,7 +53,7 @@ class ViewerPreflight:
         lines = []
         if self.missing_packages:
             lines.append(f"Missing Python packages: {', '.join(self.missing_packages)}")
-            lines.append(f"pip install {' '.join(self.missing_packages)}")
+            lines.append(f"pip install {' '.join(_PIP_SPECS.get(name, name) for name in self.missing_packages)}")
         if not self.entry_point_exists:
             lines.append(f"The viewer submodule is not checked out ({self.entry_point}).")
             lines.append(f"Run: {SUBMODULE_HINT}")

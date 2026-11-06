@@ -110,3 +110,9 @@ def test_launch_viewer_propagates_popen_errors(tmp_path):
 
 def test_software_dir_contains_the_control_package():
     assert os.path.isdir(os.path.join(software_dir(), "control"))
+
+
+def test_check_viewer_pins_ndv_in_the_install_hint(tmp_path):
+    # The bundled viewer needs ndv>=0.4,<0.5; an unpinned hint would install a version it cannot use
+    p = check_viewer(str(tmp_path), find_spec=lambda n: None if n == "ndv" else object(), isfile=lambda f: True)
+    assert 'pip install "ndv>=0.4,<0.5"' in p.problem()

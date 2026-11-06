@@ -8342,6 +8342,7 @@ class FlexibleMultiPointWidget(
         self.combobox_z_order.setEnabled(enabled)
         if enabled:
             self._update_laser_af_per_stack_state()  # enabled only under its rule, not blanket
+            self.set_finished_run_dir(self._finished_run_dir)  # likewise: only when a finished run is held
         else:
             self.checkbox_laserAfPerStack.setEnabled(False)
         self.entry_dt.setEnabled(enabled)
@@ -10438,6 +10439,8 @@ class WellplateMultiPointWidget(
         if enabled:
             # Every child was just enabled: the "AF per stack" box is enabled only under its rule (CodeRabbit).
             self._update_laser_af_per_stack_state()
+            # ... and the Open in Viewer button only when a finished run is held
+            self.set_finished_run_dir(self._finished_run_dir)
             self.update_scan_control_ui()
 
             # Restore mode dropdown states based on their respective checkboxes

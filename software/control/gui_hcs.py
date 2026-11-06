@@ -1902,6 +1902,8 @@ class HighContentScreeningGui(QMainWindow):
         experiment_ID: the fluidics imaging port's acquisition_finished slot restores those and may run first.
         """
         controller = self.multipointController
+        if controller.last_end_reason == "failed_to_start":
+            return  # nothing ran (Start with nothing to acquire): the previously finished run stays openable
         run_dir = finished_run_dir(controller.open_in_viewer_snapshot, controller.last_end_reason)
         for tab in self._multipoint_tabs():
             tab.set_finished_run_dir(run_dir)

@@ -517,3 +517,37 @@ def test_toggling_the_preference_keeps_the_finished_run(qtbot, monkeypatch, conf
     monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
     t.update_open_in_viewer_visibility()
     assert t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == str(tmp_path)
+
+
+def test_open_in_viewer_stays_disabled_when_the_tab_re_enables_its_children(
+    qtbot, monkeypatch, confirm_exit_yes, tmp_path
+):
+    # acquisition_is_finished calls setEnabled_all(True) on the tab that ran; the Wellplate tab enables every child
+    # widget blanket-style, so the button must re-apply its own rule rather than rely on the GUI's slot order.
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    win = _gui(qtbot)
+    for t in (win.wellplateMultiPointWidget, win.flexibleMultiPointWidget):
+        t.set_finished_run_dir(None)
+        t.setEnabled_all(True)
+        assert not t.btn_openInViewer.isEnabled()
+        assert t.btn_openInViewer.toolTip() == "No finished acquisition yet"
+        t.set_finished_run_dir(str(tmp_path))
+        t.setEnabled_all(False)
+        t.setEnabled_all(True)
+        assert t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == str(tmp_path)
+
+
+def test_a_run_that_fails_to_start_keeps_the_previous_finished_run(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
+    # Start pressed with nothing to acquire: the controller reports failed_to_start through acquisition_finished
+    # without ever emitting signal_acquisition_start, so the last finished run must stay openable.
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    win = _gui(qtbot)
+    c = win.multipointController
+    (tmp_path / "run").mkdir()
+    c.open_in_viewer_snapshot = RunSnapshot(str(tmp_path / "run"), False)
+    c.last_end_reason = "completed"
+    c.acquisition_finished.emit()
+    c.last_end_reason = "failed_to_start"
+    c.acquisition_finished.emit()
+    t = win.wellplateMultiPointWidget
+    assert t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == str(tmp_path / "run")
