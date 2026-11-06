@@ -513,96 +513,92 @@ class TestZarrWriterCompletion:
         assert not [f for f in os.listdir(metadata_dir) if f.endswith(".tmp")]
 
 
+import control.core.zarr_writer as zarr_writer
+
+
+def plate_attrs(plate_path: str) -> dict:
+    with open(os.path.join(plate_path, "zarr.json")) as f:
+        return json.load(f)["attributes"]["ome"]
+
+
+def well_attrs(well_path: str) -> dict:
+    with open(os.path.join(well_path, "zarr.json")) as f:
+        return json.load(f)["attributes"]["ome"]
+
+
 class TestHCSMetadata:
-    """Tests for HCS plate metadata functions."""
+    """Plate and well lists start empty and grow, sorted and idempotently, as fields are written."""
 
     @pytest.fixture
     def temp_dir(self):
-        """Create a temporary directory for test outputs."""
         with tempfile.TemporaryDirectory() as tmpdir:
             yield tmpdir
 
-    def test_write_plate_metadata(self, temp_dir):
-        from control.core.zarr_writer import write_plate_metadata
+    def test_write_plate_metadata_starts_with_no_wells(self, temp_dir):
+        p = os.path.join(temp_dir, "plate.ome.zarr")
+        zarr_writer.write_plate_metadata(p, ["B", "D"], [3, 5])
+        plate = plate_attrs(p)["plate"]
+        assert plate["wells"] == []
+        assert [r["name"] for r in plate["rows"]] == ["B", "D"]
+        assert [c["name"] for c in plate["columns"]] == ["3", "5"]
+        assert os.path.exists(os.path.join(p, "B", "zarr.json")) and os.path.exists(os.path.join(p, "D", "zarr.json"))
 
-        plate_path = os.path.join(temp_dir, "plate.zarr")
-        write_plate_metadata(
-            plate_path=plate_path,
-            rows=["A", "B", "C"],
-            cols=[1, 2, 3],
-            wells=[("A", 1), ("B", 2)],
-            plate_name="test_plate",
-        )
+    def test_add_plate_well_is_sorted_and_idempotent(self, temp_dir):
+        p = os.path.join(temp_dir, "plate.ome.zarr")
+        zarr_writer.write_plate_metadata(p, ["B", "D"], [3, 5])
+        zarr_writer.add_plate_well(p, "D", "5")
+        zarr_writer.add_plate_well(p, "B", "3")
+        zarr_writer.add_plate_well(p, "B", "3")
+        assert plate_attrs(p)["plate"]["wells"] == [
+            {"path": "B/3", "rowIndex": 0, "columnIndex": 0},
+            {"path": "D/5", "rowIndex": 1, "columnIndex": 1},
+        ]
 
-        # Check zarr.json with OME-NGFF 0.5 namespace in attributes
-        zarr_json_path = os.path.join(plate_path, "zarr.json")
-        assert os.path.exists(zarr_json_path)
+    def test_add_plate_well_uses_the_plate_lists(self, temp_dir):
+        p = os.path.join(temp_dir, "plate.ome.zarr")
+        zarr_writer.write_plate_metadata(p, ["A", "B", "P"], [1, 12])
+        zarr_writer.add_plate_well(p, "P", "12")
+        assert plate_attrs(p)["plate"]["wells"] == [{"path": "P/12", "rowIndex": 2, "columnIndex": 1}]
 
+    def test_add_plate_well_rejects_an_unplanned_well(self, temp_dir):
+        p = os.path.join(temp_dir, "plate.ome.zarr")
+        zarr_writer.write_plate_metadata(p, ["B"], [3])
+        with pytest.raises(RuntimeError):
+            zarr_writer.add_plate_well(p, "C", "3")
+
+    def test_write_plate_metadata_does_not_reset_an_existing_plate(self, temp_dir):
+        p = os.path.join(temp_dir, "plate.ome.zarr")
+        zarr_writer.write_plate_metadata(p, ["B"], [3])
+        zarr_writer.add_plate_well(p, "B", "3")
+        zarr_writer.write_plate_metadata(p, ["B"], [3])
+        assert [w["path"] for w in plate_attrs(p)["plate"]["wells"]] == ["B/3"]
+
+    def test_write_well_metadata_starts_with_no_images(self, temp_dir):
+        w = os.path.join(temp_dir, "plate.ome.zarr", "B", "3")
+        zarr_writer.write_well_metadata(w)
+        assert well_attrs(w) == {"version": "0.5", "well": {"version": "0.5", "images": []}}
+
+    def test_add_well_image_is_numeric_sorted_and_idempotent(self, temp_dir):
+        w = os.path.join(temp_dir, "plate.ome.zarr", "B", "3")
+        zarr_writer.write_well_metadata(w)
+        zarr_writer.add_well_image(w, 10)
+        zarr_writer.add_well_image(w, 2)
+        zarr_writer.add_well_image(w, 2)
+        assert well_attrs(w)["well"]["images"] == [{"path": "2"}, {"path": "10"}]
+
+    def test_rewrite_keeps_other_attributes_and_leaves_no_temp_file(self, temp_dir):
+        w = os.path.join(temp_dir, "plate.ome.zarr", "B", "3")
+        zarr_writer.write_well_metadata(w)
+        zarr_json_path = os.path.join(w, "zarr.json")
         with open(zarr_json_path) as f:
-            zarr_json = json.load(f)
-
-        # Verify Zarr v3 structure
-        assert zarr_json["zarr_format"] == 3
-        assert zarr_json["node_type"] == "group"
-        assert "attributes" in zarr_json
-
-        attrs = zarr_json["attributes"]
-
-        # Verify OME-NGFF 0.5 namespace structure
-        assert "ome" in attrs
-        assert attrs["ome"]["version"] == "0.5"
-        assert "plate" in attrs["ome"]
-        assert attrs["ome"]["plate"]["version"] == "0.5"
-        assert attrs["ome"]["plate"]["name"] == "test_plate"
-        assert len(attrs["ome"]["plate"]["wells"]) == 2
-
-    def test_write_plate_metadata_makes_each_row_a_group(self, temp_dir):
-        """Zarr v3 has no implicit groups: without row zarr.json, iohub finds no fields in the plate."""
-        from control.core.zarr_writer import write_plate_metadata
-
-        plate_path = os.path.join(temp_dir, "plate.ome.zarr")
-        write_plate_metadata(
-            plate_path=plate_path,
-            rows=["A", "C"],
-            cols=[1, 3],
-            wells=[("A", 1), ("C", 3)],
-        )
-
-        for row in ["A", "C"]:
-            with open(os.path.join(plate_path, row, "zarr.json")) as f:
-                row_meta = json.load(f)
-            assert row_meta["zarr_format"] == 3
-            assert row_meta["node_type"] == "group"
-
-    def test_write_well_metadata(self, temp_dir):
-        from control.core.zarr_writer import write_well_metadata
-
-        well_path = os.path.join(temp_dir, "plate.zarr", "A", "1")
-        write_well_metadata(
-            well_path=well_path,
-            fields=[0, 1, 2],
-        )
-
-        # Check zarr.json with OME-NGFF 0.5 namespace in attributes
-        zarr_json_path = os.path.join(well_path, "zarr.json")
-        assert os.path.exists(zarr_json_path)
-
+            j = json.load(f)
+        j["attributes"]["_custom"] = {"x": 1}
+        zarr_writer._atomic_write_json(zarr_json_path, j)
+        zarr_writer.add_well_image(w, 0)
         with open(zarr_json_path) as f:
-            zarr_json = json.load(f)
-
-        # Verify Zarr v3 structure
-        assert zarr_json["zarr_format"] == 3
-        assert zarr_json["node_type"] == "group"
-        assert "attributes" in zarr_json
-
-        attrs = zarr_json["attributes"]
-
-        # Verify OME-NGFF 0.5 namespace structure
-        assert "ome" in attrs
-        assert attrs["ome"]["version"] == "0.5"
-        assert "well" in attrs["ome"]
-        assert attrs["ome"]["well"]["version"] == "0.5"
-        assert len(attrs["ome"]["well"]["images"]) == 3
+            j = json.load(f)
+        assert j["attributes"]["_custom"] == {"x": 1}
+        assert not [f for f in os.listdir(w) if f.endswith(".tmp")]
 
 
 class TestZarrWriterInfo:

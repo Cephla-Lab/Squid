@@ -15,7 +15,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -275,77 +275,149 @@ def _write_group_metadata(path: str, ome_metadata: dict, description: str) -> No
         raise RuntimeError(f"Failed to write {description} metadata: {e}") from e
 
 
+def _update_group_attributes(path: str, mutate: Callable[[dict], None], description: str) -> None:
+    """Edit the attributes of a group's zarr.json in place and write it back atomically.
+
+    Creates the group (an empty-attributes group node) when it does not exist yet. mutate() receives the
+    attributes dict and changes it; whatever it raises propagates.
+
+    Raises:
+        RuntimeError: If the metadata file cannot be read or written
+    """
+    zarr_json_path = os.path.join(path, "zarr.json")
+    try:
+        os.makedirs(path, exist_ok=True)
+        if os.path.exists(zarr_json_path):
+            with open(zarr_json_path, "r") as f:
+                zarr_json = json.load(f)
+        else:
+            zarr_json = {"zarr_format": 3, "node_type": "group", "attributes": {}}
+        attrs = zarr_json.setdefault("attributes", {})
+        mutate(attrs)
+        _atomic_write_json(zarr_json_path, zarr_json)
+    except (OSError, json.JSONDecodeError) as e:
+        log.error(f"Failed to update {description} metadata at {zarr_json_path}: {e}")
+        raise RuntimeError(f"Failed to update {description} metadata: {e}") from e
+
+
 def write_plate_metadata(
     plate_path: str,
     rows: List[str],
     cols: List[int],
-    wells: List[Tuple[str, int]],
     plate_name: str = "plate",
 ) -> None:
-    """Write OME-NGFF HCS plate metadata.
+    """Write OME-NGFF HCS plate metadata with an empty well list, plus a group zarr.json per row.
 
-    Creates the plate-level zarr.json with well references in attributes, and a
-    group zarr.json for each row (Zarr v3 has no implicit groups, so readers that
-    walk plate -> row -> well find nothing under a row without one).
+    The plate's rows and columns are the planned set; wells are added one by one with add_plate_well() as
+    their first image is written, so the list always names what is on disk. An existing plate zarr.json is
+    left as it is (its well list is the record of what was written so far). Zarr v3 has no implicit groups,
+    so readers that walk plate -> row -> well find nothing under a row without its own zarr.json.
 
     Args:
         plate_path: Path to plate.ome.zarr directory
         rows: List of row names (e.g., ["A", "B", "C"])
         cols: List of column numbers (e.g., [1, 2, 3])
-        wells: List of (row, col) tuples for wells with data
         plate_name: Name for the plate
 
     Raises:
         RuntimeError: If metadata files cannot be written
     """
-    well_entries = [
-        {"path": f"{row}/{col}", "rowIndex": rows.index(row), "columnIndex": cols.index(col)} for row, col in wells
-    ]
-
-    plate_metadata = {
-        "ome": {
-            "version": "0.5",
-            "plate": {
+    plate_json_path = os.path.join(plate_path, "zarr.json")
+    if os.path.exists(plate_json_path):
+        log.debug(f"Plate metadata already present at {plate_json_path}; keeping its well list")
+    else:
+        plate_metadata = {
+            "ome": {
                 "version": "0.5",
-                "name": plate_name,
-                "rows": [{"name": r} for r in rows],
-                "columns": [{"name": str(c)} for c in cols],
-                "wells": well_entries,
-            },
+                "plate": {
+                    "version": "0.5",
+                    "name": plate_name,
+                    "rows": [{"name": r} for r in rows],
+                    "columns": [{"name": str(c)} for c in cols],
+                    "wells": [],
+                },
+            }
         }
-    }
-
-    _write_group_metadata(plate_path, plate_metadata, "plate")
+        _write_group_metadata(plate_path, plate_metadata, "plate")
     for row in rows:
-        _write_group_metadata(os.path.join(plate_path, row), {}, f"row {row}")
+        if not os.path.exists(os.path.join(plate_path, row, "zarr.json")):
+            _write_group_metadata(os.path.join(plate_path, row), {}, f"row {row}")
 
 
-def write_well_metadata(
-    well_path: str,
-    fields: List[int],
-) -> None:
-    """Write OME-NGFF HCS well metadata.
+def add_plate_well(plate_path: str, row: str, col: str) -> None:
+    """List a well in the plate metadata (idempotent; wells stay sorted by row, then column).
 
-    Creates the well-level zarr.json with field references in attributes.
+    rowIndex / columnIndex come from the plate's own rows and columns lists, so they stay consistent with
+    whatever write_plate_metadata() wrote.
+
+    Raises:
+        RuntimeError: If the well is not among the plate's rows/columns, or the metadata cannot be updated
+    """
+    path = f"{row}/{col}"
+
+    def mutate(attrs: dict) -> None:
+        try:
+            plate = attrs["ome"]["plate"]
+            row_names = [r["name"] for r in plate["rows"]]
+            col_names = [c["name"] for c in plate["columns"]]
+        except (KeyError, TypeError) as e:
+            raise RuntimeError(f"{plate_path} does not hold plate metadata: {e}") from e
+        if row not in row_names or str(col) not in col_names:
+            raise RuntimeError(f"Well {path} is not in the plate's rows {row_names} / columns {col_names}")
+        wells = [w for w in plate["wells"] if w.get("path") != path]
+        wells.append({"path": path, "rowIndex": row_names.index(row), "columnIndex": col_names.index(str(col))})
+        plate["wells"] = sorted(wells, key=lambda w: (w["rowIndex"], w["columnIndex"]))
+
+    _update_group_attributes(plate_path, mutate, f"plate well {path}")
+
+
+def write_well_metadata(well_path: str) -> None:
+    """Write OME-NGFF HCS well metadata with an empty image list.
+
+    Fields are added with add_well_image() as their first image is written. An existing well zarr.json is
+    left as it is.
 
     Args:
         well_path: Path to well directory (e.g., plate.ome.zarr/A/1)
-        fields: List of field indices (FOVs) in this well
 
     Raises:
         RuntimeError: If metadata files cannot be written
     """
+    well_json_path = os.path.join(well_path, "zarr.json")
+    if os.path.exists(well_json_path):
+        log.debug(f"Well metadata already present at {well_json_path}; keeping its image list")
+        return
     well_metadata = {
         "ome": {
             "version": "0.5",
             "well": {
                 "version": "0.5",
-                "images": [{"path": str(f)} for f in fields],
+                "images": [],
             },
         }
     }
-
     _write_group_metadata(well_path, well_metadata, "well")
+
+
+def add_well_image(well_path: str, field: int) -> None:
+    """List a field in the well metadata (idempotent; images stay sorted numerically by path).
+
+    Raises:
+        RuntimeError: If the well metadata cannot be updated
+    """
+
+    def mutate(attrs: dict) -> None:
+        try:
+            images = attrs["ome"]["well"]["images"]
+        except (KeyError, TypeError) as e:
+            raise RuntimeError(f"{well_path} does not hold well metadata: {e}") from e
+        if not any(image.get("path") == str(field) for image in images):
+            images.append({"path": str(field)})
+            images.sort(
+                key=lambda image: (not image["path"].isdigit(), int(image["path"]) if image["path"].isdigit() else 0)
+            )
+
+    _update_group_attributes(well_path, mutate, f"well image {field}")
 
 
 # Synchronous wrapper for use in job processing

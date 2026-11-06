@@ -566,27 +566,31 @@ class SaveZarrJob(Job):
             region_id: Well ID (e.g., "A1", "B12")
             fov: Field of view index
         """
-        from control.core.zarr_writer import write_plate_metadata, write_well_metadata
+        from control.core.zarr_writer import add_plate_well, add_well_image, write_plate_metadata, write_well_metadata
 
         info = self.zarr_writer_info
 
-        # Write plate metadata (once per acquisition)
+        # Plate metadata (once per acquisition): the planned rows and columns, with an empty well list
         plate_path = info.get_plate_path()
         if plate_path not in self._hcs_plate_written:
             rows, cols, wells = info.get_hcs_structure()
-            write_plate_metadata(plate_path, rows, cols, wells, plate_name="plate")
+            write_plate_metadata(plate_path, rows, cols, plate_name="plate")
             self._hcs_plate_written.add(plate_path)
-            self._log.info(f"Wrote HCS plate metadata: {len(wells)} wells")
+            self._log.info(
+                f"Wrote HCS plate metadata: {len(rows)} rows x {len(cols)} columns, {len(wells)} wells planned"
+            )
 
-        # Write well metadata (once per well)
+        # Well metadata (once per well): an empty image list, and the well listed in the plate
         well_path = info.get_well_path(region_id)
         if well_path not in self._hcs_wells_written:
-            # Get FOV count for this well
-            fov_count = info.get_fov_count(region_id)
-            fields = list(range(fov_count))
-            write_well_metadata(well_path, fields)
+            write_well_metadata(well_path)
+            row_letter, col_num = utils.parse_well_id(region_id)
+            add_plate_well(plate_path, row_letter, col_num)
             self._hcs_wells_written.add(well_path)
-            self._log.debug(f"Wrote HCS well metadata for {region_id}: {fov_count} fields")
+            self._log.debug(f"Wrote HCS well metadata for {region_id}")
+
+        # The field, listed in its well now that it has an image (idempotent)
+        add_well_image(well_path, fov)
 
     def run(self) -> ZarrWriteResult:
         if self.zarr_writer_info is None:
