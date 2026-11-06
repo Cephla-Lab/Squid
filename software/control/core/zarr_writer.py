@@ -705,6 +705,7 @@ class ZarrWriter:
                 "dtype": str(config.dtype),
                 "is_hcs": config.is_hcs,
                 "acquisition_complete": False,
+                "aborted": False,
                 "planes_written": 0,
                 "planes_expected": self.planes_expected,
             },

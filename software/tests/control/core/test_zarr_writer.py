@@ -446,6 +446,7 @@ class TestZarrWriterCompletion:
         w = self._writer(temp_dir)
         s = squid_attrs(w)
         assert (s["acquisition_complete"], s["planes_written"], s["planes_expected"]) == (False, 0, 6)
+        assert s["aborted"] is False
 
     def test_partial_write_is_not_complete(self, temp_dir):
         w = self._writer(temp_dir)
@@ -664,6 +665,22 @@ class TestSaveZarrJobWrittenFields:
         assert (f1["planes_written"], f1["planes_expected"]) == (1, 4)
         assert not os.path.exists(os.path.join(plate, "B", "3", "2"))
         assert not os.path.exists(os.path.join(plate, "D", "5"))
+
+    def test_zero_padded_well_id_saves_and_lists_the_well(self, temp_dir):
+        """Region ids loaded from a CSV can be zero-padded ("A01"); the well must save and be listed at the
+        directory that exists, since the plate's column names, the well path and the directory must agree."""
+        info = ZarrWriterInfo(
+            base_path=temp_dir, t_size=1, c_size=1, z_size=1, is_hcs=True, region_fov_counts={"A01": 1}
+        )
+        run_save_job(info, "A01", 0, 0, 0)
+        assert SaveZarrJob.finalize_all_writers()
+        plate = os.path.join(temp_dir, "plate.ome.zarr")
+        wells = plate_attrs(plate)["plate"]["wells"]
+        assert [w["path"] for w in wells] == ["A/1"]
+        assert [c["name"] for c in plate_attrs(plate)["plate"]["columns"]] == ["1"]
+        assert os.path.isdir(os.path.join(plate, "A", "1", "0", "0"))
+        assert [i["path"] for i in well_attrs(os.path.join(plate, "A", "1"))["well"]["images"]] == ["0"]
+        assert squid_of(os.path.join(plate, "A", "1", "0"))["planes_written"] == 1
 
     def test_failed_registration_is_retried_on_the_next_frame(self, temp_dir, monkeypatch):
         import control.core.zarr_writer as zw
