@@ -489,8 +489,8 @@ def test_snapshot_is_taken_at_acquisition_start(qtbot, monkeypatch, confirm_exit
     params = c.build_params(ScanPositionInformation.from_scan_coordinates(c.scanCoordinates))
     c._signal_acquisition_start_fn(params)
     assert c.open_in_viewer_snapshot == RunSnapshot(str(tmp_path / "exp"), True)
-    c._signal_acquisition_start_fn(dataclasses.replace(params, base_path=None, skip_saving=False))
-    assert c.open_in_viewer_snapshot == RunSnapshot(None, False)
+    c._signal_acquisition_start_fn(dataclasses.replace(params, skip_saving=False))
+    assert c.open_in_viewer_snapshot == RunSnapshot(str(tmp_path / "exp"), False)
 
 
 def test_open_in_viewer_shows_the_preflight_problem_instead_of_launching(
