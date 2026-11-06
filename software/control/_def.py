@@ -1015,6 +1015,9 @@ Z_STACK_ORDERS = ("CHANNEL FIRST", "Z FIRST")
 # Channel First (whatever a loaded acquisition YAML says); the TCP server, fluidics protocols and
 # Microscope.acquire_single_fov still use an order they are given explicitly.
 ENABLE_Z_STACK_ORDER_SELECTION = False
+# Opt-in: an "Open in Viewer" button next to Start Acquisition. After a run finishes it opens that run's folder in
+# ndviewer_light, in a separate process. Off, the button is not shown at all.
+SHOW_OPEN_IN_VIEWER_BUTTON = False
 
 DEFAULT_Z_POS_MM = 2
 

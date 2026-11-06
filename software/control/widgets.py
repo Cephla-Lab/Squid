@@ -1489,6 +1489,15 @@ class PreferencesDialog(QDialog):
         )
         layout.addRow("Z-stack Order Dropdown:", self.z_stack_order_dropdown_checkbox)
 
+        # Open in Viewer button next to Start Acquisition (opens the finished run in ndviewer_light). Applies live.
+        self.open_in_viewer_checkbox = QCheckBox()
+        self.open_in_viewer_checkbox.setChecked(self._get_config_bool("GENERAL", "show_open_in_viewer_button", False))
+        self.open_in_viewer_checkbox.setToolTip(
+            "Show an Open in Viewer button next to Start Acquisition.\n"
+            "After a run finishes it opens that run in ndviewer_light."
+        )
+        layout.addRow("Open in Viewer Button:", self.open_in_viewer_checkbox)
+
         self.tab_widget.addTab(tab, "Acquisition")
 
     def _create_camera_tab(self):
@@ -2377,6 +2386,11 @@ class PreferencesDialog(QDialog):
             "enable_z_stack_order_selection",
             "true" if self.z_stack_order_dropdown_checkbox.isChecked() else "false",
         )
+        self.config.set(
+            "GENERAL",
+            "show_open_in_viewer_button",
+            "true" if self.open_in_viewer_checkbox.isChecked() else "false",
+        )
 
         # Camera settings
         self.config.set("CAMERA_CONFIG", "binning_factor_default", str(self.binning_spinbox.value()))
@@ -2571,6 +2585,7 @@ class PreferencesDialog(QDialog):
         # Flexible multipoint
         control._def.ENABLE_FLEXIBLE_MULTIPOINT = self.flexible_multipoint_checkbox.isChecked()
         control._def.ENABLE_Z_STACK_ORDER_SELECTION = self.z_stack_order_dropdown_checkbox.isChecked()
+        control._def.SHOW_OPEN_IN_VIEWER_BUTTON = self.open_in_viewer_checkbox.isChecked()
 
         # Click to Move
         control._def.ENABLE_CLICK_TO_MOVE = self.click_to_move_enable_checkbox.isChecked()
@@ -2760,6 +2775,11 @@ class PreferencesDialog(QDialog):
         new_val = self.z_stack_order_dropdown_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Z-stack Order Dropdown", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_bool("GENERAL", "show_open_in_viewer_button", False)
+        new_val = self.open_in_viewer_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Open in Viewer Button", str(old_val), str(new_val), False))
 
         # Camera settings (require restart)
         old_val = self._get_config_int("CAMERA_CONFIG", "binning_factor_default", 2)
