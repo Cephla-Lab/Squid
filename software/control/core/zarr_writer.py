@@ -15,7 +15,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -243,6 +243,15 @@ def _dtype_to_zarr(dtype: np.dtype) -> str:
 # HCS Plate Metadata Functions
 
 
+def _atomic_write_json(path: str, obj: dict) -> None:
+    """Write obj as JSON to path so a reader never sees a half-written file: temp file in the same directory, then
+    os.replace (atomic on POSIX and Windows)."""
+    tmp_path = f"{path}.{os.getpid()}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(obj, f, indent=2)
+    os.replace(tmp_path, path)
+
+
 def _write_group_metadata(path: str, ome_metadata: dict, description: str) -> None:
     """Write OME-NGFF group metadata to zarr.json.
 
@@ -358,6 +367,9 @@ class ZarrWriter:
         self._config = config
         self._dataset = None
         self._pending_futures: List[Any] = []
+        # Plane indices ((t, c, z) or (fov, t, c, z)) whose write_frame returned: the writer's own record of what is on
+        # disk, so finalize() can say whether the array is complete whatever ended the run.
+        self._written_planes: Set[Tuple[int, ...]] = set()
         self._initialized = False
         self._finalized = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -621,6 +633,8 @@ class ZarrWriter:
                 "dtype": str(config.dtype),
                 "is_hcs": config.is_hcs,
                 "acquisition_complete": False,
+                "planes_written": 0,
+                "planes_expected": self.planes_expected,
             },
         }
 
@@ -714,6 +728,7 @@ class ZarrWriter:
         # Wait for write to complete (blocking)
         # TensorStore futures have a .result() method that blocks until complete
         future.result()
+        self._written_planes.add((fov, t, c, z) if config.ndim == 6 else (t, c, z))
         if config.ndim == 5:
             log.debug(f"Write complete for frame t={t}, c={c}, z={z}")
         else:
@@ -751,6 +766,33 @@ class ZarrWriter:
         """Number of writes currently pending."""
         return len(self._pending_futures)
 
+    @property
+    def planes_written(self) -> int:
+        """Distinct planes whose write_frame returned (a plane written twice counts once)."""
+        return len(self._written_planes)
+
+    @property
+    def planes_expected(self) -> int:
+        """Planes the allocated array holds: the product of its non-spatial extents."""
+        return int(np.prod(self._config.shape[:-2]))
+
+    def _update_squid_attrs(self, **fields: Any) -> None:
+        """Update the _squid block of the metadata zarr.json in place (atomic write). Metadata failures are logged, not
+        raised: the pixel data is already on disk."""
+        zarr_json_path = self._get_metadata_zarr_json_path()
+        try:
+            if not os.path.exists(zarr_json_path):
+                return
+            with open(zarr_json_path, "r") as f:
+                zarr_json = json.load(f)
+            attrs = zarr_json.get("attributes", {})
+            if "_squid" in attrs:
+                attrs["_squid"].update(fields)
+                zarr_json["attributes"] = attrs
+            _atomic_write_json(zarr_json_path, zarr_json)
+        except (OSError, json.JSONDecodeError) as e:
+            log.error(f"Failed to update zarr metadata at {zarr_json_path}: {e}")
+
     def finalize(self) -> None:
         """Finalize the dataset (blocking)."""
         if self._finalized:
@@ -762,21 +804,12 @@ class ZarrWriter:
         # Wait for all pending writes
         self.wait_for_pending()
 
-        # Update metadata with completion status (in zarr.json attributes)
-        zarr_json_path = self._get_metadata_zarr_json_path()
-        try:
-            if os.path.exists(zarr_json_path):
-                with open(zarr_json_path, "r") as f:
-                    zarr_json = json.load(f)
-                attrs = zarr_json.get("attributes", {})
-                if "_squid" in attrs:
-                    attrs["_squid"]["acquisition_complete"] = True
-                    zarr_json["attributes"] = attrs
-                with open(zarr_json_path, "w") as f:
-                    json.dump(zarr_json, f, indent=2)
-        except (OSError, json.JSONDecodeError) as e:
-            log.error(f"Failed to finalize zarr metadata at {zarr_json_path}: {e}")
-            # Don't raise - data is already written, just log the metadata issue
+        # Completion comes from the writer's own count, whatever ended the run (a user abort finalises too).
+        self._update_squid_attrs(
+            acquisition_complete=self.planes_written == self.planes_expected,
+            planes_written=self.planes_written,
+            planes_expected=self.planes_expected,
+        )
 
         self._finalized = True
         self._cleanup_event_loop()
@@ -795,20 +828,12 @@ class ZarrWriter:
             self._pending_futures.clear()
 
             # Mark as incomplete in metadata (in zarr.json attributes)
-            zarr_json_path = self._get_metadata_zarr_json_path()
-            try:
-                if os.path.exists(zarr_json_path):
-                    with open(zarr_json_path, "r") as f:
-                        zarr_json = json.load(f)
-                    attrs = zarr_json.get("attributes", {})
-                    if "_squid" in attrs:
-                        attrs["_squid"]["acquisition_complete"] = False
-                        attrs["_squid"]["aborted"] = True
-                        zarr_json["attributes"] = attrs
-                    with open(zarr_json_path, "w") as f:
-                        json.dump(zarr_json, f, indent=2)
-            except (OSError, json.JSONDecodeError) as e:
-                log.error(f"Failed to update abort metadata at {zarr_json_path}: {e}")
+            self._update_squid_attrs(
+                acquisition_complete=False,
+                aborted=True,
+                planes_written=self.planes_written,
+                planes_expected=self.planes_expected,
+            )
         finally:
             # Always mark as finalized and cleanup resources
             self._finalized = True

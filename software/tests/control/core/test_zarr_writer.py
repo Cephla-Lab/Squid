@@ -417,6 +417,102 @@ class TestZarrWriter:
         assert dataset_transforms == [{"type": "scale", "scale": [1.0, 1.0, 1.5, 0.5, 0.5]}]
 
 
+def squid_attrs(writer) -> dict:
+    """The _squid block of the zarr.json the writer keeps its completion status in."""
+    with open(writer._get_metadata_zarr_json_path()) as f:
+        return json.load(f)["attributes"]["_squid"]
+
+
+class TestZarrWriterCompletion:
+    """acquisition_complete comes from the planes the writer actually wrote, whatever ended the run."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
+
+    def _writer(self, temp_dir, shape=(1, 2, 3, 16, 16)):
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+
+        writer = ZarrWriter(
+            ZarrAcquisitionConfig(
+                output_path=os.path.join(temp_dir, "t.zarr"), shape=shape, dtype=np.uint16, pixel_size_um=1.0
+            )
+        )
+        writer.initialize()
+        return writer
+
+    def test_initial_metadata_has_counts(self, temp_dir):
+        w = self._writer(temp_dir)
+        s = squid_attrs(w)
+        assert (s["acquisition_complete"], s["planes_written"], s["planes_expected"]) == (False, 0, 6)
+
+    def test_partial_write_is_not_complete(self, temp_dir):
+        w = self._writer(temp_dir)
+        img = np.zeros((16, 16), np.uint16)
+        w.write_frame(img, t=0, c=0, z=0)
+        w.write_frame(img, t=0, c=1, z=2)
+        w.finalize()
+        s = squid_attrs(w)
+        assert (s["acquisition_complete"], s["planes_written"], s["planes_expected"]) == (False, 2, 6)
+
+    def test_full_write_is_complete(self, temp_dir):
+        w = self._writer(temp_dir)
+        img = np.zeros((16, 16), np.uint16)
+        for c in range(2):
+            for z in range(3):
+                w.write_frame(img, t=0, c=c, z=z)
+        w.finalize()
+        s = squid_attrs(w)
+        assert (s["acquisition_complete"], s["planes_written"]) == (True, 6)
+
+    def test_duplicate_plane_counts_once(self, temp_dir):
+        w = self._writer(temp_dir)
+        img = np.zeros((16, 16), np.uint16)
+        w.write_frame(img, t=0, c=0, z=0)
+        w.write_frame(img, t=0, c=0, z=0)
+        w.finalize()
+        assert squid_attrs(w)["planes_written"] == 1
+
+    def test_abort_marks_aborted_with_counts(self, temp_dir):
+        w = self._writer(temp_dir)
+        w.write_frame(np.zeros((16, 16), np.uint16), t=0, c=0, z=0)
+        w.abort()
+        s = squid_attrs(w)
+        assert (s["aborted"], s["acquisition_complete"], s["planes_written"], s["planes_expected"]) == (
+            True,
+            False,
+            1,
+            6,
+        )
+
+    def test_6d_counts_fov_planes(self, temp_dir):
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+
+        w = ZarrWriter(
+            ZarrAcquisitionConfig(
+                output_path=os.path.join(temp_dir, "6d.zarr"),
+                shape=(2, 1, 1, 2, 8, 8),
+                dtype=np.uint16,
+                pixel_size_um=1.0,
+                is_hcs=False,
+            )
+        )
+        w.initialize()
+        img = np.zeros((8, 8), np.uint16)
+        w.write_frame(img, t=0, c=0, z=0, fov=0)
+        w.write_frame(img, t=0, c=0, z=1, fov=0)
+        w.finalize()
+        s = squid_attrs(w)
+        assert (s["acquisition_complete"], s["planes_written"], s["planes_expected"]) == (False, 2, 4)
+
+    def test_rewrite_leaves_no_temp_file(self, temp_dir):
+        w = self._writer(temp_dir)
+        w.finalize()
+        metadata_dir = os.path.dirname(w._get_metadata_zarr_json_path())
+        assert not [f for f in os.listdir(metadata_dir) if f.endswith(".tmp")]
+
+
 class TestHCSMetadata:
     """Tests for HCS plate metadata functions."""
 
@@ -1480,7 +1576,9 @@ class TestZarrWriterEmptyDataset:
         assert "attributes" in zarr_json
         attrs = zarr_json["attributes"]
         assert "_squid" in attrs
-        assert attrs["_squid"]["acquisition_complete"] is True
+        # Nothing was written: 0 of 1 planes, so the array is not complete even though finalize() ran
+        assert attrs["_squid"]["acquisition_complete"] is False
+        assert attrs["_squid"]["planes_written"] == 0
 
 
 class TestZarrWriterDtypeAutoConversion:
