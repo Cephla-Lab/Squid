@@ -812,7 +812,6 @@ class HighContentScreeningGui(QMainWindow):
 
                 if ENABLE_WELLPLATE_MULTIPOINT:
                     self.wellplateMultiPointWidget.init_z()
-                self.flexibleMultiPointWidget.init_z()
 
         # Create the menu bar
         menubar = self.menuBar()
@@ -2006,6 +2005,7 @@ class HighContentScreeningGui(QMainWindow):
                 CACHED_CONFIG_FILE_PATH,
                 parent=self,
                 on_restart=self.restart_application,
+                stage=self.stage,
             )
             dialog.signal_config_changed.connect(self._update_ram_monitor_visibility)
             dialog.signal_config_changed.connect(

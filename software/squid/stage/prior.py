@@ -19,6 +19,10 @@ class PriorStage(AbstractStage):
     # so long moves are fine; this catches a controller that stopped answering while its port stays open (each
     # unanswered poll costs the 0.1 s read timeout).
     STATUS_REPLY_TIMEOUT_S = 1.0
+    # SMS (max speed) and SAS (acceleration) take 1-1000; the controller clamps a larger value to 1000 without an
+    # error. 1000 is the most the controller allows for the fitted stage.
+    MOTION_SETTING_MIN = 1
+    MOTION_SETTING_MAX = 1000
 
     def __init__(
         self,
@@ -27,9 +31,17 @@ class PriorStage(AbstractStage):
         stage_config: StageConfig = None,
         max_speed: int = 100,
         acceleration: int = 100,
+        max_speed_limit: int = MOTION_SETTING_MAX,
+        acceleration_limit: int = MOTION_SETTING_MAX,
+        *,
+        use_encoders: Optional[bool] = None,
     ):
         """max_speed (SMS) and acceleration (SAS) are in the controller's 1-1000 scale. On the H117(1MM) stage
-        100 is 6 mm/s and 28.6 mm/s^2, 1000 is 60 mm/s and 285.5 mm/s^2 (read back with "SMS,u" / "SAS,u")."""
+        100 is 6 mm/s and 28.6 mm/s^2, 1000 is 60 mm/s and 285.5 mm/s^2 (read back with "SMS,u" / "SAS,u").
+
+        max_speed_limit / acceleration_limit are this stage's ceilings: the most it takes without losing steps (it
+        runs open loop, so a lost step goes unnoticed until the stage is homed again). A larger max_speed or
+        acceleration is lowered to the ceiling with a warning; set_max_speed() / set_acceleration() refuse it."""
         # We are not using StageConfig for Prior stage now. Waiting for further update/clarification of this part
         super().__init__(stage_config)
 
@@ -61,31 +73,53 @@ class PriorStage(AbstractStage):
         self.resolution = 0.1
         self.x_direction = 1  # 1 or -1
         self.y_direction = 1  # 1 or -1
-        self.speed = max_speed
-        self.acceleration = acceleration
+        self.max_speed_limit = PriorStage.within_controller_range(max_speed_limit)
+        self.acceleration_limit = PriorStage.within_controller_range(acceleration_limit)
+        self.speed = self._within_ceiling(max_speed, self.max_speed_limit, "max speed")
+        self.acceleration = self._within_ceiling(acceleration, self.acceleration_limit, "acceleration")
 
         self.serial_lock = threading.Lock()
         self.is_busy = False
+        # True/False switches the stage's encoders on/off at start-up; None leaves them as the controller has them
+        self.use_encoders = PriorStage.parse_use_encoders(use_encoders)
+        self.encoder_axes: Optional[int] = None
 
         self.set_baudrate(baudrate)
 
         self._pos_polling_thread: Optional[threading.Timer] = None
+        self._unreadable_pos_polls = 0  # in a row, by the polling thread
 
         self._initialize()
 
     def _pos_polling_thread_fn(self):
         last_poll = time.time()
-        self._get_pos_poll_stage()
+        self._poll_pos()
         # We launch this as a Daemon, and have a mechanism for restarting it if needed.  So, just do a while True
-        # and do not worry about exceptions.
+        # and do not worry about exceptions (an unreadable reply is not one: _poll_pos skips it).
         while True:
             time_since_last = time.time() - last_poll
             time_left = PriorStage.POS_POLLING_PERIOD - time_since_last
             if time_left > 0:
                 time.sleep(time_left)
 
-            self._get_pos_poll_stage()
+            self._poll_pos()
             last_poll = time.time()
+
+    def _poll_pos(self):
+        """One background position read. A reply that isn't a position ("" when none came within the read timeout,
+        or a stray line) is skipped, keeping the last position: the next poll reads it again. Raising on it ended
+        this thread with an "Uncaught Exception!" traceback, and the position stood still until a get_pos() call
+        restarted it."""
+        try:
+            self._get_pos_poll_stage()
+        except ValueError as e:
+            self._unreadable_pos_polls += 1
+            if self._unreadable_pos_polls == 1:  # once per run of them, not every poll while it lasts
+                self._log.warning(f"Unreadable reply to 'P' ({e}); keeping the last position and polling again")
+            return
+        if self._unreadable_pos_polls:
+            self._log.info(f"Position replies readable again after {self._unreadable_pos_polls} unreadable")
+            self._unreadable_pos_polls = 0
 
     def _ensure_pos_polling_thread(self):
         if self._pos_polling_thread and self._pos_polling_thread.is_alive():
@@ -141,6 +175,7 @@ class PriorStage(AbstractStage):
         self.joystick_enabled = True
         self.user_unit = self.stage_microsteps_per_mm * self.resolution
         self.get_stage_info()
+        self._apply_encoder_setting()  # once the controller has shown it is a ProScan with a stage
         self.set_acceleration(self.acceleration)
         self.set_max_speed(self.speed)
         self._get_pos_poll_stage()
@@ -187,13 +222,44 @@ class PriorStage(AbstractStage):
         self.stage_model = match.group(1)
         print("Stage model: ", self.stage_model)
 
+    @staticmethod
+    def within_controller_range(value) -> int:
+        return min(max(int(value), PriorStage.MOTION_SETTING_MIN), PriorStage.MOTION_SETTING_MAX)
+
+    def _within_ceiling(self, value, ceiling, name) -> int:
+        if not PriorStage.MOTION_SETTING_MIN <= value <= ceiling:
+            used = min(max(int(value), PriorStage.MOTION_SETTING_MIN), ceiling)
+            self._log.warning(f"Prior stage {name} {value} is outside 1-{ceiling} for this stage; using {used}.")
+            return used
+        return value
+
     def set_max_speed(self, speed=1000):
-        """Set the maximum speed of the stage. Range is 1 to 1000."""
-        if 1 <= speed <= 1000:
-            response = self._send_command(f"SMS {speed}")
-            print(f"Maximum speed set to {speed}. Response: {response}")
+        """Set the maximum speed of the stage. Range is 1 to the stage's max_speed_limit (at most 1000). Raises
+        SquidError when the controller doesn't report the new value back, leaving self.speed None: the controller may
+        have taken it all the same, so its speed is unknown and the next one sent isn't skipped as already there."""
+        if PriorStage.MOTION_SETTING_MIN <= speed <= self.max_speed_limit:
+            self.speed = None  # until the controller reports the new value back
+            self.speed = self._send_motion_setting("SMS", speed, "max speed")
         else:
-            raise ValueError("Speed must be between 1 and 1000")
+            raise ValueError(f"Speed must be between 1 and {self.max_speed_limit}")
+
+    def _send_motion_setting(self, command: str, value: int, name: str) -> int:
+        """Send "<command> <value>" (SMS or SAS) and return value once the controller reports it back. The reply to
+        the setting can be lost (an empty read once the serial timeout runs out) whether or not the controller took
+        it, so only the read-back says whether it did."""
+        reply = self._send_command(f"{command} {value}")
+        read_back = self._send_command(command)
+        try:
+            taken = int(read_back) == value
+        except ValueError:  # "" when the query went unanswered too
+            taken = False
+        if not taken:
+            raise SquidError(
+                f"Prior stage did not take {name} {value}: '{command} {value}' got {reply!r}, "
+                f"and '{command}' reads back {read_back!r}"
+            )
+        self._log.info(f"Prior stage {name} set to {value}.")
+        return value
 
     def get_max_speed(self):
         """Get the current maximum speed setting."""
@@ -202,13 +268,14 @@ class PriorStage(AbstractStage):
         return int(response)
 
     def set_acceleration(self, acceleration=1000):
-        """Set the acceleration of the stage. Range is 1 to 1000."""
-        if 1 <= acceleration <= 1000:
-            response = self._send_command(f"SAS {acceleration}")
-            self.acceleration = acceleration
-            print(f"Acceleration set to {acceleration}. Response: {response}")
+        """Set the acceleration of the stage. Range is 1 to the stage's acceleration_limit (at most 1000). Raises
+        SquidError when the controller doesn't report the new value back, leaving self.acceleration None (unknown), as
+        set_max_speed does."""
+        if PriorStage.MOTION_SETTING_MIN <= acceleration <= self.acceleration_limit:
+            self.acceleration = None  # until the controller reports the new value back
+            self.acceleration = self._send_motion_setting("SAS", acceleration, "acceleration")
         else:
-            raise ValueError("Acceleration must be between 1 and 1000")
+            raise ValueError(f"Acceleration must be between 1 and {self.acceleration_limit}")
 
     def enable_joystick(self):
         self._send_command("J")
@@ -218,11 +285,85 @@ class PriorStage(AbstractStage):
         self._send_command("H")
         self.joystick_enabled = False
 
+    def get_encoder_axes(self) -> Optional[int]:
+        """The axes moving under encoder control, as the controller's bit mask (X=1, Y=2, Z=4; 0 = none). None if
+        the controller doesn't say."""
+        try:
+            return int(self._send_command("ENCODER"))
+        except Exception as e:
+            self._log.debug(f"Prior stage gave no usable reply to 'ENCODER': {e}")
+            return None
+
+    @staticmethod
+    def parse_use_encoders(value) -> Optional[bool]:
+        """The prior_stage_use_encoders setting as True, False or None. The .ini loader passes text such as 'off' or
+        'none' through as a non-empty (truthy) string, which would switch the encoders the wrong way; anything that is
+        not clearly one of the three is refused."""
+        if value is None or isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ("", "none", "null"):
+            return None
+        if text in ("true", "on", "yes", "1"):
+            return True
+        if text in ("false", "off", "no", "0"):
+            return False
+        raise ValueError(f"prior_stage_use_encoders must be True, False or None (leave as is), not {value!r}")
+
+    def _apply_encoder_setting(self):
+        """Switch the X/Y encoders on or off as configured; with use_encoders None nothing is sent at all.
+
+        A ProScan enables the encoders it detects at power-up, which makes every move closed loop. On an H117 that
+        made 0.2 mm moves ~3x slower (0.55 s vs 0.17 s), and a stall still ended a move short (9 mm) rather than being
+        recovered. SENCODER, unlike ENCODER, makes the step and encoder counts equal when switching, so the position
+        doesn't jump. With the encoders off they still count: "P,e" reads where the stage really is. The controller
+        keeps the switched state until it is power-cycled.
+
+        X and Y are switched one at a time ("SENCODER,X,b"): the plain "SENCODER,b" switches every encoder, including
+        an encoded focus drive's on the same controller. The result is read back (ENCODER reports the axes under
+        encoder control, X=1, Y=2, Z=4) and must have both X and Y as asked; one axis on and one off is reported."""
+        if self.use_encoders is None:
+            return
+        wanted = "on" if self.use_encoders else "off"
+        for axis in ("X", "Y"):
+            try:
+                reply = self._send_command(f"SENCODER,{axis},{1 if self.use_encoders else 0}")
+            except Exception as e:
+                reply = str(e)
+            if reply != "0":
+                self._log.warning(f"Prior stage: switching the {axis} encoder {wanted} was answered {reply!r}")
+        self.encoder_axes = self.get_encoder_axes()
+        if self.encoder_axes is None:
+            self._log.warning(f"Prior stage: could not read back the encoders after switching them {wanted}")
+            return
+        x_on, y_on = bool(self.encoder_axes & 1), bool(self.encoder_axes & 2)
+        if x_on == y_on == self.use_encoders:
+            self._log.info(f"Prior stage encoders: {'X+Y (closed loop)' if self.use_encoders else 'off (open loop)'}")
+        else:
+            state = f"X {'on' if x_on else 'off'}, Y {'on' if y_on else 'off'}"
+            self._log.warning(f"Prior stage encoders: asked for X and Y {wanted}, but they read back {state}")
+
     def get_acceleration(self):
         """Get the current acceleration setting."""
         response = self._send_command("SAS")
         print(f"Current acceleration: {response}")
         return int(response)
+
+    def get_max_speed_mm_s(self) -> Optional[float]:
+        """The current max speed in mm/s, as the controller reports it for the fitted stage. None if it can't say."""
+        return self._query_in_physical_units("SMS,u")
+
+    def get_acceleration_mm_s2(self) -> Optional[float]:
+        """The current acceleration in mm/s^2, as the controller reports it for the fitted stage. None if it can't say."""
+        return self._query_in_physical_units("SAS,u")
+
+    def _query_in_physical_units(self, command: str) -> Optional[float]:
+        # "SMS,u" / "SAS,u" reply in um/s and um/s^2 (e.g. "6000.00" for SMS 100 on an H117(1MM)).
+        try:
+            return float(self._send_command(command)) / 1000
+        except Exception as e:
+            self._log.debug(f"Prior stage gave no usable reply to {command!r}: {e}")
+            return None
 
     def _mm_to_steps(self, mm: float):
         return int(mm * self.user_unit)

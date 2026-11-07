@@ -62,7 +62,8 @@ python3 -m pip install --upgrade pip
 # install libraries
 pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy<2" tifffile scipy pyreadline3
 pip3 install opencv-python-headless opencv-contrib-python-headless
-pip3 install napari==0.5.4 scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv
+# mcp<2: mcp 2.0 dropped the decorator API that the MCP bridge (mcp_microscope_server.py) is written against
+pip3 install napari==0.5.4 scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil "mcp<2" ndv
 
 # Optional: PI V-308 / C-414 focus stage (USE_PI_FOCUS_STAGE). Safe to skip if unused;
 # squid.stage.pi imports it lazily and only needs it to connect to real hardware, so

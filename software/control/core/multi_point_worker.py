@@ -113,6 +113,9 @@ class MultiPointWorker:
         self._acquisition_error_count = 0
         self._laser_af_successes = 0
         self._laser_af_failures = 0
+        # Laser AF re-runs before later channels' stacks (Z First "AF per stack"), counted apart from the per-FOV AF.
+        self._laser_af_per_stack_successes = 0
+        self._laser_af_per_stack_failures = 0
         self._current_z_offset_um: float = 0.0
         self.microscope: Microscope = scope
         self.camera: AbstractCamera = scope.camera
@@ -186,7 +189,10 @@ class MultiPointWorker:
         self.scan_region_names = acquisition_parameters.scan_position_information.scan_region_names
         self.z_stacking_config = acquisition_parameters.z_stacking_config  # default 'from bottom'
         self.z_stack_order = acquisition_parameters.z_stack_order  # 'CHANNEL FIRST' or 'Z FIRST'
+        # Z First only: laser AF before each later channel's stack (the first channel keeps the per-FOV AF).
+        self.laser_af_per_stack = acquisition_parameters.laser_af_per_stack
         self.z_range = acquisition_parameters.z_range
+        self.piezo_z_range_um = acquisition_parameters.piezo_z_range_um
 
         self.crop = SEGMENTATION_CROP
 
@@ -750,6 +756,8 @@ class MultiPointWorker:
             self._timepoint_fov_count = 0
             self._laser_af_successes = 0
             self._laser_af_failures = 0
+            self._laser_af_per_stack_successes = 0
+            self._laser_af_per_stack_failures = 0
             self.microcontroller.enable_joystick(False)
 
             self._log.debug("multipoint acquisition - time point " + str(self.time_point + 1))
@@ -789,6 +797,8 @@ class MultiPointWorker:
                         laser_af_successes=self._laser_af_successes,
                         laser_af_failures=self._laser_af_failures,
                         laser_af_failure_reasons=[],
+                        laser_af_per_stack_successes=self._laser_af_per_stack_successes,
+                        laser_af_per_stack_failures=self._laser_af_per_stack_failures,
                     )
                     # Use callback to allow main thread to capture screenshot before sending
                     self.callbacks.signal_slack_timepoint_notification(stats)
@@ -812,6 +822,12 @@ class MultiPointWorker:
             self.move_to_z_level(self.z_range[1])
         else:
             self.move_to_z_level(self.z_range[0])
+
+        # A piezo range is swept by the piezo from its first plane; each FOV's stack returns it there.
+        if self.piezo_z_range_um is not None:
+            piezo_min_um, piezo_max_um = self.piezo_z_range_um
+            self.piezo.move_to(piezo_max_um if self.z_stacking_config == "FROM TOP" else piezo_min_um)
+            self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
         self.z_pos = self.stage.get_pos().z_mm  # zpos at the beginning of the scan
 
@@ -1195,6 +1211,10 @@ class MultiPointWorker:
                 if config_idx > 0:
                     self._move_z_to_stack_start(stack_start)
                     z_steps_taken = 0
+                    if self.laser_af_per_stack and self.do_reflection_af:
+                        if self.abort_requested_fn():
+                            break
+                        af_succeeded = self._re_anchor_before_stack(config, region_id, fov, af_succeeded)
                 self._apply_channel_z_offset(config, af_succeeded)
                 # Where this channel's stack starts (piezo um or stage mm), offset included.
                 stack_start = self.z_piezo_um if self.use_piezo else self.stage.get_pos().z_mm
@@ -1313,49 +1333,116 @@ class MultiPointWorker:
                     self.autofocusController.wait_till_autofocus_has_completed()
         else:
             self._log.info("laser reflection af")
-            # move_to_target reports soft failures (no reference, NaN displacement,
-            # displacement out of range, cross-correlation mismatch) via its return
-            # value, NOT by raising — both paths must mark the FOV's AF as failed or
-            # the per-channel z-offset gate would apply offsets from an unanchored z.
-            try:
-                target_um = self.region_laser_af_offsets.get(region_id, 0.0)
-                # Anchor closed-loop at the reference (displacement 0), where spot-alignment
-                # verification is valid, then apply the per-region offset as an OPEN-LOOP
-                # relative move. Driving move_to_target() straight to a nonzero displacement
-                # would always fail verification (its crop is fixed at x_reference) and revert.
-                af_succeeded = self.laser_auto_focus_controller.move_to_target(0.0)
-                if af_succeeded and target_um:
-                    self._log.info(f"applying per-region laser AF offset for region '{region_id}': {target_um:+.2f} µm")
-                    self.laser_auto_focus_controller.apply_relative_offset_um(target_um)
-            except Exception as e:
-                file_ID = f"{region_id}_focus_camera.bmp"
-                saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
-                iio.imwrite(saving_path, self.laser_auto_focus_controller.image)
-                self._log.error(
-                    "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
-                    exc_info=e,
-                )
-                af_succeeded = False
-            if not af_succeeded:
+            if not self._laser_af_anchor(region_id, fov, restore_on_failure=False):
                 self._laser_af_failures += 1
                 return False
             self._laser_af_successes += 1
         return True
 
+    def _laser_af_anchor(self, region_id, fov, *, restore_on_failure: bool, channel_name=None) -> bool:
+        """Closed-loop laser AF to the reference plane, then the region's open-loop offset. True on success.
+
+        move_to_target reports soft failures (no reference, NaN displacement, displacement out of range,
+        cross-correlation mismatch) via its return value, NOT by raising; a correction past the piezo's
+        travel raises from piezo.move_to. Either way the caller must treat the FOV as unanchored, or the
+        per-channel z-offset gate would apply offsets from an unanchored z.
+
+        Z is not reliably unchanged on failure: move_to_target can succeed and leave Z at the reference
+        plane before the region offset raises. With restore_on_failure (the per-stack re-AF) the absolute
+        pre-AF Z is restored (an exception from that restore propagates: run() treats it as fatal) and the
+        piezo cache is re-read on every outcome, since the laser AF controller moves the piezo directly
+        (its _move_z). The per-FOV caller re-reads the cache itself in acquire_at_position.
+        """
+        if restore_on_failure:
+            # The controller moves the piezo whenever the scope has one (its _move_z), whichever actuator runs
+            # the stack; so the restore must follow the controller, not use_piezo.
+            af_moves_piezo = getattr(self.laser_auto_focus_controller, "piezo", None) is not None
+            pre_af = self.piezo.position if af_moves_piezo else self.stage.get_pos().z_mm
+        try:
+            target_um = self.region_laser_af_offsets.get(region_id, 0.0)
+            # Anchor closed-loop at the reference (displacement 0), where spot-alignment
+            # verification is valid, then apply the per-region offset as an OPEN-LOOP
+            # relative move. Driving move_to_target() straight to a nonzero displacement
+            # would always fail verification (its crop is fixed at x_reference) and revert.
+            af_succeeded = self.laser_auto_focus_controller.move_to_target(0.0)
+            if af_succeeded and target_um:
+                self._log.info(f"applying per-region laser AF offset for region '{region_id}': {target_um:+.2f} µm")
+                self.laser_auto_focus_controller.apply_relative_offset_um(target_um)
+        except Exception as e:
+            self._log.error(
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+                exc_info=e,
+            )
+            self._save_laser_af_diagnostic(region_id, fov, channel_name)  # best effort: never blocks the restore
+            af_succeeded = False
+        if restore_on_failure:
+            if not af_succeeded:
+                if af_moves_piezo:
+                    self.piezo.move_to(pre_af)
+                    if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                        self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+                else:
+                    self.stage.move_z_to(pre_af)
+                # Settle as prepare_z_stack does, in both trigger modes: after a partial AF move and its
+                # rollback the next exposure must not start before the actuator has settled.
+                self._sleep(squid.stage.utils.z_stabilization_time_s())
+            if self.use_piezo:
+                self.z_piezo_um = self.piezo.position
+        return af_succeeded
+
+    def _save_laser_af_diagnostic(self, region_id, fov, channel_name=None) -> None:
+        """Best effort: save the focus-camera image of a failed laser AF next to the time point's images.
+
+        Named per region and FOV, plus the channel for a per-stack re-AF, so one failure never overwrites another.
+        """
+        try:
+            file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}"
+            if channel_name:
+                file_ID += "_" + channel_name.replace(" ", "_")
+            file_ID += "_focus_camera.bmp"
+            saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
+            iio.imwrite(saving_path, self.laser_auto_focus_controller.image)
+        except Exception as e:
+            self._log.warning(f"Could not save the laser AF focus-camera image for region '{region_id}': {e}")
+
+    def _re_anchor_before_stack(self, config, region_id, fov, af_succeeded: bool) -> bool:
+        """Z First "AF per stack": laser AF before this later channel's stack, at the stack start (the
+        bottom for From Center: on an inverted microscope the reflection comes off the coverslip there).
+
+        Returns the af_succeeded to use for this channel: True after a successful re-AF (a verified anchor,
+        even if the FOV's per-FOV AF had failed), else the FOV's current value (the previous anchor stands and
+        the channel offset is still applied from it).
+        """
+        if self._laser_af_anchor(region_id, fov, restore_on_failure=True, channel_name=config.name):
+            # The AF consumed the previous channel's offset: Z is at the anchored plane again.
+            self._current_z_offset_um = 0.0
+            self._laser_af_per_stack_successes += 1
+            self._log.info(f"laser AF before '{config.name}' stack: anchored")
+            # Exactly as per FOV: From Center moves down half a stack, and the stack settles before its first frame.
+            self.prepare_z_stack()
+            return True
+        self._laser_af_per_stack_failures += 1
+        self._log.error(f"laser AF before '{config.name}' stack failed; keeping the previous anchor")
+        return af_succeeded
+
     def prepare_z_stack(self):
         # move to bottom of the z stack
         if self.z_stacking_config == "FROM CENTER":
-            if self.use_piezo:
-                # The piezo takes the whole stack (centring included): on a piezo-only Z the stage
-                # has no z to move, and on a stage + piezo system a stage move here was never undone.
-                self.z_piezo_um -= self.deltaZ * 1000 * _z_steps_below_center(self.NZ)
-                self.piezo.move_to(self.z_piezo_um)
-                if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-                    self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-            else:
-                self.stage.move_z(-self.deltaZ * _z_steps_below_center(self.NZ))
-                self._sleep(squid.stage.utils.z_stabilization_time_s())
+            self._move_down_half_stack()
         self._sleep(squid.stage.utils.z_stabilization_time_s())
+
+    def _move_down_half_stack(self):
+        """From Center: from the anchored plane down to the stack bottom, with the stack's own mover."""
+        if self.use_piezo:
+            # The piezo takes the whole stack (centring included): on a piezo-only Z the stage
+            # has no z to move, and on a stage + piezo system a stage move here was never undone.
+            self.z_piezo_um -= self.deltaZ * 1000 * _z_steps_below_center(self.NZ)
+            self.piezo.move_to(self.z_piezo_um)
+            if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+        else:
+            self.stage.move_z(-self.deltaZ * _z_steps_below_center(self.NZ))
+            self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def _move_z_for_offset(self, delta_um: float) -> float:
         """Dispatch a relative z move via piezo when use_piezo, otherwise via stage.
