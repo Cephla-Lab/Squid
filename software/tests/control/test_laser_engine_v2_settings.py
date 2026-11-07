@@ -12,6 +12,7 @@ from control.laser_engine_v2_settings import (
     load_settings,
     save_idle_off_560_min,
     save_power_560_mw,
+    save_shutter_mode_560,
 )
 
 
@@ -104,3 +105,21 @@ def test_a_number_too_large_for_a_float_falls_back_to_its_default(cache):
     cache.parent.mkdir(parents=True)
     cache.write_text(f"power_560_mw: {10 ** 400}\nidle_off_560_min: 45\n")
     assert load_settings() == LaserEngineV2Settings(power_560_mw=None, idle_off_560_min=45.0)
+
+
+def test_shutter_mode_defaults_to_on_use_and_round_trips(cache):
+    assert load_settings().shutter_mode_560 == "on_use"
+    assert save_power_560_mw(600) and save_shutter_mode_560("always_open")
+    assert yaml.safe_load(cache.read_text()) == {"power_560_mw": 600.0, "shutter_mode_560": "always_open"}
+    assert load_settings().shutter_mode_560 == "always_open"
+    assert options_from_cache().shutter_mode == "always_open"
+
+
+@pytest.mark.parametrize("bad", ["per_pulse", "On use", 1, True, None])
+def test_a_bad_shutter_mode_is_not_saved_and_not_loaded(cache, bad):
+    assert save_shutter_mode_560(bad) is False
+    assert not cache.exists()
+    if bad is not None:  # null in the file is "not set"
+        cache.parent.mkdir(parents=True)
+        cache.write_text(yaml.safe_dump({"shutter_mode_560": bad}))
+    assert load_settings().shutter_mode_560 == "on_use"

@@ -26,7 +26,7 @@ from qtpy.QtCore import QObject, Signal
 
 import squid.logging
 from control._def import source_code_to_port_index
-from control.laser_engine_v2_settings import load_settings
+from control.laser_engine_v2_settings import SHUTTER_ALWAYS_OPEN, SHUTTER_MODES, SHUTTER_ON_USE, load_settings
 from control.laser_engine_v2_link import EngineCommandError, EngineLink, EngineLinkError
 from control.laser_engine_v2_status import (
     EngineV2Status,
@@ -40,7 +40,7 @@ from control.laser_engine_v2_status import (
     SourceStatus,
 )
 from control.lighting import _DEFAULT_CHANNEL_MAPPINGS_TTL, IntensityControlMode, ShutterControlMode
-from squid.abc import LightSource
+from squid.abc import LightSource, LightSourceHold, MechanicalShutter
 
 IDN_PREFIX = "Cephla,LaserEngineCarrier-rev1,"
 
@@ -58,15 +58,28 @@ class EngineOptions:
 
     source_idle_off_min: float = 30.0  # DF 560 source off after this long without use; 0 = 24 h (there is no "never")
     source_power_mw: Optional[float] = None  # DF: 560 laser power (mW) set by the operator; None = the source's minimum
+    shutter_mode: str = SHUTTER_ON_USE  # DF: the 560 mechanical shutter, on_use or always_open
 
     def __post_init__(self):
         if self.source_idle_off_min < 0:
             raise ValueError("source_idle_off_min must be >= 0 (0 = 24 h)")
+        if self.shutter_mode not in SHUTTER_MODES:
+            raise ValueError(f"shutter_mode = {self.shutter_mode!r}: one of {', '.join(SHUTTER_MODES)}")
         mw = self.source_power_mw
         if mw is not None:
             if isinstance(mw, bool) or not isinstance(mw, (int, float)) or not math.isfinite(mw):
                 raise ValueError(f"source_power_mw = {mw!r}: a number of mW, or None for the source's minimum")
             object.__setattr__(self, "source_power_mw", float(mw))
+
+
+@dataclass(frozen=True)
+class ShutterControl:
+    """The Laser Engine tab's shutter button: what it can do now (LaserEngineV2.shutter_control)."""
+
+    manual_open: bool  # opened by hand, until Close, a use of the 560, or line 3 not READY
+    users: Tuple[str, ...]  # what uses the 560 now (holds on line 3): they control the shutter
+    can_open: bool
+    reason: str  # why it cannot be opened by hand now; "" when it can
 
 
 def _uptime_text(ms: float) -> str:
@@ -119,6 +132,7 @@ class LaserEngineV2(QObject):
     SOURCE_SETTLE_TOL_MW = 2.0  # READY needs the measured power within max(this, SOURCE_SETTLE_TOL_FRAC x request)
     SOURCE_SETTLE_TOL_FRAC = 0.05
     POLL_JOIN_TIMEOUT_S = 4.0  # close(): one STAT? can take the link's 3 s read timeout (EngineLink.open), + 1 s
+    SHUTTER_OPEN_TIME_S = 0.001  # DF: the 560 mechanical shutter, from SHUT:OPEN 1 until fully open
     simulated = False  # build_simulated_engine sets it: the Laser Engine tab then saves nothing to the cache
 
     def __init__(
@@ -184,10 +198,19 @@ class LaserEngineV2(QObject):
         # a poll whose snapshot is older than the latest one never opens the shutter or switches the source off.
         self._shutter_lock = threading.RLock()
         self._shutter_gen = 0
-        # Squid's live view: wavelengths it is illuminating with right now (polled every heartbeat; live has no
-        # per-frame call into the engine, so without this a long live session would idle the 560 source off).
-        self.in_use_provider: Optional[Callable[[], Iterable[int]]] = None
-        self._in_use_provider_failed = False
+        # The holds (use()): what Squid images with now. A hold on line 3 keeps the 560 from idling off and, in On use,
+        # holds the shutter open. Changed under _shutter_lock, which an open re-checks it under: a release cannot race
+        # an open in flight.
+        self._holds: set = set()
+        self.shutter_mode = self.options.shutter_mode  # the tab changes it
+        self._shutter_opened_at: Optional[float] = None  # time.monotonic() of the open; None = closed
+        # Accepted opens, counted under _shutter_lock: a close decided on a snapshot taken before the latest open is
+        # obsolete (that open was decided on fresher facts), as a restart makes an older open obsolete (_shutter_gen).
+        self._shutter_opens = 0
+        self._shutter_present = False  # the engine reports a mechanical shutter (STAT? shutter.present, read at open)
+        # The tab's Open shutter (On use, nothing using the 560): until Close, a use of the 560 (it takes over), a mode
+        # change or line 3 not READY; it never reopens by itself. Not a use: the idle-off still applies.
+        self._manual_open = False
         self._source_disable_pending = False  # a disable is queued and not yet executed (no duplicates)
 
     # ---- lifecycle -------------------------------------------------------------------------------------------------
@@ -212,7 +235,9 @@ class LaserEngineV2(QObject):
             self.variant = link.query("VAR?")
             link.command(f"HOST:TIMEOUT {self.HOST_TIMEOUT_S}")
             self._configure_lines()
-            self._reset_at_connect(link.status())
+            raw = link.status()
+            self._shutter_present = bool((raw.get("shutter") or {}).get("present"))
+            self._reset_at_connect(raw)
         except Exception:
             self._link = None  # a later open() starts again instead of returning early on a half-configured link
             link.close()
@@ -252,7 +277,7 @@ class LaserEngineV2(QObject):
                 self._wait_for_expanders(time.monotonic() + self.EXPANDER_INIT_WAIT_S)
                 self.variant = self._link.query("VAR?")
                 if self.variant == "DF":
-                    # the shutter is safety only: held open while the 560 is in use, never per exposure
+                    # the shutter is Squid's to drive (Always open / On use), never per exposure
                     self._link.command("SHUT:SRC MCU")
                 return
             except EngineCommandError as e:
@@ -343,6 +368,7 @@ class LaserEngineV2(QObject):
         if self._lost or link is None:
             return None
         gen = self._shutter_gen  # before the snapshot: a restart or switch-off after this point makes it obsolete
+        opens = self._shutter_opens  # likewise: an open after this point makes a close decided on it obsolete
         try:
             raw = link.status()
         except EngineLinkError as e:
@@ -353,8 +379,14 @@ class LaserEngineV2(QObject):
             self._log.warning(f"laser engine event: {event}")  # e.g. HOST_LOST / ARM_DROPPED, which are not faults
         self._last_event = event
         t = self._keep_raw(raw)
+        if not (raw.get("shutter") or {}).get("open"):
+            self._shutter_opened_at = None  # closed (also by the firmware: line 3 off, disarm, the cover)
+        elif self._shutter_opened_at is None:
+            self._shutter_opened_at = (
+                time.monotonic()
+            )  # open since a moment not known here: count its open time from now
         status = parse_status(raw, source=self._source_status, has_source=self._source is not None, timestamp_s=t)
-        self._after_poll(status, gen)  # the 560 source decisions (and the held-open shutter)
+        self._after_poll(status, gen, opens)  # the 560 source decisions (and the held-open shutter)
         self._bringup_step(status)  # the startup bring-up, one non-blocking step per poll
         self.status_updated.emit(status)
         return status
@@ -418,14 +450,126 @@ class LaserEngineV2(QObject):
             n = self.line_for_wavelength(w)
             if n is not None and f"L{n}" not in keys:
                 keys.append(f"L{n}")
-        self.note_use(keys)  # Squid asks at acquisition start and live start
         return keys
 
-    def note_use(self, channel_keys: Iterable[str]) -> None:
-        """The lines are being used (Squid's acquisition calls this for every FOV). On DF, L3 in use keeps the 560 source from
-        idling off. The L3 emission tap / hour meter cannot tell: on DF they include TOK3, which reads low."""
-        if self.variant == "DF" and "L3" in channel_keys:
+    # ---- declared use (LightSource.use): wake on use, the 560 idle-off, the 560 mechanical shutter ----------------------
+    def use(self, name: str, channels: Iterable[Optional["EngineLine"]]) -> "EngineHold":
+        """`name` ("live", "acquisition", ...) images with these lines until the hold is released. Each line it takes is
+        woken (re-armed, enabled, the 560 restarted after an idle-off). A held line 3 keeps the 560 from idling off, and
+        in On use the shutter is open only while line 3 is held and READY. Never raises."""
+        hold = EngineHold(self, name)
+        hold.update(channels)
+        return hold
+
+    def _set_hold(self, hold: "EngineHold", lines: frozenset) -> None:
+        with self._shutter_lock:
+            old = hold.lines
+            if lines == old:
+                return
+            hold.lines = lines
+            if lines:
+                self._holds.add(hold)
+            else:
+                self._holds.discard(hold)
+            if SOURCE_560_LINE in lines - old:
+                self._manual_open = False  # a use of the 560 takes the shutter over from the operator
+        if SOURCE_560_LINE in old ^ lines:
+            self._touch_source()  # the idle-off counts from the last use: taking or letting go of line 3
+        for n in sorted(lines - old):
+            self.wake_up(f"L{n}")  # polls first: that poll already sees this hold, so the shutter opens if L3 is READY
+        if SOURCE_560_LINE in old - lines and self._source is not None:
+            self.poll_once()  # the shutter closes at once
+        if SOURCE_560_LINE in lines - old:
+            self._wait_shutter_settled()
+
+    def _line3_held(self) -> bool:
+        with self._shutter_lock:
+            return any(SOURCE_560_LINE in h.lines for h in self._holds)
+
+    def _shutter_wanted(self) -> bool:
+        """DF: the shutter is to be open whenever line 3 is READY (Always open), or while line 3 is held or opened by hand
+        (On use)."""
+        return self.shutter_mode == SHUTTER_ALWAYS_OPEN or self._line3_held() or self._manual_open
+
+    def _wait_shutter_settled(self) -> None:
+        """When the shutter is open, return only once it has been open for its open time, so the first exposure is not
+        cut short. When it is not open (line 3 not READY yet), return at once: the readiness checks wait for it."""
+        opened = self._shutter_opened_at
+        if opened is not None:
+            remaining = opened + self.SHUTTER_OPEN_TIME_S - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
+
+    def _shutter_settled_for(self, channel_keys: Iterable[str]) -> bool:
+        """False while these lines need the 560 shutter open and it has not been open for its open time."""
+        if self._source is None or self.variant != "DF" or f"L{SOURCE_560_LINE}" not in channel_keys:
+            return True
+        if not self._shutter_wanted():
+            return True  # nothing would open it: no hold on line 3 (a caller that checks without holding)
+        opened = self._shutter_opened_at
+        return opened is not None and time.monotonic() >= opened + self.SHUTTER_OPEN_TIME_S
+
+    def is_ready_to_image(self, channel_keys: List[str]) -> bool:
+        """The last STAT? has these lines READY and, for the 560, the shutter open and settled."""
+        status = self.get_latest_status()
+        return status is not None and status.is_ready_for(channel_keys) and self._shutter_settled_for(channel_keys)
+
+    def set_shutter_mode(self, mode: str) -> None:
+        """The Laser Engine tab's 560 shutter mode (the tab also saves it): on_use or always_open. Applies at once."""
+        if mode not in SHUTTER_MODES:
+            raise ValueError(f"shutter mode {mode!r}: one of {', '.join(SHUTTER_MODES)}")
+        with self._shutter_lock:
+            self.shutter_mode = mode
+            self._manual_open = False
+        self.poll_once()
+
+    def shutter_control(self) -> ShutterControl:
+        """What the tab's shutter button can do now: open by hand only in On use, armed, line 3 READY and nothing using
+        the 560."""
+        with self._shutter_lock:
+            return self._shutter_control_locked()
+
+    def _shutter_control_locked(self) -> ShutterControl:
+        users = tuple(sorted({h.name for h in self._holds if SOURCE_560_LINE in h.lines}))
+        manual = self._manual_open
+        status = self.get_latest_status()
+        l3 = status.channels.get("L3") if status is not None else None
+        if self.mechanical_shutter is None or self._source is None:
+            reason = "no 560 shutter"
+        elif self.shutter_mode == SHUTTER_ALWAYS_OPEN:
+            reason = "Always open: it opens whenever the 560 is ready"
+        elif users:
+            reason = f"in use ({', '.join(users)})"
+        elif status is None or not status.armed:
+            reason = "the engine is not armed"
+        elif l3 is None or l3.state != LineState.READY:
+            reason = "the 560 is not ready"
+        else:
+            reason = ""
+        return ShutterControl(manual_open=manual, users=users, can_open=not reason, reason=reason)
+
+    def set_manual_shutter(self, open_: bool) -> None:
+        """The tab's shutter button: open the shutter by hand (only when shutter_control() allows it) or close it. Pressing
+        Open counts as one use of the 560; the idle-off still applies."""
+        if open_:
+            # checked and set under the lock a use registers under: a use starting meanwhile takes over after this
+            with self._shutter_lock:
+                control = self._shutter_control_locked()
+                if not control.can_open:
+                    raise LaserEngineV2Error("L3", f"shutter not opened: {control.reason}")
+                self._manual_open = True
             self._touch_source()
+        else:
+            with self._shutter_lock:
+                self._manual_open = False
+        self.poll_once()  # opens / closes at once
+
+    @property
+    def mechanical_shutter(self) -> Optional[MechanicalShutter]:
+        """DF: the 560's shutter (line 3), when the engine reports one (STAT? shutter.present)."""
+        if self.variant == "DF" and self._shutter_present:
+            return MechanicalShutter(open_time_s=self.SHUTTER_OPEN_TIME_S)
+        return None
 
     @staticmethod
     def _line_of(channel_key: str) -> int:
@@ -641,7 +785,11 @@ class LaserEngineV2(QObject):
             if status is None:
                 return False
             if status.is_ready_for(channel_keys):
-                return True
+                if self._shutter_settled_for(channel_keys):
+                    return True
+                self._wait_shutter_settled()  # this poll has just opened it: wait out its open time
+                if self._shutter_settled_for(channel_keys):
+                    return True
             for key in channel_keys:
                 if key not in status.channels:
                     raise LaserEngineV2Error(key, "no such line")
@@ -687,6 +835,7 @@ class LaserEngineV2(QObject):
             try:
                 # always sent: the cached STAT? may be older than an open, and closing twice is harmless
                 self._cmd("SHUT:OPEN 0")
+                self._shutter_opened_at = None
             except Exception as e:
                 with self._source_lock:
                     self._source_enable_pending = False
@@ -801,8 +950,8 @@ class LaserEngineV2(QObject):
         thread stops then; this thread keeps stepping). It acts on the source's own reading, not on the judged
         status. A source that still reads on right after a disable gets a second, redundant disable at the next step;
         that is harmless. The step whose reading makes the source READY runs an engine poll at once: the shutter is
-        not part of L3's readiness, so it opens now rather than at the next poll, which a caller seeing READY in
-        between would image behind."""
+        not part of L3's readiness, so for a user waiting on line 3 it opens now rather than at the next poll, which a
+        caller seeing READY in between would image behind."""
         src = self._source
         if src is None:
             return
@@ -909,7 +1058,7 @@ class LaserEngineV2(QObject):
                 self._log.exception("560 nm source shutdown")
         self._source = None
 
-    def _after_poll(self, status: EngineV2Status, gen: Optional[int] = None) -> None:
+    def _after_poll(self, status: EngineV2Status, gen: Optional[int] = None, opens: Optional[int] = None) -> None:
         """Poll thread: decide only. Queue source requests (never talk to the source here); short engine commands for the shutter.
         Retrying a disable that did not take is source_step's job (it keeps running after the engine link is lost);
         the shutter needs the engine link, so it is handled here. Sleep (LINE3:EN 0) and DISARM close the shutter in
@@ -918,14 +1067,16 @@ class LaserEngineV2(QObject):
             return
         raw = self._latest_raw or {}
         if not self._source_want_on:
+            self._manual_open = False
             self._set_held_shutter(False, raw)  # closed while the source is off; retried every poll while unwanted
             return
-        self._note_provider_use()
         l3 = status.channels.get("L3")
         st = self._source_status
         source_starting = st is not None and st.starting and not st.ready
+        held = self._line3_held()
+        want_open = self._shutter_wanted()  # re-checked under _shutter_lock before an open
         last_use = self._source_last_use
-        idle = time.monotonic() - last_use > self.source_idle_off_s
+        idle = not held and time.monotonic() - last_use > self.source_idle_off_s
         current = gen is None or gen == self._shutter_gen  # no restart / switch-off since this snapshot
         not_armed = not status.armed and not self._source_enable_pending  # not a STAT? from before this thread's ARM
         error = l3 is not None and l3.state in ERROR_STATES
@@ -937,16 +1088,21 @@ class LaserEngineV2(QObject):
                 return
             if idle:
                 self._log.info(f"560 nm source idle for {self.source_idle_off_s / 60:.0f} min: switching it off")
+            self._manual_open = False
             self._set_held_shutter(False, raw)
         elif not_armed or error:
             return  # an obsolete fault / not-armed snapshot: the next poll decides on a fresh one
-        elif l3 is not None and l3.state == LineState.READY:
+        elif l3 is not None and l3.state == LineState.READY and want_open:
             self._open_held_shutter(self._shutter_gen if gen is None else gen)
-        elif l3 is None or l3.state != LineState.STARTING or source_starting:
+        elif l3 is None or l3.state not in (LineState.READY, LineState.STARTING) or source_starting:
             # Open only at READY: NEEDS KEY, the source off or starting (also by itself, between two polls), line 3 off
-            # or paused close it until READY again. The source stays wanted (the next use restarts it behind the closed
-            # shutter). A line-3 ramp with the source ready leaves the shutter as it is: every AOM LINE3:SET ramps.
-            self._set_held_shutter(False, raw)
+            # or paused close it, in every mode, and end an open by hand (it never reopens by itself). The source stays
+            # wanted (the next use restarts it behind the closed shutter).
+            self._close_held_shutter(raw, opens, unwanted=False)
+        elif not want_open:
+            # READY, or a line-3 ramp with the source ready (every AOM LINE3:SET ramps), and in On use nothing holds line
+            # 3 or opened it by hand: closed. A ramp while it is wanted open leaves the shutter as it is.
+            self._close_held_shutter(raw, opens, unwanted=True)
 
     def _open_held_shutter(self, gen: int) -> None:
         """Line 3 read READY: open the shutter, but only on facts that are still true when the command goes out. The
@@ -956,6 +1112,7 @@ class LaserEngineV2(QObject):
             st = self._source_status
             if (
                 gen != self._shutter_gen  # a restart or switch-off since the snapshot: the next poll decides
+                or not self._shutter_wanted()  # On use: line 3 let go since the poll
                 or not self._source_want_on
                 or self._source_enable_pending
                 or _source_state(st)[0] != LineState.READY  # the same READY test that L3's state uses
@@ -963,25 +1120,26 @@ class LaserEngineV2(QObject):
                 return
             self._set_held_shutter(True, self._latest_raw or {})
 
-    def _note_provider_use(self) -> None:
-        """Count what in_use_provider reports (Squid's live view) as use of those lines."""
-        provider = self.in_use_provider
-        if provider is None:
-            return
-        try:
-            wavelengths = list(provider())
-        except Exception as e:
-            if not self._in_use_provider_failed:  # once: a broken provider must not flood the log every second
-                self._in_use_provider_failed = True
-                self._log.warning(f"live-view use not counted (the 560 source may idle off during live): {e}")
-            return
-        self._in_use_provider_failed = False
-        self.channel_keys_for_wavelengths(wavelengths)  # notes their use
+    def _close_held_shutter(self, raw: dict, opens: Optional[int], unwanted: bool) -> None:
+        """Close the shutter, but only on facts that are still true when the command goes out (as _open_held_shutter):
+        a close decided on a snapshot older than the latest open is obsolete, and a close because nothing wanted the
+        shutter open is dropped when something wants it now. Either way a use that has opened it since must not have
+        its exposure darkened; the next poll decides again. A close because line 3 is not ready ends an open by hand."""
+        with self._shutter_lock:
+            if opens is not None and opens != self._shutter_opens:
+                return
+            if unwanted:
+                if self._shutter_wanted():
+                    return
+            else:
+                self._manual_open = False
+            self._set_held_shutter(False, raw)
 
     def _set_held_shutter(self, want_open: bool, raw: dict) -> None:
-        """DF: the shutter is a safety device only - open while the 560 is in use (line 3 READY), closed in every other
-        state, so the beam is blocked whenever the source is not known to be ready. Never per exposure: the AOM does
-        exposure on/off (D3 TTL). `raw` = the latest STAT?. A refusal is logged; the next poll tries again.
+        """DF: the mechanical shutter - open while line 3 is READY and the mode wants it open (Always open, or On use
+        with line 3 held), closed otherwise, so the beam is blocked whenever it is not in use or the source is not known
+        to be ready. Never per exposure: the AOM does exposure on/off (D3 TTL). `raw` = the latest STAT?. A refusal is
+        logged; the next poll tries again.
         """
         if self.variant != "DF" or bool((raw.get("shutter") or {}).get("open")) == want_open:
             return
@@ -989,6 +1147,10 @@ class LaserEngineV2(QObject):
             self._cmd(f"SHUT:OPEN {int(want_open)}")
         except (EngineCommandError, LaserEngineV2Error) as e:
             self._log.warning(f"shutter {'open' if want_open else 'close'} not done: {e}")
+            return
+        self._shutter_opened_at = time.monotonic() if want_open else None  # accepted: its open time counts from here
+        if want_open:
+            self._shutter_opens += 1
 
     def _on_lost(self) -> None:
         self._disable_source()
@@ -1180,6 +1342,39 @@ class _EngineLineMap(Mapping):
         return self._lines().items()  # one read of the port map, not one per wavelength
 
 
+class EngineHold(LightSourceHold):
+    """LaserEngineV2.use(): the engine lines `name` images with, until released."""
+
+    def __init__(self, engine: LaserEngineV2, name: str):
+        self._engine = engine
+        self.name = name  # for logs
+        self.lines: frozenset = frozenset()
+
+    def update(self, channels: Iterable[Optional[EngineLine]]) -> None:
+        self._engine._set_hold(self, frozenset(c.line for c in channels if c is not None))
+
+    def release(self) -> None:
+        self._engine._set_hold(self, frozenset())
+
+    def wait_until_ready(
+        self, timeout_s: Optional[float] = None, cancel_fn: Callable[[], bool] = lambda: False
+    ) -> bool:
+        """Every held line READY and, for the 560, the shutter open and settled (wait_until_ready). Never raises: a line
+        only the operator can bring back (e.g. the 560 key) is logged and gives False."""
+        keys = [f"L{n}" for n in sorted(self.lines)]
+        if not keys or self._engine.is_ready_to_image(keys):
+            return True
+        timeout = self._engine.READY_TIMEOUT_S if timeout_s is None else timeout_s
+        try:
+            return self._engine.wait_until_ready(keys, timeout, cancel_fn)
+        except (LaserEngineV2Error, EngineCommandError) as e:
+            self._engine._log.warning(f"{self.name}: laser engine line(s) {', '.join(keys)} not ready: {e}")
+            return False
+
+    def __repr__(self) -> str:
+        return f"EngineHold({self.name!r}, lines={sorted(self.lines)})"
+
+
 class LaserEngineV2LightSource(LightSource):
     """IlluminationController's view of the engine: intensity over USB; on/off = Squid controller TTL (hardware-timed)."""
 
@@ -1229,6 +1424,12 @@ class LaserEngineV2LightSource(LightSource):
     def get_intensity(self, channel: Optional[EngineLine]) -> float:
         return 0.0 if channel is None else self._engine.get_wavelength_intensity(channel.wavelength)
 
+    def use(self, name: str, channels) -> "EngineHold":
+        return self._engine.use(name, channels)
+
+    def mechanical_shutter(self, channel: Optional[EngineLine]) -> Optional[MechanicalShutter]:
+        return self._engine.mechanical_shutter if channel is not None and channel.line == SOURCE_560_LINE else None
+
     def shut_down(self):
         self._engine.close()
 
@@ -1245,9 +1446,14 @@ def _production_source_factory() -> Optional[Callable[[], SourceDriver]]:
 
 
 def options_from_cache(cache_path: Optional[Path] = None) -> EngineOptions:
-    """The 560 power and idle-off as last set in the Laser Engine tab (cache/laser_engine_v2.yaml; defaults when absent)."""
+    """The 560 power, idle-off and shutter mode as last set in the Laser Engine tab (cache/laser_engine_v2.yaml; defaults
+    when absent)."""
     settings = load_settings(cache_path)
-    return EngineOptions(source_idle_off_min=settings.idle_off_560_min, source_power_mw=settings.power_560_mw)
+    return EngineOptions(
+        source_idle_off_min=settings.idle_off_560_min,
+        source_power_mw=settings.power_560_mw,
+        shutter_mode=settings.shutter_mode_560,
+    )
 
 
 def build_from_config(sn: Optional[str], options: EngineOptions) -> LaserEngineV2:
