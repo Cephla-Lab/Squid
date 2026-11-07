@@ -507,6 +507,7 @@ class OneShotWatchdog(FakeMicrocontroller):
         self.fed_at = 0.0
         self.unprotected_on = 0
         self.stall_when = None  # a predicate on the last command: the wait for it to complete stalls 6 s
+        self.stall_raises = False  # the stalled wait then raises TimeoutError, as the real one does without an ack
 
     def _fed(self):
         self.fed_at = self.time.clock()
@@ -515,6 +516,8 @@ class OneShotWatchdog(FakeMicrocontroller):
         super().wait_till_operation_is_completed(timeout_limit_s)
         if self.stall_when is not None and self.calls and self.stall_when(self.calls[-1]):
             self.stall(6.0)
+            if self.stall_raises:
+                raise TimeoutError("Current mcu operation timed out after 5 [s]")
 
     def set_watchdog_timeout(self, timeout_s):
         super().set_watchdog_timeout(timeout_s)
@@ -913,25 +916,37 @@ def _stall_arms(indices):
     return stall_when
 
 
-def test_a_stall_while_handing_the_watchdog_back_arms_it_again(repo):
+@pytest.mark.parametrize("no_ack", [False, True], ids=["late ack", "no ack"])
+@pytest.mark.parametrize("handed_back_by", ["run", "test beam"])
+def test_a_stall_while_handing_the_watchdog_back_arms_it_again(repo, handed_back_by, no_ack):
     # review 5: the hand-back armed the watchdog and discarded the deadline; a 6 s stall in that wait let it fire and
-    # disarm, the heartbeat came back, and a later live-view beam came on unprotected
+    # disarm, the heartbeat came back, and a later live-view beam came on unprotected.
+    # review 7: when no acknowledgement comes the real wait raises TimeoutError, which skipped the re-arming
     time = FakeTime()
     mcu = OneShotWatchdog(time)
     session = _owned_session(repo, time, mcu)
-    mcu.stall_when = _stall_arms({1})  # the channel's arming is fine; the hand-back's first one stalls
-    result = session.run([session.targets()[0]], measured_in="n/a", sensor_limit_mw=500.0)["Fluorescence 405 nm Ex"]
-    assert isinstance(result, ChannelResult)  # the measurement itself is unaffected
+    # the channel's (or test beam's) arming is fine; the hand-back's first one stalls past the watchdog
+    mcu.stall_when, mcu.stall_raises = _stall_arms({1}), no_ack
+    target = session.targets()[0]
+    if handed_back_by == "run":
+        result = session.run([target], measured_in="n/a", sensor_limit_mw=500.0)["Fluorescence 405 nm Ex"]
+        assert isinstance(result, ChannelResult)  # the measurement itself is unaffected
+    else:
+        session.test_beam_on(target, 10.0)
+        session.test_beam_off(target)
     assert mcu.armed and mcu.calls[-1] == ("start_heartbeat", 2.5)
     mcu.turn_on_illumination()  # live view, after the hand-back
     assert mcu.unprotected_on == 0
 
 
-def test_a_watchdog_that_cannot_be_armed_again_fails_the_hand_back_loudly(repo):
+@pytest.mark.parametrize("no_ack", [False, True], ids=["late ack", "no ack"])
+def test_a_watchdog_that_cannot_be_armed_again_fails_the_hand_back_loudly(repo, no_ack):
     time = FakeTime()
     mcu = OneShotWatchdog(time)
     session = _owned_session(repo, time, mcu)
-    mcu.stall_when = _stall_arms(range(1, 100))  # every arming after the channel's stalls past the watchdog
-    with pytest.raises(WatchdogDeadlineMissed, match="live view"):
+    # every arming after the channel's stalls past the watchdog
+    mcu.stall_when, mcu.stall_raises = _stall_arms(range(1, 100)), no_ack
+    with pytest.raises(WatchdogDeadlineMissed, match="restart Squid"):
         session.run([session.targets()[0]], measured_in="n/a", sensor_limit_mw=500.0)
+    assert not mcu.armed
     assert mcu.calls[-1] == ("start_heartbeat", 2.5)  # the heartbeat comes back regardless

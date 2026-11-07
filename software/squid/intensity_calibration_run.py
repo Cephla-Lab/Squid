@@ -770,28 +770,30 @@ class CalibrationSession:
         """Give the watchdog back to the background heartbeat, re-armed first: the firmware's watchdog is one-shot
         (it disables itself after turning the light off), so if it fired while this session owned it - the code
         driving the light stopped - it would otherwise stay off for the rest of the session. A heartbeat only feeds
-        it: if the arming's own wait outlasted it, it fired and disarmed again, so it is armed again. The heartbeat
-        comes back however this ends; if the watchdog cannot be armed, the hand-back fails loudly."""
+        it: only an arming the controller acknowledged within its period counts. One whose wait outlasted the period
+        (it fired and disarmed again) or that was never acknowledged (the wait raises TimeoutError) is armed again.
+        The heartbeat comes back however this ends; if the watchdog cannot be armed, the hand-back fails loudly."""
         if self._paused_heartbeat_s is None:
             return
         try:
-            armed = False
+            last_error: Optional[Exception] = None
             for _ in range(WATCHDOG_ARM_ATTEMPTS):
                 try:
                     self._arm_watchdog().check()
-                    armed = True
+                    last_error = None
                     break
-                except WatchdogDeadlineMissed:
-                    _log.warning("the illumination watchdog fired while being armed for the hand-back; arming it again")
+                except Exception as e:  # noqa: BLE001 - any failure leaves the arming unconfirmed: arm it again
+                    last_error = e
+                    _log.warning(f"arming the illumination watchdog for the hand-back failed ({e}); arming it again")
         finally:
             interval, self._paused_heartbeat_s = self._paused_heartbeat_s, None
             self.microcontroller.start_heartbeat(interval_s=interval)
-        if not armed:
+        if last_error is not None:
             raise WatchdogDeadlineMissed(
-                f"the controller's illumination watchdog could not be armed again: {WATCHDOG_ARM_ATTEMPTS} armings each "
-                f"took longer than its {control._def.WATCHDOG_TIMEOUT_S:g} s period, so live view would run without "
-                "it; restart Squid"
-            )
+                f"the controller's illumination watchdog could not be armed again: none of {WATCHDOG_ARM_ATTEMPTS} "
+                f"armings was acknowledged within its {control._def.WATCHDOG_TIMEOUT_S:g} s period (the last: "
+                f"{last_error}), so live view would run without it; restart Squid"
+            ) from last_error
 
     def feed_watchdog(self) -> None:
         """Keep the watchdog alive while this session owns it (the background heartbeat is paused)."""
