@@ -1,5 +1,6 @@
 import configparser
 import gc
+import io
 import os
 import json
 import yaml
@@ -56,6 +57,7 @@ from control.models.yaml_store import YamlStoreDamaged
 from control.core.plate_transform import has_well_grid, plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
+from squid.stage.prior import PriorStage
 from squid.stage.utils import (
     move_to_loading_position,
     move_to_scanning_position,
@@ -89,6 +91,7 @@ from scipy.spatial import Delaunay
 import shutil
 from control._def import *
 from control.lighting import LightSourceType
+from control.widgets_homing import confirm_nosepiece_lowered
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -930,9 +933,8 @@ class ConfigEditor(QDialog):
 
     def save_to_filename(self, filename: str):
         try:
-            with open(filename, "w") as configfile:
-                self.config.write(configfile)
-                return True
+            utils.write_ini_atomically(self.config, filename)
+            return True
         except IOError:
             self._log.exception(f"Failed to write config file to '{filename}'")
             return False
@@ -972,8 +974,7 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
 
     def apply_and_exit(self):
         self.save_config()
-        with open(self.original_filepath, "w") as configfile:
-            self.config.write(configfile)
+        utils.write_ini_atomically(self.config, self.original_filepath)
         try:
             self.main_window.close()
         except (AttributeError, RuntimeError):
@@ -1100,7 +1101,13 @@ class AcquisitionYAMLDropMixin:
                 e,
             )
 
-        validation = validate_hardware(yaml_data, self.objectiveStore.current_objective, current_binning)
+        piezo = self.multipointController.piezo
+        validation = validate_hardware(
+            yaml_data,
+            self.objectiveStore.current_objective,
+            current_binning,
+            piezo_travel_um=piezo.range_um if piezo is not None else None,
+        )
 
         if not validation.is_valid:
             dialog = AcquisitionYAMLMismatchDialog(validation, self)
@@ -1115,6 +1122,95 @@ class AcquisitionYAMLDropMixin:
     def _apply_yaml_settings(self, yaml_data):
         """Apply parsed YAML settings to widget controls. Override in subclass."""
         raise NotImplementedError("Subclass must implement _apply_yaml_settings()")
+
+
+class _ZRangeMixin:
+    """Set Z-range entries in the motor the z-stack runs on.
+
+    With "Piezo Z-Stack" checked (always, on a piezo-only scope) the Z-min/Z-max entries are piezo
+    positions in µm and the stepper holds where it is; unchecked, they are stepper z in µm. Host widgets
+    have ``stage``, ``multipointController``, ``checkbox_usePiezo``, ``entry_minZ`` and ``entry_maxZ``.
+    """
+
+    def _stack_z_um(self) -> float:
+        if self.checkbox_usePiezo.isChecked():
+            return self.multipointController.piezo.position
+        return self.stage.get_pos().z_mm * 1000
+
+    def _move_stack_z_to_um(self, z_um: float):
+        if self.checkbox_usePiezo.isChecked():
+            self.multipointController.piezo.move_to(z_um)
+        else:
+            self.stage.move_z_to(z_um / 1000)
+
+    def _reset_z_range_entries(self):
+        """Limit both entries to the stack motor's travel and start them at its current position."""
+        if self.checkbox_usePiezo.isChecked():
+            low_um, high_um = 0.0, self.multipointController.piezo.range_um
+        else:
+            low_um, high_um = SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000, SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
+        z_um = self._stack_z_um()
+        for entry in (self.entry_minZ, self.entry_maxZ):
+            entry.setRange(low_um, high_um)
+            entry.setValue(z_um)
+
+    def _push_set_z_range(self):
+        """Hand the Set Z-range entries to the controller (a piezo range holds the stepper where it is)."""
+        if self.checkbox_usePiezo.isChecked():
+            z_mm = self.stage.get_pos().z_mm
+            self.multipointController.set_z_range(z_mm, z_mm)
+            self.multipointController.set_piezo_z_range_um((self.entry_minZ.value(), self.entry_maxZ.value()))
+        else:
+            self.multipointController.set_z_range(self.entry_minZ.value() / 1000, self.entry_maxZ.value() / 1000)
+            self.multipointController.set_piezo_z_range_um(None)
+
+
+class _LaserAfPerStackMixin:
+    """The Z First "AF per stack" checkbox: laser AF before each later channel's stack.
+
+    Host widgets have ``combobox_z_order``, ``checkbox_withReflectionAutofocus`` and ``multipointController``
+    with ``set_laser_af_per_stack(bool)``; a tab whose z row can be hidden overrides ``_z_row_shown``.
+    """
+
+    _LASER_AF_PER_STACK_TOOLTIP = (
+        "Z First only: run laser AF before each channel's stack. The first channel uses the per-FOV laser AF."
+    )
+
+    def _create_laser_af_per_stack_checkbox(self):
+        self.checkbox_laserAfPerStack = QCheckBox("AF per stack")
+        self.checkbox_laserAfPerStack.setChecked(False)
+        self.checkbox_laserAfPerStack.setToolTip(self._LASER_AF_PER_STACK_TOOLTIP)
+        self.checkbox_laserAfPerStack.toggled.connect(lambda _checked: self._update_laser_af_per_stack_state())
+
+    def _z_row_shown(self) -> bool:
+        return True
+
+    def _laser_af_per_stack_shown(self) -> bool:
+        # Like checkbox_applyChannelOffset: the checkbox sits in a layout only when laser AF is supported, and a
+        # shown parentless widget would become a top-level window, so visibility needs the same flag.
+        return bool(
+            control._def.ENABLE_Z_STACK_ORDER_SELECTION
+            and self.combobox_z_order.currentData() == "Z FIRST"
+            and SUPPORT_LASER_AUTOFOCUS
+            and self._z_row_shown()
+        )
+
+    def laser_af_per_stack_to_start(self) -> bool:
+        return _laser_af_per_stack_to_start(
+            control._def.ENABLE_Z_STACK_ORDER_SELECTION,
+            self.combobox_z_order.currentData(),
+            SUPPORT_LASER_AUTOFOCUS,
+            self.checkbox_withReflectionAutofocus.isChecked(),
+            self._z_row_shown(),
+            self.checkbox_laserAfPerStack.isChecked(),
+        )
+
+    def _update_laser_af_per_stack_state(self):
+        """Re-apply the rule to the checkbox (shown / enabled) and push the resulting value to the controller."""
+        shown = self._laser_af_per_stack_shown()
+        self.checkbox_laserAfPerStack.setVisible(shown)
+        self.checkbox_laserAfPerStack.setEnabled(shown and self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_laser_af_per_stack(self.laser_af_per_stack_to_start())
 
 
 class _ApplyChannelOffsetMixin:
@@ -1221,12 +1317,30 @@ class PreferencesDialog(QDialog):
 
     signal_config_changed = Signal()
 
-    def __init__(self, config, config_filepath, parent=None, on_restart=None):
+    # What the File Saving Format combo box shows; the config file keeps the FileSavingOption names.
+    FILE_SAVING_LABELS = {
+        FileSavingOption.INDIVIDUAL_IMAGES: "Individual images",
+        FileSavingOption.MULTI_PAGE_TIFF: "Multi-page TIFF",
+        FileSavingOption.OME_TIFF: "OME-TIFF",
+        FileSavingOption.ZARR_V3: "OME-Zarr 0.5",
+    }
+    OME_ZARR_TOOLTIP = (
+        "OME-Zarr 0.5 (Zarr v3).\n"
+        "Tools that only read OME-Zarr 0.4 / Zarr v2 cannot open it;\n"
+        "use a reader with Zarr v3 support, such as ngff-zarr, iohub or ome-zarr-py."
+    )
+    OME_ZARR_6D_NOTE = (
+        "\n\nUse 6D FOV Dimension is on (Advanced > OME-Zarr Options):\n"
+        "non-HCS acquisitions are saved as one 6D Zarr per region, which is not OME-Zarr."
+    )
+
+    def __init__(self, config, config_filepath, parent=None, on_restart=None, stage=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
         self.config_filepath = config_filepath
         self._on_restart = on_restart  # Optional callback for application restart
+        self._stage = stage  # Optional; settings the stage can take live (Prior speed/acceleration) are sent to it
         self.setWindowTitle("Preferences")
         self.setMinimumWidth(500)
         self.setMinimumHeight(600)
@@ -1247,6 +1361,11 @@ class PreferencesDialog(QDialog):
         self._create_advanced_tab()
         self._create_development_tab()
 
+        # The format tooltip depends on the 6D option in the Advanced tab, so it is set up once all tabs exist
+        self._update_file_saving_tooltip()
+        self.file_saving_combo.currentIndexChanged.connect(self._update_file_saving_tooltip)
+        self.zarr_6d_fov_checkbox.toggled.connect(self._update_file_saving_tooltip)
+
         # Buttons
         button_layout = QHBoxLayout()
         self.save_button = QPushButton("Save")
@@ -1264,11 +1383,14 @@ class PreferencesDialog(QDialog):
         layout = QFormLayout(tab)
         layout.setSpacing(10)
 
-        # File Saving Format
+        # File Saving Format. Each item's data is the FileSavingOption name stored in the config file,
+        # so an item can show a friendlier label without changing what existing configs contain.
         self.file_saving_combo = QComboBox()
-        self.file_saving_combo.addItems([e.name for e in FileSavingOption])
-        current_value = self._get_file_saving_option()
-        self.file_saving_combo.setCurrentText(current_value)
+        for option in FileSavingOption:
+            self.file_saving_combo.addItem(self.FILE_SAVING_LABELS[option], option.name)
+        current_index = self.file_saving_combo.findData(self._get_file_saving_option())
+        if current_index >= 0:
+            self.file_saving_combo.setCurrentIndex(current_index)
         layout.addRow("File Saving Format:", self.file_saving_combo)
 
         # TIFF Compression (only visible for the TIFF formats that support it)
@@ -1287,21 +1409,20 @@ class PreferencesDialog(QDialog):
 
         # Zarr Compression (only visible when ZARR_V3 is selected)
         self.zarr_compression_combo = QComboBox()
-        self.zarr_compression_combo.addItems(["none", "fast", "balanced", "best"])
+        self.zarr_compression_combo.addItems([e.value for e in ZarrCompression])
         self.zarr_compression_combo.setToolTip(
             "none: No compression, maximum speed (~2x faster than TIFF)\n"
             "fast: blosc-lz4, ~1000 MB/s, ~2x compression (default)\n"
             "balanced: blosc-zstd level 3, ~500 MB/s, ~3-4x compression\n"
             "best: blosc-zstd level 9, slower but best compression"
         )
-        zarr_compression_value = self._get_config_value("GENERAL", "zarr_compression", "fast")
-        self.zarr_compression_combo.setCurrentText(zarr_compression_value)
+        self.zarr_compression_combo.setCurrentText(self._get_zarr_compression())
         self.zarr_compression_label = QLabel("Zarr Compression:")
         layout.addRow(self.zarr_compression_label, self.zarr_compression_combo)
 
         # Show/hide the per-format options based on file saving format selection
         self._update_file_format_options_visibility()
-        self.file_saving_combo.currentTextChanged.connect(self._update_file_format_options_visibility)
+        self.file_saving_combo.currentIndexChanged.connect(self._update_file_format_options_visibility)
 
         # Default Saving Path
         path_widget = QWidget()
@@ -1358,6 +1479,17 @@ class PreferencesDialog(QDialog):
             self._get_config_bool("GENERAL", "enable_flexible_multipoint", True)
         )
         layout.addRow("Enable Flexible Multipoint:", self.flexible_multipoint_checkbox)
+
+        # Z-stack order dropdown (Channel First / Z First) next to Nz in the acquisition tabs. Applies live.
+        self.z_stack_order_dropdown_checkbox = QCheckBox()
+        self.z_stack_order_dropdown_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "enable_z_stack_order_selection", False)
+        )
+        self.z_stack_order_dropdown_checkbox.setToolTip(
+            "Show the Channel First / Z First choice next to Nz in the acquisition tabs.\n"
+            "Off, every acquisition started from the GUI runs Channel First."
+        )
+        layout.addRow("Z-stack Order Dropdown:", self.z_stack_order_dropdown_checkbox)
 
         self.tab_widget.addTab(tab, "Acquisition")
 
@@ -1495,31 +1627,81 @@ class PreferencesDialog(QDialog):
         stage_group.content.addLayout(stage_layout)
         layout.addWidget(stage_group)
 
-        # Zarr v3 Options section
-        zarr_group = CollapsibleGroupBox("Zarr v3 Options", collapsed=True)
+        # Prior Stage section (sent to the stage on Save, no restart)
+        self.prior_speed_spinbox = None
+        self.prior_accel_spinbox = None
+        if control._def.USE_PRIOR_STAGE:
+            prior_group = CollapsibleGroupBox("Prior Stage", collapsed=True)
+            prior_layout = QFormLayout()
+            speed_per_step, accel_per_step = self._prior_physical_units_per_step()
+            # The rig's ceilings (prior_stage_*_limit in the machine .ini): the most the stage takes without losing steps
+            self._prior_speed_limit = PriorStage.within_controller_range(control._def.PRIOR_STAGE_MAX_SPEED_LIMIT)
+            self._prior_accel_limit = PriorStage.within_controller_range(control._def.PRIOR_STAGE_ACCELERATION_LIMIT)
+
+            self.prior_speed_spinbox, self.prior_speed_physical_label, row = self._make_prior_motion_row(
+                self._get_prior_motion_setting(
+                    "prior_stage_max_speed", control._def.PRIOR_STAGE_MAX_SPEED, self._prior_speed_limit
+                ),
+                self._prior_speed_limit,
+                speed_per_step,
+                "mm/s",
+                "Prior controller max speed (SMS). The scale is linear; the controller allows up to 1000\n"
+                "(60 mm/s on an H117 with 1 mm screws). This rig's ceiling is prior_stage_max_speed_limit\n"
+                "in the machine .ini: the most the stage takes without losing steps.",
+            )
+            prior_layout.addRow(f"Max Speed (1-{self._prior_speed_limit}):", row)
+
+            self.prior_accel_spinbox, self.prior_accel_physical_label, row = self._make_prior_motion_row(
+                self._get_prior_motion_setting(
+                    "prior_stage_acceleration", control._def.PRIOR_STAGE_ACCELERATION, self._prior_accel_limit
+                ),
+                self._prior_accel_limit,
+                accel_per_step,
+                "mm/s²",
+                "Prior controller acceleration (SAS). The scale is linear; the controller allows up to 1000\n"
+                "(285.5 mm/s² on an H117 with 1 mm screws). This rig's ceiling is prior_stage_acceleration_limit\n"
+                "in the machine .ini: the most the stage takes without losing steps.",
+            )
+            prior_layout.addRow(f"Acceleration (1-{self._prior_accel_limit}):", row)
+
+            prior_note = QLabel(
+                "Applied to the stage when you click Save. Faster moves can lose steps or leave the stage still "
+                "settling when an exposure starts: after raising these, check that the stage returns to the same "
+                "spot and that images are sharp."
+            )
+            prior_note.setWordWrap(True)
+            prior_note.setStyleSheet("color: #666; font-style: italic;")
+            prior_layout.addRow(prior_note)
+
+            prior_group.content.addLayout(prior_layout)
+            layout.addWidget(prior_group)
+
+        # OME-Zarr Options section
+        zarr_group = CollapsibleGroupBox("OME-Zarr Options", collapsed=True)
         zarr_layout = QFormLayout()
 
         self.zarr_chunk_mode_combo = QComboBox()
-        self.zarr_chunk_mode_combo.addItems(["full_frame", "tiled_512", "tiled_256"])
+        self.zarr_chunk_mode_combo.addItems([e.value for e in ZarrChunkMode])
         self.zarr_chunk_mode_combo.setToolTip(
             "full_frame: Each chunk is a full image plane (simplest, default)\n"
             "tiled_512: 512x512 pixel chunks for tiled visualization\n"
             "tiled_256: 256x256 pixel chunks for fine-grained streaming"
         )
-        zarr_chunk_mode_value = self._get_config_value("GENERAL", "zarr_chunk_mode", "full_frame")
-        self.zarr_chunk_mode_combo.setCurrentText(zarr_chunk_mode_value)
+        self.zarr_chunk_mode_combo.setCurrentText(self._get_zarr_chunk_mode())
         zarr_layout.addRow("Chunk Mode:", self.zarr_chunk_mode_combo)
 
         self.zarr_6d_fov_checkbox = QCheckBox()
         self.zarr_6d_fov_checkbox.setToolTip(
             "When enabled, non-HCS acquisitions use a single 6D zarr per region\n"
-            "with shape (FOV, T, C, Z, Y, X). This is non-standard but groups\n"
-            "all FOVs together. When disabled (default), creates separate 5D\n"
-            "OME-NGFF compliant zarr files per FOV."
+            "with shape (FOV, T, C, Z, Y, X). This groups all FOVs together but\n"
+            "is not OME-Zarr: OME-Zarr readers cannot open it. When disabled\n"
+            "(default), creates a separate 5D OME-Zarr image per FOV."
         )
-        zarr_6d_fov_value = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        zarr_6d_fov_value = self._get_config_bool(
+            "GENERAL", "zarr_use_6d_fov_dimension", control._def.ZARR_USE_6D_FOV_DIMENSION
+        )
         self.zarr_6d_fov_checkbox.setChecked(zarr_6d_fov_value)
-        zarr_layout.addRow("Use 6D FOV Dimension:", self.zarr_6d_fov_checkbox)
+        zarr_layout.addRow("Use 6D FOV Dimension (not OME-Zarr):", self.zarr_6d_fov_checkbox)
 
         zarr_group.content.addLayout(zarr_layout)
         layout.addWidget(zarr_group)
@@ -1553,11 +1735,8 @@ class PreferencesDialog(QDialog):
         hw_group = CollapsibleGroupBox("Hardware Configuration", collapsed=True)
         hw_layout = QFormLayout()
 
-        self.z_motor_combo = QComboBox()
-        self.z_motor_combo.addItems(["STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"])
-        self.z_motor_combo.setCurrentText(self._get_config_value("GENERAL", "z_motor_config", "STEPPER"))
-        hw_layout.addRow("Z Motor Config *:", self.z_motor_combo)
-
+        # No Z motor choice here: z_motor_config names the Z hardware the machine has, so it is set in the
+        # config file, and saving Preferences leaves it as written.
         self.spinning_disk_checkbox = QCheckBox()
         self.spinning_disk_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False))
         hw_layout.addRow("Enable Spinning Disk *:", self.spinning_disk_checkbox)
@@ -2016,16 +2195,41 @@ class PreferencesDialog(QDialog):
             return 0.0
         return float(value)
 
-    def _get_file_saving_option(self):
-        """The file saving format currently in effect, as a FileSavingOption name.
+    def _get_enum_setting(self, option, enum_cls, running):
+        """A [GENERAL] enum setting as set in the config file, falling back to the running value.
 
-        The config file usually has no file_saving_option key, so the fallback has to be the value
-        the software is actually running with (control._def, which the dialog itself updates live)
-        rather than a hardcoded format.  Otherwise the combo box displays a format that isn't in
-        use, _get_changes() can't detect a change away from it, and _apply_settings() persists that
-        wrong format into the machine config file.
+        Startup reads these keys with convert_to_enum, which ignores case, so the dialog does too
+        ("zarr_v3" would otherwise match no item).  With no key, the running value (control._def,
+        which the dialog itself updates live) is the one in use, not a hardcoded default; otherwise
+        the combo box shows a value that isn't in use and _apply_settings() persists it.  A value
+        convert_to_enum rejects would have stopped startup, so it was written while Squid runs:
+        show the running value, so the dialog still opens and saving writes a valid one.
         """
-        return self._get_config_value("GENERAL", "file_saving_option", control._def.FILE_SAVING_OPTION.name)
+        value = self._get_config_value("GENERAL", option, None)
+        if value is None:
+            return running
+        try:
+            return enum_cls.convert_to_enum(value)
+        except ValueError:
+            self._log.warning(f"Config file has {option} = {value!r}, which is not valid; showing {running} instead")
+            return running
+
+    def _get_file_saving_option(self):
+        """The file saving format, as a FileSavingOption name (see _get_enum_setting)."""
+        return self._get_enum_setting("file_saving_option", FileSavingOption, control._def.FILE_SAVING_OPTION).name
+
+    def _get_zarr_compression(self):
+        """The Zarr compression preset, as its combo box item ("fast", ...; see _get_enum_setting)."""
+        return self._get_enum_setting("zarr_compression", ZarrCompression, control._def.ZARR_COMPRESSION).value
+
+    def _get_zarr_chunk_mode(self):
+        """The Zarr chunk mode, as its combo box item ("full_frame", ...; see _get_enum_setting)."""
+        return self._get_enum_setting("zarr_chunk_mode", ZarrChunkMode, control._def.ZARR_CHUNK_MODE).value
+
+    def _file_saving_label(self, option_name):
+        """The label the format combo box shows for a FileSavingOption name (the name itself if unknown)."""
+        index = self.file_saving_combo.findData(option_name)
+        return self.file_saving_combo.itemText(index) if index >= 0 else option_name
 
     def _get_tiff_compression_level(self):
         """The TIFF compression level currently in effect, falling back to the running value.
@@ -2036,6 +2240,46 @@ class PreferencesDialog(QDialog):
         level = self._get_config_int("GENERAL", "tiff_compression_level", control._def.TIFF_COMPRESSION_LEVEL)
         spinbox = self.tiff_compression_spinbox
         return min(max(level, spinbox.minimum()), spinbox.maximum())
+
+    def _get_prior_motion_setting(self, option, running_value, limit):
+        """A Prior SMS/SAS setting from the config, falling back to the running value, limited to what the spin box
+        can show (1 to the rig's ceiling) so that an out of range value in the config file isn't reported as a
+        change."""
+        value = self._get_config_int("GENERAL", option, running_value)
+        return min(max(value, PriorStage.MOTION_SETTING_MIN), limit)
+
+    def _prior_physical_units_per_step(self):
+        """(mm/s, mm/s^2) per SMS/SAS step on the connected Prior stage, from what its controller reports; the scale
+        is linear. (None, None) without a Prior stage or when the controller doesn't say."""
+        stage = self._stage
+        try:
+            return stage.get_max_speed_mm_s() / stage.speed, stage.get_acceleration_mm_s2() / stage.acceleration
+        except Exception:  # no stage, not a Prior stage, or no usable reply
+            return None, None
+
+    @staticmethod
+    def _make_prior_motion_row(value, maximum, physical_per_step, unit, tooltip):
+        spinbox = QSpinBox()
+        spinbox.setRange(PriorStage.MOTION_SETTING_MIN, maximum)
+        spinbox.setSingleStep(50)
+        spinbox.setValue(value)
+        spinbox.setToolTip(tooltip)
+        physical_label = QLabel()
+        physical_label.setStyleSheet("color: #666;")
+
+        def show_physical(steps):
+            physical_label.setText(f"≈ {steps * physical_per_step:.1f} {unit}" if physical_per_step else "")
+
+        spinbox.valueChanged.connect(show_physical)
+        show_physical(value)
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(spinbox)
+        row_layout.addWidget(physical_label)
+        row_layout.addStretch()
+        return spinbox, physical_label, row
 
     def _floats_equal(self, a, b, epsilon=1e-4):
         """Compare two floats with epsilon tolerance to avoid precision issues."""
@@ -2060,7 +2304,7 @@ class PreferencesDialog(QDialog):
 
     def _update_file_format_options_visibility(self):
         """Show/hide format specific options based on file saving format."""
-        current_format = self.file_saving_combo.currentText()
+        current_format = self.file_saving_combo.currentData()
 
         is_zarr = current_format == "ZARR_V3"
         self.zarr_compression_label.setVisible(is_zarr)
@@ -2071,6 +2315,18 @@ class PreferencesDialog(QDialog):
         self.tiff_compression_label.setVisible(supports_tiff_compression)
         self.tiff_compression_spinbox.setVisible(supports_tiff_compression)
 
+    def _update_file_saving_tooltip(self):
+        """Describe OME-Zarr on its combo box item and, while it is selected, on the combo box itself.
+
+        With the 6D FOV option on, non-HCS acquisitions are not OME-Zarr, so the tooltip says so.
+        """
+        tooltip = self.OME_ZARR_TOOLTIP
+        if self.zarr_6d_fov_checkbox.isChecked():
+            tooltip += self.OME_ZARR_6D_NOTE
+        zarr_index = self.file_saving_combo.findData(FileSavingOption.ZARR_V3.name)
+        self.file_saving_combo.setItemData(zarr_index, tooltip, Qt.ToolTipRole)
+        self.file_saving_combo.setToolTip(tooltip if self.file_saving_combo.currentIndex() == zarr_index else "")
+
     def _ensure_section(self, section):
         """Ensure a config section exists, creating it if necessary."""
         if not self.config.has_section(section):
@@ -2078,12 +2334,21 @@ class PreferencesDialog(QDialog):
 
     def _apply_settings(self) -> bool:
         """Apply settings to config file. Returns True on success, False on failure."""
+        # The Prior stage first: when it doesn't take its new speed/acceleration, nothing is saved.
+        if not self._send_prior_motion_settings():
+            return False
+
+        # The config as it is now, put back if the ini can't be written: left holding the unsaved values, it would
+        # show no change, so Save would close without trying again.
+        config_before = io.StringIO()
+        self.config.write(config_before)
+
         # Ensure all required sections exist
         for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING", "VIEWS"]:
             self._ensure_section(section)
 
         # General settings
-        self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
+        self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentData())
         self.config.set("GENERAL", "tiff_compression_level", str(self.tiff_compression_spinbox.value()))
         self.config.set("GENERAL", "zarr_compression", self.zarr_compression_combo.currentText())
         self.config.set("GENERAL", "zarr_chunk_mode", self.zarr_chunk_mode_combo.currentText())
@@ -2109,6 +2374,11 @@ class PreferencesDialog(QDialog):
             "enable_flexible_multipoint",
             "true" if self.flexible_multipoint_checkbox.isChecked() else "false",
         )
+        self.config.set(
+            "GENERAL",
+            "enable_z_stack_order_selection",
+            "true" if self.z_stack_order_dropdown_checkbox.isChecked() else "false",
+        )
 
         # Camera settings
         self.config.set("CAMERA_CONFIG", "binning_factor_default", str(self.binning_spinbox.value()))
@@ -2130,13 +2400,17 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "scan_stabilization_time_ms_y", str(self.scan_stab_y.value()))
         self.config.set("GENERAL", "scan_stabilization_time_ms_z", str(self.scan_stab_z.value()))
 
+        # Advanced - Prior Stage
+        if self.prior_speed_spinbox is not None:
+            self.config.set("GENERAL", "prior_stage_max_speed", str(self.prior_speed_spinbox.value()))
+            self.config.set("GENERAL", "prior_stage_acceleration", str(self.prior_accel_spinbox.value()))
+
         # Advanced - Autofocus
         self.config.set("AF", "stop_threshold", str(self.af_stop_threshold.value()))
         self.config.set("AF", "crop_width", str(self.af_crop_width.value()))
         self.config.set("AF", "crop_height", str(self.af_crop_height.value()))
 
         # Advanced - Hardware
-        self.config.set("GENERAL", "z_motor_config", self.z_motor_combo.currentText())
         self.config.set(
             "GENERAL",
             "enable_spinning_disk_confocal",
@@ -2231,11 +2505,13 @@ class PreferencesDialog(QDialog):
 
         # Save to file
         try:
-            with open(self.config_filepath, "w") as f:
-                self.config.write(f)
+            utils.write_ini_atomically(self.config, self.config_filepath)
             self._log.info(f"Configuration saved to {self.config_filepath}")
         except OSError as e:
             self._log.exception("Failed to save configuration")
+            self.config.clear()
+            self.config.read_string(config_before.getvalue())  # so the changes stay pending, ready to retry
+            put_back = self._put_back_prior_motion()  # it may have taken its new speed/acceleration already
             QMessageBox.warning(
                 self,
                 "Error",
@@ -2247,6 +2523,11 @@ class PreferencesDialog(QDialog):
                     "- The file is not open in another application.\n"
                     "- The disk is not full or write-protected.\n\n"
                     f"System error: {e}"
+                    + (
+                        ""
+                        if put_back
+                        else "\n\nThe Prior stage could not be put back to its earlier speed/acceleration."
+                    )
                 ),
             )
             return False
@@ -2264,7 +2545,7 @@ class PreferencesDialog(QDialog):
         """Apply settings that can take effect without restart."""
         # File saving option
         control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.convert_to_enum(
-            self.file_saving_combo.currentText()
+            self.file_saving_combo.currentData()
         )
 
         # TIFF compression level (only applicable when saving individual or multi page TIFFs)
@@ -2291,6 +2572,7 @@ class PreferencesDialog(QDialog):
 
         # Flexible multipoint
         control._def.ENABLE_FLEXIBLE_MULTIPOINT = self.flexible_multipoint_checkbox.isChecked()
+        control._def.ENABLE_Z_STACK_ORDER_SELECTION = self.z_stack_order_dropdown_checkbox.isChecked()
 
         # Click to Move
         control._def.ENABLE_CLICK_TO_MOVE = self.click_to_move_enable_checkbox.isChecked()
@@ -2344,6 +2626,66 @@ class PreferencesDialog(QDialog):
         control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
         control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
 
+        # Prior stage speed and acceleration (the stage already has them: _send_prior_motion_settings)
+        if self.prior_speed_spinbox is not None:
+            control._def.PRIOR_STAGE_MAX_SPEED = self.prior_speed_spinbox.value()
+            control._def.PRIOR_STAGE_ACCELERATION = self.prior_accel_spinbox.value()
+
+    def _prior_stage_settings(self):
+        """(setter, the stage's attribute for its value, spin box, running value, name) of the Prior max speed and
+        acceleration; empty without a Prior stage. The running value is control._def's, within 1 to the rig's ceiling
+        as the stage lowered it at startup."""
+        stage = self._stage
+        if self.prior_speed_spinbox is None or not hasattr(stage, "set_max_speed"):
+            return []
+        speed = min(max(control._def.PRIOR_STAGE_MAX_SPEED, PriorStage.MOTION_SETTING_MIN), self._prior_speed_limit)
+        accel = min(max(control._def.PRIOR_STAGE_ACCELERATION, PriorStage.MOTION_SETTING_MIN), self._prior_accel_limit)
+        return [
+            (stage.set_max_speed, "speed", self.prior_speed_spinbox, speed, "max speed"),
+            (stage.set_acceleration, "acceleration", self.prior_accel_spinbox, accel, "acceleration"),
+        ]
+
+    def _send_prior_motion_settings(self) -> bool:
+        """Send the Prior stage the speed and acceleration about to be saved, when either changes. Runs before anything
+        is saved, so when the stage doesn't take them the ini and the running values stay as they were and the change
+        stays pending, ready to retry. Returns False, after putting the stage back to the running values and telling
+        the user, in that case."""
+        settings = self._prior_stage_settings()
+        if all(spinbox.value() == running for _, _, spinbox, running, _ in settings):
+            return True  # neither changes: leave the stage alone, even one that doesn't answer
+        for setter, attr, spinbox, _, name in settings:
+            value = spinbox.value()
+            if getattr(self._stage, attr) == value:
+                continue  # it has it already
+            try:
+                setter(value)
+            except Exception as e:
+                self._log.exception(f"Prior stage did not take {name} {value}; nothing saved")
+                put_back = self._put_back_prior_motion()
+                QMessageBox.warning(
+                    self,
+                    "Prior Stage Not Updated",
+                    f"The Prior stage did not take {name} {value}, so no settings were saved.\n\n{e}\n\n"
+                    "Check the stage's connection, then Save again (or set the value back)."
+                    + ("" if put_back else "\n\nThe stage could not be put back to its earlier settings."),
+                )
+                return False
+        return True
+
+    def _put_back_prior_motion(self) -> bool:
+        """Send the Prior stage its running speed and acceleration wherever it may not have them: a setting it took for a
+        Save that then failed, or one it didn't confirm (its value is then None, unknown, since the controller may have
+        taken it all the same). Returns False when the stage doesn't take them."""
+        put_back = True
+        for setter, attr, _, running, name in self._prior_stage_settings():
+            if getattr(self._stage, attr) != running:
+                try:
+                    setter(running)
+                except Exception:
+                    self._log.exception(f"Could not put the Prior stage back to {name} {running}")
+                    put_back = False
+        return put_back
+
     def _get_changes(self):
         """Get list of settings that have changed from current config.
         Returns list of (name, old, new, requires_restart) tuples."""
@@ -2351,9 +2693,11 @@ class PreferencesDialog(QDialog):
 
         # General settings (live update)
         old_val = self._get_file_saving_option()
-        new_val = self.file_saving_combo.currentText()
+        new_val = self.file_saving_combo.currentData()
         if old_val != new_val:
-            changes.append(("File Saving Format", old_val, new_val, False))
+            changes.append(
+                ("File Saving Format", self._file_saving_label(old_val), self._file_saving_label(new_val), False)
+            )
 
         # A setting missing here is silently not saved: _save_and_close() returns before
         # _apply_settings() when it is the only thing the user changed.
@@ -2362,10 +2706,20 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("TIFF Compression Level", str(old_val), str(new_val), False))
 
-        old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        old_val = self._get_zarr_compression()
+        new_val = self.zarr_compression_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Zarr Compression", old_val, new_val, False))
+
+        old_val = self._get_zarr_chunk_mode()
+        new_val = self.zarr_chunk_mode_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Zarr Chunk Mode", old_val, new_val, False))
+
+        old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", control._def.ZARR_USE_6D_FOV_DIMENSION)
         new_val = self.zarr_6d_fov_checkbox.isChecked()
         if old_val != new_val:
-            changes.append(("Use 6D FOV Dimension", str(old_val), str(new_val), False))
+            changes.append(("Use 6D FOV Dimension (not OME-Zarr)", str(old_val), str(new_val), False))
 
         old_val = self._get_config_value("GENERAL", "default_saving_path", str(Path.home() / "Downloads"))
         new_val = self.saving_path_edit.text()
@@ -2403,6 +2757,11 @@ class PreferencesDialog(QDialog):
         new_val = self.flexible_multipoint_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable Flexible Multipoint", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_bool("GENERAL", "enable_z_stack_order_selection", False)
+        new_val = self.z_stack_order_dropdown_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Z-stack Order Dropdown", str(old_val), str(new_val), False))
 
         # Camera settings (require restart)
         old_val = self._get_config_int("CAMERA_CONFIG", "binning_factor_default", 2)
@@ -2476,6 +2835,22 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("Scan Stabilization Z", f"{old_val} ms", f"{new_val} ms", True))
 
+        # Advanced - Prior Stage (live update: sent to the stage on Save)
+        if self.prior_speed_spinbox is not None:
+            old_val = self._get_prior_motion_setting(
+                "prior_stage_max_speed", control._def.PRIOR_STAGE_MAX_SPEED, self._prior_speed_limit
+            )
+            new_val = self.prior_speed_spinbox.value()
+            if old_val != new_val:
+                changes.append(("Prior Stage Max Speed", str(old_val), str(new_val), False))
+
+            old_val = self._get_prior_motion_setting(
+                "prior_stage_acceleration", control._def.PRIOR_STAGE_ACCELERATION, self._prior_accel_limit
+            )
+            new_val = self.prior_accel_spinbox.value()
+            if old_val != new_val:
+                changes.append(("Prior Stage Acceleration", str(old_val), str(new_val), False))
+
         # Advanced - Autofocus (live update)
         old_val = self._get_config_float("AF", "stop_threshold", 0.85)
         new_val = self.af_stop_threshold.value()
@@ -2493,11 +2868,6 @@ class PreferencesDialog(QDialog):
             changes.append(("AF Crop Height", f"{old_val} px", f"{new_val} px", False))
 
         # Advanced - Hardware (require restart)
-        old_val = self._get_config_value("GENERAL", "z_motor_config", "STEPPER")
-        new_val = self.z_motor_combo.currentText()
-        if old_val != new_val:
-            changes.append(("Z Motor Config", old_val, new_val, True))
-
         old_val = self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False)
         new_val = self.spinning_disk_checkbox.isChecked()
         if old_val != new_val:
@@ -2809,28 +3179,6 @@ class PreferencesDialog(QDialog):
             # If save failed, dialog stays open (error already shown)
 
 
-def _objective_lowered_box(parent) -> Tuple[QMessageBox, QPushButton]:
-    """The piezo-only 'objective lowered' prompt and its Home button. Enter is Cancel."""
-    from control.startup_homing import OBJECTIVE_LOWERED_PROMPT
-
-    box = QMessageBox(parent)
-    box.setIcon(QMessageBox.Warning)
-    box.setWindowTitle("Lower the objective")
-    box.setText(OBJECTIVE_LOWERED_PROMPT)
-    home_btn = box.addButton("Objective lowered \u2013 Home", QMessageBox.AcceptRole)
-    cancel_btn = box.addButton("Cancel \u2013 don't home", QMessageBox.RejectRole)
-    box.setDefaultButton(cancel_btn)
-    box.setEscapeButton(cancel_btn)
-    return box, home_btn
-
-
-def ask_objective_lowered(parent) -> bool:
-    """Ask a person to confirm the objective is lowered. True only if they click Home."""
-    box, home_btn = _objective_lowered_box(parent)
-    box.exec_()
-    return box.clickedButton() is home_btn
-
-
 def show_homing_failure(parent, title: str, error: str, still_homing: bool) -> None:
     """A home that raised (Home stage, Home X/Y). still_homing: its claim is still held, as the stage has not
     reported that it stopped."""
@@ -2845,6 +3193,22 @@ def show_homing_failure(parent, title: str, error: str, still_homing: bool) -> N
         QMessageBox.warning(parent, title, f"Homing failed: {error}")
 
 
+def _queued_slot(receiver: QObject, slot_name: str):
+    """A threaded_operation_helper callback that delivers (success, error_msg) to a slot of receiver, on the GUI
+    thread: the operation's own thread must not touch widgets, live view or dialogs."""
+
+    def on_finished(success, error_msg):
+        QMetaObject.invokeMethod(
+            receiver,
+            slot_name,
+            Qt.QueuedConnection,
+            Q_ARG(bool, success),
+            Q_ARG(str, error_msg or ""),
+        )
+
+    return on_finished
+
+
 class StageUtils(QDialog):
     """Dialog containing microscope utility functions like homing, zeroing, and slide positioning."""
 
@@ -2852,7 +3216,6 @@ class StageUtils(QDialog):
     signal_loading_position_reached = Signal()
     signal_scanning_position_reached = Signal()
     signal_home_stage_requested = Signal()  # the Home Stage button: the main window runs it (Microscope.home_stage)
-    signal_axes_homed = Signal(object)  # the set of axes ("x", "y", "z") a Home X / Y / Z just homed
 
     def __init__(self, stage: AbstractStage, live_controller: LiveController, is_wellplate: bool, parent=None):
         super().__init__(parent)
@@ -2980,18 +3343,17 @@ class StageUtils(QDialog):
         """Home Z axis with confirmation dialog."""
         if self._confirm_homing():
             self.stage.home(x=False, y=False, z=True, theta=False)
-            self.signal_axes_homed.emit({"z"})
         move_z_axis_to_safety_position(self.stage)
 
     def _home_xy_axis(self, axis: str):
-        """Home X or Y: refused while something else drives the stage; on a piezo-only system the lower-the-objective
-        prompt replaces the generic confirmation; the home holds the Microscope's homing claim (live paused, other
+        """Home X or Y: refused while something else drives the stage; on a piezo-only system the stop sign (lower the
+        nosepiece) replaces the generic confirmation; the home holds the Microscope's homing claim (live paused, other
         motion refused), released once the stage reports it stopped. A failure is shown, as Home stage shows it."""
         operation = f"Home {axis.upper()}"
         if self._homing_refused():
             return
         if control._def.IS_PIEZO_ONLY:
-            objective_lowered = ask_objective_lowered(self)
+            objective_lowered = confirm_nosepiece_lowered(self, decline_text="Cancel")
             confirmed = objective_lowered
         else:
             objective_lowered = False
@@ -3014,8 +3376,6 @@ class StageUtils(QDialog):
             claim.release_when_stopped()
         if error is not None:
             show_homing_failure(self, "Homing", error, still_homing=not claim.released)
-            return
-        self.signal_axes_homed.emit({axis})
 
     def _homing_refused(self) -> bool:
         reason = self._homing_blocker()
@@ -3078,14 +3438,14 @@ class StageUtils(QDialog):
             move_to_loading_position(
                 self.stage,
                 blocking=False,
-                callback=self._callback_loading_position_reached,
+                callback=_queued_slot(self, "_callback_loading_position_reached"),
                 is_wellplate=self.is_wellplate,
             )
         else:
             move_to_scanning_position(
                 self.stage,
                 blocking=False,
-                callback=self._callback_scanning_position_reached,
+                callback=_queued_slot(self, "_callback_scanning_position_reached"),
                 is_wellplate=self.is_wellplate,
                 restore_z=restore_z,
             )
@@ -3108,20 +3468,22 @@ class StageUtils(QDialog):
             return None
         return reply == QMessageBox.Ok
 
-    def _callback_loading_position_reached(self, success: bool, error_message: Optional[str]):
-        """Handle slide loading position reached signal."""
+    @Slot(bool, str)
+    def _callback_loading_position_reached(self, success: bool, error_message: str):
+        """The move to the loading position ended (on the GUI thread, from _queued_slot)."""
         self.slide_position = "loading"
         self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live and not self.keep_live_off_at_loading:
-            self.live_controller.start_live()
+            self._restart_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_loading_position_reached.emit()
 
-    def _callback_scanning_position_reached(self, success: bool, error_message: Optional[str]):
-        """Handle slide scanning position reached signal."""
+    @Slot(bool, str)
+    def _callback_scanning_position_reached(self, success: bool, error_message: str):
+        """The move back to the scanning position ended (on the GUI thread, from _queued_slot)."""
         if not success:
             # The stage may not have left the loading position: it is still treated as there (a lift system keeps
             # everything locked), and the button offers the move back to scanning again.
@@ -3134,10 +3496,74 @@ class StageUtils(QDialog):
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live:
-            self.live_controller.start_live()
+            self._restart_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_scanning_position_reached.emit()
+
+    def _restart_live(self):
+        """Live view back on after a move. A camera that will not restart must not stop the move ending: the reached
+        signals that follow release the Z lift guard and the GUI's stage lock."""
+        try:
+            self.live_controller.start_live()
+        except Exception:
+            self.log.exception("Could not restart live view after the loading position move")
+
+
+# Where a z stack sits relative to each FOV's z, as offered in the acquisition tabs: (label, controller name).
+# "FROM TOP" is deliberately not offered (Hongquan, 2026-10-31); the worker still runs it for a YAML / TCP request.
+_Z_STACKING_CHOICES = (("From Bottom", "FROM BOTTOM"), ("From Center", "FROM CENTER"))
+# The Wellplate tab's Z mode dropdown: the three stacking choices, or an explicit Z-min..Z-max range.
+WELLPLATE_Z_MODES = tuple(label for label, _ in _Z_STACKING_CHOICES) + ("Set Range",)
+_Z_STACKING_CONFIG_FOR_Z_MODE = dict(_Z_STACKING_CHOICES, **{"Set Range": "FROM BOTTOM"})
+_Z_MODE_FOR_Z_STACKING_CONFIG = {config: label for label, config in _Z_STACKING_CHOICES}
+
+
+def _z_stacking_config_for_z_mode(z_mode: str) -> str:
+    """The z-stacking config an acquisition started from the Wellplate tab uses for its Z mode.
+
+    Set Range runs from Z-min up, i.e. From Bottom.
+    """
+    return _Z_STACKING_CONFIG_FOR_Z_MODE[z_mode]
+
+
+def _z_stacking_config_offered(z_stacking_config: str) -> str:
+    """The config the tabs can show for a loaded acquisition's z-stacking config: itself when offered, else
+    From Bottom (e.g. "FROM TOP", which the GUI does not offer)."""
+    if z_stacking_config in _Z_MODE_FOR_Z_STACKING_CONFIG:
+        return z_stacking_config
+    squid.logging.get_logger(__name__).warning(
+        f"z-stack config '{z_stacking_config}' is not offered in the GUI; showing From Bottom instead"
+    )
+    return "FROM BOTTOM"
+
+
+def _z_mode_for_z_stacking_config(z_stacking_config: str) -> str:
+    """The Wellplate Z mode to show for a loaded acquisition's z-stacking config."""
+    return _Z_MODE_FOR_Z_STACKING_CONFIG[_z_stacking_config_offered(z_stacking_config)]
+
+
+def _laser_af_per_stack_to_start(
+    choice_enabled: bool,
+    z_stack_order: str,
+    laser_af_supported: bool,
+    laser_af_checked: bool,
+    z_row_shown: bool,
+    checkbox_checked: bool,
+) -> bool:
+    """Whether an acquisition started from a tab runs laser AF before each later channel's stack.
+
+    One rule for showing/enabling the "AF per stack" checkbox AND for the start path, so a hidden or disabled
+    checkbox never takes effect and the exported YAML never says true for a run whose GUI showed no checkbox.
+    """
+    return bool(
+        choice_enabled
+        and z_stack_order == "Z FIRST"
+        and laser_af_supported
+        and laser_af_checked
+        and z_row_shown
+        and checkbox_checked
+    )
 
 
 def _z_stack_order_to_start(combobox) -> str:
@@ -4193,24 +4619,10 @@ class ObjectivesWidget(QWidget):
             self.signal_swap_active.emit(True)
         utils.threaded_operation_helper(
             self._lower_lift_then,
-            self._queued_slot("_on_objective_move_finished"),
+            _queued_slot(self, "_on_objective_move_finished"),
             move=self.objective_changer.move_to_objective,
             objective_name=objective_name,
         )
-
-    def _queued_slot(self, slot_name):
-        """A threaded_operation_helper callback that delivers (success, error_msg) to a slot on the GUI thread."""
-
-        def on_finished(success, error_msg):
-            QMetaObject.invokeMethod(
-                self,
-                slot_name,
-                Qt.QueuedConnection,
-                Q_ARG(bool, success),
-                Q_ARG(str, error_msg or ""),
-            )
-
-        return on_finished
 
     @Slot(bool, str)
     def _on_objective_move_finished(self, success, error_msg):
@@ -4266,7 +4678,7 @@ class ObjectivesWidget(QWidget):
         self._swap_target = objective_name
         self._swap_z_before_mm = None
         self._swap_retracted = False
-        utils.threaded_operation_helper(self._retract_z_and_release_servo, self._queued_slot("_on_servo_released"))
+        utils.threaded_operation_helper(self._retract_z_and_release_servo, _queued_slot(self, "_on_servo_released"))
 
     def _retract_z_and_release_servo(self):
         self._swap_z_before_mm = self.focus_servo.get_pos().z_mm
@@ -4325,7 +4737,7 @@ class ObjectivesWidget(QWidget):
         self._swap_servo_on = False
         self._swap_lift_raised = False
         self._swap_z_cleared = False
-        utils.threaded_operation_helper(self._reengage_servo_and_restore_z, self._queued_slot("_on_servo_reengaged"))
+        utils.threaded_operation_helper(self._reengage_servo_and_restore_z, _queued_slot(self, "_on_servo_reengaged"))
 
     def _profile_frozen(self) -> bool:
         is_frozen = getattr(self.focus_servo, "is_profile_frozen", None)
@@ -6738,7 +7150,7 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -6944,6 +7356,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
         self._create_apply_channel_offset_checkbox()
+        self._create_laser_af_per_stack_checkbox()
 
         self.checkbox_genAFMap = QCheckBox("Generate Focus Map")
         self.checkbox_genAFMap.setChecked(False)
@@ -6960,34 +7373,16 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_skipSaving = QCheckBox("Skip Saving")
         self.checkbox_skipSaving.setChecked(False)
 
-        self.checkbox_set_z_range = QCheckBox("Set Z-range")
-        self.checkbox_set_z_range.toggled.connect(self.toggle_z_range_controls)
-
-        # Add new components for Z-range
-        self.entry_minZ = QDoubleSpinBox()
-        self.entry_minZ.setKeyboardTracking(False)
-        self.entry_minZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_minZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
-        self.entry_minZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_minZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to current position
-        self.entry_minZ.setSuffix(" μm")
-        # self.entry_minZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.set_minZ_button = QPushButton("Set")
-        self.set_minZ_button.clicked.connect(self.set_z_min)
-
-        self.entry_maxZ = QDoubleSpinBox()
-        self.entry_maxZ.setKeyboardTracking(False)
-        self.entry_maxZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_maxZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
-        self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_maxZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to current position
-        self.entry_maxZ.setSuffix(" μm")
-        # self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.set_maxZ_button = QPushButton("Set")
-        self.set_maxZ_button.clicked.connect(self.set_z_max)
-
         self.combobox_z_stack = QComboBox()
-        self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
+        for label, z_stacking_config in _Z_STACKING_CHOICES:
+            self.combobox_z_stack.addItem(label, z_stacking_config)
+        self.combobox_z_stack.setCurrentIndex(
+            self.combobox_z_stack.findData(_z_stacking_config_offered(self.multipointController.z_stacking_config))
+        )
+        self.combobox_z_stack.setToolTip(
+            "Where the z stack sits relative to the current z: starting at it, or centred on it.\n"
+            "Not used with Set Z-range, which runs from Z-min up."
+        )
 
         self.combobox_z_order = QComboBox()
         for order in Z_STACK_ORDERS:
@@ -7048,7 +7443,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         # Create spacer items
         EDGE_SPACING = 4  # Adjust this value as needed
-        edge_spacer = QSpacerItem(EDGE_SPACING, 0, QSizePolicy.Fixed, QSizePolicy.Minimum)
 
         # Create first row layouts
         if self.use_overlap:
@@ -7058,10 +7452,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             xy_half.addStretch(1)
             xy_half.addWidget(QLabel("Ny"))
             xy_half.addWidget(self.entry_NY)
-            xy_half.addSpacerItem(edge_spacer)
+            xy_half.addSpacing(EDGE_SPACING)
 
             overlap_half = QHBoxLayout()
-            overlap_half.addSpacerItem(edge_spacer)
+            overlap_half.addSpacing(EDGE_SPACING)
             overlap_half.addWidget(QLabel("FOV Overlap"), alignment=Qt.AlignRight)
             overlap_half.addWidget(self.entry_overlap)
         else:
@@ -7072,10 +7466,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             x_half.addStretch(1)
             x_half.addWidget(QLabel("Nx"))
             x_half.addWidget(self.entry_NX)
-            x_half.addSpacerItem(edge_spacer)
+            x_half.addSpacing(EDGE_SPACING)
 
             y_half = QHBoxLayout()
-            y_half.addSpacerItem(edge_spacer)
+            y_half.addSpacing(EDGE_SPACING)
             y_half.addWidget(QLabel("dy"))
             y_half.addWidget(self.entry_deltaY)
             y_half.addStretch(1)
@@ -7089,11 +7483,12 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         dz_half.addStretch(1)
         dz_half.addWidget(QLabel("Nz"))
         dz_half.addWidget(self.entry_NZ)
+        dz_half.addWidget(self.combobox_z_stack)
         dz_half.addWidget(self.combobox_z_order)
-        dz_half.addSpacerItem(edge_spacer)
+        dz_half.addSpacing(EDGE_SPACING)
 
         dt_half = QHBoxLayout()
-        dt_half.addSpacerItem(edge_spacer)
+        dt_half.addSpacing(EDGE_SPACING)
         dt_half.addWidget(QLabel("dt"))
         dt_half.addWidget(self.entry_dt)
         dt_half.addStretch(1)
@@ -7111,26 +7506,12 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.grid_acquisition.addLayout(dz_half, 4, 0, 1, 4)
         self.grid_acquisition.addLayout(dt_half, 4, 4, 1, 4)
 
-        self.z_min_layout = QHBoxLayout()
-        self.z_min_layout.addWidget(self.set_minZ_button)
-        self.z_min_layout.addWidget(QLabel("Z-min"), Qt.AlignRight)
-        self.z_min_layout.addWidget(self.entry_minZ)
-        self.z_min_layout.addSpacerItem(edge_spacer)
-
-        self.z_max_layout = QHBoxLayout()
-        self.z_max_layout.addSpacerItem(edge_spacer)
-        self.z_max_layout.addWidget(self.set_maxZ_button)
-        self.z_max_layout.addWidget(QLabel("Z-max"), Qt.AlignRight)
-        self.z_max_layout.addWidget(self.entry_maxZ)
-
-        self.grid_acquisition.addLayout(self.z_min_layout, 5, 0, 1, 4)  # hide this in toggle
-        self.grid_acquisition.addLayout(self.z_max_layout, 5, 4, 1, 4)  # hide this in toggle
-
         grid_af = QVBoxLayout()
         grid_af.addWidget(self.checkbox_withAutofocus)
         if SUPPORT_LASER_AUTOFOCUS:
             grid_af.addWidget(self.checkbox_withReflectionAutofocus)
             grid_af.addWidget(self.checkbox_applyChannelOffset)
+            grid_af.addWidget(self.checkbox_laserAfPerStack)
         # grid_af.addWidget(self.checkbox_genAFMap)  # we are not using auto-focus map for now
         grid_af.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
@@ -7138,19 +7519,18 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             if IS_PIEZO_ONLY:
                 self.checkbox_usePiezo.setChecked(True)
                 self.checkbox_usePiezo.setVisible(False)
-        grid_af.addWidget(self.checkbox_set_z_range)
         grid_af.addWidget(self.checkbox_skipSaving)
 
         grid_config = QHBoxLayout()
         grid_config.addWidget(self.list_configurations)
-        grid_config.addSpacerItem(edge_spacer)
+        grid_config.addSpacing(EDGE_SPACING)
 
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
 
         grid_acquisition = QHBoxLayout()
-        grid_acquisition.addSpacerItem(edge_spacer)
+        grid_acquisition.addSpacing(EDGE_SPACING)
         grid_acquisition.addLayout(grid_af)
         grid_acquisition.addLayout(button_layout)
 
@@ -7210,13 +7590,15 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
+        self.checkbox_withReflectionAutofocus.toggled.connect(lambda _c: self._update_laser_af_per_stack_state())
+        self.combobox_z_order.currentIndexChanged.connect(lambda _i: self._update_laser_af_per_stack_state())
+        self._update_laser_af_per_stack_state()
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
-        # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
@@ -7241,7 +7623,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.shortcut = QShortcut(QKeySequence(";"), self)
         self.shortcut.activated.connect(self.btn_add.click)
 
-        self.toggle_z_range_controls(False)
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
 
@@ -7255,94 +7636,11 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.grid.addLayout(self.row_progress_layout)
         self.setLayout(self.grid)
 
-    def toggle_z_range_controls(self, state):
-        is_visible = bool(state)
-
-        # Hide/show widgets in z_min_layout
-        for i in range(self.z_min_layout.count()):
-            widget = self.z_min_layout.itemAt(i).widget()
-            if widget is not None:
-                widget.setVisible(is_visible)
-            widget = self.z_max_layout.itemAt(i).widget()
-            if widget is not None:
-                widget.setVisible(is_visible)
-
-        # Disable reflection autofocus checkbox if Z-range is visible
-        self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
-        # Enable/disable NZ entry based on the inverse of is_visible
-        self.entry_NZ.setEnabled(not is_visible)
-        current_z = self.stage.get_pos().z_mm * 1000
-        self.entry_minZ.setValue(current_z)
-        if is_visible:
-            self._reset_reflection_af_reference()
-        self.entry_maxZ.setValue(current_z)
-
-        if not is_visible:
-            try:
-                self.entry_minZ.valueChanged.disconnect(self.update_z_max)
-                self.entry_maxZ.valueChanged.disconnect(self.update_z_min)
-                self.entry_minZ.valueChanged.disconnect(self.update_Nz)
-                self.entry_maxZ.valueChanged.disconnect(self.update_Nz)
-                self.entry_deltaZ.valueChanged.disconnect(self.update_Nz)
-            except:
-                pass
-            # When Z-range is not specified, set Z-min and Z-max to current Z position
-            current_z = self.stage.get_pos().z_mm * 1000
-            self.entry_minZ.setValue(current_z)
-            self.entry_maxZ.setValue(current_z)
-        else:
-            self.entry_minZ.valueChanged.connect(self.update_z_max)
-            self.entry_maxZ.valueChanged.connect(self.update_z_min)
-            self.entry_minZ.valueChanged.connect(self.update_Nz)
-            self.entry_maxZ.valueChanged.connect(self.update_Nz)
-            self.entry_deltaZ.valueChanged.connect(self.update_Nz)
-
-        # Update the layout
-        self.grid.update()
-        self.updateGeometry()
-        self.update()
-
-    def init_z(self, z_pos_mm=None):
-        if z_pos_mm is None:
-            z_pos_mm = self.stage.get_pos().z_mm
-
-        # block entry update signals
-        self.entry_minZ.blockSignals(True)
-        self.entry_maxZ.blockSignals(True)
-
-        # set entry range values bith to current z pos
-        self.entry_minZ.setValue(z_pos_mm * 1000)
-        self.entry_maxZ.setValue(z_pos_mm * 1000)
-        print("init z-level flexible:", self.entry_minZ.value())
-
-        # reallow updates from entry sinals (signal enforces min <= max when we update either entry)
-        self.entry_minZ.blockSignals(False)
-        self.entry_maxZ.blockSignals(False)
-
-    def set_z_min(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
-        self.entry_minZ.setValue(z_value)
-        self._reset_reflection_af_reference()
-
-    def set_z_max(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
-        self.entry_maxZ.setValue(z_value)
-
-    def update_z_min(self, z_pos_um):
-        if z_pos_um < self.entry_minZ.value():
-            self.entry_minZ.setValue(z_pos_um)
-            self._reset_reflection_af_reference()
-
-    def update_z_max(self, z_pos_um):
-        if z_pos_um > self.entry_maxZ.value():
-            self.entry_maxZ.setValue(z_pos_um)
-
-    def _reset_reflection_af_reference(self):
-        if (
-            self.checkbox_withReflectionAutofocus.isChecked()
-            and not self.multipointController.laserAutoFocusController.set_reference()
-        ):
-            error_dialog("Failed to set reference for reflection autofocus. Is the laser autofocus initialized?")
+    def update_z_order_dropdown_visibility(self):
+        """Re-apply the opt-in Z-stack order choice (ENABLE_Z_STACK_ORDER_SELECTION), e.g. after Preferences
+        changed it at runtime."""
+        self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+        self._update_laser_af_per_stack_state()
 
     def update_z(self):
         z_mm = self.stage.get_pos().z_mm
@@ -7355,13 +7653,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         ]
         location_str = f"x:{round(self.location_list[index,0],3)} mm  y:{round(self.location_list[index,1],3)} mm  z:{round(z_mm * 1000.0,3)} μm"
         self.dropdown_location_list.setItemText(index, location_str)
-
-    def update_Nz(self):
-        z_min = self.entry_minZ.value()
-        z_max = self.entry_maxZ.value()
-        dz = self.entry_deltaZ.value()
-        nz = math.ceil((z_max - z_min) / dz) + 1
-        self.entry_NZ.setValue(nz)
 
     def update_region_progress(self, current_fov, num_fovs):
         self._log.debug(f"Updating region progress for {current_fov=}, {num_fovs=}")
@@ -7506,16 +7797,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         No dialogs, no start_new_experiment, no run - the Start button and the fluidics protocol's
         "Apply current settings" share this. Returns None, or a reason nothing further should happen.
         """
-        if self.checkbox_set_z_range.isChecked():
-            # Set Z-range (convert from μm to mm)
-            minZ = self.entry_minZ.value() / 1000
-            maxZ = self.entry_maxZ.value() / 1000
-            self.multipointController.set_z_range(minZ, maxZ)
-        else:
-            z = self.stage.get_pos().z_mm
-            dz = self.entry_deltaZ.value()
-            Nz = self.entry_NZ.value()
-            self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
+        # No Set Z-range in this tab: locations keep their own z, the stack is dz & Nz from the current z
+        # (Hongquan, 2026-10-31). A piezo range left by the Wellplate tab must not leak into this run.
+        z = self.stage.get_pos().z_mm
+        dz = self.entry_deltaZ.value()
+        Nz = self.entry_NZ.value()
+        self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))  # dz is in um, z in mm
+        self.multipointController.set_piezo_z_range_um(None)
 
         if self.checkbox_useFocusMap.isChecked():
             self.focusMapWidget.fit_surface()
@@ -7526,12 +7814,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         # Set acquisition parameters
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_z_stacking_config(self.combobox_z_stack.currentData())
         self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
         self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_laser_af_per_stack(self.laser_af_per_stack_to_start())
         self.multipointController.set_base_path(self.lineEdit_savingDir.text())
         self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
         self.multipointController.set_widget_type("flexible")
@@ -7992,6 +8282,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
+        self.multipointController.set_piezo_z_range_um(None)
 
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
@@ -8054,6 +8345,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.entry_deltaZ.setEnabled(enabled)
         self.entry_NZ.setEnabled(enabled)
         self.combobox_z_order.setEnabled(enabled)
+        if enabled:
+            self._update_laser_af_per_stack_state()  # enabled only under its rule, not blanket
+        else:
+            self.checkbox_laserAfPerStack.setEnabled(False)
         self.entry_dt.setEnabled(enabled)
         self.entry_Nt.setEnabled(enabled)
         if not self.use_overlap:
@@ -8067,7 +8362,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withAutofocus.setEnabled(enabled)
         self.checkbox_withReflectionAutofocus.setEnabled(enabled)
         self.checkbox_stitchOutput.setEnabled(enabled)
-        self.checkbox_set_z_range.setEnabled(enabled)
 
         if exclude_btn_startAcquisition is not True:
             self.btn_startAcquisition.setEnabled(enabled)
@@ -8157,6 +8451,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
             self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
+            self.combobox_z_stack.setCurrentIndex(
+                self.combobox_z_stack.findData(_z_stacking_config_offered(yaml_data.z_stacking_config))
+            )
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
@@ -8172,6 +8469,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Autofocus
             self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
             self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+            self.checkbox_laserAfPerStack.setChecked(yaml_data.laser_af_per_stack)
 
             # Load positions if present
             if yaml_data.flexible_positions:
@@ -8181,6 +8479,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Unblock all signals
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+            self._update_laser_af_per_stack_state()  # the loaded checkbox state, under the rule
 
             # Update FOV positions to reflect new NX, NY, delta values
             self.update_fov_positions()
@@ -8260,7 +8559,9 @@ def _warn_if_coordinates_stale(widget, stamp):
         QMessageBox.warning(widget, "Coordinates may be stale", stale)
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class WellplateMultiPointWidget(
+    AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, _ZRangeMixin, QFrame
+):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
@@ -8269,6 +8570,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
     signal_toggle_live_scan_grid = Signal(bool)  # enable/disable live scan grid
     # Signal to set acquisition running state from any thread (used by TCP server)
     signal_set_acquisition_running = Signal(bool, int, float)  # is_running, nz, delta_z_um
+
+    # Z parameters remembered while the Z controls are hidden; z_mode stays None until one was stored, so checking
+    # Z for the first time keeps the mode the dropdown was seeded with (INI default or cache).
+    INITIAL_STORED_Z_PARAMS = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": None}
 
     def __init__(
         self,
@@ -8323,7 +8628,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.cached_loaded_stamp = None
 
         # Add state tracking for Z parameters
-        self.stored_z_params = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": "From Bottom"}
+        self.stored_z_params = dict(self.INITIAL_STORED_Z_PARAMS)
 
         # Add state tracking for Time parameters
         self.stored_time_params = {"dt": None, "nt": None}
@@ -8391,10 +8696,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # Add z-min and z-max entries
         self.entry_minZ = QDoubleSpinBox()
         self.entry_minZ.setKeyboardTracking(False)
-        self.entry_minZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_minZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_minZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_minZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to minimum
         self.entry_minZ.setSuffix(" μm")
         # self.entry_minZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -8407,10 +8709,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.entry_maxZ = QDoubleSpinBox()
         self.entry_maxZ.setKeyboardTracking(False)
-        self.entry_maxZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_maxZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_maxZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to maximum
         self.entry_maxZ.setSuffix(" μm")
         # self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -8453,10 +8752,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_Nt.setMaximum(5000)
         self.entry_Nt.setSingleStep(1)
         self.entry_Nt.setValue(1)
-
-        self.combobox_z_stack = QComboBox()
-        self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
-        self.combobox_z_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.combobox_z_order = QComboBox()
         for order in Z_STACK_ORDERS:
@@ -8504,9 +8799,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
         self._create_apply_channel_offset_checkbox()
+        self._create_laser_af_per_stack_checkbox()
 
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
         self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
+        self._reset_z_range_entries()  # the entries above follow the motor the stack runs on
 
         self.checkbox_stitchOutput = QCheckBox("Stitch Scans")
         self.checkbox_stitchOutput.setChecked(False)
@@ -8561,7 +8858,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_z.setChecked(False)
 
         self.combobox_z_mode = QComboBox()
-        self.combobox_z_mode.addItems(["From Bottom", "Set Range"])
+        self.combobox_z_mode.addItems(list(WELLPLATE_Z_MODES))
+        self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(self.multipointController.z_stacking_config))
+        self.combobox_z_mode.setToolTip(
+            "Where the z stack sits relative to each position's z: starting at it, or centred on it;\n"
+            "or Set Range for an explicit Z-min..Z-max (runs from Z-min up)."
+        )
         self.combobox_z_mode.setEnabled(False)  # Initially disabled since Z is unchecked
 
         z_layout = QHBoxLayout()
@@ -8737,6 +9039,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         if SUPPORT_LASER_AUTOFOCUS:
             options_layout.addWidget(self.checkbox_withReflectionAutofocus)
             options_layout.addWidget(self.checkbox_applyChannelOffset)
+            options_layout.addWidget(self.checkbox_laserAfPerStack)
         # options_layout.addWidget(self.checkbox_genAFMap)  # We are not using AF map now
         options_layout.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
@@ -8812,10 +9115,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
+        self.checkbox_withReflectionAutofocus.toggled.connect(lambda _c: self._update_laser_af_per_stack_state())
+        self.combobox_z_order.currentIndexChanged.connect(lambda _i: self._update_laser_af_per_stack_state())
+        self._update_laser_af_per_stack_state()
         self.checkbox_genAFMap.toggled.connect(self.multipointController.set_gen_focus_map_flag)
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_useFocusMap.toggled.connect(self.multipointController.set_manual_focus_map_flag)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
+        self.checkbox_usePiezo.toggled.connect(self._on_stack_motor_changed)
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
@@ -8860,6 +9167,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # cache), so it is intentionally NOT wired to this settings cache.
         self.checkbox_withAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
+        self.checkbox_laserAfPerStack.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
 
     def enable_manual_ROI(self):
@@ -8908,6 +9216,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 "z_order": self.combobox_z_order.currentData(),
                 "contrast_af": self.checkbox_withAutofocus.isChecked(),
                 "laser_af": self.checkbox_withReflectionAutofocus.isChecked(),
+                "laser_af_per_stack": self.checkbox_laserAfPerStack.isChecked(),
             }
 
             with open("cache/multipoint_widget_config.yaml", "w") as f:
@@ -8965,7 +9274,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.checkbox_z.setChecked(settings.get("z_enabled", False))
 
             z_mode = settings.get("z_mode", "From Bottom")
-            if z_mode in ["From Bottom", "Set Range"]:
+            if z_mode in WELLPLATE_Z_MODES:
                 self.combobox_z_mode.setCurrentText(z_mode)
 
             self.checkbox_time.setChecked(settings.get("time_enabled", False))
@@ -8981,6 +9290,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Restore autofocus settings
             self.checkbox_withAutofocus.setChecked(settings.get("contrast_af", False))
             self.checkbox_withReflectionAutofocus.setChecked(settings.get("laser_af", False))
+            self.checkbox_laserAfPerStack.setChecked(settings.get("laser_af_per_stack", False))
 
             # Unblock signals
             self.checkbox_xy.blockSignals(False)
@@ -8997,6 +9307,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.list_configurations.blockSignals(False)
             self.checkbox_withAutofocus.blockSignals(False)
             self.checkbox_withReflectionAutofocus.blockSignals(False)
+            # The restored Z / Z First / Laser AF state came in with signals blocked: re-apply the rule for the
+            # "AF per stack" checkbox (shown / enabled / pushed) from the loaded values.
+            self._update_laser_af_per_stack_state()
 
             # Update UI state based on loaded settings
             self.update_scan_control_ui()
@@ -9315,6 +9628,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         # Enable/disable the Z mode dropdown
         self.combobox_z_mode.setEnabled(checked)
+        self._update_laser_af_per_stack_state()  # the "AF per stack" checkbox goes with the z row
 
         if checked:
             # Z Stack enabled - restore stored parameters and show controls
@@ -9411,6 +9725,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.stored_z_params["z_max"] = self.entry_maxZ.value()
         self.stored_z_params["z_mode"] = self.combobox_z_mode.currentText()
 
+    def _on_stack_motor_changed(self):
+        """A range recorded on one motor means nothing on the other: restart it at the new motor's position."""
+        self.stored_z_params["z_min"] = self.stored_z_params["z_max"] = None
+        self._reset_z_range_entries()
+
     def restore_z_parameters(self):
         """Restore stored Z parameters when showing controls"""
         if self.stored_z_params["dz"] is not None:
@@ -9421,7 +9740,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_minZ.setValue(self.stored_z_params["z_min"])
         if self.stored_z_params["z_max"] is not None:
             self.entry_maxZ.setValue(self.stored_z_params["z_max"])
-        self.combobox_z_mode.setCurrentText(self.stored_z_params["z_mode"])
+        if self.stored_z_params["z_mode"] is not None:
+            self.combobox_z_mode.setCurrentText(self.stored_z_params["z_mode"])
 
     def hide_z_controls(self):
         """Hide Z-related controls and set single-slice parameters"""
@@ -9439,20 +9759,32 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                     widget.setVisible(False)
 
         # Set single-slice parameters
-        current_z = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        current_z = self._stack_z_um()
         self.entry_NZ.setValue(1)
         self.entry_minZ.setValue(current_z)
         self.entry_maxZ.setValue(current_z)
-        self.combobox_z_mode.blockSignals(True)
-        self.combobox_z_mode.setCurrentText("From Bottom")
-        self.combobox_z_mode.blockSignals(False)
+        # The Z mode is left alone: with Nz = 1 it does not matter, and resetting it here would drop the INI
+        # default or the user's choice every time Z is unchecked (and at start-up, when Z starts unchecked).
+
+    def _z_row_shown(self) -> bool:
+        return self.checkbox_z.isChecked()
+
+    def update_z_order_dropdown_visibility(self):
+        """Re-apply the opt-in Z-stack order choice (ENABLE_Z_STACK_ORDER_SELECTION), e.g. after Preferences
+        changed it at runtime: shown with the rest of the z row (Z checked) and only when the choice is on."""
+        self.combobox_z_order.setVisible(self.checkbox_z.isChecked() and control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+        self._update_laser_af_per_stack_state()
 
     def show_z_controls(self, visible):
         """Show Z-related controls"""
         # Show dz/Nz widgets
         for i in range(self.dz_layout.count()):
             widget = self.dz_layout.itemAt(i).widget()
-            if widget:
+            if widget is self.combobox_z_order:
+                # Opt-in choice (ENABLE_Z_STACK_ORDER_SELECTION): off, it stays hidden with the row shown, since
+                # the start path (_z_stack_order_to_start) ignores it and would silently run Channel First.
+                widget.setVisible(visible and control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+            elif widget:
                 widget.setVisible(visible)
 
         # Show/hide Z-min/Z-max based on dropdown selection AND visibility
@@ -9622,7 +9954,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
-        current_z = self.stage.get_pos().z_mm * 1000
+        current_z = self._stack_z_um()
         self.entry_minZ.setValue(current_z)
         if is_visible:
             self._reset_reflection_af_reference()
@@ -9769,21 +10101,19 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_NZ.setValue(nz)
 
     def set_z_min(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        z_value = self._stack_z_um()
         self.entry_minZ.setValue(z_value)
         self._reset_reflection_af_reference()
 
     def set_z_max(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        z_value = self._stack_z_um()
         self.entry_maxZ.setValue(z_value)
 
     def goto_z_min(self):
-        z_value_mm = self.entry_minZ.value() / 1000  # Convert from μm to mm
-        self.stage.move_z_to(z_value_mm)
+        self._move_stack_z_to_um(self.entry_minZ.value())
 
     def goto_z_max(self):
-        z_value_mm = self.entry_maxZ.value() / 1000  # Convert from μm to mm
-        self.stage.move_z_to(z_value_mm)
+        self._move_stack_z_to_um(self.entry_maxZ.value())
 
     def update_z_min(self, z_pos_um):
         if z_pos_um < self.entry_minZ.value():
@@ -9804,18 +10134,17 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             if was_live:
                 self.liveController.start_live()
 
-    def init_z(self, z_pos_mm=None):
+    def init_z(self):
         # sets initial z range form the current z position used after startup of the GUI
-        if z_pos_mm is None:
-            z_pos_mm = self.stage.get_pos().z_mm
+        z_um = self._stack_z_um()
 
         # block entry update signals
         self.entry_minZ.blockSignals(True)
         self.entry_maxZ.blockSignals(True)
 
         # set entry range values bith to current z pos
-        self.entry_minZ.setValue(z_pos_mm * 1000)
-        self.entry_maxZ.setValue(z_pos_mm * 1000)
+        self.entry_minZ.setValue(z_um)
+        self.entry_maxZ.setValue(z_um)
         self._log.debug(f"Init z-level wellplate: {self.entry_minZ.value()}")
 
         # reallow updates from entry sinals (signal enforces min <= max when we update either entry)
@@ -9932,17 +10261,16 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.scanCoordinates.sort_coordinates()
 
-        if self.combobox_z_mode.currentText() == "Set Range":
-            # Set Z-range (convert from μm to mm)
-            minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
-            maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
-            self.multipointController.set_z_range(minZ, maxZ)
-            self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
+        # Unchecking Z leaves the Z mode as it was (Nz = 1), so a "Set Range" there only counts with Z checked
+        if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() == "Set Range":
+            self._push_set_z_range()
+            self._log.debug(f"Set z-range: ({self.entry_minZ.value()}, {self.entry_maxZ.value()}) µm")
         else:
             z = self.stage.get_pos().z_mm
             dz = self.entry_deltaZ.value()
             Nz = self.entry_NZ.value()
-            self.multipointController.set_z_range(z, z + dz * (Nz - 1))
+            self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))  # dz is in um, z in mm
+            self.multipointController.set_piezo_z_range_um(None)
 
         if self.checkbox_useFocusMap.isChecked():
             # Try to fit the surface; on success set the surface fitter in the controller
@@ -9956,12 +10284,16 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_z_stacking_config(
+            _z_stacking_config_for_z_mode(self.combobox_z_mode.currentText())
+        )
         self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
         self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_laser_af_per_stack(self.laser_af_per_stack_to_start())
         self.multipointController.set_base_path(self.lineEdit_savingDir.text())
         self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
         self.multipointController.set_widget_type("wellplate")
@@ -10102,6 +10434,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         # Restore scan controls visibility based on XY checkbox state
         if enabled:
+            # Every child was just enabled: the "AF per stack" box is enabled only under its rule (CodeRabbit).
+            self._update_laser_af_per_stack_state()
             self.update_scan_control_ui()
 
             # Restore mode dropdown states based on their respective checkboxes
@@ -10110,8 +10444,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             # Restore Z controls based on Z mode
             if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() == "Set Range":
-                # In Set Range mode, Nz should be disabled
+                # In Set Range mode, Nz comes from the range, and laser AF stays off (see toggle_z_range_controls)
                 self.entry_NZ.setEnabled(False)
+                self.checkbox_withReflectionAutofocus.setEnabled(False)
 
             # Restore coverage based on XY mode
             if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position":
@@ -10154,6 +10489,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
+        self.multipointController.set_piezo_z_range_um(None)
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
         self.multipointController.run_acquisition(acquire_current_fov=True)
@@ -10345,6 +10681,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         for widget in widgets_to_block:
             widget.blockSignals(True)
 
+        # Only a piezo range marks Set Range in the YAML: z_range_mm is written for every z mode.
+        piezo_z_range_um = yaml_data.piezo_z_range_um if yaml_data.use_piezo else None
+
         try:
             # Z-stack settings
             self.checkbox_z.setChecked(yaml_data.nz > 1)
@@ -10352,13 +10691,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
             self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
 
-            # Z mode - map YAML config to combobox text
-            z_mode_map = {
-                "FROM BOTTOM": "From Bottom",
-                "SET RANGE": "Set Range",
-            }
-            z_mode = z_mode_map.get(yaml_data.z_stacking_config, "From Bottom")
-            self.combobox_z_mode.setCurrentText(z_mode)
+            # Z mode - Set Range for a saved piezo range, otherwise the YAML's z-stacking config as the dropdown shows it
+            if piezo_z_range_um is not None:
+                self.combobox_z_mode.setCurrentText("Set Range")
+            else:
+                self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(yaml_data.z_stacking_config))
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
@@ -10386,6 +10723,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Autofocus
             self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
             self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+            self.checkbox_laserAfPerStack.setChecked(yaml_data.laser_af_per_stack)
 
             # XY mode - set to Select Wells for wellplate YAML
             if yaml_data.xy_mode in ["Current Position", "Select Wells", "Manual", "Load Coordinates"]:
@@ -10402,6 +10740,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Unblock all signals
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+            self._update_laser_af_per_stack_state()  # the loaded checkbox state, under the rule
+
+            # The Piezo Z-Stack checkbox changed with its signals blocked: give the Z-min/Z-max entries
+            # the loaded motor's travel limits (its toggled handler does this on a click).
+            self._on_stack_motor_changed()
 
             # Enable/disable mode dropdowns based on checkbox states
             self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
@@ -10412,6 +10755,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.update_control_visibility()
             self.update_tab_styles()
             self.update_coordinates()
+
+            # After update_control_visibility, which starts both entries at the current position
+            if piezo_z_range_um is not None:
+                self.entry_minZ.setValue(piezo_z_range_um[0])
+                self.entry_maxZ.setValue(piezo_z_range_um[1])
 
     def _load_well_regions(self, regions):
         """Load well regions from YAML and select them in the well selector."""

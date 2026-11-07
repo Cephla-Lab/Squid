@@ -638,9 +638,6 @@ class HighContentScreeningGui(QMainWindow):
         self._stage_homing_saved_enabled = {}
         # Firmware < 1.8 cannot lock the control panel: said once per session, not at every home
         self._panel_lock_unsupported_logged = False
-        # Axes startup would have homed but did not (the piezo-only prompt was cancelled): the not-homed warning shows
-        # until each is homed again.
-        self._unreferenced_axes = set()
         # A transient status-bar message for startup, shown once the window first appears (showEvent)
         self._startup_status_message: Optional[str] = None
 
@@ -742,7 +739,7 @@ class HighContentScreeningGui(QMainWindow):
         self.objectivesWidget: Optional[widgets.ObjectivesWidget] = None
         self.filterControllerWidget: Optional[widgets.FilterControllerWidget] = None
         self.squidFilterWidget: Optional[widgets.SquidFilterWidget] = None
-        self.laserEngineWidget: Optional[LaserEngineWidget] = None
+        self.laserEngineWidget: Optional[QWidget] = None
         self.versaLaseWidget: Optional[VersaLaseWidget] = None
         self.recordingControlWidget: Optional[widgets.RecordingWidget] = None
         self.wellplateFormatWidget: Optional[widgets.WellplateFormatWidget] = None
@@ -805,12 +802,6 @@ class HighContentScreeningGui(QMainWindow):
                     self.stage.move_z_to(target_z_mm)
             else:
                 self.log.info("Skipping cached position restoration (--skip-init flag set)")
-        elif self.microscope.startup_homing is StartupHoming.DECLINED:
-            # The cached coordinates mean nothing to a stage that has not homed: nothing moves.
-            self.log.info("Startup homing was declined: the stage is not moved, its positions are not referenced")
-            z_homes = control._def.HOMING_ENABLED_Z and not control._def.USE_PI_FOCUS_STAGE
-            self._unreferenced_axes = {"x", "y"} | ({"z"} if z_homes else set())
-            self._update_not_homed_warning()
         elif HOMING_ENABLED_X and HOMING_ENABLED_Y and self._restored_loading_state is not None:
             still_homed = self.microscope.startup_homing is StartupHoming.ALREADY_HOMED
             if still_homed and squid.stage.utils.is_at_loading_xy(self.stage):
@@ -1090,8 +1081,13 @@ class HighContentScreeningGui(QMainWindow):
                 self.emission_filter_wheel, self.liveController, config_repo=self.microscope.config_repo
             )
 
-        if USE_SQUID_LASER_ENGINE and self.microscope.addons.squid_laser_engine is not None:
+        if LASER_ENGINE == "v1" and self.microscope.addons.squid_laser_engine is not None:
             self.laserEngineWidget = LaserEngineWidget(self.microscope.addons.squid_laser_engine)
+
+        if LASER_ENGINE == "v2" and self.microscope.addons.squid_laser_engine is not None:
+            from control.laser_engine_v2_widget import LaserEngineV2Widget
+
+            self.laserEngineWidget = LaserEngineV2Widget(self.microscope.addons.squid_laser_engine)
 
         if self.microscope.illumination_controller.light_source_type == LightSourceType.VersaLase:
             self.versaLaseWidget = VersaLaseWidget(
@@ -1546,11 +1542,6 @@ class HighContentScreeningGui(QMainWindow):
         if self.warningErrorWidget is not None:
             self.statusBar().addWidget(self.warningErrorWidget)  # Left-aligned
 
-        # Stage not homed (startup homing declined): shown until every axis startup homes is homed again
-        self._not_homed_label = QLabel("Stage not homed: positions are not referenced. Use Home stage.")
-        self._not_homed_label.setStyleSheet("color: #c0392b; font-weight: bold;")
-        self._not_homed_label.setVisible(False)
-        self.statusBar().addPermanentWidget(self._not_homed_label)
         # A transient message (e.g. "Stage homed") shows the status bar for as long as it is displayed
         self.statusBar().messageChanged.connect(lambda _message: self._update_status_bar_visibility())
 
@@ -2052,11 +2043,16 @@ class HighContentScreeningGui(QMainWindow):
                 CACHED_CONFIG_FILE_PATH,
                 parent=self,
                 on_restart=self.restart_application,
+                stage=self.stage,
             )
             dialog.signal_config_changed.connect(self._update_ram_monitor_visibility)
             dialog.signal_config_changed.connect(
                 lambda: self.navigationWidget.set_click_to_move(control._def.ENABLE_CLICK_TO_MOVE)
             )
+            # The Z-stack order dropdown preference applies live: the tabs re-read the flag.
+            for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget):
+                if tab is not None:
+                    dialog.signal_config_changed.connect(tab.update_z_order_dropdown_visibility)
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")
@@ -2560,7 +2556,7 @@ class HighContentScreeningGui(QMainWindow):
         if self._home_stage_refused():
             return
         if control._def.IS_PIEZO_ONLY:
-            objective_lowered = widgets.ask_objective_lowered(self)
+            objective_lowered = widgets.confirm_nosepiece_lowered(self, decline_text="Cancel")
             confirmed = objective_lowered
         else:
             objective_lowered = False
@@ -2606,17 +2602,11 @@ class HighContentScreeningGui(QMainWindow):
     def _on_home_stage_finished(self, ok: bool, error: str):
         """Home stage's result. The controls and live come back with the claim's release, not here."""
         if ok:
-            self._unreferenced_axes.clear()
-            self._update_not_homed_warning()
             self.statusBar().showMessage("Stage homed", 10000)
         else:
             widgets.show_homing_failure(
                 self, "Home Stage", error, still_homing=self.microscope.stage_homing_in_progress
             )
-
-    def _on_axes_homed(self, axes):
-        self._unreferenced_axes -= set(axes)
-        self._update_not_homed_warning()
 
     def _restore_cached_z(self, cached_pos: Optional[squid.abc.Pos]) -> None:
         """Startup's Z restore, once the stage is homed (HOMED) or still homed (ALREADY_HOMED), when Z is referenced:
@@ -2640,14 +2630,9 @@ class HighContentScreeningGui(QMainWindow):
         self._init_multipoint_z()
 
     def _init_multipoint_z(self) -> None:
-        """The multipoint widgets take the stage's current Z as their Z range (startup, once Z is where it stays)."""
+        """The Wellplate tab takes the stage's current Z as its Z range (startup, once Z is where it stays)."""
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellplateMultiPointWidget.init_z()
-        self.flexibleMultiPointWidget.init_z()
-
-    def _update_not_homed_warning(self):
-        self._not_homed_label.setVisible(bool(self._unreferenced_axes))
-        self._update_status_bar_visibility()
 
     def _connect_stage_homing(self):
         """Home stage, Home X/Y, the homing lock, and the one exclusion every homing claim goes through."""
@@ -2655,7 +2640,6 @@ class HighContentScreeningGui(QMainWindow):
         self.microscope.add_stage_homing_listener(self._relay_stage_homing_changed)
         self.stageUtils.set_homing_hooks(self._stage_homing_blocker, self._claim_stage_for_homing)
         self.stageUtils.signal_home_stage_requested.connect(self._on_home_stage_requested)
-        self.stageUtils.signal_axes_homed.connect(self._on_axes_homed)
         self.signal_home_stage_finished.connect(self._on_home_stage_finished)
 
     def _claim_lift_for_acquisition(self):
@@ -3083,7 +3067,6 @@ class HighContentScreeningGui(QMainWindow):
             self._ram_monitor_should_show
             or self._bp_monitor_should_show
             or warning_has_messages
-            or bool(self._unreferenced_axes)
             or bool(self.statusBar().currentMessage())
         )
 

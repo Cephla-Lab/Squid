@@ -1030,7 +1030,7 @@ ENABLE_STROBE_OUTPUT = False
 ACQUISITION_PATTERN = "S-Pattern"  # 'S-Pattern', 'Unidirectional'
 FOV_PATTERN = "Unidirectional"  # 'S-Pattern', 'Unidirectional'
 
-Z_STACKING_CONFIG = "FROM BOTTOM"  # 'FROM BOTTOM', 'FROM TOP'
+Z_STACKING_CONFIG = "FROM BOTTOM"  # 'FROM BOTTOM', 'FROM CENTER', 'FROM TOP'
 Z_STACKING_CONFIG_MAP = {0: "FROM BOTTOM", 1: "FROM CENTER", 2: "FROM TOP"}
 
 # Order of the z and channel loops at each FOV:
@@ -1125,6 +1125,12 @@ USE_CELESTA_ETHERNET_CONTROL = False
 USE_ANDOR_LASER_CONTROL = False
 ANDOR_LASER_VID = 0x1BDB
 ANDOR_LASER_PID = 0x0300
+# Active blanking with an Andor SDK3 camera and Andor laser engine; one switch for both halves.
+# Laser: when a channel is selected, only its line's shutter is open (every other line on every unit is
+# closed), so the camera's exposure signal gates the one active line. Camera: the AUX OUT pin follows the
+# "all rows exposing" window (SDK3 AuxiliaryOutSource "FireAll"); this half is what a Dragonfly with TWO
+# Andor cameras needs, and does no harm with one. Off by default; needs AUX OUT wired to the engine.
+USE_ANDOR_ACTIVE_BLANKING = False
 # Vortran Stradus VersaLase over USB HID. VORTRAN_SHUTTER_CONTROL_MODE is "TTL" (TTL lines gate
 # the light) or "Software" (emission toggled over USB - slow, heads with the 5 s emission delay
 # take 5 s to turn on). With TTL, VORTRAN_TTL_INPUT is the VersaLase input the TTL lines are wired
@@ -1138,8 +1144,15 @@ VORTRAN_TTL_INPUT = "LASER_ENABLE"
 # When True, software opens a USB-serial connection to the laser engine, polls
 # per-channel status (state/temperature/ΔT/TTL), and gates acquisition on
 # channels reaching ACTIVE state.
+# Legacy keys of this (v1) engine, still read: set laser_engine = v1 and laser_engine_sn (below) instead.
 USE_SQUID_LASER_ENGINE = False
 SQUID_LASER_ENGINE_SN = None  # USB serial number; required when USE_SQUID_LASER_ENGINE is True
+
+# Cephla laser engine (docs/laser-engine.md): laser_engine = v1 (the engine above) or v2 (control/laser_engine_v2.py:
+# intensity over USB, exposure timing on the Squid controller TTL lines D1-D5); blank or None = no laser engine.
+# Resolved at startup together with the legacy keys above (_resolve_laser_engine); the code reads only these two.
+LASER_ENGINE = None
+LASER_ENGINE_SN = None  # the engine's USB serial number, every version (all digits is fine: matched as text)
 
 XLIGHT_SERIAL_NUMBER = "B00031BE"
 XLIGHT_SLEEP_TIME_FOR_WHEEL = 0.25
@@ -1283,6 +1296,21 @@ SQUID_FILTERWHEEL_CONFIGS = {
 # Stage
 USE_PRIOR_STAGE = False
 PRIOR_STAGE_SN = ""
+# Encoders on a Prior stage: False switches them off at start-up (open loop), True on (closed loop), None sends
+# nothing. A ProScan turns on the encoders it detects at power-up and keeps a switched state until it is power-cycled,
+# so going back to None does not restore closed loop by itself. On an H117 closed loop made short moves ~3x slower and
+# did not recover a stall. Switched off, they still count ("P,e"), e.g. to check for lost steps.
+PRIOR_STAGE_USE_ENCODERS = None
+# ProScan SMS / SAS values, 1-1000. On an H117(1MM) stage 100 = 6 mm/s and 28.6 mm/s^2; 1000 = 60 mm/s, 285.5 mm/s^2.
+# Editable in Preferences > Advanced > Prior Stage, which also sends them to the connected stage.
+PRIOR_STAGE_MAX_SPEED = 100
+PRIOR_STAGE_ACCELERATION = 100
+# This rig's ceilings: the most the stage takes without losing steps (it runs open loop). Preferences and the driver
+# refuse more. 1000 is the controller's own maximum; set lower where faster moves lose steps. Speed and acceleration
+# act together: an H117(1MM) on a Squid stalled at 200/250 (its Y axis, on 10 mm moves) but not at 200/100, 175/250
+# or 150 with any acceleration up to 1000.
+PRIOR_STAGE_MAX_SPEED_LIMIT = 1000
+PRIOR_STAGE_ACCELERATION_LIMIT = 1000
 
 # PI V-308 / C-414 focus drive used as the main Z (wraps the configured XY stage)
 USE_PI_FOCUS_STAGE = False
@@ -1762,6 +1790,34 @@ def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> Non
         )
 
 
+def _resolve_laser_engine(laser_engine, laser_engine_sn, use_squid_laser_engine, squid_laser_engine_sn) -> tuple:
+    """(LASER_ENGINE, LASER_ENGINE_SN) from the machine .ini: laser_engine = v1 | v2 (blank / none = no engine) and
+    laser_engine_sn, plus the legacy v1 keys use_squid_laser_engine / squid_laser_engine_sn. Raises ValueError for an
+    unknown laser_engine and for use_squid_laser_engine = True together with laser_engine = v2."""
+    engine = None if laser_engine is None else str(laser_engine).strip().lower()
+    if engine in ("", "none"):
+        engine = None
+    if engine is not None and engine not in ("v1", "v2"):
+        raise ValueError(
+            f"laser_engine = {laser_engine!r} in the machine .ini: use v1, v2, or leave it blank (no laser engine)"
+        )
+    if use_squid_laser_engine:
+        if engine == "v2":
+            raise ValueError(
+                "use_squid_laser_engine = True (the v1 engine) contradicts laser_engine = v2 in the machine .ini: "
+                "remove use_squid_laser_engine"
+            )
+        if engine is None:
+            log.warning(
+                "use laser_engine = v1 (and laser_engine_sn) instead of use_squid_laser_engine (and squid_laser_engine_sn)"
+            )
+            engine = "v1"
+    sn = None if laser_engine_sn in (None, "") else laser_engine_sn
+    if sn is None and engine == "v1":
+        sn = squid_laser_engine_sn
+    return engine, sn
+
+
 # fluidics
 RUN_FLUIDICS = False
 FLUIDICS_CONFIG_PATH = "machine_configs/fluidics_config.yaml"  # the library's FluidicsConfig YAML
@@ -1891,6 +1947,9 @@ if config_files:
         populate_class_from_dict(myclass, pop_items)
 
     _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
+    LASER_ENGINE, LASER_ENGINE_SN = _resolve_laser_engine(
+        LASER_ENGINE, LASER_ENGINE_SN, USE_SQUID_LASER_ENGINE, SQUID_LASER_ENGINE_SN
+    )
 
     with open("cache/config_file_path.txt", "w") as file:
         file.write(config_files[0])
@@ -1905,6 +1964,9 @@ else:
         log.info("load machine-specific configuration")
         exec(open(config_files[0]).read())
         _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
+        LASER_ENGINE, LASER_ENGINE_SN = _resolve_laser_engine(
+            LASER_ENGINE, LASER_ENGINE_SN, USE_SQUID_LASER_ENGINE, SQUID_LASER_ENGINE_SN
+        )
     else:
         log.error("machine-specific configuration not present, the program will exit")
         sys.exit(1)

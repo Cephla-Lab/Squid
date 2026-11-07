@@ -220,3 +220,65 @@ def test_settings_block_rejects_an_unknown_z_stack_order_at_load():
 
     with pytest.raises(ValidationError, match="z_stack.order"):
         SettingsBlock.model_validate({**SETTINGS, "z_stack": {"order": "TIME FIRST"}})
+
+
+def test_settings_block_keeps_a_piezo_range_through_to_the_acquisition_data():
+    from control.core.acquisition_settings import acquisition_data_from_blocks
+
+    z_stack = {**SETTINGS["z_stack"], "use_piezo": True, "z_range_mm": [1.0, 1.0], "piezo_z_range_um": [20.0, 26.0]}
+    block = SettingsBlock.model_validate({**SETTINGS, "z_stack": z_stack})
+    assert acquisition_data_from_blocks(block.model_dump(), COORDS).piezo_z_range_um == (20.0, 26.0)
+
+
+def test_settings_block_from_an_acquisition_file_keeps_its_piezo_range():
+    from control.acquisition_yaml_loader import AcquisitionYAMLData
+    from control.core.fluidics_protocol.resolve import settings_block_from_acquisition
+
+    data = AcquisitionYAMLData(
+        widget_type="wellplate", use_piezo=True, z_range_mm=(1.0, 1.0), piezo_z_range_um=(20.0, 26.0)
+    )
+    assert settings_block_from_acquisition(data, "acquisition.yaml").z_stack.piezo_z_range_um == [20.0, 26.0]
+
+
+def test_settings_block_carries_laser_af_per_stack_to_the_acquisition_data():
+    from control.core.acquisition_settings import acquisition_data_from_blocks
+
+    block = SettingsBlock.model_validate(
+        {
+            **SETTINGS,
+            "z_stack": {**SETTINGS["z_stack"], "order": "Z FIRST"},
+            "autofocus": {"laser_af": True, "laser_af_per_stack": True},
+        }
+    )
+    assert block.autofocus.laser_af_per_stack is True
+    assert acquisition_data_from_blocks(block.model_dump(), COORDS).laser_af_per_stack is True
+
+
+def test_settings_block_laser_af_per_stack_defaults_off():
+    assert SettingsBlock.model_validate(SETTINGS).autofocus.laser_af_per_stack is False
+
+
+@pytest.mark.parametrize(
+    "autofocus, z_stack",
+    [
+        ({"laser_af": False, "laser_af_per_stack": True}, {"order": "Z FIRST"}),  # no laser AF
+        ({"laser_af": True, "laser_af_per_stack": True}, {"order": "CHANNEL FIRST"}),  # not Z First
+    ],
+)
+def test_settings_block_rejects_laser_af_per_stack_without_its_prerequisites(autofocus, z_stack):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="laser_af_per_stack"):
+        SettingsBlock.model_validate(
+            {**SETTINGS, "autofocus": autofocus, "z_stack": {**SETTINGS["z_stack"], **z_stack}}
+        )
+
+
+def test_resolve_carries_laser_af_per_stack_into_the_settings_block():
+    from control.acquisition_yaml_loader import parse_acquisition_dict
+    from control.core.fluidics_protocol.resolve import settings_block_from_acquisition
+
+    data = parse_acquisition_dict(
+        {"z_stack": {"nz": 3, "order": "Z FIRST"}, "autofocus": {"laser_af": True, "laser_af_per_stack": True}}
+    )
+    assert settings_block_from_acquisition(data, "acquisition.yaml").autofocus.laser_af_per_stack is True

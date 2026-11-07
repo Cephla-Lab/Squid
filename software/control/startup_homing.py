@@ -5,11 +5,6 @@ import hashlib
 
 import control._def
 
-OBJECTIVE_LOWERED_PROMPT = (
-    "Turn the focus knob to lower the objective clear of the sample holder, then click Home. "
-    "The stage will move to its X and Y limit switches."
-)
-
 
 class ObjectiveNotLoweredError(RuntimeError):
     """An XY home was requested on a piezo-only system without the per-operation confirmation."""
@@ -47,7 +42,11 @@ class StartupHoming(enum.Enum):
     NOT_RUN = "not_run"  # skip_init: startup did not touch the stage
     HOMED = "homed"  # startup homed the stage
     ALREADY_HOMED = "already_homed"  # the controller vouched the stage is still homed (a warm start): not homed again
-    DECLINED = "declined"  # a person cancelled the piezo-only prompt; the stage is not referenced
+
+
+class StartupHomingDeclined(RuntimeError):
+    """A person declined the piezo-only stop sign at startup. The Microscope closed the hardware it had opened and was
+    not built; the caller quits (main_hcs.py)."""
 
 
 def startup_needs_objective_prompt() -> bool:

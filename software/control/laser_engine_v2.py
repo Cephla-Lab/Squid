@@ -1,0 +1,1466 @@
+"""Cephla laser engine v2 — Squid driver. Variants (firmware VAR?): 400R / 400HP (400 µm fiber) and DF (50 µm fiber, for
+the Dragonfly; adds a 560 nm fiber laser with an AOM on line 3).
+
+One object owns the engine link (and, on DF, the engine's 560 nm source). It polls STAT? once a second, which is also the heartbeat the
+firmware needs to stay armed; publishes per-line readiness; arms and brings every line up at Squid startup, and re-arms on use after
+any disarm; and sets intensities, linear in each line's drive (% of its current ceiling; on DF line 3, of the AOM's
+0-5 V input). Exposure timing is NOT here: the Squid controller's TTL lines gate the lines in hardware
+(IlluminationController, ShutterControlMode.TTL).
+
+DF 560 nm: the laser runs at the operator's power (Laser Engine tab, remembered in cache/laser_engine_v2.yaml);
+Squid's 560 intensity drives the AOM amplitude (line 3 analog); the AOM's on/off input is the controller's D3 TTL; the
+shutter is safety only - it opens at line 3 READY and stays open through the line-3 ramp of an AOM set-point while the
+source reads ready; it is closed in every other state and before any source restart.
+"""
+
+import math
+import queue
+import threading
+import time
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Callable, Dict, Iterable, List, Optional, Protocol, Tuple
+
+from qtpy.QtCore import QObject, Signal
+
+import squid.logging
+from control._def import source_code_to_port_index
+from control.laser_engine_v2_settings import SHUTTER_ALWAYS_OPEN, SHUTTER_MODES, SHUTTER_ON_USE, load_settings
+from control.laser_engine_v2_link import EngineCommandError, EngineLink, EngineLinkError
+from control.laser_engine_v2_status import (
+    EngineV2Status,
+    ERROR_STATES,
+    is_560_line,
+    LineState,
+    parse_status,
+    REFUSE_STATES,
+    SOURCE_560_LINE,
+    _source_state,
+    SourceStatus,
+)
+from control.lighting import _DEFAULT_CHANNEL_MAPPINGS_TTL, IntensityControlMode, ShutterControlMode
+from squid.abc import LightSource, LightSourceHold, MechanicalShutter
+
+IDN_PREFIX = "Cephla,LaserEngineCarrier-rev1,"
+
+
+class LaserEngineV2Error(RuntimeError):
+    def __init__(self, channel_key: str, message: str, needs_operator: bool = False):
+        super().__init__(f"[{channel_key}] {message}")
+        self.channel_key = channel_key
+        self.needs_operator = needs_operator  # only the operator can clear it (e.g. the 560 key cycle)
+
+
+@dataclass(frozen=True)
+class EngineOptions:
+    """The engine's options at build: the Laser Engine tab's saved 560 settings (options_from_cache)."""
+
+    source_idle_off_min: float = 30.0  # DF 560 source off after this long without use; 0 = 24 h (there is no "never")
+    source_power_mw: Optional[float] = None  # DF: 560 laser power (mW) set by the operator; None = the source's minimum
+    shutter_mode: str = SHUTTER_ON_USE  # DF: the 560 mechanical shutter, on_use or always_open
+
+    def __post_init__(self):
+        if self.source_idle_off_min < 0:
+            raise ValueError("source_idle_off_min must be >= 0 (0 = 24 h)")
+        if self.shutter_mode not in SHUTTER_MODES:
+            raise ValueError(f"shutter_mode = {self.shutter_mode!r}: one of {', '.join(SHUTTER_MODES)}")
+        mw = self.source_power_mw
+        if mw is not None:
+            if isinstance(mw, bool) or not isinstance(mw, (int, float)) or not math.isfinite(mw):
+                raise ValueError(f"source_power_mw = {mw!r}: a number of mW, or None for the source's minimum")
+            object.__setattr__(self, "source_power_mw", float(mw))
+
+
+@dataclass(frozen=True)
+class ShutterControl:
+    """The Laser Engine tab's shutter button: what it can do now (LaserEngineV2.shutter_control)."""
+
+    manual_open: bool  # opened by hand, until Close, a use of the 560, or line 3 not READY
+    users: Tuple[str, ...]  # what uses the 560 now (holds on line 3): they control the shutter
+    can_open: bool
+    reason: str  # why it cannot be opened by hand now; "" when it can
+
+
+def _uptime_text(ms: float) -> str:
+    s = ms / 1000.0
+    if s < 120:
+        return f"{s:.0f} s"
+    if s < 7200:
+        return f"{s / 60:.0f} min"
+    return f"{s / 3600:.1f} h"
+
+
+AOM_FULL_SCALE_V = 5.0  # GATED3 = the AOM driver's analog input, 0-5 V; full scale = full transmission
+
+
+def idle_off_seconds(minutes: float) -> float:
+    """Seconds before an unused 560 source is switched off; 0 minutes = 24 h, so it is never left on indefinitely."""
+    if minutes < 0:
+        raise ValueError("idle-off minutes must be >= 0 (0 = 24 h)")
+    return float(minutes if minutes > 0 else 24 * 60) * 60.0
+
+
+class SourceDriver(Protocol):
+    """The engine's own free-space source (DF: the 560 nm fiber laser). Implementations must never raise from poll()."""
+
+    max_power_mw: float
+    min_power_mw: float  # the source's own minimum set-point (read from the device)
+
+    def poll(self) -> SourceStatus: ...
+
+    def set_power_mw(self, mw: float) -> None: ...
+
+    def enable(self) -> None: ...
+
+    def disable(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class LaserEngineV2(QObject):
+    status_updated = Signal(object)  # EngineV2Status
+    connection_lost = Signal(str)
+    notice_added = Signal(str)  # an operator-facing message for the Laser Engine tab (also logged)
+
+    READY_TIMEOUT_S = 300.0
+    DEFAULT_QUERY_INTERVAL_S = 1.0  # every STAT? is the heartbeat: must stay well under HOST_TIMEOUT_S
+    HOST_TIMEOUT_S = 5
+    CONFIG_RETRY_S = 3.0  # expanders come up within ~1 s of a cold power-up (firmware retries them once a second)
+    EXPANDER_INIT_WAIT_S = 2.5  # then the straps: the firmware initialises its expanders on a 1 s tick (2 ticks)
+    SOURCE_ENABLE_ATTEMPTS = 3  # consecutive enable failures before the source is reported as a fault
+    SOURCE_SETTLE_TOL_MW = 2.0  # READY needs the measured power within max(this, SOURCE_SETTLE_TOL_FRAC x request)
+    SOURCE_SETTLE_TOL_FRAC = 0.05
+    POLL_JOIN_TIMEOUT_S = 4.0  # close(): one STAT? can take the link's 3 s read timeout (EngineLink.open), + 1 s
+    SHUTTER_OPEN_TIME_S = 0.001  # DF: the 560 mechanical shutter, from SHUT:OPEN 1 until fully open
+    simulated = False  # build_simulated_engine sets it: the Laser Engine tab then saves nothing to the cache
+
+    def __init__(
+        self,
+        link_factory: Callable[[], EngineLink],
+        source_factory: Optional[Callable[[], object]] = None,
+        query_interval_s: Optional[float] = None,
+        options: Optional[EngineOptions] = None,
+    ):
+        super().__init__()
+        self._link_factory = link_factory
+        self._source_factory = source_factory
+        self.query_interval_s = query_interval_s or self.DEFAULT_QUERY_INTERVAL_S
+        self.options = options or EngineOptions()
+        self.notices: List[str] = []
+        self._link: Optional[EngineLink] = None
+        self.variant = ""
+        self._latest_raw: Optional[dict] = None
+        self._latest_raw_t = 0.0  # time.time() of _latest_raw: a status parsed from it later keeps this time
+        self._last_event = ""
+        self._status_lock = threading.Lock()
+        self._lost = False
+        self._lost_lock = threading.Lock()
+        self._running = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._percent: Dict[int, float] = {}  # last commanded drive per line, % of its ceiling
+        self._light_source = None  # LaserEngineV2LightSource, created on first use
+        self._source = None  # the engine's own 560 nm source (DF), when its driver is present
+        self._source_reading: Optional[SourceStatus] = None  # the source's own last reading; _source_status judges it
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        # wavelength -> TTL port code: Microscope sets it to IlluminationController.channel_mappings_TTL
+        self.ttl_map_provider: Optional[Callable[[], Dict[int, int]]] = None
+        self._bringup_state = ""  # "", "running", "done", "cancelled: ..."
+        self._bringup_keys: List[str] = []
+        self._bringup_armed = False  # the bring-up has seen the engine armed (a later disarm cancels it)
+        self._bringup_waiting: set = set()  # lines waiting for the operator (notice given once)
+        self._bringup_dropped: List[str] = []
+        self._bringup_lock = threading.Lock()
+        self._arm_wait_reason: Optional[str] = None  # last transient ARM refusal, until an ARM is accepted
+        self._requested: Dict[int, float] = {}  # last requested intensity per wavelength, % of optical power
+        self.source_idle_off_s = idle_off_seconds(self.options.source_idle_off_min)  # the tab changes it
+        self._source_queue: "queue.Queue" = queue.Queue()
+        self._source_thread: Optional[threading.Thread] = None
+        self._source_running = threading.Event()
+        self._source_want_on = False  # what the driver has asked for
+        self._source_enabled = False  # what the source thread has done
+        self._source_enable_pending = False  # an enable is queued and not yet executed (no duplicates)
+        self._source_requested_mw: Optional[float] = (
+            None  # the operator's laser power, clamped to the source's limits; None = its minimum
+        )
+        self._source_pending_mw: Optional[float] = None
+        self._source_last_use = time.monotonic()
+        self._source_failures = 0  # consecutive failed enables
+        self._source_error: Optional[str] = None  # set after SOURCE_ENABLE_ATTEMPTS failures; cleared by fault_reset()
+        self._aom_volts: Optional[float] = None  # line 3 set-point = the AOM analog input; None = not sent yet
+        # orders the wake's and the set-point's LINE3:SET; may take _shutter_lock and _source_lock inside it (link lost ->
+        # _on_lost -> _disable_source), never the reverse: nothing holding either of those waits for _aom_lock
+        self._aom_lock = threading.Lock()
+        self._source_lock = threading.Lock()  # guards the check-then-act source fields shared between the two threads
+        # The shutter's open decision + send and a restart's enable-pending + close share _shutter_lock (lock order:
+        # _aom_lock, _shutter_lock, _source_lock; reentrant, since a lost link inside a shutter command runs
+        # _disable_source on the same thread). _shutter_gen (changed under _source_lock) counts restarts and switch-offs:
+        # a poll whose snapshot is older than the latest one never opens the shutter or switches the source off.
+        self._shutter_lock = threading.RLock()
+        self._shutter_gen = 0
+        # The holds (use()): what Squid images with now. A hold on line 3 keeps the 560 from idling off and, in On use,
+        # holds the shutter open. Changed under _shutter_lock, which an open re-checks it under: a release cannot race
+        # an open in flight.
+        self._holds: set = set()
+        self.shutter_mode = self.options.shutter_mode  # the tab changes it
+        self._shutter_opened_at: Optional[float] = None  # time.monotonic() of the open; None = closed
+        # Accepted opens, counted under _shutter_lock: a close decided on a snapshot taken before the latest open is
+        # obsolete (that open was decided on fresher facts), as a restart makes an older open obsolete (_shutter_gen).
+        self._shutter_opens = 0
+        self._shutter_present = False  # the engine reports a mechanical shutter (STAT? shutter.present, read at open)
+        # The tab's Open shutter (On use, nothing using the 560): until Close, a use of the 560 (it takes over), a mode
+        # change or line 3 not READY; it never reopens by itself. Not a use: the idle-off still applies.
+        self._manual_open = False
+        self._source_disable_pending = False  # a disable is queued and not yet executed (no duplicates)
+
+    # ---- lifecycle -------------------------------------------------------------------------------------------------
+    @property
+    def link(self) -> EngineLink:
+        if self._link is None:
+            raise LaserEngineV2Error("engine", "not open")
+        return self._link
+
+    def open(self) -> None:
+        """Connect and configure. Idempotent. Never arms."""
+        if self._link is not None:
+            return
+        link = self._link_factory()
+        link.resync()
+        idn = link.query("*IDN?")
+        if not idn.startswith(IDN_PREFIX):
+            link.close()
+            raise RuntimeError(f"{idn!r} is not a Cephla laser engine v2")
+        self._link = link
+        try:
+            self.variant = link.query("VAR?")
+            link.command(f"HOST:TIMEOUT {self.HOST_TIMEOUT_S}")
+            self._configure_lines()
+            raw = link.status()
+            self._shutter_present = bool((raw.get("shutter") or {}).get("present"))
+            self._reset_at_connect(raw)
+        except Exception:
+            self._link = None  # a later open() starts again instead of returning early on a half-configured link
+            link.close()
+            raise
+        self._open_source()
+
+    def _reset_at_connect(self, raw: dict) -> None:
+        """One FAULT:RESET at connect (the engine latches at every power-up), never retried, saying what it cleared:
+        a fault from before Squid connected must stay visible to the operator."""
+        latched = []
+        if not raw["in"].get("latch_ok", 1):
+            latched.append("hardware fault latch")
+        if raw.get("fault_names"):
+            latched.append("faults " + ", ".join(raw["fault_names"]))
+        if not latched:
+            return
+        what = (
+            "; ".join(latched)
+            + f"; last event {raw.get('last_event') or 'none'}, engine up {_uptime_text(raw.get('t', 0))}"
+        )
+        try:
+            self._link.command("FAULT:RESET")
+        except EngineCommandError as e:
+            self._notice(f"NOT cleared at connect ({e.reason}): {what} - fix the cause, then Reset faults")
+            return
+        self._notice(f"cleared at connect: {what}", warn=bool(raw.get("fault_names")))
+
+    def _configure_lines(self) -> None:
+        deadline = time.monotonic() + self.CONFIG_RETRY_S
+        while True:
+            try:
+                for n in range(1, 6):
+                    self._link.command(f"LINE{n}:MOD INT")  # set-point from the engine DAC (USB), never the analog jack
+                    self._link.command(f"LINE{n}:GATE 0")  # exposure timing = Squid controller TTL
+                # At a cold power-up the VAR? in open() can still say UNPROGRAMMED: read it again once the firmware
+                # has initialised its expanders and read the ID straps.
+                self._wait_for_expanders(time.monotonic() + self.EXPANDER_INIT_WAIT_S)
+                self.variant = self._link.query("VAR?")
+                if self.variant == "DF":
+                    # the shutter is Squid's to drive (Always open / On use), never per exposure
+                    self._link.command("SHUT:SRC MCU")
+                return
+            except EngineCommandError as e:
+                if time.monotonic() >= deadline:
+                    raise LaserEngineV2Error("engine", f"cannot configure the lines: {e.reason}") from e
+                time.sleep(0.2)
+
+    def _wait_for_expanders(self, deadline: float) -> None:
+        """The firmware reads the ID straps when it initialises its expanders (STAT? chips.mcp turns 1), on a 1 s tick:
+        the line writes in _configure_lines can succeed up to a second before that."""
+        while not self._link.status().get("chips", {}).get("mcp"):
+            if time.monotonic() >= deadline:
+                self._log.warning(
+                    "laser engine expanders not initialised at connect: its variant may read UNPROGRAMMED"
+                )
+                return
+            time.sleep(0.2)
+
+    def _notice(self, text: str, warn: bool = True) -> None:
+        (self._log.warning if warn else self._log.info)(text)
+        self.notices.append(text)
+        self.notice_added.emit(text)
+
+    def start(self) -> None:
+        self.open()
+        if self._running.is_set():
+            return
+        self._running.set()
+        self._thread = threading.Thread(target=self._poll_loop, name="LaserEngineV2Poll", daemon=True)
+        self._thread.start()
+        self._start_source_thread()
+
+    def close(self) -> None:
+        self._running.clear()
+        if self._thread is not None:
+            self._thread.join(timeout=self.POLL_JOIN_TIMEOUT_S)
+            self._thread = None
+        self._close_source()
+        if self._link is not None:
+            try:
+                self._link.command("DISARM")
+            except EngineLinkError:
+                pass  # link already gone: the engine disarms itself after HOST_TIMEOUT_S
+            self._link.close()
+            self._link = None
+
+    # ---- helpers that turn a broken link into "connection lost" --------------------------------------------------------
+    def _cmd(self, line: str) -> str:
+        try:
+            return self.link.command(line)
+        except EngineCommandError:
+            raise
+        except EngineLinkError as e:
+            self._signal_lost(str(e))
+            raise LaserEngineV2Error("engine", f"connection lost: {e}") from e
+
+    def _stat(self) -> dict:
+        try:
+            raw = self.link.status()
+        except EngineLinkError as e:
+            self._signal_lost(str(e))
+            raise LaserEngineV2Error("engine", f"connection lost: {e}") from e
+        self._keep_raw(raw)
+        return raw
+
+    def _keep_raw(self, raw: dict) -> float:
+        t = time.time()
+        with self._status_lock:
+            self._latest_raw, self._latest_raw_t = raw, t
+        return t
+
+    # ---- polling / heartbeat -------------------------------------------------------------------------------------------
+    def _poll_loop(self) -> None:
+        while self._running.is_set():
+            try:
+                if self.poll_once() is None and self._lost:
+                    return
+            except Exception as e:  # a bug (e.g. an unexpected STAT? shape) must not stop the heartbeat silently
+                self._log.exception("laser engine poll thread")
+                self._signal_lost(f"poll thread error: {e}")  # the tab's banner, the 560 off, waits return False
+                return
+            time.sleep(self.query_interval_s)
+
+    def poll_once(self) -> Optional[EngineV2Status]:
+        """One STAT? round-trip. Never does source I/O: only the source thread does, so a slow source cannot delay this
+        heartbeat."""
+        link = self._link  # close() on another thread may clear it
+        if self._lost or link is None:
+            return None
+        gen = self._shutter_gen  # before the snapshot: a restart or switch-off after this point makes it obsolete
+        opens = self._shutter_opens  # likewise: an open after this point makes a close decided on it obsolete
+        try:
+            raw = link.status()
+        except EngineLinkError as e:
+            self._signal_lost(str(e))
+            return None
+        event = raw.get("last_event", "")
+        if event and event != self._last_event:
+            self._log.warning(f"laser engine event: {event}")  # e.g. HOST_LOST / ARM_DROPPED, which are not faults
+        self._last_event = event
+        t = self._keep_raw(raw)
+        if not (raw.get("shutter") or {}).get("open"):
+            self._shutter_opened_at = None  # closed (also by the firmware: line 3 off, disarm, the cover)
+        elif self._shutter_opened_at is None:
+            self._shutter_opened_at = (
+                time.monotonic()
+            )  # open since a moment not known here: count its open time from now
+        status = parse_status(raw, source=self._source_status, has_source=self._source is not None, timestamp_s=t)
+        self._after_poll(status, gen, opens)  # the 560 source decisions (and the held-open shutter)
+        self._bringup_step(status)  # the startup bring-up, one non-blocking step per poll
+        self.status_updated.emit(status)
+        return status
+
+    def get_latest_status(self) -> Optional[EngineV2Status]:
+        """The last STAT? with the 560 source as judged now, so a change asked since that poll (a new laser power, a
+        switch-off) shows at once: a caller deciding from it never takes the line for READY on a stale reading."""
+        with self._status_lock:
+            raw, t = self._latest_raw, self._latest_raw_t
+        if raw is None:
+            return None
+        return parse_status(raw, source=self._source_status, has_source=self._source is not None, timestamp_s=t)
+
+    def is_connection_lost(self) -> bool:
+        return self._lost
+
+    def _signal_lost(self, message: str) -> None:
+        with self._lost_lock:
+            if self._lost:
+                return
+            self._lost = True
+        self._log.error(f"laser engine connection lost: {message}")
+        self._on_lost()
+        self.connection_lost.emit(message)
+
+    # ARM refusals that clear by themselves within seconds: wait for them instead of aborting (firmware app.cpp arm())
+    TRANSIENT_ARM_REASONS = (
+        "cover interlock open",
+        "WDOG_5V low",
+        "expanders not responding",
+        "DAC not initialised",
+        "12V_OK low",
+        "PG_BUCKS low",
+    )
+
+    # ---- wavelength -> line: the map that selects the TTL port, so intensity and exposure use one line ---------------
+    def _ttl_map(self) -> Dict[int, int]:
+        provider = self.ttl_map_provider
+        return provider() if provider is not None else _DEFAULT_CHANNEL_MAPPINGS_TTL
+
+    def lines_by_wavelength(self) -> Dict[int, int]:
+        """Every wavelength on an engine port -> its line, from one read of the port map. Squid port Dn is cabled to engine
+        TTLn, so the line is the port the wavelength's TTL uses (D3/D4 codes are swapped)."""
+        lines = {}
+        for wavelength, code in self._ttl_map().items():
+            index = source_code_to_port_index(code)
+            if 0 <= index < 5:
+                lines[wavelength] = index + 1
+        return lines
+
+    def line_for_wavelength(self, wavelength) -> Optional[int]:
+        return self.lines_by_wavelength().get(wavelength)
+
+    def wavelengths_for_line(self, line: int) -> List[int]:
+        """The wavelengths whose TTL port is this line (the inverse of line_for_wavelength, same map), ascending."""
+        return sorted(w for w, n in self.lines_by_wavelength().items() if n == line)
+
+    def channel_keys_for_wavelengths(self, wavelengths: Iterable[int]) -> List[str]:
+        keys: List[str] = []
+        for w in wavelengths:
+            n = self.line_for_wavelength(w)
+            if n is not None and f"L{n}" not in keys:
+                keys.append(f"L{n}")
+        return keys
+
+    # ---- declared use (LightSource.use): wake on use, the 560 idle-off, the 560 mechanical shutter ----------------------
+    def use(self, name: str, channels: Iterable[Optional["EngineLine"]]) -> "EngineHold":
+        """`name` ("live", "acquisition", ...) images with these lines until the hold is released. Each line it takes is
+        woken (re-armed, enabled, the 560 restarted after an idle-off). A held line 3 keeps the 560 from idling off, and
+        in On use the shutter is open only while line 3 is held and READY. Never raises."""
+        hold = EngineHold(self, name)
+        hold.update(channels)
+        return hold
+
+    def _set_hold(self, hold: "EngineHold", lines: frozenset) -> None:
+        with self._shutter_lock:
+            old = hold.lines
+            if lines == old:
+                return
+            hold.lines = lines
+            if lines:
+                self._holds.add(hold)
+            else:
+                self._holds.discard(hold)
+            if SOURCE_560_LINE in lines - old:
+                self._manual_open = False  # a use of the 560 takes the shutter over from the operator
+        if SOURCE_560_LINE in old ^ lines:
+            self._touch_source()  # the idle-off counts from the last use: taking or letting go of line 3
+        for n in sorted(lines - old):
+            self.wake_up(f"L{n}")  # polls first: that poll already sees this hold, so the shutter opens if L3 is READY
+        if SOURCE_560_LINE in old - lines and self._source is not None:
+            self.poll_once()  # the shutter closes at once
+        if SOURCE_560_LINE in lines - old:
+            self._wait_shutter_settled()
+
+    def _line3_held(self) -> bool:
+        with self._shutter_lock:
+            return any(SOURCE_560_LINE in h.lines for h in self._holds)
+
+    def _shutter_wanted(self) -> bool:
+        """DF: the shutter is to be open whenever line 3 is READY (Always open), or while line 3 is held or opened by hand
+        (On use)."""
+        return self.shutter_mode == SHUTTER_ALWAYS_OPEN or self._line3_held() or self._manual_open
+
+    def _wait_shutter_settled(self) -> None:
+        """When the shutter is open, return only once it has been open for its open time, so the first exposure is not
+        cut short. When it is not open (line 3 not READY yet), return at once: the readiness checks wait for it."""
+        opened = self._shutter_opened_at
+        if opened is not None:
+            remaining = opened + self.SHUTTER_OPEN_TIME_S - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
+
+    def _shutter_settled_for(self, channel_keys: Iterable[str]) -> bool:
+        """False while these lines need the 560 shutter open and it has not been open for its open time."""
+        if self._source is None or self.variant != "DF" or f"L{SOURCE_560_LINE}" not in channel_keys:
+            return True
+        if not self._shutter_wanted():
+            return True  # nothing would open it: no hold on line 3 (a caller that checks without holding)
+        opened = self._shutter_opened_at
+        return opened is not None and time.monotonic() >= opened + self.SHUTTER_OPEN_TIME_S
+
+    def is_ready_to_image(self, channel_keys: List[str]) -> bool:
+        """The last STAT? has these lines READY and, for the 560, the shutter open and settled."""
+        status = self.get_latest_status()
+        return status is not None and status.is_ready_for(channel_keys) and self._shutter_settled_for(channel_keys)
+
+    def set_shutter_mode(self, mode: str) -> None:
+        """The Laser Engine tab's 560 shutter mode (the tab also saves it): on_use or always_open. Applies at once."""
+        if mode not in SHUTTER_MODES:
+            raise ValueError(f"shutter mode {mode!r}: one of {', '.join(SHUTTER_MODES)}")
+        with self._shutter_lock:
+            self.shutter_mode = mode
+            self._manual_open = False
+        self.poll_once()
+
+    def shutter_control(self) -> ShutterControl:
+        """What the tab's shutter button can do now: open by hand only in On use, armed, line 3 READY and nothing using
+        the 560."""
+        with self._shutter_lock:
+            return self._shutter_control_locked()
+
+    def _shutter_control_locked(self) -> ShutterControl:
+        users = tuple(sorted({h.name for h in self._holds if SOURCE_560_LINE in h.lines}))
+        manual = self._manual_open
+        status = self.get_latest_status()
+        l3 = status.channels.get("L3") if status is not None else None
+        if self.mechanical_shutter is None or self._source is None:
+            reason = "no 560 shutter"
+        elif self.shutter_mode == SHUTTER_ALWAYS_OPEN:
+            reason = "Always open: it opens whenever the 560 is ready"
+        elif users:
+            reason = f"in use ({', '.join(users)})"
+        elif status is None or not status.armed:
+            reason = "the engine is not armed"
+        elif l3 is None or l3.state != LineState.READY:
+            reason = "the 560 is not ready"
+        else:
+            reason = ""
+        return ShutterControl(manual_open=manual, users=users, can_open=not reason, reason=reason)
+
+    def set_manual_shutter(self, open_: bool) -> None:
+        """The tab's shutter button: open the shutter by hand (only when shutter_control() allows it) or close it. Pressing
+        Open counts as one use of the 560; the idle-off still applies."""
+        if open_:
+            # checked and set under the lock a use registers under: a use starting meanwhile takes over after this
+            with self._shutter_lock:
+                control = self._shutter_control_locked()
+                if not control.can_open:
+                    raise LaserEngineV2Error("L3", f"shutter not opened: {control.reason}")
+                self._manual_open = True
+            self._touch_source()
+        else:
+            with self._shutter_lock:
+                self._manual_open = False
+        self.poll_once()  # opens / closes at once
+
+    @property
+    def mechanical_shutter(self) -> Optional[MechanicalShutter]:
+        """DF: the 560's shutter (line 3), when the engine reports one (STAT? shutter.present)."""
+        if self.variant == "DF" and self._shutter_present:
+            return MechanicalShutter(open_time_s=self.SHUTTER_OPEN_TIME_S)
+        return None
+
+    @staticmethod
+    def _line_of(channel_key: str) -> int:
+        return int(channel_key.lstrip("L"))
+
+    # ---- startup bring-up: every fitted line ready without the operator asking ---------------------------------------
+    @property
+    def bringup_state(self) -> str:
+        if self._bringup_state == "running" and self._arm_wait_reason:
+            return f"running - ARM waits: {self._arm_wait_reason}"
+        return self._bringup_state
+
+    def on_startup(self) -> None:
+        """Once, from MicroscopeAddons.prepare_for_use: TECs on, then ARM and bring every line up, the 560 included.
+        Runs one step per STAT? poll, so Squid's startup never waits for the TECs. The TECs are switched on here
+        because the firmware does not switch them on by itself at power-up.
+        """
+        raw = self._stat()
+        for i, ln in enumerate(raw["lines"]):
+            if ln.get("tok_req") and ln.get("kind") != "NONE":
+                try:
+                    self._cmd(f"TEC{i + 1}:OUT 1")
+                except EngineCommandError as e:
+                    self._log.warning(f"TEC{i + 1} did not switch on: {e.reason}")
+        self._bringup_keys = [
+            f"L{i + 1}"
+            for i, ln in enumerate(raw["lines"])
+            if ln.get("kind") != "NONE" and not (is_560_line(raw, i + 1) and self._source is None)
+        ]
+        self._bringup_armed = False
+        self._bringup_dropped = []
+        self._bringup_state = "running"
+        self._log.info(f"laser engine startup: arming and bringing up {', '.join(self._bringup_keys)}")
+        self.poll_once()  # first step now: the ARM
+
+    def _end_bringup(self, result: str) -> None:
+        self._bringup_state = result
+        if result == "done":
+            self._log.info("laser engine startup: every line ready")
+        else:
+            self._notice(f"startup bring-up {result}")
+
+    def _bringup_step(self, status: EngineV2Status) -> None:
+        if self._bringup_state != "running" or not self._bringup_lock.acquire(blocking=False):
+            return
+        try:
+            if status.armed:
+                self._bringup_armed = True
+            elif self._bringup_armed:  # the first disarm of any kind ends it; lines then come up on use only
+                self._end_bringup(
+                    f"cancelled: the engine disarmed ({status.last_event or 'DISARM'}) - lines come up on use"
+                )
+                return
+            system_faults = [f for f in status.fault_names if f != "TOK_LOST"]
+            if system_faults:
+                self._end_bringup(
+                    f"cancelled: engine fault {', '.join(system_faults)} - Reset faults; lines then come up on use"
+                )
+                return
+            pending = [k for k in self._bringup_keys if not status.channels[k].is_ready]
+            if not pending:
+                dropped = self._bringup_dropped
+                self._end_bringup(f"done except {', '.join(dropped)}" if dropped else "done")
+                return
+            for key in pending:
+                try:
+                    self._ensure_ready_step(key, status)
+                except LaserEngineV2Error as e:
+                    if e.channel_key == "engine":  # a real ARM refusal (key off, fault latched) or the link: give up
+                        self._end_bringup(f"cancelled: {e} - lines come up on use")
+                        return
+                    if e.needs_operator:  # e.g. the 560 key: keep waiting for the operator
+                        if key not in self._bringup_waiting:
+                            self._bringup_waiting.add(key)
+                            self._notice(f"startup: {key} waits for the operator: {status.channels[key].reason}")
+                        continue
+                    self._bringup_keys.remove(key)
+                    self._bringup_dropped.append(key)
+                    # the refusal itself (e.g. the firmware's reason), not the line's status text
+                    self._notice(f"startup: {key} not brought up: {e}")
+                if not status.armed:
+                    return  # one ARM per step; the lines follow at the next poll
+        finally:
+            self._bringup_lock.release()
+
+    # ---- consent / faults ------------------------------------------------------------------------------------------------
+    def arm(self) -> None:
+        try:
+            self._cmd("ARM")
+        except EngineCommandError as e:
+            raise LaserEngineV2Error("engine", f"cannot arm: {e.reason}") from e
+
+    def _try_arm(self) -> bool:
+        """True when armed; False on a transient refusal (retried at the next step); raises on a real refusal."""
+        try:
+            self._cmd("ARM")
+        except EngineCommandError as e:
+            if e.reason.startswith(self.TRANSIENT_ARM_REASONS):
+                if e.reason != self._arm_wait_reason:  # log each new reason once, not every second
+                    self._log.info(f"laser engine not ready to arm yet: {e.reason}")
+                self._arm_wait_reason = e.reason
+                return False
+            self._arm_wait_reason = None
+            raise LaserEngineV2Error("engine", f"cannot arm: {e.reason}") from e
+        self._arm_wait_reason = None
+        return True
+
+    def disarm(self) -> None:
+        if self._bringup_state == "running":
+            self._end_bringup("cancelled: disarmed by the operator")
+        self._disable_source()
+        self._cmd("DISARM")
+
+    def fault_reset(self) -> None:
+        self._clear_source_error()
+        try:
+            self._cmd("FAULT:RESET")
+        except EngineCommandError as e:
+            raise LaserEngineV2Error("engine", f"fault reset refused: {e.reason}") from e
+
+    # ---- enable on use ---------------------------------------------------------------------------------------------------
+    def _ensure_ready_step(self, channel_key: str, status: EngineV2Status, tec_retried: Optional[set] = None) -> None:
+        """One non-blocking step towards READY for one line. Raises LaserEngineV2Error for error/operator states."""
+        info = status.channels[channel_key]
+        n = self._line_of(channel_key)
+        is560 = is_560_line(self._latest_raw or {}, n)
+        if is560:
+            self._touch_source()
+        if info.state in REFUSE_STATES:
+            raise LaserEngineV2Error(channel_key, info.reason, needs_operator=info.state == LineState.NEEDS_KEY)
+        if info.state == LineState.NOT_ARMED:
+            if self._try_arm():
+                self._bringup_armed = True  # a disarm after this (even before the next poll) ends a running bring-up
+        elif info.state == LineState.WARMING_UP:
+            if tec_retried is not None and channel_key not in tec_retried:
+                tec_retried.add(channel_key)
+                try:
+                    self._cmd(f"TEC{n}:OUT 1")  # idempotent; covers a TCM that was silent at on_startup()
+                except EngineCommandError as e:
+                    self._log.warning(f"TEC{n} did not switch on: {e.reason}")
+        elif info.state == LineState.OFF:
+            if is560:
+                self._check_source_usable(channel_key)  # fail before touching line 3 or the source
+            try:
+                self._cmd(f"LINE{n}:EN 1")
+            except EngineCommandError as e:
+                if e.reason.startswith("TOK low"):
+                    return
+                raise LaserEngineV2Error(channel_key, e.reason) from e
+            if is560:
+                self._wake_source()
+        elif info.state == LineState.SOURCE_OFF:
+            self._check_source_usable(channel_key)
+            self._wake_source()
+        # STARTING / PAUSED / READY: nothing to do; the firmware or the source moves on by itself
+
+    def wake_up(self, channel_key: str) -> None:
+        """Non-blocking (live view, set_intensity): up to three steps towards READY. Never raises."""
+        for _ in range(3):
+            status = self.poll_once()
+            if status is None or channel_key not in status.channels:
+                return
+            if status.channels[channel_key].state not in (LineState.NOT_ARMED, LineState.OFF, LineState.SOURCE_OFF):
+                return
+            try:
+                self._ensure_ready_step(channel_key, status)
+            except (LaserEngineV2Error, EngineCommandError) as e:
+                self._log.warning(f"laser engine wake_up({channel_key}): {e}")
+                return
+
+    def wake_up_all(self) -> None:
+        status = self.poll_once()
+        for key, info in status.channels.items() if status else []:
+            if info.state not in (LineState.UNUSED, LineState.NOT_CONFIGURED):
+                self.wake_up(key)
+
+    def put_to_sleep(self, channel_key: str) -> None:
+        self._leave_bringup([channel_key])
+        n = self._line_of(channel_key)
+        if is_560_line(self._latest_raw or {}, n):
+            self._disable_source()
+        self._cmd(f"LINE{n}:EN 0")
+
+    def sleep_all(self) -> None:
+        keys = [f"L{n}" for n in range(1, 6)]
+        self._leave_bringup(keys)  # all at once: the bring-up ends as cancelled, not as done
+        for key in keys:
+            self.put_to_sleep(key)
+
+    def _leave_bringup(self, keys: List[str]) -> None:
+        """The operator put these lines to sleep: a running startup bring-up must not switch them on again. Waits out a
+        bring-up step in flight, so the step cannot enable a line after this returns."""
+        with self._bringup_lock:
+            if self._bringup_state != "running":
+                return
+            asleep = [k for k in self._bringup_keys if k in keys]
+            for key in asleep:
+                self._bringup_keys.remove(key)
+            if not self._bringup_keys:
+                self._end_bringup("cancelled: put to sleep by the operator - lines come up on use")
+            else:
+                self._bringup_dropped.extend(asleep)
+
+    def wait_until_ready(
+        self, channel_keys: List[str], timeout_s: float = 300.0, cancel_fn: Callable[[], bool] = lambda: False
+    ) -> bool:
+        deadline = time.monotonic() + timeout_s
+        tec_retried: set = set()
+        while True:
+            if cancel_fn() or self._lost:
+                return False
+            status = self.poll_once()
+            if status is None:
+                return False
+            if status.is_ready_for(channel_keys):
+                if self._shutter_settled_for(channel_keys):
+                    return True
+                self._wait_shutter_settled()  # this poll has just opened it: wait out its open time
+                if self._shutter_settled_for(channel_keys):
+                    return True
+            for key in channel_keys:
+                if key not in status.channels:
+                    raise LaserEngineV2Error(key, "no such line")
+                if status.channels[key].state == LineState.UNUSED:
+                    raise LaserEngineV2Error(key, "nothing on this line in this variant")
+                if not status.channels[key].is_ready:
+                    self._ensure_ready_step(key, status, tec_retried)
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(self.query_interval_s)
+
+    # ---- the engine's 560 source: checks and requests used above -----------------------------------------------------
+    def _check_source_usable(self, channel_key: str) -> None:
+        if self._source is None:
+            raise LaserEngineV2Error(channel_key, "560 nm source not configured")
+        st = self._source_status
+        if st is not None and st.needs_key:
+            raise LaserEngineV2Error(channel_key, "turn the 560 key OFF then ON", needs_operator=True)
+        if st is not None and (st.fault or not st.link_ok):
+            raise LaserEngineV2Error(channel_key, f"560 nm source not usable: {st.detail or 'not responding'}")
+
+    def _wake_source(self) -> None:
+        """Set the AOM to the current 560 intensity (0 V = dark until one is asked), then queue one source enable at the
+        source's minimum (the operator's power follows once it is ready).
+        The shutter is closed first, so the source never starts behind an open one: a refused close raises and nothing
+        is queued (the poll keeps closing it; the next use tries again). The enable_pending check-then-set and
+        the queue/state update run under _source_lock; the shutter close and the LINE3:SET round-trips run outside it,
+        so a concurrent _disable_source() cannot interleave with the update. A connection lost on the way aborts the
+        enable there: _on_lost has already switched the source off. `src` is
+        captured once, so a concurrent _close_source() cannot leave _source_enable_pending set. The AOM read + send +
+        cache runs under _aom_lock (not _source_lock), so it cannot interleave with _set_aom_volts on another thread.
+        """
+        src = self._source
+        if src is None:
+            return
+        self._touch_source()
+        with self._shutter_lock:  # with the open decision: a READY read from before this restart cannot reopen it
+            with self._source_lock:
+                if self._source_enable_pending:
+                    return  # the source thread has not run the last enable yet (callers repeat)
+                self._source_enable_pending = True
+                self._shutter_gen += 1
+            try:
+                # always sent: the cached STAT? may be older than an open, and closing twice is harmless
+                self._cmd("SHUT:OPEN 0")
+                self._shutter_opened_at = None
+            except Exception as e:
+                with self._source_lock:
+                    self._source_enable_pending = False
+                if isinstance(e, EngineCommandError):
+                    raise LaserEngineV2Error("L3", f"shutter did not close: {e.reason} - 560 not started") from e
+                raise
+        try:
+            with self._aom_lock:
+                volts = self._aom_volts_for(self._percent.get(SOURCE_560_LINE, 0.0))
+                self._cmd(f"LINE3:SET {volts:.3f}")  # the AOM amplitude; the AOM's on/off input is the D3 TTL
+                self._aom_volts = volts  # accepted: what the engine now has
+            start = src.min_power_mw  # the source starts at its own minimum; the operator's power follows at ready
+            with self._source_lock:
+                if self._lost:  # under the lock: _signal_lost sets _lost before its _disable_source takes the lock
+                    raise LaserEngineV2Error("L3", "laser engine connection lost")
+                requested = self._source_requested_mw if self._source_requested_mw is not None else start
+                self._source_pending_mw = requested if requested > start else None
+                self._source_want_on = True
+                self._source_queue.put(("enable", start))
+        except Exception as e:
+            with self._source_lock:
+                self._source_enable_pending = False
+            if isinstance(e, EngineCommandError):  # callers (wait_until_ready) raise only LaserEngineV2Error
+                raise LaserEngineV2Error("L3", e.reason) from e
+            raise
+
+    def _disable_source(self, gen: Optional[int] = None, idle_since: Optional[float] = None) -> bool:
+        """Queue the source switch-off. With `gen` (the generation of the poll that decided it), only while no restart or
+        switch-off has happened since that poll; with `idle_since` (the last use the idle-off measured from), only while
+        there has been no use since. Returns False when it was obsolete and nothing was done."""
+        if self._source is None:
+            return True
+        # Not under _shutter_lock: a switch-off must not wait for a shutter round trip in flight. An open racing it is
+        # harmless (the source is going off; the next poll closes the shutter).
+        with self._source_lock:
+            if gen is not None and gen != self._shutter_gen:
+                return False
+            # Checked under the lock that _source_status is judged under: a use noted before a status read either
+            # stops this switch-off, or comes after it and the read already shows the source off (the use then wakes it)
+            if idle_since is not None and self._source_last_use != idle_since:
+                return False
+            if not self._source_want_on:
+                return True
+            self._source_want_on = False
+            self._source_pending_mw = None
+            self._source_disable_pending = True  # source_step clears it once the disable has run
+            self._source_queue.put(("disable", None))
+            self._shutter_gen += 1
+        return True
+
+    def _touch_source(self) -> None:
+        self._source_last_use = time.monotonic()
+
+    def _clear_source_error(self) -> None:
+        self._source_error, self._source_failures = None, 0
+
+    # ---- the engine's 560 source: open, source thread, close ---------------------------------------------------------
+    def _open_source(self) -> None:
+        if self.variant != "DF" or self._source_factory is None:
+            return
+        try:
+            self._source = self._source_factory()
+        except Exception as e:  # the engine stays usable on its other lines; L3 reads NOT_CONFIGURED
+            self._log.error(f"560 nm source not available: {e}")
+            self._source = None
+            return
+        first = self._source.poll()  # known (e.g. key not cycled) before line 3 is touched
+        if first.ready or first.starting:  # left on by a session that ended without switching it off (e.g. a crash)
+            try:
+                self._source.disable()  # the source thread is not running yet: direct call
+            except Exception as e:
+                self._log.error(f"560 nm source: switching off at connect: {e}")
+            self._notice("560 nm source was on at connect (the last session did not switch it off): switched off")
+            first = self._source.poll()
+        self._source_reading = first
+        saved = self.options.source_power_mw
+        if saved is not None:
+            mw = self._source_power_for(saved, self._source)
+            self._source_requested_mw = mw
+            if abs(mw - saved) > 1e-6:
+                lo, hi = self._source.min_power_mw, self._source.max_power_mw
+                self._notice(
+                    f"saved 560 nm laser power {saved:.0f} mW is outside this laser's {lo:.0f}-{hi:.0f} mW: using {mw:.0f} mW"
+                )
+            else:
+                self._log.info(f"560 nm laser power {mw:.0f} mW (saved setting)")
+
+    def _start_source_thread(self) -> None:
+        if self._source is None or self._source_running.is_set():
+            return
+        self._source_running.set()
+        self._source_thread = threading.Thread(target=self._source_loop, name="LaserEngineV2Source", daemon=True)
+        self._source_thread.start()
+
+    def _source_loop(self) -> None:
+        while self._source_running.is_set():
+            try:
+                self.source_step()
+            except (
+                Exception
+            ) as e:  # a driver bug must not kill the thread silently: report the source as not responding
+                self._log.exception("560 nm source thread")
+                self._source_reading = SourceStatus(link_ok=False, detail=f"source thread error: {e}")
+            time.sleep(self.query_interval_s)
+
+    def source_step(self) -> None:
+        """One pass of the source thread: run queued requests, then poll. The only place that does source I/O.
+        _source_enable_pending and _source_disable_pending are cleared only after this step's own poll, so a caller
+        (wake_up / wait_until_ready) polling in between still sees the request as queued and does not queue another.
+        The tail reconciles a source that is not wanted but still reads emitting or starting by queuing one disable.
+        It lives here, not in _after_poll, so a failed disable is retried even after the engine link is lost (the poll
+        thread stops then; this thread keeps stepping). It acts on the source's own reading, not on the judged
+        status. A source that still reads on right after a disable gets a second, redundant disable at the next step;
+        that is harmless. The step whose reading makes the source READY runs an engine poll at once: the shutter is
+        not part of L3's readiness, so for a user waiting on line 3 it opens now rather than at the next poll, which a
+        caller seeing READY in between would image behind."""
+        src = self._source
+        if src is None:
+            return
+        was_ready = _source_state(self._source_status)[0] == LineState.READY
+        ran_enable = False
+        ran_disable = False
+        while True:
+            try:
+                op, arg = self._source_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                if op == "enable":
+                    ran_enable = True
+                    src.set_power_mw(arg)
+                    src.enable()
+                    self._source_enabled, self._source_failures = True, 0
+                elif op == "power":
+                    src.set_power_mw(arg)
+                elif op == "disable":
+                    ran_disable = True
+                    src.disable()
+                    self._source_enabled = False
+            except Exception as e:
+                self._log.error(f"560 nm source {op}: {e}")
+                if op == "enable":
+                    self._source_failures += 1
+                    if self._source_failures >= self.SOURCE_ENABLE_ATTEMPTS:
+                        self._source_error = f"enable failed {self._source_failures}x: {e}"
+        status = None
+        try:
+            status = src.poll()
+            with self._source_lock:
+                pending = self._source_pending_mw
+                if status.ready and pending is not None:
+                    self._source_pending_mw = None
+                else:
+                    pending = None
+            if pending is not None:
+                try:
+                    src.set_power_mw(pending)
+                except Exception as e:
+                    self._log.error(f"560 nm source power: {e}")
+            self._source_reading = status
+        finally:
+            if ran_enable:
+                self._source_enable_pending = False
+            with self._source_lock:
+                if ran_disable:
+                    # the disable this step ran (succeeded or failed) is no longer queued
+                    self._source_disable_pending = False
+                if (
+                    status is not None  # the source's own reading, not the judged one
+                    and not self._source_want_on
+                    and not self._source_disable_pending
+                    and (status.ready or status.starting)
+                ):
+                    # not wanted but still reads emitting/starting (e.g. a failed disable): queue one disable
+                    self._source_disable_pending = True
+                    self._source_queue.put(("disable", None))
+        if not was_ready and _source_state(self._source_status)[0] == LineState.READY:
+            self.poll_once()  # its _after_poll opens the shutter (line 3 READY), with the usual checks
+
+    @property
+    def _source_status(self) -> Optional[SourceStatus]:
+        """The source's last reading judged against what the engine asks of it now, so a change asked since the reading
+        (a new power, a switch-off) is never READY. Judged under _source_lock, like the switch-off decision."""
+        with self._source_lock:
+            return self._judged_source_locked()
+
+    def _judged_source_locked(self) -> Optional[SourceStatus]:
+        src, reading = self._source, self._source_reading  # local: close() can clear self._source on another thread
+        return None if src is None or reading is None else self._judge_source(reading, src)
+
+    def _judge_source(self, status: SourceStatus, src) -> SourceStatus:
+        """Add what only the engine knows: repeated enable failures are a fault; a source switched off (idle-off, sleep,
+        disarm) that still reads on is off, so the next use restarts it; a reading from before a queued restart is not
+        ready; READY needs the power at the request.
+        `src` is the source that reported `status` (close() may clear self._source meanwhile)."""
+        if self._source_error is not None:
+            return replace(status, fault=True, detail=self._source_error)
+        if not self._source_want_on and (status.ready or status.starting):
+            return replace(status, ready=False, starting=False, off=True, detail="switching off")
+        if self._source_enable_pending and status.ready:
+            return replace(status, ready=False, starting=True, detail="(restart queued)")
+        if status.ready:
+            target = self._source_requested_mw if self._source_requested_mw is not None else src.min_power_mw
+            tol = max(self.SOURCE_SETTLE_TOL_MW, self.SOURCE_SETTLE_TOL_FRAC * target)
+            settled = self._source_pending_mw is None and abs(status.power_mw - target) <= tol
+            return replace(status, settled=settled)
+        return status
+
+    def _close_source(self) -> None:
+        if self._source is None:
+            return
+        self._source_running.clear()
+        if self._source_thread is not None:
+            self._source_thread.join(timeout=3.0)
+            self._source_thread = None
+        for action in (self._source.disable, self._source.close):  # always off on close, whatever was requested
+            try:
+                action()
+            except Exception:
+                self._log.exception("560 nm source shutdown")
+        self._source = None
+
+    def _after_poll(self, status: EngineV2Status, gen: Optional[int] = None, opens: Optional[int] = None) -> None:
+        """Poll thread: decide only. Queue source requests (never talk to the source here); short engine commands for the shutter.
+        Retrying a disable that did not take is source_step's job (it keeps running after the engine link is lost);
+        the shutter needs the engine link, so it is handled here. Sleep (LINE3:EN 0) and DISARM close the shutter in
+        the firmware as well (PERMIT3 needs line 3 on; DISARM switches everything off); this closes it if it is not."""
+        if self._source is None:
+            return
+        raw = self._latest_raw or {}
+        if not self._source_want_on:
+            self._manual_open = False
+            self._set_held_shutter(False, raw)  # closed while the source is off; retried every poll while unwanted
+            return
+        l3 = status.channels.get("L3")
+        st = self._source_status
+        source_starting = st is not None and st.starting and not st.ready
+        held = self._line3_held()
+        want_open = self._shutter_wanted()  # re-checked under _shutter_lock before an open
+        last_use = self._source_last_use
+        idle = not held and time.monotonic() - last_use > self.source_idle_off_s
+        current = gen is None or gen == self._shutter_gen  # no restart / switch-off since this snapshot
+        not_armed = not status.armed and not self._source_enable_pending  # not a STAT? from before this thread's ARM
+        error = l3 is not None and l3.state in ERROR_STATES
+        if idle or ((not_armed or error) and current):
+            # A fault / not-armed snapshot switches off only while still current, checked again where the disable is
+            # queued: a fault reset + restart on another thread since this poll must not be cancelled by it. Idle-off is
+            # measured now, not from the snapshot, and checked again there too: a use since then keeps the source on.
+            if not (self._disable_source(idle_since=last_use) if idle else self._disable_source(gen)):
+                return
+            if idle:
+                self._log.info(f"560 nm source idle for {self.source_idle_off_s / 60:.0f} min: switching it off")
+            self._manual_open = False
+            self._set_held_shutter(False, raw)
+        elif not_armed or error:
+            return  # an obsolete fault / not-armed snapshot: the next poll decides on a fresh one
+        elif l3 is not None and l3.state == LineState.READY and want_open:
+            self._open_held_shutter(self._shutter_gen if gen is None else gen)
+        elif l3 is None or l3.state not in (LineState.READY, LineState.STARTING) or source_starting:
+            # Open only at READY: NEEDS KEY, the source off or starting (also by itself, between two polls), line 3 off
+            # or paused close it, in every mode, and end an open by hand (it never reopens by itself). The source stays
+            # wanted (the next use restarts it behind the closed shutter).
+            self._close_held_shutter(raw, opens, unwanted=False)
+        elif not want_open:
+            # READY, or a line-3 ramp with the source ready (every AOM LINE3:SET ramps), and in On use nothing holds line
+            # 3 or opened it by hand: closed. A ramp while it is wanted open leaves the shutter as it is.
+            self._close_held_shutter(raw, opens, unwanted=True)
+
+    def _open_held_shutter(self, gen: int) -> None:
+        """Line 3 read READY: open the shutter, but only on facts that are still true when the command goes out. The
+        READY snapshot can be older than a restart or a switch-off made on another thread while this poll ran; those
+        take _shutter_lock too, so the check and the send cannot interleave with them."""
+        with self._shutter_lock:
+            st = self._source_status
+            if (
+                gen != self._shutter_gen  # a restart or switch-off since the snapshot: the next poll decides
+                or not self._shutter_wanted()  # On use: line 3 let go since the poll
+                or not self._source_want_on
+                or self._source_enable_pending
+                or _source_state(st)[0] != LineState.READY  # the same READY test that L3's state uses
+            ):
+                return
+            self._set_held_shutter(True, self._latest_raw or {})
+
+    def _close_held_shutter(self, raw: dict, opens: Optional[int], unwanted: bool) -> None:
+        """Close the shutter, but only on facts that are still true when the command goes out (as _open_held_shutter):
+        a close decided on a snapshot older than the latest open is obsolete, and a close because nothing wanted the
+        shutter open is dropped when something wants it now. Either way a use that has opened it since must not have
+        its exposure darkened; the next poll decides again. A close because line 3 is not ready ends an open by hand."""
+        with self._shutter_lock:
+            if opens is not None and opens != self._shutter_opens:
+                return
+            if unwanted:
+                if self._shutter_wanted():
+                    return
+            else:
+                self._manual_open = False
+            self._set_held_shutter(False, raw)
+
+    def _set_held_shutter(self, want_open: bool, raw: dict) -> None:
+        """DF: the mechanical shutter - open while line 3 is READY and the mode wants it open (Always open, or On use
+        with line 3 held), closed otherwise, so the beam is blocked whenever it is not in use or the source is not known
+        to be ready. Never per exposure: the AOM does exposure on/off (D3 TTL). `raw` = the latest STAT?. A refusal is
+        logged; the next poll tries again.
+        """
+        if self.variant != "DF" or bool((raw.get("shutter") or {}).get("open")) == want_open:
+            return
+        try:
+            self._cmd(f"SHUT:OPEN {int(want_open)}")
+        except (EngineCommandError, LaserEngineV2Error) as e:
+            self._log.warning(f"shutter {'open' if want_open else 'close'} not done: {e}")
+            return
+        self._shutter_opened_at = time.monotonic() if want_open else None  # accepted: its open time counts from here
+        if want_open:
+            self._shutter_opens += 1
+
+    def _on_lost(self) -> None:
+        self._disable_source()
+
+    # ---- intensity (DF 560: the AOM amplitude, not the laser power) --------------------------------------------------
+    SETTLE_TIMEOUT_S = 1.0  # firmware ramps 0 -> ceiling in 0.5 s
+
+    def set_line_intensity(self, line: int, percent: float) -> None:
+        """Raw drive, no calibration: % of the line's current ceiling. On DF line 3: the 560 intensity as the AOM amplitude
+        (linear in volts); the 560 laser power is the operator's, never changed here.
+        """
+        if self._lost:
+            raise LaserEngineV2Error(f"L{line}", "laser engine connection lost")
+        percent = max(0.0, min(100.0, float(percent)))
+        raw = self._stat()  # fresh: whether to wait for the ramp depends on the line's state now
+        if is_560_line(raw, line):
+            if self._source is None:
+                raise LaserEngineV2Error(f"L{line}", "560 nm source not configured")
+            self._touch_source()  # an intensity request is use: keeps the source from idling off
+            self._percent[line] = percent
+            self._set_aom_volts(self._aom_volts_for(percent))
+            return
+        self._percent[line] = percent
+        amps = percent / 100.0 * float(raw["lines"][line - 1]["max"])
+        self._cmd(f"LINE{line}:SET {amps:.4f}")
+        if raw["lines"][line - 1]["st"] != "OFF":
+            self._wait_line_settled(line)  # an OFF line takes the set-point through the ramp when it is enabled
+
+    def _wait_line_settled(self, line: int) -> None:
+        """After a set-point change: wait out the firmware ramp (RAMP -> ON); warn after SETTLE_TIMEOUT_S."""
+        deadline = time.monotonic() + self.SETTLE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if self.poll_once() is None:
+                raise LaserEngineV2Error(f"L{line}", "laser engine connection lost")
+            if self._latest_raw["lines"][line - 1]["st"] != "RAMP":
+                return
+            time.sleep(0.02)
+        self._log.warning(f"L{line} did not reach its set-point within {self.SETTLE_TIMEOUT_S} s")
+
+    def get_line_intensity(self, line: int) -> float:
+        if line in self._percent:
+            return self._percent[line]
+        raw = self._stat()
+        ln = raw["lines"][line - 1]
+        if is_560_line(raw, line):
+            return self.aom_percent_for_volts(float(ln["target"] or 0.0))
+        return 100.0 * float(ln["target"]) / float(ln["max"]) if ln["max"] else 0.0
+
+    def set_wavelength_intensity(self, wavelength: int, percent: float) -> None:
+        """Squid's intensity on the line whose TTL port this wavelength uses: linear in the line's drive (% of its
+        current ceiling; on DF line 3, of the AOM's 0-5 V input)."""
+        line = self.line_for_wavelength(wavelength)
+        if line is None:
+            raise LaserEngineV2Error(f"{wavelength} nm", "not on an engine port (D1-D5) in the illumination port map")
+        percent = max(0.0, min(100.0, float(percent)))
+        self._requested[wavelength] = percent
+        self.set_line_intensity(line, percent)
+
+    def get_wavelength_intensity(self, wavelength: int) -> float:
+        if wavelength in self._requested:
+            return self._requested[wavelength]
+        line = self.line_for_wavelength(wavelength)
+        return self.get_line_intensity(line) if line is not None else 0.0
+
+    @property
+    def source_status(self) -> Optional[SourceStatus]:
+        """The engine-owned source's last judged status (read-only, for display); None when there is no source."""
+        src = self._source  # local: close() can clear self._source on another thread
+        return self._source_status if src is not None else None
+
+    @property
+    def source_limits_mw(self) -> Optional[Tuple[float, float]]:
+        """(minimum, maximum) set-point of the engine-owned source in mW (read-only, for display); None when absent."""
+        src = self._source  # local: close() can clear self._source on another thread
+        if src is None:
+            return None
+        return float(src.min_power_mw), float(src.max_power_mw)
+
+    @property
+    def source_power_setpoint_mw(self) -> Optional[float]:
+        """The operator's 560 nm laser power in mW (the source's minimum until one is set); None when there is no source."""
+        src = self._source  # local: close() can clear self._source on another thread
+        if src is None:
+            return None
+        mw = self._source_requested_mw
+        return float(mw) if mw is not None else float(src.min_power_mw)
+
+    def set_source_power_mw(self, mw: float) -> float:
+        """The 560 nm laser power, set by the operator (Laser Engine tab), clamped to the source's limits.
+        Applied now when the source is on, once it has started when it is starting, else at its next start. Returns the
+        power applied. Only queues (the source thread does the I/O). Squid's intensity never changes it."""
+        src = self._source  # local: close() can clear self._source on another thread
+        if src is None:
+            raise LaserEngineV2Error("L3", "560 nm source not configured")
+        asked = float(mw)
+        if not math.isfinite(asked):
+            raise ValueError(f"560 nm laser power {mw!r}: not a number of mW")
+        mw = self._source_power_for(asked, src)
+        when = ""
+        with self._source_lock:
+            self._source_requested_mw = mw  # judged against from now on: READY again once the source reads it
+            st = self._source_reading  # the source's own "starting" reading: its enable has run, it is not ready yet
+            starting = self._source_want_on and st is not None and st.starting
+            if self._source_enable_pending or self._source_pending_mw is not None or starting:
+                self._source_pending_mw = mw  # still starting at the minimum: go to it once the source is ready
+            elif self._source_want_on:
+                self._source_queue.put(("power", mw))
+            else:
+                when = " (applies when the 560 is next switched on)"
+        text = f"560 nm laser set to {mw:.0f} mW{when}"
+        if abs(mw - asked) > 1e-6:
+            text += f" - {asked:.0f} mW is outside its {src.min_power_mw:.0f}-{src.max_power_mw:.0f} mW"
+        self._notice(text, warn=False)
+        return mw
+
+    @staticmethod
+    def _source_power_for(mw: float, src) -> float:
+        """The laser power for a setting: clamped to the source's limits. `src` is the caller's source (close() may clear
+        self._source meanwhile). The AOM is not touched here: it does the intensity."""
+        return max(float(src.min_power_mw), min(float(mw), float(src.max_power_mw)))
+
+    def _aom_volts_for(self, percent: float) -> float:
+        """Line 3 drive (% of the AOM's 0-5 V input) -> volts."""
+        return AOM_FULL_SCALE_V * min(1.0, max(0.0, percent / 100.0))
+
+    def aom_percent_for_volts(self, volts: float) -> float:
+        """The line 3 drive (%) a set-point is: the inverse of _aom_volts_for (for display; no I/O)."""
+        return 100.0 * min(1.0, max(0.0, volts / AOM_FULL_SCALE_V))
+
+    def _set_aom_volts(self, volts: float) -> None:
+        """Line 3 set-point = the AOM analog input. _aom_lock covers compare + send + cache, not the ramp wait (poll_once
+        can re-enter _wake_source)."""
+        with self._aom_lock:
+            if self._aom_volts is not None and abs(volts - self._aom_volts) < 1e-3:
+                return
+            try:
+                self._cmd(f"LINE3:SET {volts:.3f}")
+            except EngineCommandError as e:
+                raise LaserEngineV2Error("L3", e.reason) from e
+            self._aom_volts = volts  # cached only once the engine has accepted it: a refused set is sent again
+        self._wait_line_settled(SOURCE_560_LINE)  # the AOM input ramps like any set-point (at once while line 3 is off)
+
+    def set_source_idle_off_min(self, minutes: float) -> None:
+        """The Laser Engine tab's idle-off (the tab also saves it for the next session). 0 = 24 h."""
+        self.source_idle_off_s = idle_off_seconds(minutes)
+
+    @property
+    def light_source(self) -> "LaserEngineV2LightSource":
+        if self._light_source is None:
+            self._light_source = LaserEngineV2LightSource(self)
+        return self._light_source
+
+
+@dataclass(frozen=True)
+class EngineLine:
+    """The channel map's value for a wavelength on an engine port. Equal (and hashed) by line only: the wavelengths on one
+    port drive one engine line, so IlluminationController's shared-line cache treats them as one line, as it does
+    CELESTA's 470 and 488 on its line 2. The wavelength rides along for the engine's per-wavelength intensity."""
+
+    line: int
+    wavelength: int = field(compare=False)
+
+
+class _EngineLineMap(Mapping):
+    """IlluminationController's channel map for this source: wavelength -> EngineLine, read live from the TTL port map, so
+    port-map edits apply at once. A wavelength on no engine port maps to None: the controller still selects its TTL port,
+    and no intensity goes to the engine."""
+
+    def __init__(self, engine: LaserEngineV2):
+        self._engine = engine
+
+    def _lines(self) -> Dict[int, EngineLine]:
+        return {w: EngineLine(n, w) for w, n in self._engine.lines_by_wavelength().items()}
+
+    def __getitem__(self, wavelength) -> Optional[EngineLine]:
+        line = self._engine.line_for_wavelength(wavelength)
+        return None if line is None else EngineLine(line, wavelength)
+
+    def __contains__(self, wavelength) -> bool:
+        return self._engine.line_for_wavelength(wavelength) is not None
+
+    def __iter__(self):
+        return iter(self._lines())
+
+    def __len__(self) -> int:
+        return len(self._lines())
+
+    def items(self):
+        return self._lines().items()  # one read of the port map, not one per wavelength
+
+
+class EngineHold(LightSourceHold):
+    """LaserEngineV2.use(): the engine lines `name` images with, until released."""
+
+    def __init__(self, engine: LaserEngineV2, name: str):
+        self._engine = engine
+        self.name = name  # for logs
+        self.lines: frozenset = frozenset()
+
+    def update(self, channels: Iterable[Optional[EngineLine]]) -> None:
+        self._engine._set_hold(self, frozenset(c.line for c in channels if c is not None))
+
+    def release(self) -> None:
+        self._engine._set_hold(self, frozenset())
+
+    def wait_until_ready(
+        self, timeout_s: Optional[float] = None, cancel_fn: Callable[[], bool] = lambda: False
+    ) -> bool:
+        """Every held line READY and, for the 560, the shutter open and settled (wait_until_ready). Never raises: a line
+        only the operator can bring back (e.g. the 560 key) is logged and gives False."""
+        keys = [f"L{n}" for n in sorted(self.lines)]
+        if not keys or self._engine.is_ready_to_image(keys):
+            return True
+        timeout = self._engine.READY_TIMEOUT_S if timeout_s is None else timeout_s
+        try:
+            return self._engine.wait_until_ready(keys, timeout, cancel_fn)
+        except (LaserEngineV2Error, EngineCommandError) as e:
+            self._engine._log.warning(f"{self.name}: laser engine line(s) {', '.join(keys)} not ready: {e}")
+            return False
+
+    def __repr__(self) -> str:
+        return f"EngineHold({self.name!r}, lines={sorted(self.lines)})"
+
+
+class LaserEngineV2LightSource(LightSource):
+    """IlluminationController's view of the engine: intensity over USB; on/off = Squid controller TTL (hardware-timed)."""
+
+    def __init__(self, engine: LaserEngineV2):
+        self._engine = engine
+        self.channel_mappings = _EngineLineMap(engine)
+        self._unmapped_warned = False
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
+    def initialize(self):
+        self._engine.open()
+        return True
+
+    def set_intensity_control_mode(self, mode):
+        if mode != IntensityControlMode.Software:
+            raise ValueError("laser engine v2 takes its set-point over USB (IntensityControlMode.Software)")
+
+    def get_intensity_control_mode(self):
+        return IntensityControlMode.Software
+
+    def set_shutter_control_mode(self, mode):
+        if mode != ShutterControlMode.TTL:  # a software gate would hold a line emitting between exposures
+            raise ValueError("laser engine v2 is gated by the Squid controller TTL lines (ShutterControlMode.TTL)")
+
+    def get_shutter_control_mode(self):
+        return ShutterControlMode.TTL
+
+    def set_shutter_state(self, channel, on):
+        raise ValueError("laser engine v2 is gated by the Squid controller TTL lines, not by software")
+
+    def get_shutter_state(self, channel):
+        return False  # no software gate; exposure is the TTL line
+
+    def set_intensity(self, channel: Optional[EngineLine], intensity):
+        """`channel` = the channel map's value. Wake the line on use (re-arm + enable), then send the set-point. Can block the
+        caller for up to three STAT? round-trips (the wake) plus the firmware ramp wait (SETTLE_TIMEOUT_S, <= ~1 s)."""
+        if channel is None:  # on no engine port: the controller still selects its TTL port right after this call
+            if not self._unmapped_warned:
+                self._unmapped_warned = True
+                self._log.warning("a channel on no engine port (D1-D5): its intensity is not sent to the laser engine")
+            return
+        self._engine.wake_up(f"L{channel.line}")  # re-arm + enable on use first; never raises
+        self._engine.set_wavelength_intensity(
+            channel.wavelength, intensity
+        )  # then the set-point: waits out the ramp when the line is on
+
+    def get_intensity(self, channel: Optional[EngineLine]) -> float:
+        return 0.0 if channel is None else self._engine.get_wavelength_intensity(channel.wavelength)
+
+    def use(self, name: str, channels) -> "EngineHold":
+        return self._engine.use(name, channels)
+
+    def mechanical_shutter(self, channel: Optional[EngineLine]) -> Optional[MechanicalShutter]:
+        return self._engine.mechanical_shutter if channel is not None and channel.line == SOURCE_560_LINE else None
+
+    def shut_down(self):
+        self._engine.close()
+
+
+def _production_source_factory() -> Optional[Callable[[], SourceDriver]]:
+    """open_560_source from control.laser_engine_v2_560_driver: the DF 560 nm source driver, which finds the source by
+    its own USB IDs. That module is not in this repository (it is supplied separately); without it this returns None
+    and line 3 reads NOT_CONFIGURED, the other lines are unaffected."""
+    try:
+        from control.laser_engine_v2_560_driver import open_560_source
+    except ImportError:
+        return None
+    return open_560_source
+
+
+def options_from_cache(cache_path: Optional[Path] = None) -> EngineOptions:
+    """The 560 power, idle-off and shutter mode as last set in the Laser Engine tab (cache/laser_engine_v2.yaml; defaults
+    when absent)."""
+    settings = load_settings(cache_path)
+    return EngineOptions(
+        source_idle_off_min=settings.idle_off_560_min,
+        source_power_mw=settings.power_560_mw,
+        shutter_mode=settings.shutter_mode_560,
+    )
+
+
+def build_from_config(sn: Optional[str], options: EngineOptions) -> LaserEngineV2:
+    """The engine on the USB device with serial number `sn` (laser_engine_sn in the machine .ini), and the 560 source when the
+    build has its driver."""
+    return LaserEngineV2(
+        link_factory=lambda: EngineLink.open(sn=sn),
+        source_factory=_production_source_factory(),
+        options=options,
+    )

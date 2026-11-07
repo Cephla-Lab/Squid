@@ -17,7 +17,12 @@ import pandas as pd
 from control import utils, utils_acquisition
 import control._def
 from control.core.auto_focus_controller import AutoFocusController
-from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
+from control.core.multi_point_utils import (
+    MultiPointControllerFunctions,
+    ScanPositionInformation,
+    AcquisitionParameters,
+    piezo_z_range_problem,
+)
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
@@ -90,6 +95,7 @@ def _save_acquisition_yaml(
             "config": params.z_stacking_config,
             "order": params.z_stack_order,
             "z_range_mm": _serialize_for_yaml(params.z_range) if params.z_range else None,
+            "piezo_z_range_um": _serialize_for_yaml(params.piezo_z_range_um) if params.piezo_z_range_um else None,
             "use_piezo": params.use_piezo,
         },
         "time_series": {
@@ -99,6 +105,7 @@ def _save_acquisition_yaml(
         "autofocus": {
             "contrast_af": params.do_autofocus,
             "laser_af": params.do_reflection_autofocus,
+            "laser_af_per_stack": params.laser_af_per_stack,
         },
         "channels": [_serialize_for_yaml(ch) for ch in params.selected_configurations],
     }
@@ -229,6 +236,7 @@ class MultiPointController:
         # direct-constructor contract for TCP/MCP callers that build AcquisitionParameters
         # without going through this controller.
         self.apply_channel_offset = False
+        self.laser_af_per_stack = False
         self.display_resolution_scaling = control._def.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.use_piezo = control._def.MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
         self.experiment_ID = None
@@ -258,6 +266,7 @@ class MultiPointController:
         self.scanCoordinates = scan_coordinates
         self.old_images_per_page = 1
         self.z_range: Tuple[float, float] = None
+        self.piezo_z_range_um: Optional[Tuple[float, float]] = None
         self.z_stacking_config = control._def.Z_STACKING_CONFIG
         self.z_stack_order = control._def.Z_STACK_ORDER
 
@@ -389,9 +398,12 @@ class MultiPointController:
         if self.multiPointWorker:
             self.multiPointWorker.update_use_piezo(checked)
 
-    def set_z_stacking_config(self, z_stacking_config_index):
-        if z_stacking_config_index in control._def.Z_STACKING_CONFIG_MAP:
-            self.z_stacking_config = control._def.Z_STACKING_CONFIG_MAP[z_stacking_config_index]
+    def set_z_stacking_config(self, z_stacking_config: str):
+        """Where the stack sits relative to each position's z: "FROM BOTTOM", "FROM CENTER" or "FROM TOP"."""
+        valid = set(control._def.Z_STACKING_CONFIG_MAP.values())
+        if z_stacking_config not in valid:
+            raise ValueError(f"Unknown z_stacking_config '{z_stacking_config}'; expected one of {sorted(valid)}")
+        self.z_stacking_config = z_stacking_config
         self._log.info(f"z-stacking configuration set to {self.z_stacking_config}")
 
     def set_z_stack_order(self, z_stack_order: str):
@@ -402,6 +414,10 @@ class MultiPointController:
 
     def set_z_range(self, minZ, maxZ):
         self.z_range = [minZ, maxZ]
+
+    def set_piezo_z_range_um(self, piezo_z_range_um: Optional[Tuple[float, float]]):
+        """Set Z-range on a piezo stack: (min, max) piezo positions in µm, or None to start from the current piezo."""
+        self.piezo_z_range_um = piezo_z_range_um
 
     def set_NX(self, N):
         self.NX = N
@@ -435,6 +451,10 @@ class MultiPointController:
 
     def set_apply_channel_offset(self, flag: bool):
         self.apply_channel_offset = flag
+
+    def set_laser_af_per_stack(self, flag: bool):
+        """Z First only: re-run laser AF before each later channel's stack (opt-in, default off)."""
+        self.laser_af_per_stack = flag
 
     def set_manual_focus_map_flag(self, flag):
         self.use_manual_focus_map = flag
@@ -1059,11 +1079,17 @@ class MultiPointController:
             do_autofocus=self.do_autofocus,
             do_reflection_autofocus=self.do_reflection_af,
             apply_channel_offset=self.apply_channel_offset,
+            # Only meaningful with laser AF in Z First; the snap paths turn reflection AF off before running, so
+            # normalise here or the saved acquisition.yaml could fail the loaders' strict check on reload.
+            laser_af_per_stack=bool(
+                self.laser_af_per_stack and self.do_reflection_af and self.z_stack_order == "Z FIRST"
+            ),
             use_piezo=self.use_piezo,
             display_resolution_scaling=self.display_resolution_scaling,
             z_stacking_config=self.z_stacking_config,
             z_stack_order=self.z_stack_order,
             z_range=self.z_range,
+            piezo_z_range_um=self.piezo_z_range_um,
             skip_saving=self.skip_saving,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
@@ -1073,23 +1099,32 @@ class MultiPointController:
 
     def _on_acquisition_completed(self):
         self._log.debug("MultiPointController._on_acquisition_completed called")
+        worker = self.multiPointWorker
+        self.last_end_reason = getattr(worker, "end_reason", None) or "completed"
+        self.last_image_count = int(getattr(worker, "image_count", 0) or 0)
+        # Each group runs even when the other one fails, and the end of the run is reported either way: otherwise the
+        # GUI stays in "acquiring" with no acquisition left to abort (e.g. after the stage stopped answering).
+        for restore in (self._restore_software_state_after_acquisition, self._restore_hardware_after_acquisition):
+            try:
+                restore()
+            except Exception:
+                self._log.exception(f"Restoring after the acquisition failed in {restore.__name__}")
+        # emit the acquisition finished signal to enable the UI
+        self.callbacks.signal_acquisition_finished()
+
+    def _restore_software_state_after_acquisition(self):
+        """The steps that talk to no device, so a dead controller cannot stop them."""
         # Note: Plate views are saved per timepoint in the worker's run_single_time_point method
 
-        # restore the previous selected mode
+        # restore the previous focus map
         if self.gen_focus_map:
             self.autofocusController.clear_focus_map()
             for x, y, z in self.focus_map_storage:
                 self.autofocusController.focus_map_coords.append((x, y, z))
             self.autofocusController.use_focus_map = self.already_using_fmap
-        self.callbacks.signal_current_configuration(self.configuration_before_running_multipoint)
-        self.liveController.set_microscope_mode(self.configuration_before_running_multipoint)
 
         # Restore callbacks to pre-acquisition state
         self.camera.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
-
-        # re-enable live if it's previously on
-        if self.liveController_was_live_before_multipoint and control._def.RESUME_LIVE_AFTER_ACQUISITION:
-            self.liveController.start_live()
 
         # Stop memory monitoring and log final report (in background to not delay acquisition finish)
         if self._memory_monitor is not None:
@@ -1106,15 +1141,21 @@ class MultiPointController:
 
             Thread(target=_stop_monitor_background, daemon=True).start()
 
-        # emit the acquisition finished signal to enable the UI
         self._log.info(f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}")
         utils.create_done_file(os.path.join(self.base_path, self.experiment_ID))
-        worker = self.multiPointWorker
-        self.last_end_reason = getattr(worker, "end_reason", None) or "completed"
-        self.last_image_count = int(getattr(worker, "image_count", 0) or 0)
 
         if self.run_acquisition_current_fov:
             self.run_acquisition_current_fov = False
+
+    def _restore_hardware_after_acquisition(self):
+        """In order, stopping at the first failure: the rest would only wait out timeouts on the same dead device."""
+        # restore the previous selected mode
+        self.callbacks.signal_current_configuration(self.configuration_before_running_multipoint)
+        self.liveController.set_microscope_mode(self.configuration_before_running_multipoint)
+
+        # re-enable live if it's previously on
+        if self.liveController_was_live_before_multipoint and control._def.RESUME_LIVE_AFTER_ACQUISITION:
+            self.liveController.start_live()
 
         if self._start_position:
             x_mm = self._start_position.x_mm
@@ -1129,8 +1170,6 @@ class MultiPointController:
         ending_pos = self.stage.get_pos()
         self.callbacks.signal_current_fov(ending_pos.x_mm, ending_pos.y_mm)
 
-        self.callbacks.signal_acquisition_finished()
-
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
 
@@ -1141,6 +1180,24 @@ class MultiPointController:
                 "Laser Autofocus Not Ready - Please set the laser autofocus reference position before starting acquisition with laser AF enabled."
             )
             return False
+        if self.piezo_z_range_um is not None:
+            if not self.use_piezo:
+                self._log.error(
+                    "The Z-range holds piezo positions, but the z-stack is set to run on the stepper - set the range again."
+                )
+                return False
+            if self.do_reflection_af:
+                self._log.error(
+                    "Laser AF can't run with Set Range: the range is absolute piezo positions and laser AF would "
+                    "move the piezo off them at every FOV. Turn laser AF off, or use From Bottom / From Center."
+                )
+                return False
+            problem = piezo_z_range_problem(
+                self.piezo_z_range_um, self.NZ, abs(self.deltaZ) * 1000, self.z_stacking_config, self.piezo.range_um
+            )
+            if problem:
+                self._log.error(problem)
+                return False
         return True
 
     def get_plate_view(self) -> np.ndarray:

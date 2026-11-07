@@ -16,27 +16,27 @@ This gives ~72 images per acquisition (2 wells × ~4 FOVs × 3z × 1t × 3ch).
 
 ### Test 1: Individual TIFF (Baseline)
 1. Use current master branch
-2. Settings > Preferences > General > File Saving Format: `INDIVIDUAL_IMAGES`
+2. Settings > Preferences > General > File Saving Format: `Individual images`
 3. Run acquisition with above parameters
 4. Note: Save to `/Volumes/Extreme SSD/test_tiff_{timestamp}/`
 
 ### Test 2: Zarr NONE (No Compression)
 1. Use `zarr-v3-support` worktree
-2. Settings > Preferences > General > File Saving Format: `ZARR_V3`
+2. Settings > Preferences > General > File Saving Format: `OME-Zarr 0.5`
 3. Settings > Preferences > General > Zarr Compression: `NONE`
 4. Run acquisition with same parameters
 5. Note: Save to `/Volumes/Extreme SSD/test_zarr_none_{timestamp}/`
 
 ### Test 3: Zarr FAST (LZ4 Compression)
 1. Use `zarr-v3-support` worktree
-2. Settings > Preferences > General > File Saving Format: `ZARR_V3`
+2. Settings > Preferences > General > File Saving Format: `OME-Zarr 0.5`
 3. Settings > Preferences > General > Zarr Compression: `FAST`
 4. Run acquisition with same parameters
 5. Note: Save to `/Volumes/Extreme SSD/test_zarr_fast_{timestamp}/`
 
 ### Test 4: Zarr BALANCED (Zstd Compression)
 1. Use `zarr-v3-support` worktree
-2. Settings > Preferences > General > File Saving Format: `ZARR_V3`
+2. Settings > Preferences > General > File Saving Format: `OME-Zarr 0.5`
 3. Settings > Preferences > General > Zarr Compression: `BALANCED`
 4. Run acquisition with same parameters
 5. Note: Save to `/Volumes/Extreme SSD/test_zarr_balanced_{timestamp}/`

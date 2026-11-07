@@ -3,6 +3,7 @@ Utilities for parsing and validating acquisition YAML files.
 """
 
 import csv
+import math
 import os
 import yaml
 
@@ -41,6 +42,7 @@ class AcquisitionYAMLData:
     # Autofocus
     contrast_af: bool = False
     laser_af: bool = False
+    laser_af_per_stack: bool = False  # Z First only: laser AF before each later channel's stack
 
     # Wellplate-specific
     scan_size_mm: Optional[float] = None
@@ -59,6 +61,8 @@ class AcquisitionYAMLData:
     experiment_id: Optional[str] = None
     wellplate_format: Optional[str] = None
     z_range_mm: Optional[Tuple[float, float]] = None
+    # Set Z-range on a piezo z-stack, in piezo µm; files written before it existed have none.
+    piezo_z_range_um: Optional[Tuple[float, float]] = None
     skip_saving: bool = False
 
 
@@ -115,6 +119,40 @@ def parse_z_stack_order(value) -> str:
     return normalized
 
 
+def parse_range(value) -> Optional[Tuple[float, float]]:
+    """A saved (min, max) pair as two floats; None when missing or not a pair."""
+    return (float(value[0]), float(value[1])) if value and len(value) == 2 else None
+
+
+_FLAG_ON = {"true", "yes", "on", "1"}
+_FLAG_OFF = {"false", "no", "off", "0", "none", ""}
+
+
+def parse_laser_af_per_stack(value, laser_af: bool, z_stack_order: str) -> bool:
+    """Normalize a saved autofocus.laser_af_per_stack value (missing or null means off).
+
+    On, it needs laser AF and Z First: anything else is a configuration mistake the author should see,
+    so every loader (GUI drop, TCP, fluidics protocol) raises ValueError instead of silently dropping it.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        on = value
+    else:
+        text = str(value).strip().lower()
+        if text in _FLAG_ON:
+            on = True
+        elif text in _FLAG_OFF:
+            on = False
+        else:
+            raise ValueError(f"Invalid autofocus.laser_af_per_stack '{value}'. Must be true or false")
+    if on and not laser_af:
+        raise ValueError("autofocus.laser_af_per_stack: true requires autofocus.laser_af: true")
+    if on and z_stack_order != "Z FIRST":
+        raise ValueError("autofocus.laser_af_per_stack: true requires z_stack.order: Z FIRST")
+    return on
+
+
 def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAMLData:
     """Parse an already-loaded acquisition.yaml mapping (the file body, or a protocol header block)."""
     if not isinstance(data, dict):
@@ -158,9 +196,7 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
     if wellplate_regions and len(wellplate_regions) > 0:
         scan_shape = wellplate_regions[0].get("shape")
 
-    z_range = z_stack.get("z_range_mm")
-    z_range_mm = tuple(float(v) for v in z_range) if z_range and len(z_range) == 2 else None
-
+    z_stack_order = parse_z_stack_order(z_stack.get("order"))
     return AcquisitionYAMLData(
         widget_type=widget_type,
         xy_mode=acq.get("xy_mode", "Select Wells"),
@@ -173,7 +209,7 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
         nz=z_stack.get("nz", 1),
         delta_z_um=z_stack.get("delta_z_mm", 0.001) * 1000,
         z_stacking_config=z_stack.get("config", "FROM BOTTOM"),
-        z_stack_order=parse_z_stack_order(z_stack.get("order")),
+        z_stack_order=z_stack_order,
         use_piezo=z_stack.get("use_piezo", False),
         # Time series
         nt=time_series.get("nt", 1),
@@ -183,6 +219,11 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
         # Autofocus
         contrast_af=autofocus.get("contrast_af", False),
         laser_af=autofocus.get("laser_af", False),
+        laser_af_per_stack=parse_laser_af_per_stack(
+            autofocus.get("laser_af_per_stack"),
+            laser_af=bool(autofocus.get("laser_af", False)),
+            z_stack_order=z_stack_order,
+        ),
         # Wellplate-specific
         scan_size_mm=wellplate_scan.get("scan_size_mm"),
         overlap_percent=overlap,
@@ -197,7 +238,8 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
         # Saved-acquisition reuse
         experiment_id=acq.get("experiment_id"),
         wellplate_format=sample.get("wellplate_format"),
-        z_range_mm=z_range_mm,
+        z_range_mm=parse_range(z_stack.get("z_range_mm")),
+        piezo_z_range_um=parse_range(z_stack.get("piezo_z_range_um")),
         skip_saving=bool(acq.get("skip_saving", False)),
     )
 
@@ -238,6 +280,7 @@ class ValidationResult:
     is_valid: bool
     objective_mismatch: bool = False
     binning_mismatch: bool = False
+    piezo_mismatch: bool = False
     current_objective: str = ""
     yaml_objective: str = ""
     current_binning: Tuple[int, int] = (1, 1)
@@ -249,6 +292,7 @@ def validate_hardware(
     yaml_data: AcquisitionYAMLData,
     current_objective: str,
     current_binning: Tuple[int, int],
+    piezo_travel_um: Optional[float] = None,
 ) -> ValidationResult:
     """Validate that YAML settings match current hardware configuration.
 
@@ -256,12 +300,14 @@ def validate_hardware(
         yaml_data: Parsed YAML data
         current_objective: Currently selected objective name
         current_binning: Current camera binning as (x, y) tuple
+        piezo_travel_um: This microscope's piezo travel, or None when it has no piezo
 
     Returns:
         ValidationResult indicating whether hardware matches
     """
     objective_mismatch = False
     binning_mismatch = False
+    piezo_mismatch = False
     messages = []
 
     if yaml_data.objective_name and yaml_data.objective_name != current_objective:
@@ -274,10 +320,29 @@ def validate_hardware(
             f"Camera binning mismatch:\n  YAML: {list(yaml_data.camera_binning)}\n  Current: {list(current_binning)}"
         )
 
+    if yaml_data.use_piezo and piezo_travel_um is None:
+        piezo_mismatch = True
+        messages.append("Piezo mismatch:\n  YAML: z-stack on the piezo\n  Current: this microscope has no piezo")
+    elif yaml_data.use_piezo and yaml_data.piezo_z_range_um:
+        z_min_um, z_max_um = yaml_data.piezo_z_range_um
+        if not (math.isfinite(z_min_um) and math.isfinite(z_max_um) and z_min_um <= z_max_um):
+            piezo_mismatch = True
+            messages.append(
+                f"Piezo Z-range not in order:\n  YAML: {z_min_um:.1f} to {z_max_um:.1f} µm\n"
+                "  Z-min must be a number at or below Z-max"
+            )
+        elif z_min_um < 0 or z_max_um > piezo_travel_um:
+            piezo_mismatch = True
+            messages.append(
+                f"Piezo Z-range outside the travel:\n  YAML: {z_min_um:.1f} to {z_max_um:.1f} µm\n"
+                f"  Current: piezo travel 0 to {piezo_travel_um:.0f} µm"
+            )
+
     return ValidationResult(
-        is_valid=not (objective_mismatch or binning_mismatch),
+        is_valid=not (objective_mismatch or binning_mismatch or piezo_mismatch),
         objective_mismatch=objective_mismatch,
         binning_mismatch=binning_mismatch,
+        piezo_mismatch=piezo_mismatch,
         current_objective=current_objective,
         yaml_objective=yaml_data.objective_name or "",
         current_binning=current_binning,

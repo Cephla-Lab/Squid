@@ -140,6 +140,13 @@ class TestRunAcquisitionFromYAML:
         with pytest.raises(RuntimeError, match="Hardware configuration mismatch"):
             mock_server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file)
 
+    def test_hardware_mismatch_piezo(self, mock_server, yaml_file):
+        """A YAML whose z-stack ran on the piezo is refused on a microscope without one."""
+        mock_server.multipoint_controller.piezo = None  # SAMPLE_WELLPLATE_YAML has use_piezo: true
+
+        with pytest.raises(RuntimeError, match="(?s)Hardware configuration mismatch.*no piezo"):
+            mock_server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file)
+
     def test_hardware_mismatch_binning(self, mock_server, yaml_file):
         """Test error when camera binning doesn't match YAML."""
         mock_server.microscope.camera.get_binning.return_value = (2, 2)  # Different from YAML's (1,1)
@@ -436,14 +443,18 @@ def test_cmd_home_passes_the_confirmation():
     server.microscope.home_xyz.assert_called_once_with(objective_lowered=True)
 
 
-def test_cmd_home_fieldinfo_is_not_a_confirmation():
+def test_cmd_home_left_out_is_not_a_confirmation():
     server = create_mock_server()
     server.microscope.home_xyz = MagicMock()
     server._cmd_home()
     server.microscope.home_xyz.assert_called_once_with(objective_lowered=False)
 
 
-def test_unconfirmed_tcp_home_sends_no_motion(monkeypatch):
+# Only a JSON true confirms: a truthy string or number does not.
+@pytest.mark.parametrize(
+    "params", [{}, {"objective_lowered": False}, {"objective_lowered": "false"}, {"objective_lowered": 1}]
+)
+def test_unconfirmed_tcp_home_sends_no_motion(monkeypatch, params):
     import control._def
     import control.microscope
     from tests.control.test_startup_homing import _spy_commands
@@ -454,7 +465,7 @@ def test_unconfirmed_tcp_home_sends_no_motion(monkeypatch):
     server.microscope = scope
     server._commands = {"home": server._cmd_home}
     sent = _spy_commands(scope.low_level_drivers.microcontroller)
-    response = server._execute("home", {})
+    response = server._execute("home", params)
     assert response["success"] is False and "objective_lowered=true" in response["error"]
     assert response["error"].startswith("Home XYZ refused:")  # not Home stage's name
     assert sent == []

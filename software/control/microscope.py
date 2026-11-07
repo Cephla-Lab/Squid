@@ -22,6 +22,7 @@ from control.startup_homing import (
     StageHomingInProgressError,
     StageHomingRefused,
     StartupHoming,
+    StartupHomingDeclined,
     require_objective_lowered,
     startup_needs_objective_prompt,
     ObjectiveNotLoweredError,
@@ -32,6 +33,8 @@ from squid.stage.prior import PriorStage
 import control.celesta
 import control.illumination_andor
 import control.illumination_versalase
+import control.laser_engine_v2 as laser_engine_v2
+import control.laser_engine_v2_sim as laser_engine_v2_sim
 import control.microcontroller
 import control.serial_peripherals as serial_peripherals
 import control.squid_laser_engine as squid_laser_engine
@@ -320,11 +323,21 @@ class MicroscopeAddons:
             sci_microscopy_led_array.set_NA(control._def.SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA)
 
         laser_engine = None
-        if control._def.USE_SQUID_LASER_ENGINE:
+        if control._def.LASER_ENGINE == "v1":
             laser_engine = (
-                squid_laser_engine.SquidLaserEngine(sn=control._def.SQUID_LASER_ENGINE_SN)
+                squid_laser_engine.SquidLaserEngine(sn=control._def.LASER_ENGINE_SN)
                 if not simulated
                 else squid_laser_engine.SquidLaserEngine_Simulation()
+            )
+        if control._def.LASER_ENGINE == "v2":
+            options = laser_engine_v2.options_from_cache()  # the 560 settings last set in the Laser Engine tab
+            laser_engine = (
+                laser_engine_v2.build_from_config(
+                    sn=control._def.LASER_ENGINE_SN,
+                    options=options,
+                )
+                if not simulated
+                else laser_engine_v2_sim.build_simulated_engine(options=options)
             )
 
         return MicroscopeAddons(
@@ -391,9 +404,9 @@ class MicroscopeAddons:
             self.piezo_stage.home()
         if self.squid_laser_engine:
             # start() may raise if the USB device is missing — intentional hard fail
-            # when USE_SQUID_LASER_ENGINE=True so we don't silently disable it.
+            # when a laser engine is configured so we don't silently disable it.
             self.squid_laser_engine.start()
-            self.squid_laser_engine.wake_up_all()  # fire-and-forget
+            self.squid_laser_engine.on_startup()  # v1: wake all (TEC warm-up); v2: TECs on, arm, bring every line up
 
 
 class LowLevelDrivers:
@@ -444,7 +457,15 @@ class Microscope:
 
         stage_config = squid.config.get_stage_config()
         if control._def.USE_PRIOR_STAGE:
-            stage = PriorStage(sn=control._def.PRIOR_STAGE_SN, stage_config=stage_config)
+            stage = PriorStage(
+                sn=control._def.PRIOR_STAGE_SN,
+                stage_config=stage_config,
+                use_encoders=control._def.PRIOR_STAGE_USE_ENCODERS,
+                max_speed=control._def.PRIOR_STAGE_MAX_SPEED,
+                acceleration=control._def.PRIOR_STAGE_ACCELERATION,
+                max_speed_limit=control._def.PRIOR_STAGE_MAX_SPEED_LIMIT,
+                acceleration_limit=control._def.PRIOR_STAGE_ACCELERATION_LIMIT,
+            )
         else:
             if low_level_devices.microcontroller is None:
                 raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
@@ -575,7 +596,9 @@ class Microscope:
             )
         elif control._def.USE_ANDOR_LASER_CONTROL and not simulated:
             andor_laser = control.illumination_andor.AndorLaser(
-                control._def.ANDOR_LASER_VID, control._def.ANDOR_LASER_PID
+                control._def.ANDOR_LASER_VID,
+                control._def.ANDOR_LASER_PID,
+                active_blanking=control._def.USE_ANDOR_ACTIVE_BLANKING,
             )
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,
@@ -604,6 +627,17 @@ class Microscope:
                 LightSourceType.VersaLase,
                 versalase,
             )
+        elif control._def.LASER_ENGINE == "v2" and addons.squid_laser_engine is not None:
+            illumination_controller = IlluminationController(
+                low_level_devices.microcontroller,
+                IntensityControlMode.Software,
+                ShutterControlMode.TTL,
+                LightSourceType.CephlaLaserEngineV2,
+                addons.squid_laser_engine.light_source,
+            )
+            # the engine line for a wavelength is the port its TTL uses, so intensity and exposure reach the same line;
+            # read live (follows port-map edits and the Microscope.config_repo setter, which replaces its config_repo)
+            addons.squid_laser_engine.ttl_map_provider = lambda: illumination_controller.channel_mappings_TTL
         else:
             illumination_controller = IlluminationController(low_level_devices.microcontroller)
 
@@ -784,7 +818,6 @@ class Microscope:
                     self.startup_homing = StartupHoming.ALREADY_HOMED
                 else:
                     confirmed = False
-                    declined = False
                     if startup_needs_objective_prompt():
                         if self._confirm_objective_lowered is None:
                             raise ObjectiveNotLoweredError(
@@ -792,14 +825,14 @@ class Microscope:
                                 "lowered; pass confirm_objective_lowered"
                             )
                         confirmed = bool(self._confirm_objective_lowered())
-                        declined = not confirmed
-                    if declined:
-                        self._log.info("Piezo-only: user cancelled homing; stage not referenced")
-                        self.startup_homing = StartupHoming.DECLINED
-                    else:
-                        self.home_xyz(objective_lowered=confirmed)
-                        self._raise_z_lift_to_sample_height()
-                        self.startup_homing = StartupHoming.HOMED
+                        if not confirmed:
+                            # Nothing else of startup runs either (an objective changer would home and rotate next).
+                            self._log.info("Piezo-only: startup homing declined at the stop sign; closing the hardware")
+                            self.close()
+                            raise StartupHomingDeclined("Startup homing declined: the nosepiece was not lowered")
+                    self.home_xyz(objective_lowered=confirmed)
+                    self._raise_z_lift_to_sample_height()
+                    self.startup_homing = StartupHoming.HOMED
             except TimeoutError:
                 self._log.error("Hardware setup timed out, resetting microcontroller")
                 if self.low_level_drivers.microcontroller:
@@ -966,27 +999,30 @@ class Microscope:
         """
         using_software_trigger = self.live_controller.trigger_mode == control._def.TriggerMode.SOFTWARE
 
-        # turn on illumination and send trigger
-        if using_software_trigger:
-            self.live_controller.turn_on_illumination()
-            self._wait_for_microcontroller()
-            self.camera.send_trigger()
-        elif self.live_controller.trigger_mode == control._def.TriggerMode.HARDWARE:
-            self.low_level_drivers.microcontroller.send_hardware_trigger(
-                control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
-            )
-
-        try:
-            # read a frame from camera
-            image = self.camera.read_frame()
-            if image is None:
-                self._log.error("camera.read_frame() returned None")
-                raise RuntimeError("Failed to acquire image: camera.read_frame() returned None")
-            return image
-        finally:
-            # always turn off illumination when using software trigger
+        with self.live_controller.use_current_channel("acquire_image") as light:  # wakes the line, opens its shutter
+            if not light.wait_until_ready():  # e.g. the 560 restarting after its idle-off: no dark image
+                raise RuntimeError("Failed to acquire image: the illumination did not become ready")
+            # turn on illumination and send trigger
             if using_software_trigger:
-                self.live_controller.turn_off_illumination()
+                self.live_controller.turn_on_illumination()
+                self._wait_for_microcontroller()
+                self.camera.send_trigger()
+            elif self.live_controller.trigger_mode == control._def.TriggerMode.HARDWARE:
+                self.low_level_drivers.microcontroller.send_hardware_trigger(
+                    control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
+                )
+
+            try:
+                # read a frame from camera
+                image = self.camera.read_frame()
+                if image is None:
+                    self._log.error("camera.read_frame() returned None")
+                    raise RuntimeError("Failed to acquire image: camera.read_frame() returned None")
+                return image
+            finally:
+                # always turn off illumination when using software trigger
+                if using_software_trigger:
+                    self.live_controller.turn_off_illumination()
 
     def _get_channel_or_raise(self, objective: str, channel_name: str):
         config = self.live_controller.get_channel_by_name(objective, channel_name)
