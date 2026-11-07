@@ -397,3 +397,157 @@ def test_wellplate_yaml_moving_the_stack_to_the_stepper_gives_the_entries_the_st
     w._apply_yaml_settings(AcquisitionYAMLData(widget_type="wellplate", nz=4, delta_z_um=2.0, use_piezo=False))
 
     assert w.entry_minZ.maximum() == control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
+
+
+# ---- Open in Viewer button (opt-in; opens the finished run in a separate ndviewer_light process) ----
+
+import dataclasses  # noqa: E402
+import time  # noqa: E402
+
+from control.core.multi_point_utils import ScanPositionInformation  # noqa: E402
+from control.core.open_in_viewer import RunSnapshot, ViewerPreflight, check_viewer, software_dir  # noqa: E402
+
+
+def _gui(qtbot):
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    return win
+
+
+def _tabs(win):
+    return [
+        t
+        for t in (win.wellplateMultiPointWidget, win.flexibleMultiPointWidget, win.templateMultiPointWidget)
+        if t is not None
+    ]
+
+
+def test_open_in_viewer_button_is_hidden_unless_opted_in(qtbot, monkeypatch, confirm_exit_yes):
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", False)
+    win = _gui(qtbot)
+    assert all(t.btn_openInViewer.isHidden() for t in _tabs(win))
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    for t in _tabs(win):
+        t.update_open_in_viewer_visibility()
+    assert all(not t.btn_openInViewer.isHidden() and not t.btn_openInViewer.isEnabled() for t in _tabs(win))
+
+
+def test_open_in_viewer_enables_on_every_tab_after_a_finished_run(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    win = _gui(qtbot)
+    c = win.multipointController
+    (tmp_path / "run").mkdir()
+    c.open_in_viewer_snapshot = RunSnapshot(str(tmp_path / "run"), False)
+    c.last_end_reason = "user_abort"
+    c.acquisition_finished.emit()
+    assert all(
+        t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == str(tmp_path / "run") for t in _tabs(win)
+    )
+    launched = []
+    monkeypatch.setattr(control.widgets, "check_viewer", lambda sd: ViewerPreflight((), "x", True))
+    monkeypatch.setattr(control.widgets, "launch_viewer", lambda run_dir, sd: launched.append((run_dir, sd)))
+    win.wellplateMultiPointWidget.btn_openInViewer.click()
+    assert launched == [(str(tmp_path / "run"), software_dir())]
+    c.signal_acquisition_start.emit()
+    assert all(
+        not t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == "No finished acquisition yet"
+        for t in _tabs(win)
+    )
+
+
+def test_open_in_viewer_uses_the_folder_captured_at_start_not_the_restored_base_path(
+    qtbot, monkeypatch, confirm_exit_yes, tmp_path
+):
+    # The fluidics imaging port (widgets_fluidics/qt_imaging_port.py) restores controller.base_path in its own
+    # acquisition_finished slot; whichever slot runs first, the button must get the run's folder.
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    win = _gui(qtbot)
+    c = win.multipointController
+    (tmp_path / "protocol_run").mkdir()
+    c.open_in_viewer_snapshot = RunSnapshot(str(tmp_path / "protocol_run"), False)
+    c.last_end_reason = "completed"
+    c.set_base_path(str(tmp_path / "operator_dir"))  # what the port's restore leaves behind
+    c.experiment_ID = "stale"
+    c.acquisition_finished.emit()
+    assert win.wellplateMultiPointWidget.btn_openInViewer.isEnabled()
+    assert win.wellplateMultiPointWidget.btn_openInViewer.toolTip() == str(tmp_path / "protocol_run")
+
+
+def test_snapshot_is_taken_at_acquisition_start(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
+    win = _gui(qtbot)
+    c = win.multipointController
+    # _signal_acquisition_start_fn is the start callback that emits signal_acquisition_save_target. It reads the
+    # whole AcquisitionParameters (scan information, selected configurations, NZ, ...), so build real ones the
+    # way run_acquisition does, from a controller set up for a run.
+    c.set_base_path(str(tmp_path))
+    c.start_new_experiment("exp", add_timestamp=False)
+    c.set_skip_saving(True)
+    c.selected_configurations = []
+    c.run_acquisition_current_fov = False
+    c.timestamp_acquisition_started = time.time()  # run_acquisition sets this before build_params
+    params = c.build_params(ScanPositionInformation.from_scan_coordinates(c.scanCoordinates))
+    c._signal_acquisition_start_fn(params)
+    assert c.open_in_viewer_snapshot == RunSnapshot(str(tmp_path / "exp"), True)
+    c._signal_acquisition_start_fn(dataclasses.replace(params, skip_saving=False))
+    assert c.open_in_viewer_snapshot == RunSnapshot(str(tmp_path / "exp"), False)
+
+
+def test_open_in_viewer_shows_the_preflight_problem_instead_of_launching(
+    qtbot, monkeypatch, confirm_exit_yes, tmp_path
+):
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    win = _gui(qtbot)
+    win.wellplateMultiPointWidget.set_finished_run_dir(str(tmp_path))
+    shown = []
+    monkeypatch.setattr(control.widgets.QMessageBox, "warning", lambda *a: shown.append(a[2]))
+    monkeypatch.setattr(control.widgets, "check_viewer", lambda sd: check_viewer(sd, isfile=lambda f: False))
+    monkeypatch.setattr(control.widgets, "launch_viewer", lambda *a: pytest.fail("launched"))
+    win.wellplateMultiPointWidget.btn_openInViewer.click()
+    assert shown and "git submodule update --init" in shown[0]
+
+
+def test_toggling_the_preference_keeps_the_finished_run(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    win = _gui(qtbot)
+    t = win.flexibleMultiPointWidget
+    t.set_finished_run_dir(str(tmp_path))
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", False)
+    t.update_open_in_viewer_visibility()
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    t.update_open_in_viewer_visibility()
+    assert t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == str(tmp_path)
+
+
+def test_open_in_viewer_stays_disabled_when_the_tab_re_enables_its_children(
+    qtbot, monkeypatch, confirm_exit_yes, tmp_path
+):
+    # acquisition_is_finished calls setEnabled_all(True) on the tab that ran; the Wellplate tab enables every child
+    # widget blanket-style, so the button must re-apply its own rule rather than rely on the GUI's slot order.
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    win = _gui(qtbot)
+    for t in (win.wellplateMultiPointWidget, win.flexibleMultiPointWidget):
+        t.set_finished_run_dir(None)
+        t.setEnabled_all(True)
+        assert not t.btn_openInViewer.isEnabled()
+        assert t.btn_openInViewer.toolTip() == "No finished acquisition yet"
+        t.set_finished_run_dir(str(tmp_path))
+        t.setEnabled_all(False)
+        t.setEnabled_all(True)
+        assert t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == str(tmp_path)
+
+
+def test_a_run_that_fails_to_start_keeps_the_previous_finished_run(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
+    # Start pressed with nothing to acquire: the controller reports failed_to_start through acquisition_finished
+    # without ever emitting signal_acquisition_start, so the last finished run must stay openable.
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    win = _gui(qtbot)
+    c = win.multipointController
+    (tmp_path / "run").mkdir()
+    c.open_in_viewer_snapshot = RunSnapshot(str(tmp_path / "run"), False)
+    c.last_end_reason = "completed"
+    c.acquisition_finished.emit()
+    c.last_end_reason = "failed_to_start"
+    c.acquisition_finished.emit()
+    t = win.wellplateMultiPointWidget
+    assert t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == str(tmp_path / "run")

@@ -1333,6 +1333,32 @@ class TestZStackOrderDropdownPreference:
         assert control._def.ENABLE_Z_STACK_ORDER_SELECTION is True
 
 
+class TestOpenInViewerButtonPreference:
+    """The opt-in Open in Viewer button beside Start Acquisition is switched from Preferences, live."""
+
+    def test_checkbox_is_off_when_the_ini_has_no_key(self, preferences_dialog):
+        assert preferences_dialog.open_in_viewer_checkbox.isChecked() is False
+
+    def test_checkbox_reflects_the_ini(self, qtbot, sample_config, temp_config_file, sync_def_with_config):
+        sample_config.set("GENERAL", "show_open_in_viewer_button", "True")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        assert dialog.open_in_viewer_checkbox.isChecked() is True
+
+    def test_turning_it_on_is_a_live_change(self, preferences_dialog):
+        preferences_dialog.open_in_viewer_checkbox.setChecked(True)
+        assert ("Open in Viewer Button", "False", "True", False) in preferences_dialog._get_changes()
+
+    def test_apply_writes_the_ini_and_flips_the_runtime_flag(self, preferences_dialog, monkeypatch):
+        monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", False)
+        preferences_dialog.open_in_viewer_checkbox.setChecked(True)
+
+        assert preferences_dialog._apply_settings() is True
+
+        assert preferences_dialog.config.get("GENERAL", "show_open_in_viewer_button") == "true"
+        assert control._def.SHOW_OPEN_IN_VIEWER_BUTTON is True
+
+
 class _FakePriorStage:
     """What the dialog uses of PriorStage: the SMS/SAS values, their physical units, and the setters. Like PriorStage,
     a setter that raises leaves its value unknown (None), since the controller may have taken it all the same."""
