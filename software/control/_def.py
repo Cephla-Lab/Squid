@@ -1003,7 +1003,7 @@ ENABLE_STROBE_OUTPUT = False
 ACQUISITION_PATTERN = "S-Pattern"  # 'S-Pattern', 'Unidirectional'
 FOV_PATTERN = "Unidirectional"  # 'S-Pattern', 'Unidirectional'
 
-Z_STACKING_CONFIG = "FROM BOTTOM"  # 'FROM BOTTOM', 'FROM TOP'
+Z_STACKING_CONFIG = "FROM BOTTOM"  # 'FROM BOTTOM', 'FROM CENTER', 'FROM TOP'
 Z_STACKING_CONFIG_MAP = {0: "FROM BOTTOM", 1: "FROM CENTER", 2: "FROM TOP"}
 
 # Order of the z and channel loops at each FOV:
@@ -1269,6 +1269,21 @@ SQUID_FILTERWHEEL_CONFIGS = {
 # Stage
 USE_PRIOR_STAGE = False
 PRIOR_STAGE_SN = ""
+# Encoders on a Prior stage: False switches them off at start-up (open loop), True on (closed loop), None sends
+# nothing. A ProScan turns on the encoders it detects at power-up and keeps a switched state until it is power-cycled,
+# so going back to None does not restore closed loop by itself. On an H117 closed loop made short moves ~3x slower and
+# did not recover a stall. Switched off, they still count ("P,e"), e.g. to check for lost steps.
+PRIOR_STAGE_USE_ENCODERS = None
+# ProScan SMS / SAS values, 1-1000. On an H117(1MM) stage 100 = 6 mm/s and 28.6 mm/s^2; 1000 = 60 mm/s, 285.5 mm/s^2.
+# Editable in Preferences > Advanced > Prior Stage, which also sends them to the connected stage.
+PRIOR_STAGE_MAX_SPEED = 100
+PRIOR_STAGE_ACCELERATION = 100
+# This rig's ceilings: the most the stage takes without losing steps (it runs open loop). Preferences and the driver
+# refuse more. 1000 is the controller's own maximum; set lower where faster moves lose steps. Speed and acceleration
+# act together: an H117(1MM) on a Squid stalled at 200/250 (its Y axis, on 10 mm moves) but not at 200/100, 175/250
+# or 150 with any acceleration up to 1000.
+PRIOR_STAGE_MAX_SPEED_LIMIT = 1000
+PRIOR_STAGE_ACCELERATION_LIMIT = 1000
 
 # PI V-308 / C-414 focus drive used as the main Z (wraps the configured XY stage)
 USE_PI_FOCUS_STAGE = False

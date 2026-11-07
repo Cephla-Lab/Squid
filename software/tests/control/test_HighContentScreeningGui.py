@@ -724,3 +724,49 @@ def test_reset_objective_turret_is_locked_and_refused_while_the_stage_homes(qtbo
         assert reset_action.isEnabled() is enabled_before
 
     assert refusals == ["The stage is homing. Reset the objective turret once it has finished."] * 2
+
+
+@pytest.mark.parametrize("start_on_piezo", [False, True])
+def test_wellplate_yaml_with_a_piezo_range_reloads_set_range_and_reaches_the_controller(
+    qtbot, monkeypatch, confirm_exit_yes, start_on_piezo
+):
+    from control.acquisition_yaml_loader import AcquisitionYAMLData
+
+    monkeypatch.setattr(control._def, "HAS_OBJECTIVE_PIEZO", True)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    w = win.wellplateMultiPointWidget
+    w.checkbox_usePiezo.setChecked(start_on_piezo)
+
+    w._apply_yaml_settings(
+        AcquisitionYAMLData(
+            widget_type="wellplate", nz=4, delta_z_um=2.0, use_piezo=True, piezo_z_range_um=(20.0, 26.0)
+        )
+    )
+
+    assert w.combobox_z_mode.currentText() == "Set Range"
+    assert (w.entry_minZ.value(), w.entry_maxZ.value(), w.entry_NZ.value()) == (20.0, 26.0, 4)
+    assert w.entry_maxZ.maximum() == scope.addons.piezo_stage.range_um
+    assert not w.checkbox_withReflectionAutofocus.isEnabled()
+
+    w.configure_controller_from_ui()  # what Start runs
+    assert w.multipointController.use_piezo
+    assert tuple(w.multipointController.piezo_z_range_um) == (20.0, 26.0)
+
+
+def test_wellplate_yaml_moving_the_stack_to_the_stepper_gives_the_entries_the_stepper_limits(
+    qtbot, monkeypatch, confirm_exit_yes
+):
+    from control.acquisition_yaml_loader import AcquisitionYAMLData
+
+    monkeypatch.setattr(control._def, "HAS_OBJECTIVE_PIEZO", True)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    w = win.wellplateMultiPointWidget
+    w.checkbox_usePiezo.setChecked(True)
+
+    w._apply_yaml_settings(AcquisitionYAMLData(widget_type="wellplate", nz=4, delta_z_um=2.0, use_piezo=False))
+
+    assert w.entry_minZ.maximum() == control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000

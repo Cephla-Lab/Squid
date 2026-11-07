@@ -829,7 +829,6 @@ class HighContentScreeningGui(QMainWindow):
 
                 if ENABLE_WELLPLATE_MULTIPOINT:
                     self.wellplateMultiPointWidget.init_z()
-                self.flexibleMultiPointWidget.init_z()
 
         # Create the menu bar
         menubar = self.menuBar()
@@ -2021,11 +2020,16 @@ class HighContentScreeningGui(QMainWindow):
                 CACHED_CONFIG_FILE_PATH,
                 parent=self,
                 on_restart=self.restart_application,
+                stage=self.stage,
             )
             dialog.signal_config_changed.connect(self._update_ram_monitor_visibility)
             dialog.signal_config_changed.connect(
                 lambda: self.navigationWidget.set_click_to_move(control._def.ENABLE_CLICK_TO_MOVE)
             )
+            # The Z-stack order dropdown preference applies live: the tabs re-read the flag.
+            for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget):
+                if tab is not None:
+                    dialog.signal_config_changed.connect(tab.update_z_order_dropdown_visibility)
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")

@@ -69,26 +69,14 @@ except ImportError:
         return {"default": default, "description": description, "ge": ge, "le": le}
 
 
-def resolve_field_value(value, default=None):
-    """
-    Extract actual value from a pydantic FieldInfo object.
-
-    When Field() is used as a default parameter in a regular Python function,
-    the default becomes the FieldInfo object itself. This helper extracts
-    the actual default value.
-    """
-    if PYDANTIC_AVAILABLE and isinstance(value, FieldInfo):
-        field_default = value.default
-        # Check for PydanticUndefined or Ellipsis (required field)
-        if field_default is ... or (
-            hasattr(field_default, "__class__") and "PydanticUndefinedType" in field_default.__class__.__name__
-        ):
-            return default
-        return field_default
-    elif isinstance(value, dict) and "default" in value:
-        # Fallback Field dict
-        return value.get("default", default)
-    return value
+def _call_default(default):
+    """The value a parameter takes when a call leaves it out, given its declared default: a Field()'s own default,
+    or inspect.Parameter.empty when the parameter is required."""
+    if PYDANTIC_AVAILABLE and isinstance(default, FieldInfo):
+        return inspect.Parameter.empty if default.is_required() else default.get_default(call_default_factory=True)
+    if not PYDANTIC_AVAILABLE and isinstance(default, dict):  # the fallback Field() above
+        return inspect.Parameter.empty if default["default"] is ... else default["default"]
+    return default
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -115,14 +103,20 @@ def schema_method(func: Callable) -> Callable:
             param2: float = Field(0.0, description="Optional float", ge=0, le=100),
         ) -> Dict[str, Any]:
             ...
+
+    A parameter the call leaves out gets its Field()'s default, and a required one left out is a TypeError naming
+    it. (Python alone would hand the method the FieldInfo object itself.)
     """
+    sig = inspect.signature(func)
+    call_sig = sig.replace(parameters=[p.replace(default=_call_default(p.default)) for p in sig.parameters.values()])
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
+        bound = call_sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        return func(*bound.args, **bound.kwargs)
 
     # Extract schema information from function signature
-    sig = inspect.signature(func)
     hints = get_type_hints(func) if hasattr(func, "__annotations__") else {}
 
     schema = {
@@ -189,15 +183,6 @@ def schema_method(func: Callable) -> Callable:
                     param_info["minimum"] = meta.ge
                 if hasattr(meta, "le") and meta.le is not None:
                     param_info["maximum"] = meta.le
-            # Check if field is required (default is PydanticUndefined or Ellipsis)
-            field_default = default.default
-            is_required = field_default is ... or (
-                hasattr(field_default, "__class__") and "PydanticUndefinedType" in field_default.__class__.__name__
-            )
-            if is_required:
-                schema["required"].append(param_name)
-            elif field_default is not None:
-                param_info["default"] = field_default
         elif isinstance(default, dict) and "description" in default:
             # Fallback Field dict
             if default.get("description"):
@@ -206,14 +191,12 @@ def schema_method(func: Callable) -> Callable:
                 param_info["minimum"] = default["ge"]
             if default.get("le") is not None:
                 param_info["maximum"] = default["le"]
-            if default.get("default") not in (None, ...):
-                param_info["default"] = default["default"]
-            else:
-                schema["required"].append(param_name)
-        elif default is inspect.Parameter.empty:
+
+        call_default = call_sig.parameters[param_name].default
+        if call_default is inspect.Parameter.empty:
             schema["required"].append(param_name)
-        elif default is not None:
-            param_info["default"] = default
+        elif call_default is not None:
+            param_info["default"] = call_default
 
         schema["parameters"][param_name] = param_info
 
@@ -477,9 +460,8 @@ class MicroscopeControlServer:
         ),
     ) -> Dict[str, Any]:
         """Home all stage axes (X, Y, Z) to reference position."""
-        # Called directly, an unset Field default arrives as a FieldInfo, which is not a confirmation.
-        confirmed = isinstance(objective_lowered, bool) and objective_lowered
-        self.microscope.home_xyz(objective_lowered=confirmed)
+        # Passed as sent: the Microscope's check counts only true (a truthy string or number is not a confirmation).
+        self.microscope.home_xyz(objective_lowered=objective_lowered)
         pos = self.microscope.stage.get_pos()
         return {"homed": True, "position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
 
@@ -721,14 +703,6 @@ class MicroscopeControlServer:
         import os
 
         import control._def
-
-        # Resolve FieldInfo objects to actual values (fixes bug when params not provided)
-        nx = resolve_field_value(nx, 2)
-        ny = resolve_field_value(ny, 2)
-        experiment_id = resolve_field_value(experiment_id, None)
-        base_path = resolve_field_value(base_path, None)
-        wellplate_format = resolve_field_value(wellplate_format, "96 well plate")
-        overlap_percent = resolve_field_value(overlap_percent, 10.0)
 
         # Check requirements
         if not self.multipoint_controller:
@@ -1012,11 +986,6 @@ class MicroscopeControlServer:
 
         self._log.info(f"Starting acquisition from YAML: {yaml_path}")
 
-        # Resolve FieldInfo objects to actual values
-        wells = resolve_field_value(wells, None)
-        experiment_id = resolve_field_value(experiment_id, None)
-        base_path = resolve_field_value(base_path, None)
-
         # Validate file exists
         if not os.path.exists(yaml_path):
             raise FileNotFoundError(f"YAML file not found: {yaml_path}")
@@ -1042,7 +1011,7 @@ class MicroscopeControlServer:
         except Exception as e:
             raise ValueError(f"Failed to parse YAML file: {e}") from e
 
-        # Validate hardware configuration (objective, binning)
+        # Validate hardware configuration (objective, binning, piezo)
         current_binning = None
         try:
             camera = getattr(self.microscope, "camera", None)
@@ -1056,7 +1025,13 @@ class MicroscopeControlServer:
             current_binning = (1, 1)  # Default for validation (will skip binning check)
 
         current_objective = self.microscope.objective_store.current_objective
-        validation = validate_hardware(yaml_data, current_objective, current_binning)
+        piezo = self.multipoint_controller.piezo
+        validation = validate_hardware(
+            yaml_data,
+            current_objective,
+            current_binning,
+            piezo_travel_um=piezo.range_um if piezo is not None else None,
+        )
 
         if not validation.is_valid:
             raise RuntimeError(f"Hardware configuration mismatch:\n{validation.message}")
@@ -1234,8 +1209,7 @@ class MicroscopeControlServer:
         """Set multiple view settings at once for RAM debugging (mosaic view: immediate; others: next acquisition)."""
         changes = []
 
-        # Note: Use isinstance(x, bool) instead of "x is not None" because Field(None, ...)
-        # returns a FieldInfo object (not None) when called directly without JSON parsing.
+        # isinstance, not "is not None": a value that is not a boolean leaves the setting as it is
         if isinstance(save_downsampled_overview, bool):
             control._def.SAVE_DOWNSAMPLED_OVERVIEW = save_downsampled_overview
             changes.append(f"save_downsampled_overview={'enabled' if save_downsampled_overview else 'disabled'}")
