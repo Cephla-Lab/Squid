@@ -194,6 +194,7 @@ class QtAutoFocusController(AutoFocusController, QObject):
 
 class QtMultiPointController(MultiPointController, QObject):
     acquisition_finished = Signal()
+    acquisition_preparing = Signal()
     signal_acquisition_start = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
@@ -254,6 +255,7 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_overall_progress=self._signal_overall_progress_fn,
                 signal_region_progress=self._signal_region_progress_fn,
                 signal_plate_view_init=self._signal_plate_view_init_fn,
+                signal_acquisition_preparing=self._signal_acquisition_preparing_fn,
                 signal_timepoint_finished=self._signal_timepoint_finished_fn,
                 signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
                 signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
@@ -280,6 +282,9 @@ class QtMultiPointController(MultiPointController, QObject):
         self._ndviewer_region_idx_offset: list = []  # [0, 5, ...] region_idx -> flat FOV offset
         self._ndviewer_mode: NDViewerMode = NDViewerMode.INACTIVE  # Current viewer mode
         self._ndviewer_region_index_map: dict = {}  # {region_name: region_idx} for 6D mode
+
+    def _signal_acquisition_preparing_fn(self):
+        self.acquisition_preparing.emit()
 
     def _signal_acquisition_start_fn(self, parameters: AcquisitionParameters):
         # TODO mpc napari signals
@@ -1610,6 +1615,11 @@ class HighContentScreeningGui(QMainWindow):
 
         # The controller stops live at the start of every run (GUI, TCP, fluidics) and, only when the INI sets
         # resume_live_after_acquisition, turns it back on at the end: Live and Snap are locked in between.
+        # The lock lands on preparing, before the run stops live: a TCP run prepares on the server's thread
+        # while the GUI still takes clicks. The start re-syncs the button once live is off.
+        self.multipointController.acquisition_preparing.connect(
+            lambda: self.liveControlWidget.set_acquisition_running(True)
+        )
         self.multipointController.signal_acquisition_start.connect(
             lambda: self.liveControlWidget.set_acquisition_running(True)
         )

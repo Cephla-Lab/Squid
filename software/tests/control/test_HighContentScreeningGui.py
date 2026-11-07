@@ -1,3 +1,4 @@
+import threading
 import unittest.mock
 
 import pytest
@@ -190,6 +191,28 @@ def test_live_and_snap_are_locked_while_an_acquisition_runs(qtbot, confirm_exit_
     win.multipointController.acquisition_finished.emit()
     assert live_widget.btn_live.isEnabled()
     assert live_widget.btn_snap.isEnabled()
+
+
+def test_live_and_snap_lock_while_a_run_prepares_on_another_thread(qtbot, confirm_exit_yes):
+    """A TCP run prepares on the server's thread while the GUI still takes clicks: the lock must land when
+    preparation begins, not when the worker starts."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    live_widget = win.liveControlWidget
+    try:
+        server_thread = threading.Thread(target=win.multipointController.callbacks.signal_acquisition_preparing)
+        server_thread.start()
+        server_thread.join(5)
+
+        qtbot.waitUntil(lambda: not live_widget.btn_live.isEnabled(), timeout=2000)
+        assert not live_widget.btn_snap.isEnabled()
+        assert live_widget.btn_live.isChecked()  # live is still on: the run has not stopped it yet
+
+        win.liveController.stop_live()
+        win.multipointController.acquisition_finished.emit()  # every failed start sends it too
+        assert live_widget.btn_live.isEnabled()
+        assert live_widget.btn_snap.isEnabled()
+    finally:
+        win.liveController.stop_live()
 
 
 def test_image_display_signals_connected_once(qtbot, monkeypatch, confirm_exit_yes):
