@@ -270,6 +270,19 @@ def test_restart_is_refused_from_preparing_until_the_run_finishes(qtbot, monkeyp
 
     win.multipointController.acquisition_finished.emit()  # every run, failed starts included, ends with it
     calls.clear()
+
+    # A run that starts while the fluidics question is open (that dialog spins the event loop) is still caught.
+    def a_run_starts_during_the_fluidics_question(action):
+        win.multipointController.acquisition_preparing.emit()
+        return True
+
+    monkeypatch.setattr(win, "_confirm_end_fluidics_run", a_run_starts_during_the_fluidics_question)
+    win.restart_application()
+    assert len(calls) == 1 and calls[0][0] == "warning", calls
+    win.multipointController.acquisition_finished.emit()
+    calls.clear()
+
+    monkeypatch.setattr(win, "_confirm_end_fluidics_run", lambda action: True)
     win.restart_application()
     assert calls == ["cleanup", "spawn", "quit"]
 

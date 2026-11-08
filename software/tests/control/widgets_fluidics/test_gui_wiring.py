@@ -77,8 +77,13 @@ def test_close_and_show_events_cover_the_protocol_lifecycle():
     assert "_confirm_end_fluidics_run" in close_src and "Confirm Exit" in close_src
     restart_src = _source("restart_application")
     assert "_confirm_end_fluidics_run" in restart_src
-    # A running acquisition refuses the restart before anything (fluidics question, cleanup) happens.
-    assert restart_src.index("_acquisition_run_active") < restart_src.index("_confirm_end_fluidics_run")
+    # The acquisition check comes after the fluidics question (which spins the event loop) and before cleanup,
+    # so no run can start between the check and the cleanup.
+    assert (
+        restart_src.index("_confirm_end_fluidics_run")
+        < restart_src.index("if self._acquisition_run_active")
+        < restart_src.index("_cleanup_for_restart()")
+    )
     helper_src = _source("_confirm_end_fluidics_run")
     # Ending the run is irreversible: it must come only after the user consents.
     assert helper_src.index("question") < helper_src.index("end_run_for_exit(15)")

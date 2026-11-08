@@ -3062,14 +3062,18 @@ class HighContentScreeningGui(QMainWindow):
         worker exists) and leave the output incomplete. Checked here, not in the dialogs, so every
         caller is covered.
         """
+        # Fluidics first: its question and its wait for the run to unwind spin the event loop, where a
+        # run (or a fluidics imaging step ending) can change the acquisition state. From the check below
+        # to quit() nothing spins it, and every start must hand acquisition_preparing to this thread, so
+        # no run can start between the check and the cleanup.
+        if not self._confirm_end_fluidics_run("restart"):
+            return
         if self._acquisition_run_active:
             QMessageBox.warning(
                 self,
                 "Acquisition running",
                 "An acquisition is running. Abort it or wait for it to finish, then restart.",
             )
-            return
-        if not self._confirm_end_fluidics_run("restart"):
             return
 
         self.log.info("Restarting application with --skip-init...")
