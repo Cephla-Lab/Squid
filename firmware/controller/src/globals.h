@@ -140,6 +140,8 @@ extern HomingValidity homing_validity;    // homed flags, configuration signatur
 extern bool startup_verdict_pending;      // the status byte (byte 1) carries 64 + startup_verdict; cleared by the next command
 extern uint8_t startup_verdict;           // STARTUP_VERDICT_*, set by QUERY_STARTUP_STATE
 extern volatile bool power_good_drop_latched;  // set by the PG falling-edge interrupt (init.cpp); hv_consume_power_drop clears it
+extern uint16_t dac_output_code[8];       // the last code set_DAC8050x_output wrote to each DAC80508 channel
+extern uint8_t dac_output_written;        // bit c: channel c written since power-up (RESET and INITIALIZE keep both)
 
 // btns
 extern uint8_t btns;

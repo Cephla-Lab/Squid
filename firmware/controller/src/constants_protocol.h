@@ -139,6 +139,12 @@ static const int CMD_EXECUTION_ERROR = 4;
 // Sent only in the packets after QUERY_STARTUP_STATE, until the next command arrives; they take precedence over
 // IN_PROGRESS (a crashed session's command may still be running); a checksum error takes precedence over them.
 static const int STARTUP_VERDICT_STATUS_BASE = 64;
+// In those packets bytes 14-21 are the startup reply, in place of the theta, encoder and focus wheel fields (a crashed
+// session may have left either reporting on): bytes 14-17 = 0, byte 18 as in every packet, byte 19 = flags below,
+// bytes 20-21 = the last code written to the objective piezo's DAC channel since power-up (big-endian), so a warm
+// start can leave the piezo where it is.
+static const int OBJECTIVE_PIEZO_DAC_CHANNEL = 7;
+static const int STARTUP_REPLY_FLAG_PIEZO_DAC_WRITTEN = 0;  // byte 19 bit: bytes 20-21 hold a code (else they are 0)
 
 // Home/zero command types
 static const int HOME_NEGATIVE = 1;

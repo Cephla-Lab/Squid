@@ -77,8 +77,11 @@
 //               or any signature after it was emptied, clears every flag.
 //               QUERY_STARTUP_STATE (68) answers in the packet status byte (byte 1):
 //               STARTUP_VERDICT_STATUS_BASE (64) + STARTUP_VERDICT_*, until the next
-//               command, even while a command is still IN_PROGRESS. Every other
-//               packet is unchanged, and the verdict does not touch byte 18.
+//               command, even while a command is still IN_PROGRESS. Those packets
+//               carry the startup reply in bytes 14-21: byte 19 bit 0 set and
+//               bytes 20-21 = the last code written to the objective piezo's DAC
+//               channel (7) since power-up, so a warm start leaves the piezo where
+//               it is. Every other packet is unchanged; byte 18 is never touched.
 //               The number may move to the next free minor at merge: the piezo
 //               focus wheel design also claims 1.9.
 #define FIRMWARE_VERSION_MAJOR 1

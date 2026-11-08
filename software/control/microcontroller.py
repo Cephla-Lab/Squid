@@ -759,8 +759,8 @@ class Microcontroller:
         self._last_packet_status = None
         self._last_packet_cmd_id = None
         self._packet_seq_at_last_send = 0
-        # (command id, StartupVerdict value) of the newest packet whose status byte was a startup verdict reply
-        # (firmware >= STARTUP_STATE_MIN_FIRMWARE), under _received_packet_cv; for query_startup_state().
+        # (command id, StartupVerdict value, piezo DAC code or None) of the newest packet whose status byte was a startup
+        # verdict reply (firmware >= STARTUP_STATE_MIN_FIRMWARE), under _received_packet_cv; for query_startup_state().
         self._startup_verdict_packet = None
         # The startup decision (reset_and_initialize only). startup_verdict: the controller's answer to the startup
         # query, None when it was not asked (older firmware, --skip-init, a startup that homes no stage axis) or gave
@@ -768,6 +768,9 @@ class Microcontroller:
         # stage is still homed.
         self.startup_verdict: Optional[StartupVerdict] = None
         self.startup_was_warm = False
+        # From the startup reply: the last code written to the objective piezo's DAC since the controller powered up;
+        # None when not asked or none was written. startup_piezo_um() converts it.
+        self.startup_piezo_dac_code: Optional[int] = None
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
         self.thread_read_received_packet.start()
 
@@ -1700,7 +1703,15 @@ class Microcontroller:
     def set_piezo_um(self, z_piezo_um):
         dac = int(65535 * (z_piezo_um / OBJECTIVE_PIEZO_RANGE_UM))
         dac = 65535 - dac if OBJECTIVE_PIEZO_FLIP_DIR else dac
-        self.analog_write_onboard_DAC(7, dac)
+        self.analog_write_onboard_DAC(OBJECTIVE_PIEZO_DAC_CHANNEL, dac)
+
+    def startup_piezo_um(self) -> Optional[float]:
+        """Where the objective piezo is by the startup reply's DAC code (set_piezo_um's conversion reversed); None when
+        the controller reported no code."""
+        if self.startup_piezo_dac_code is None:
+            return None
+        dac = 65535 - self.startup_piezo_dac_code if OBJECTIVE_PIEZO_FLIP_DIR else self.startup_piezo_dac_code
+        return OBJECTIVE_PIEZO_RANGE_UM * dac / 65535
 
     def configure_dac80508_refdiv_and_gain(self, div, gains):
         cmd = bytearray(self.tx_buffer_length)
@@ -1876,7 +1887,12 @@ class Microcontroller:
                     # that answers the query always sends a real one, so a verdict status in a packet accepted on the
                     # zero "checksum" (a misaligned read window, say) is not a verdict.
                     if crc_matched and msg[1] in _STARTUP_VERDICT_STATUSES:
-                        self._startup_verdict_packet = (msg[0], msg[1] - STARTUP_VERDICT_STATUS_BASE)
+                        piezo_dac_written = msg[19] & (1 << STARTUP_REPLY_FLAG_PIEZO_DAC_WRITTEN)
+                        self._startup_verdict_packet = (
+                            msg[0],
+                            msg[1] - STARTUP_VERDICT_STATUS_BASE,
+                            (msg[20] << 8 | msg[21]) if piezo_dac_written else None,
+                        )
                 if (self._cmd_id_mcu == self._cmd_id) and (
                     self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
                 ):
@@ -1949,7 +1965,11 @@ class Microcontroller:
                 # firmware, byte 19 bit 0 is clear and the field is theta as it always was.
                 # Firmware >= 1.8 with the focus wheel routed to the host: the field is the wheel's tick count,
                 # flagged by FOCUS_WHEEL_FLAG_REPORTING (the firmware refuses this and encoder reporting together).
-                if msg[19] & (1 << ENC_FLAG.REPORTING):
+                if msg[1] in _STARTUP_VERDICT_STATUSES:
+                    # Firmware >= 1.9: a startup reply packet's bytes 14-21 are the reply (taken above), so these
+                    # fields keep their last values.
+                    pass
+                elif msg[19] & (1 << ENC_FLAG.REPORTING):
                     self.encoder_flags = msg[19]
                     self.encoder_pos = theta_field
                     self.encoder_deviation = self._payload_to_int(msg[20:22], 2)
@@ -2088,6 +2108,8 @@ class Microcontroller:
         The query must not be interleaved with other senders: any command the controller receives after it (HEARTBEAT
         included) ends the verdict reply. The heartbeat starts only after the constructor's query.
 
+        The reply's piezo DAC code goes to startup_piezo_dac_code.
+
         Raises RuntimeError if no verdict arrives within timeout_s.
         """
         cmd = self._startup_state_command(CMD_SET.QUERY_STARTUP_STATE, signature, signature_format, required_axes_mask)
@@ -2102,6 +2124,7 @@ class Microcontroller:
             ):
                 raise RuntimeError(f"controller sent no startup verdict within {timeout_s} [s]. {self._mcu_state()}")
             verdict = StartupVerdict(self._startup_verdict_packet[1])
+            self.startup_piezo_dac_code = self._startup_verdict_packet[2]
         self.log.debug(f"Startup verdict: {verdict.name}")
         return verdict
 

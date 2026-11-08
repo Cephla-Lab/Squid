@@ -597,6 +597,7 @@ def test_query_never_takes_an_earlier_verdict():
         micro._startup_verdict_packet = (
             (micro._cmd_id + 1) % 256,
             int(StartupVerdict.WARM),
+            None,
         )  # stale; same id as the next send
         with pytest.raises(RuntimeError, match="no startup verdict"):
             micro.query_startup_state(0x12345678, 1, 0b011)
@@ -627,7 +628,7 @@ def test_a_verdict_status_never_completes_aborts_resends_or_counts_as_idle(new_f
             sim.response_buffer.extend(sim._build_response(micro._cmd_id, STARTUP_VERDICT_STATUS_BASE + verdict))
             sim._update_internal_state()
         assert parsed.wait(2)
-        assert micro._startup_verdict_packet == (micro._cmd_id, verdict)
+        assert micro._startup_verdict_packet == (micro._cmd_id, verdict, None)  # no piezo code written
         assert micro.is_busy() and micro.last_command_aborted_error is None
         assert not micro.reported_idle_since_last_command()
     assert sim.command_log == sent  # nothing resent
@@ -656,7 +657,7 @@ def test_a_verdict_is_taken_only_from_a_packet_whose_crc_matches(new_firmware_mi
     parse(packet[:-1] + b"\x00")
     assert micro._startup_verdict_packet is None
     parse(packet)  # the same packet with its CRC is one
-    assert micro._startup_verdict_packet == (micro._cmd_id, StartupVerdict.WARM)
+    assert micro._startup_verdict_packet == (micro._cmd_id, StartupVerdict.WARM, None)
 
 
 def test_signature_is_the_same_in_another_process():
@@ -1077,6 +1078,73 @@ def test_a_microscope_relaunch_is_warm(monkeypatch):
     first.close()
     sim.reconnect(1)
     assert control.microscope.Microscope.build_from_global_config(True).startup_homing is StartupHoming.ALREADY_HOMED
+
+
+# --- A warm start leaves the objective piezo where the last session left it (the controller reports its DAC code) ---
+
+
+def _leave_piezo_at(um):
+    """before_close for _homed: the last session left the piezo at um."""
+    return lambda m: (m.set_piezo_um(um), m.wait_till_operation_is_completed())
+
+
+@pytest.mark.parametrize("flip", [False, True])
+def test_the_startup_reply_says_where_the_last_session_left_the_piezo(monkeypatch, flip):
+    monkeypatch.setattr(control.microcontroller, "OBJECTIVE_PIEZO_FLIP_DIR", flip)  # set_piezo_um's (a star import)
+    micro = Microcontroller(serial_device=_homed(before_close=_leave_piezo_at(150)))
+    try:
+        assert micro.startup_was_warm and micro.startup_piezo_um() == pytest.approx(150, abs=0.01)
+    finally:
+        micro.close()
+
+
+def test_the_startup_reply_has_no_piezo_position_when_none_was_written_since_power_up():
+    micro = Microcontroller(serial_device=_homed())
+    try:
+        assert micro.startup_was_warm and micro.startup_piezo_um() is None
+    finally:
+        micro.close()
+
+
+def test_a_startup_reply_is_not_read_as_focus_wheel_or_encoder_data(new_firmware_micro):
+    """Bytes 14-21 of a startup reply packet are the reply: the wheel count and the encoder fields keep what the last
+    ordinary packet said."""
+    micro, sim = new_firmware_micro
+    micro.set_focus_wheel_mode(control._def.FOCUS_WHEEL_MODE.TO_HOST)
+    micro.wait_till_operation_is_completed()
+    sim.turn_focus_wheel(5)
+    _leave_piezo_at(150)(micro)
+    assert micro.focus_wheel_count == 5
+    micro.query_startup_state(0x12345678, 1, 0b011)  # returns once the reply packet is parsed
+    assert micro.focus_wheel_count == 5 and micro.encoder_flags == 0 and micro.encoder_deviation == 0
+    assert micro.startup_piezo_um() == pytest.approx(150, abs=0.01)
+
+
+def _piezo_scope(monkeypatch, sim):
+    monkeypatch.setattr(control._def, "HAS_OBJECTIVE_PIEZO", True)
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    return control.microscope.Microscope.build_from_global_config(True)
+
+
+def test_a_warm_start_leaves_the_piezo_where_the_last_session_left_it(monkeypatch):
+    sim = _homed(_scope_sim(), before_close=_leave_piezo_at(150))
+    scope = _piezo_scope(monkeypatch, sim)
+    try:
+        assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+        assert CMD_SET.ANALOG_WRITE_ONBOARD_DAC not in sim.command_log  # nothing sent to the piezo
+        assert scope.addons.piezo_stage.position == pytest.approx(150, abs=0.01)
+    finally:
+        scope.close()
+
+
+def test_a_warm_start_homes_a_piezo_the_controller_has_no_position_for(monkeypatch):
+    """No code written since power-up (the last session had no piezo): nothing says where it is, so it homes."""
+    scope = _piezo_scope(monkeypatch, _homed(_scope_sim()))
+    try:
+        assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+        assert scope.addons.piezo_stage.position == control._def.OBJECTIVE_PIEZO_HOME_UM
+    finally:
+        scope.close()
 
 
 # --- A warm start retracts Z before the Xeryon moves, as a normal startup's Z home does ---

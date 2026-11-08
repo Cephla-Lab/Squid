@@ -104,3 +104,11 @@ uint8_t hv_packet_status(bool checksum_error, bool verdict_pending, uint8_t verd
     if (in_progress) return IN_PROGRESS;
     return execution_status;
 }
+
+void hv_startup_reply_fields(bool piezo_dac_written, uint16_t piezo_dac_code, uint8_t *fields) {
+    if (!piezo_dac_written) piezo_dac_code = 0;
+    fields[0] = fields[1] = fields[2] = fields[3] = 0;
+    fields[5] = piezo_dac_written ? uint8_t(1 << STARTUP_REPLY_FLAG_PIEZO_DAC_WRITTEN) : 0;
+    fields[6] = uint8_t(piezo_dac_code >> 8);
+    fields[7] = uint8_t(piezo_dac_code & 0xFF);
+}

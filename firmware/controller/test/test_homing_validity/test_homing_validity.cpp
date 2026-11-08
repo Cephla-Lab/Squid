@@ -1,5 +1,6 @@
 #include <unity.h>
 #include <stdint.h>
+#include <string.h>
 #include "constants_protocol.h"
 #include "utils/homing_validity.h"
 
@@ -220,6 +221,21 @@ void test_packet_status_without_a_verdict_is_unchanged(void) {
     TEST_ASSERT_EQUAL_UINT8(CMD_EXECUTION_ERROR, hv_packet_status(false, false, STARTUP_VERDICT_NOT_HOMED, false, CMD_EXECUTION_ERROR));
 }
 
+void test_startup_reply_fields_carry_the_piezo_code(void) {
+    uint8_t fields[8];  // packet bytes 14-21
+    memset(fields, 0xAA, sizeof fields);
+    hv_startup_reply_fields(true, 0x1234, fields);
+    const uint8_t expected[8] = {0, 0, 0, 0, 0xAA, 1 << STARTUP_REPLY_FLAG_PIEZO_DAC_WRITTEN, 0x12, 0x34};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, fields, 8);  // byte 18 (buttons, limit switches) left alone
+}
+void test_startup_reply_fields_without_a_piezo_code(void) {
+    uint8_t fields[8];
+    memset(fields, 0xAA, sizeof fields);
+    hv_startup_reply_fields(false, 0x1234, fields);
+    const uint8_t expected[8] = {0, 0, 0, 0, 0xAA, 0, 0, 0};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, fields, 8);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_power_up_has_no_signature);
@@ -249,5 +265,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_packet_status_is_base_plus_verdict_while_pending);
     RUN_TEST(test_packet_status_checksum_error_wins);
     RUN_TEST(test_packet_status_without_a_verdict_is_unchanged);
+    RUN_TEST(test_startup_reply_fields_carry_the_piezo_code);
+    RUN_TEST(test_startup_reply_fields_without_a_piezo_code);
     return UNITY_END();
 }

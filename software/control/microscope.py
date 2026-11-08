@@ -380,12 +380,14 @@ class MicroscopeAddons:
         self.sci_microscopy_led_array = sci_microscopy_led_array
         self.squid_laser_engine = squid_laser_engine
 
-    def prepare_for_use(self, skip_init: bool = False):
+    def prepare_for_use(self, skip_init: bool = False, piezo_um: Optional[float] = None):
         """
         Prepare all the addon hardware for immediate use.
 
         Args:
             skip_init: If True, skip homing operations (e.g., during restart).
+            piezo_um: Where the controller reports the objective piezo is (a warm start): it stays there instead of
+                homing.
         """
         if self.emission_filter_wheel:
             fw_config = squid.config.get_filter_wheel_config()
@@ -401,7 +403,10 @@ class MicroscopeAddons:
                     if not self.emission_filter_wheel.position_is_known(wheel_index):
                         _home_filter_wheels(self.emission_filter_wheel, wheel_index)
         if self.piezo_stage and not skip_init:
-            self.piezo_stage.home()
+            if piezo_um is None:
+                self.piezo_stage.home()
+            else:
+                self.piezo_stage.adopt_position(piezo_um)
         if self.squid_laser_engine:
             # start() may raise if the USB device is missing — intentional hard fail
             # when a laser engine is configured so we don't silently disable it.
@@ -776,7 +781,8 @@ class Microscope:
         # Before anything moves: the piezo homes next (toward the sample), then X and Y go to their limit switches.
         objective_lowered = False if skip_init or warm else self._confirm_startup_homing()
         self.low_level_drivers.prepare_for_use(skip_init=skip_init)
-        self.addons.prepare_for_use(skip_init=skip_init)
+        # A warm start leaves the piezo where the controller says it is (and homes it when the controller has no code)
+        self.addons.prepare_for_use(skip_init=skip_init, piezo_um=mcu.startup_piezo_um() if warm else None)
 
         # Configure serial watchdog for illumination safety (requires firmware v1.1+)
         if self.low_level_drivers.microcontroller:

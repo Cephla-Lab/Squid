@@ -157,6 +157,11 @@ void send_position_update()
       buffer_tx[21] = 0;
     }
 
+    // Firmware 1.9: a startup verdict packet (hv_packet_status sent the verdict) carries the startup reply there
+    if (!checksum_error && startup_verdict_pending)
+      hv_startup_reply_fields(dac_output_written & (1 << OBJECTIVE_PIEZO_DAC_CHANNEL),
+                              dac_output_code[OBJECTIVE_PIEZO_DAC_CHANNEL], &buffer_tx[14]);
+
     // Firmware version in byte 22: high nibble = major, low nibble = minor
     buffer_tx[22] = (FIRMWARE_VERSION_MAJOR << 4) | (FIRMWARE_VERSION_MINOR & 0x0F);
 

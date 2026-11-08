@@ -132,6 +132,8 @@ HomingValidity homing_validity;
 bool startup_verdict_pending = false;
 uint8_t startup_verdict = STARTUP_VERDICT_NO_SIGNATURE;
 volatile bool power_good_drop_latched = false;
+uint16_t dac_output_code[8] = {0};
+uint8_t dac_output_written = 0;
 
 // btns
 uint8_t btns;

@@ -24,6 +24,10 @@ class PiezoStage:
         new_pos = self._current_position_um + delta_um
         self.move_to(new_pos)
 
+    def adopt_position(self, position_um: float) -> None:
+        """The piezo is already at position_um (the controller reported it at a warm start): track it, moving nothing."""
+        self._current_position_um = position_um
+
     def home(self) -> None:
         """Move piezo to home position"""
         self.move_to(self._home_position_um)

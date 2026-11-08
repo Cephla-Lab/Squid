@@ -28,6 +28,8 @@ from control._def import (
     BIT_POS_Z_LIMIT_RIGHT,
     CMD_EXECUTION_STATUS,
     ILLUMINATION_CODE,
+    OBJECTIVE_PIEZO_DAC_CHANNEL,
+    STARTUP_REPLY_FLAG_PIEZO_DAC_WRITTEN,
     STARTUP_VERDICT_STATUS_BASE,
     StartupVerdict,
 )
@@ -215,6 +217,8 @@ class TestProtocolConsistency:
     def test_startup_verdict_values_match(self, firmware_constants):
         """Verify the startup verdict reply (firmware 1.9: status byte = base + verdict) matches."""
         assert firmware_constants.get("STARTUP_VERDICT_STATUS_BASE") == STARTUP_VERDICT_STATUS_BASE
+        assert firmware_constants.get("OBJECTIVE_PIEZO_DAC_CHANNEL") == OBJECTIVE_PIEZO_DAC_CHANNEL
+        assert firmware_constants.get("STARTUP_REPLY_FLAG_PIEZO_DAC_WRITTEN") == STARTUP_REPLY_FLAG_PIEZO_DAC_WRITTEN
         firmware_verdicts = {
             name[len("STARTUP_VERDICT_") :]: value
             for name, value in firmware_constants.items()

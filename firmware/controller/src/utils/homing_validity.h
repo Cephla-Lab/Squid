@@ -52,4 +52,8 @@ void hv_consume_power_drop(HomingValidity *hv, volatile bool *drop_latched);
 uint8_t hv_packet_status(bool checksum_error, bool verdict_pending, uint8_t verdict, bool in_progress,
                          uint8_t execution_status);
 
+// The startup reply's fields in a verdict packet, written from fields = &packet[14]: bytes 14-17 = 0, byte 18 left
+// alone, byte 19 = STARTUP_REPLY_FLAG_* bits, bytes 20-21 = piezo_dac_code (big-endian) when piezo_dac_written, else 0.
+void hv_startup_reply_fields(bool piezo_dac_written, uint16_t piezo_dac_code, uint8_t *fields);
+
 #endif /* HOMING_VALIDITY_H_ */

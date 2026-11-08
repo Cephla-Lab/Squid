@@ -293,6 +293,9 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         self.homing_validity = HomingValidity(self.fw)
         self._startup_verdict_pending = False  # the status byte carries the verdict until the next command
         self._startup_verdict = 0
+        # set_DAC8050x_output's record, for the startup reply: each channel's last code, and the channels written
+        self.dac_output_code = [0] * 8
+        self.dac_output_written = 0
 
         # Validation tracking
         # Note: validation_errors accumulates across commands for debugging.
@@ -435,12 +438,19 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         version_byte = (self.firmware_version[0] << 4) | (self.firmware_version[1] & 0x0F)
 
         # Focus wheel to host: the theta field carries the wheel count, flagged in byte 19
-        theta_field, byte19 = self.theta, 0
+        theta_field, byte19, bytes20_21 = self.theta, 0, 0
         if self.focus_wheel_mode == self.fw.get("FOCUS_WHEEL_TO_HOST", 1):
             theta_field = self.focus_wheel_count
             byte19 = 1 << self.fw.get("FOCUS_WHEEL_FLAG_REPORTING", 7)
+        # hv_startup_reply_fields: a startup verdict packet carries the startup reply in bytes 14-21 instead
+        if self._startup_verdict_pending:
+            channel = self.fw.OBJECTIVE_PIEZO_DAC_CHANNEL
+            written = bool(self.dac_output_written & (1 << channel))
+            theta_field = 0
+            byte19 = (1 << self.fw.STARTUP_REPLY_FLAG_PIEZO_DAC_WRITTEN) if written else 0
+            bytes20_21 = self.dac_output_code[channel] if written else 0
 
-        # Struct format ">BBiiiiBB2xB" byte breakdown:
+        # Struct format ">BBiiiiBBHB" byte breakdown:
         #   B: cmd_id       (1 byte)
         #   B: status       (1 byte)
         #   i: x            (4 bytes)
@@ -449,12 +459,12 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         #   i: theta        (4 bytes)
         #   B: button_state (1 byte)
         #   B: byte 19      (1 byte, flags)
-        #   2x: reserved    (2 bytes, zero)
+        #   H: bytes 20-21  (2 bytes: the startup reply's piezo DAC code, else zero)
         #   B: version_byte (1 byte)
         #   Total: 1+1+4+4+4+4+1+3+1 = 23 bytes (+ 1 byte CRC = 24 = MSG_LENGTH)
         response = bytearray(
             struct.pack(
-                ">BBiiiiBB2xB",
+                ">BBiiiiBBHB",
                 cmd_id,
                 status,
                 self.x,
@@ -463,12 +473,13 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
                 theta_field,
                 button_state,
                 byte19,
+                bytes20_21,
                 version_byte,
             )
         )
 
         # Verify response payload matches firmware MSG_LENGTH - 1 (leaving room for CRC).
-        # The struct format ">BBiiiiBB2xB" produces 23 bytes, matching MSG_LENGTH-1 when
+        # The struct format ">BBiiiiBBHB" produces 23 bytes, matching MSG_LENGTH-1 when
         # MSG_LENGTH == 24. If firmware changes MSG_LENGTH, this assertion will fail
         # and the struct format must be updated to match the new protocol.
         expected_payload_len = msg_length - 1
@@ -557,6 +568,10 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
                 self._config_received(cmd)  # covered once applied
             else:
                 status = self.fw.get("CMD_EXECUTION_ERROR", 4)
+        elif cmd_code == self.fw.get("ANALOG_WRITE_ONBOARD_DAC"):
+            if cmd[2] < 8:
+                self.dac_output_code[cmd[2]] = cmd[3] << 8 | cmd[4]
+                self.dac_output_written |= 1 << cmd[2]
         elif cmd_code == self.fw.get("STORE_CONFIG_SIGNATURE"):
             if startup_state:  # older firmware: no handler, a no-op
                 self.homing_validity.store_signature(int.from_bytes(bytes(cmd[2:6]), "big"), cmd[6] >> 4)

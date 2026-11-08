@@ -543,6 +543,11 @@ class CMD_EXECUTION_STATUS:
 # QUERY_STARTUP_STATE's reply, sent until the next command arrives, in place of IN_PROGRESS or the last command's
 # status. Not an execution status: never completion, error or idle evidence.
 STARTUP_VERDICT_STATUS_BASE = 64
+# In those packets bytes 14-21 are the startup reply, not the theta, encoder or focus wheel fields: byte 19 bit
+# STARTUP_REPLY_FLAG_PIEZO_DAC_WRITTEN set means bytes 20-21 (big-endian) are the last code written to the objective
+# piezo's DAC channel since the controller powered up.
+OBJECTIVE_PIEZO_DAC_CHANNEL = 7
+STARTUP_REPLY_FLAG_PIEZO_DAC_WRITTEN = 0
 
 
 class SpotDetectionMode(Enum):
