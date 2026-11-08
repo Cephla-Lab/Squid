@@ -349,7 +349,7 @@ def paint_status_badge(tile: QPixmap, status_label: str, *, snap: bool) -> QPixm
         font.setPointSize(8)
         font.setBold(True)
         painter.setFont(font)
-        metrics = QFontMetrics(font)
+        metrics = painter.fontMetrics()  # resolved for the pixmap, so the badge fits the text it will draw
         height = metrics.height() + 4
         margin = 4
 
