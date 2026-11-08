@@ -214,6 +214,7 @@ class MultiPointWorker:
         self._require_first_lock_on = False  # set per time point by initialize_z_stack
         self._relative_offsets_um: List[float] = []  # the current FOV's channel offsets, per selected channel
         self._out_of_travel_by_k: Dict[int, List[str]] = {}  # the current FOV's skipped channels per plane
+        self._skipped_frames: List[Tuple[int, str, float]] = []  # the current FOV's (k, channel, target µm)
 
         self.crop = SEGMENTATION_CROP
 
@@ -1309,6 +1310,8 @@ class MultiPointWorker:
         outside the actuator's travel is skipped and reported, never clamped. Z ends at the anchor.
         """
         af_succeeded = self._relative_lock_on(region_id, fov)
+        self._out_of_travel_by_k = {}
+        self._skipped_frames = []
         try:
             if not af_succeeded and self._require_first_lock_on:
                 self._log.error(RELATIVE_FIRST_FOV_LOCK_ON_FAILED_MESSAGE)
@@ -1335,6 +1338,7 @@ class MultiPointWorker:
             self._acquire_relative_channel_first(region_id, current_path, fov, targets)
             self._timepoint_fov_count += 1
         finally:
+            self._warn_skipped_frames(region_id, fov)
             self._move_actuator_to_um(self._anchor_um)
 
     def _acquire_relative_channel_first(self, region_id, current_path, fov, targets) -> None:
@@ -1395,8 +1399,8 @@ class MultiPointWorker:
         dz_um = abs(self.deltaZ) * 1000
         nz = self._relative_nz()
         n_configs = len(self.selected_configurations)
+        settle = True  # the FOV's first eligible move settles after the per-FOV lock-on
         reached = []  # (k, acquire_pos, z_piezo_um, z_rel_um) of every plane the first channel began
-        skipped_by_k: Dict[int, List[str]] = {}
         try:
             for config_idx, config in enumerate(self.selected_configurations):
                 if self.abort_requested_fn():
@@ -1404,15 +1408,17 @@ class MultiPointWorker:
                 if config_idx > 0 and self.laser_af_per_stack:
                     self._move_actuator_to_um(self._anchor_um)
                     af_succeeded = self._relative_lock_on(region_id, fov, channel_name=config.name) or af_succeeded
-                    settle = True
-                else:
-                    settle = config_idx == 0
-                row = self._relative_targets(self.selected_configurations, af_succeeded)[config_idx]
-                self._report_skipped_frames(
-                    region_id, fov, [(config_idx, k) for k, target in enumerate(row) if target is None]
-                )
-                for k, names in self._out_of_travel_by_k.items():
-                    skipped_by_k.setdefault(k, []).extend(names)
+                    settle = True  # the next eligible move, whichever channel makes it, settles
+                if config_idx == 0 or self.laser_af_per_stack:
+                    # A lock-on group: the whole FOV without AF per stack, else this channel's stack.
+                    targets = self._relative_targets(self.selected_configurations, af_succeeded)
+                    group = [config_idx] if self.laser_af_per_stack else range(n_configs)
+                    self._report_skipped_frames(
+                        region_id,
+                        fov,
+                        [(c, k) for c in group for k, target in enumerate(targets[c]) if target is None],
+                    )
+                row = targets[config_idx]
                 for k in range(nz):
                     if self.abort_requested_fn():
                         break
@@ -1440,7 +1446,6 @@ class MultiPointWorker:
                         self.af_fov_count = self.af_fov_count + 1
         finally:
             # The caller's finally returns Z to the anchor.
-            self._out_of_travel_by_k = skipped_by_k
             for k, acquire_pos, z_piezo_um, z_rel_um in reached:
                 self._finish_z_level(
                     region_id,
@@ -1449,7 +1454,7 @@ class MultiPointWorker:
                     acquire_pos,
                     z_piezo_um,
                     z_rel_um=z_rel_um,
-                    skipped_channels=skipped_by_k.get(k, []),
+                    skipped_channels=self._out_of_travel_by_k.get(k, []),
                 )
 
     def _relative_lock_on(self, region_id, fov, channel_name=None) -> bool:
@@ -1556,29 +1561,33 @@ class MultiPointWorker:
             self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def _report_skipped_frames(self, region_id, fov, skipped: List[Tuple[int, int]]) -> None:
-        """Report this FOV's frames left out because their target is outside the actuator's travel.
+        """Per lock-on group hook, called where the targets are computed: once per FOV without AF per stack, once
+        per re-locked channel with it.
 
         skipped: (config_idx, k) pairs, from targets computed by _relative_targets for the current anchor.
-        Sets the skipped channels per plane for the FOV's coordinates.csv rows and logs one warning naming each
-        frame (plane k, channel) and why (below / past the travel). Anything else that reports skipped frames
-        (run-summary counts, a notice to the writers) belongs here too.
+        Accumulates the FOV's skipped channels per plane (the coordinates.csv rows) and the frames for the FOV's
+        single warning (_warn_skipped_frames). Anything per group (a notice to the writers, run-summary counts)
+        belongs here.
         """
         names = [config.name for config in self.selected_configurations]
-        self._out_of_travel_by_k = {}
-        for config_idx, k in skipped:
-            self._out_of_travel_by_k.setdefault(k, []).append(names[config_idx])
-        if not skipped:
-            return
-        low_um, high_um = self._actuator_travel_um()
         z_min_um = self.laser_af_relative_range_um[0]
         dz_um = abs(self.deltaZ) * 1000
-        frames = []
         for config_idx, k in skipped:
+            self._out_of_travel_by_k.setdefault(k, []).append(names[config_idx])
             target_um = self._anchor_um + z_min_um + k * dz_um + self._relative_offsets_um[config_idx]
+            self._skipped_frames.append((k, names[config_idx], target_um))
+
+    def _warn_skipped_frames(self, region_id, fov) -> None:
+        """One warning per FOV, at its end: every frame left out because its target is outside the travel."""
+        if not self._skipped_frames:
+            return
+        low_um, high_um = self._actuator_travel_um()
+        frames = []
+        for k, name, target_um in self._skipped_frames:
             reason = f"below {low_um:g} µm" if target_um < low_um else f"past {high_um:g} µm"
-            frames.append(f"plane {k} '{names[config_idx]}' at {target_um:.2f} µm ({reason})")
+            frames.append(f"plane {k} '{name}' at {target_um:.2f} µm ({reason})")
         self._log.warning(
-            f"region '{region_id}' fov {fov}: {len(skipped)} frame(s) outside the travel "
+            f"region '{region_id}' fov {fov}: {len(frames)} frame(s) outside the travel "
             f"[{low_um:g}, {high_um:g}] µm skipped, not clamped: " + "; ".join(frames)
         )
 

@@ -664,3 +664,67 @@ def test_z_first_settles_only_after_each_lock_on(tmp_path, monkeypatch):
     sleeps = [i for i, e in enumerate(events) if e[0] == "sleep"]
     assert afs[0] < sleeps[0] < frames[0]
     assert frames[3] < afs[1] < sleeps[1] < frames[4]
+
+
+def _warnings(w):
+    return [str(c.args[0]) for c in w._log.warning.call_args_list]
+
+
+@pytest.mark.parametrize(
+    "order, per_stack", [("CHANNEL FIRST", False), ("Z FIRST", False), ("Z FIRST", True)]  # per stack is Z First only
+)
+def test_one_skipped_frames_warning_per_fov_listing_every_channel(tmp_path, order, per_stack):
+    # anchor 1, range -2..0: both channels' plane 0 (-1) is below the travel.
+    w = _worker(tmp_path, order=order, relative_range=(-2.0, 0.0), references=[1.0, 1.0])
+    w.laser_af_per_stack = per_stack
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    warnings = _warnings(w)
+    assert len(warnings) == 1
+    assert "plane 0 'A'" in warnings[0] and "plane 0 'B'" in warnings[0]
+    assert "2 frame(s)" in warnings[0]
+    assert list(w.coordinates_pd["out_of_travel"]) == ["A;B", ""]
+
+
+def test_without_af_per_stack_the_targets_are_computed_once_per_fov(tmp_path):
+    w = _worker(tmp_path, order="Z FIRST", references=[100.0])
+    calls = []
+    real = w._relative_targets
+    w._relative_targets = lambda *a, **k: (calls.append(1), real(*a, **k))[1]
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    assert len(calls) == 1
+
+
+def test_z_first_settle_carries_to_channel_1_when_channel_0_is_entirely_out_of_travel(tmp_path, monkeypatch):
+    w = _worker(tmp_path, order="Z FIRST", offsets={"A": -500.0}, references=[100.0])
+    w.liveController.trigger_mode = TriggerMode.HARDWARE
+    events = _record_events(w, monkeypatch)
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    assert [name for _, _, name, _ in w.frames] == ["B"] * 4
+    first_frame = events.index(("frame",))
+    assert [e for e in events if e[0] == "sleep"] == [("sleep", _Z_SETTLE_S)]
+    assert events.index(("sleep", _Z_SETTLE_S)) < first_frame
+
+
+def test_z_first_settle_carries_past_an_entirely_skipped_relocked_channel(tmp_path, monkeypatch):
+    w = _worker(
+        tmp_path, order="Z FIRST", channels=("A", "B", "C"), offsets={"B": -500.0}, references=[100.0, 101.0, 102.0]
+    )
+    w.laser_af_per_stack = True
+    w.liveController.trigger_mode = TriggerMode.HARDWARE
+    events = _record_events(w, monkeypatch)
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    assert sorted({name for _, _, name, _ in w.frames}) == ["A", "C"]
+    sleeps = [i for i, e in enumerate(events) if e[0] == "sleep"]
+    frames = [i for i, e in enumerate(events) if e == ("frame",)]
+    afs = [i for i, e in enumerate(events) if e == ("af",)]
+    assert len(afs) == 3 and len(sleeps) == 2  # A's first move, C's first move: B had none
+    assert afs[0] < sleeps[0] < frames[0]
+    assert afs[2] < sleeps[1] < frames[4]
