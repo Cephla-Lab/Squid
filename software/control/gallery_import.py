@@ -374,6 +374,22 @@ _PROTOCOL_END_WORDS = ("finished", "stopped", "failed")
 _MANIFEST_FILE = "run_manifest.json"
 
 
+_SAVING_OPTION_FORMATS = {"ZARR_V3": "OME-Zarr", "OME_TIFF": "OME-TIFF", "MULTI_PAGE_TIFF": "Multi-page TIFF"}
+
+
+def image_format_for_saving_option(option) -> Optional[str]:
+    """The image_format text (as inspect_images names it) for a FileSavingOption or its value; None when unknown.
+    Individual images are named by the current Acquisition.IMAGE_FORMAT."""
+    value = getattr(option, "value", option)
+    if not isinstance(value, str):
+        return None
+    if value.upper() == "INDIVIDUAL_IMAGES":
+        import control._def  # imported late: this module stays light for the controller side
+
+        return f"{str(control._def.Acquisition.IMAGE_FORMAT).upper()} images"
+    return _SAVING_OPTION_FORMATS.get(value.upper())
+
+
 def is_snap_folder(path: str) -> bool:
     return os.path.basename(os.path.normpath(path)).lower().startswith(SNAP_FOLDER_PREFIXES)
 

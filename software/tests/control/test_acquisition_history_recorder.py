@@ -131,6 +131,25 @@ def test_started_and_finished_write_a_complete_entry_with_metadata_and_preview(s
     assert e.images == 16 and e.ended_at is not None
 
 
+@pytest.mark.parametrize(
+    "option, image_format",
+    [
+        (control._def.FileSavingOption.ZARR_V3, "OME-Zarr"),
+        (control._def.FileSavingOption.OME_TIFF, "OME-TIFF"),
+        (control._def.FileSavingOption.MULTI_PAGE_TIFF, "Multi-page TIFF"),
+        (control._def.FileSavingOption.INDIVIDUAL_IMAGES, "BMP images"),
+    ],
+)
+def test_started_records_the_image_format_the_gallery_shows(
+    store, recorder, params, folder, monkeypatch, option, image_format
+):
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", option)
+    monkeypatch.setattr(control._def.Acquisition, "IMAGE_FORMAT", "bmp")
+    recorder.started(params, str(folder), snap=False, skip_saving=False, protocol=None)
+    [e] = store.load()
+    assert e.metadata["image_format"] == image_format and e.metadata["file_format"] == option.value
+
+
 def test_metadata_from_params_reads_the_params_and_the_yaml(params, folder):
     md = metadata_from_params(params, str(folder))
     assert md == {

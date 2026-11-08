@@ -18,7 +18,7 @@ import psutil
 import control._def
 import squid.logging
 import squid.version
-from control.gallery_import import _scaled, metadata_from_yaml
+from control.gallery_import import _scaled, image_format_for_saving_option, metadata_from_yaml
 from squid.acquisition_history import HistoryEntry, HistoryStore, entry_id_for
 
 _log = squid.logging.get_logger(__name__)
@@ -239,6 +239,7 @@ class AcquisitionHistoryRecorder:
                 return None
             metadata = metadata_from_params(params, experiment_path)
             metadata.update(self._common_metadata())
+            metadata["image_format"] = image_format_for_saving_option(control._def.FILE_SAVING_OPTION)
             metadata["expected_images"] = _expected_images(metadata) or 0
             event = self._started_event(experiment_path, metadata, snap=snap, protocol=protocol)
             self._store.append(event)

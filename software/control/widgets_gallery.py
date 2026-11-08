@@ -48,7 +48,7 @@ from qtpy.QtWidgets import (
 
 import control._def
 import squid.logging
-from control.gallery_import import ImportResult, import_folder, is_acquisition_folder
+from control.gallery_import import ImportResult, image_format_for_saving_option, import_folder, is_acquisition_folder
 from control.gallery_previews import array_to_pixmap, load_thumbnail_array, write_preview_png
 from control.widgets_gallery_details import (
     NO_SELECTION,
@@ -120,9 +120,15 @@ def _protocol_names(entry: HistoryEntry) -> List[str]:
     return names
 
 
+def image_format_of(entry: HistoryEntry) -> Optional[str]:
+    """The entry's image_format; for entries recorded with only the saving option (file_format), its format text."""
+    md = entry.metadata
+    return md.get("image_format") or image_format_for_saving_option(md.get("file_format"))
+
+
 def _search_text(entry: HistoryEntry) -> str:
     md = entry.metadata
-    parts = [entry.name, md.get("wellplate_format"), *_channels(entry), md.get("objective"), md.get("image_format")]
+    parts = [entry.name, md.get("wellplate_format"), *_channels(entry), md.get("objective"), image_format_of(entry)]
     parts += _protocol_names(entry)
     return " ".join(str(p) for p in parts if p).lower()
 
@@ -211,8 +217,8 @@ def summary_lines(entry: HistoryEntry) -> List[str]:
         lines.append("Scan: " + ", ".join(dims))
     if entry.rounds:
         lines.append(f"Rounds: {len(entry.rounds)}")
-    if md.get("image_format"):
-        lines.append(f"Format: {md['image_format']}")
+    if image_format_of(entry):
+        lines.append(f"Format: {image_format_of(entry)}")
     return lines
 
 
@@ -938,7 +944,7 @@ class AcquisitionGalleryWidget(QWidget):
                 (", ".join(_channels(entry)), None),
                 ("" if md.get("num_fovs") is None else str(md["num_fovs"]), md.get("num_fovs")),
                 (nz_nt if nz_nt != " / " else "", None),
-                (md.get("image_format") or "", None),
+                (image_format_of(entry) or "", None),
                 (row.status_label, None),
             ]
             for c, (text, key) in enumerate(cells):
@@ -1067,7 +1073,7 @@ class AcquisitionGalleryWidget(QWidget):
             pass
 
     def _preview_placeholder(self, entry: HistoryEntry) -> QPixmap:
-        text = "Running…" if entry.is_running else (entry.metadata.get("image_format") or "No preview")
+        text = "Running…" if entry.is_running else (image_format_of(entry) or "No preview")
         if text not in self._preview_placeholders:
             self._preview_placeholders[text] = make_placeholder_pixmap(text, PREVIEW_SIDE)
         return self._preview_placeholders[text]
@@ -1214,7 +1220,7 @@ class AcquisitionGalleryWidget(QWidget):
         return str(self._store.previews_dir / entry.preview) if entry.preview else None
 
     def _format_placeholder(self, entry: HistoryEntry) -> QPixmap:
-        text = entry.metadata.get("image_format") or "No preview"
+        text = image_format_of(entry) or "No preview"
         if text not in self._placeholders:
             self._placeholders[text] = make_placeholder_pixmap(text, self.THUMBNAIL_SIZE)
         return self._placeholders[text]

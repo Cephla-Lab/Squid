@@ -25,9 +25,11 @@ from control.widgets_gallery import (
     GalleryView,
     build_rows,
     filter_counts,
+    image_format_of,
     matches,
     status_badge_colour,
     status_label_for,
+    summary_lines,
     tile_text,
 )
 from control.widgets_gallery_details import format_size, format_value, metadata_rows
@@ -207,6 +209,45 @@ def test_matches_filters_by_status_and_text():
     assert all(matches(r, "", "All") for r in (online, gone, missing, snap))
     assert matches(online, "488", "All") and not matches(gone, "488", "All")
     assert matches(online, "FLUORESCENCE", "Complete") and not matches(online, "488", "Failed")
+
+
+def test_an_entry_with_only_a_file_format_still_shows_its_format(monkeypatch):
+    # Entries recorded before image_format was stored carry only the saving option.
+    md = {k: v for k, v in _metadata(["BF"]).items() if k != "image_format"}
+    zarr = HistoryEntry(id="z", kind="run", name="z", folder="x", metadata={**md, "file_format": "ZARR_V3"})
+    monkeypatch.setattr(control._def.Acquisition, "IMAGE_FORMAT", "tiff")
+    images = HistoryEntry(id="i", kind="run", name="i", folder="x", metadata={**md, "file_format": "INDIVIDUAL_IMAGES"})
+
+    rows = {row.entry.id: row for row in build_rows([zarr, images])}
+
+    assert "ome-zarr" in rows["z"].search_text and "Format: OME-Zarr" in summary_lines(zarr)
+    assert matches(rows["z"], "zarr", "All")
+    assert "Format: TIFF images" in summary_lines(images)
+    assert image_format_of(zarr) == "OME-Zarr" and image_format_of(images) == "TIFF images"
+    unknown = HistoryEntry(id="u", kind="run", name="u", folder="x", metadata={"file_format": "SOMETHING_NEW"})
+    assert image_format_of(unknown) is None
+
+
+def test_the_format_column_falls_back_to_the_file_format(gallery, store_with_entries, qtbot):
+    store_with_entries.store.append(
+        {
+            "type": "imported",
+            "id": "old",
+            "kind": "run",
+            "name": "old",
+            "folder": str(store_with_entries.folders["complete"]),
+            "started_at": T0 + 5000,
+            "outcome": "complete",
+            "metadata": {"file_format": "OME_TIFF"},
+            "at": T0 + 5000,
+        }
+    )
+    _reload_and_wait(gallery, qtbot)
+    gallery.set_view(GalleryView.LIST)
+    table = gallery.table_widget
+    headers = [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
+    row = next(r for r in range(table.rowCount()) if table.item(r, 0).text() == "old")
+    assert table.item(row, headers.index("Format")).text() == "OME-TIFF"
 
 
 def test_filter_counts_count_each_status(store_with_entries):
