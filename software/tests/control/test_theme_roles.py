@@ -15,6 +15,7 @@ def test_classic_literals_are_pinned():
     assert s["action-bold"] == "background-color: #C2C2FF; font-weight: bold;"
     assert s["note"] == "color: #666;"
     assert s["note-gray"] == "color: gray;"
+    assert s["note-engine"] == "color: #707b7c;"
     assert s["hint"] == "color: #666; font-style: italic;"
     assert s["hint-gray"] == "color: gray; font-style: italic;"
     assert s["danger"] == "color: #CC0000; font-weight: bold;"

@@ -275,7 +275,7 @@ QPushButton[role="action"][on="true"]:disabled {{ background: {ground}; color: {
 QPushButton[role="action-bold"] {{ font-weight: bold; }}
 
 /* Label roles: muted notes and hints, danger and success text, banners and callouts */
-QLabel[role="note"], QLabel[role="note-gray"], QLabel[role="status-idle"] {{ color: {muted}; }}
+QLabel[role="note"], QLabel[role="note-gray"], QLabel[role="note-engine"], QLabel[role="status-idle"] {{ color: {muted}; }}
 QLabel[role="mono-note"] {{ color: {muted}; font-family: monospace; }}
 QLabel[role="status-neutral"] {{ color: {text}; }}
 QLabel[role="status-info"] {{ color: {accent}; }}
@@ -705,6 +705,7 @@ CLASSIC_STYLES = {
     "action-bold": "background-color: #C2C2FF; font-weight: bold;",
     "note": "color: #666;",
     "note-gray": "color: gray;",
+    "note-engine": "color: #707b7c;",
     "hint": "color: #666; font-style: italic;",
     "hint-gray": "color: gray; font-style: italic;",
     "danger": "color: #CC0000; font-weight: bold;",
