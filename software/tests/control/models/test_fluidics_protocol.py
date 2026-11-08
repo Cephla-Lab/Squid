@@ -226,7 +226,8 @@ def test_settings_block_keeps_a_piezo_range_through_to_the_acquisition_data():
     from control.core.acquisition_settings import acquisition_data_from_blocks
 
     z_stack = {**SETTINGS["z_stack"], "use_piezo": True, "z_range_mm": [1.0, 1.0], "piezo_z_range_um": [20.0, 26.0]}
-    block = SettingsBlock.model_validate({**SETTINGS, "z_stack": z_stack})
+    # An absolute range can't run with laser AF (it is refused at load), so this run has it off.
+    block = SettingsBlock.model_validate({**SETTINGS, "z_stack": z_stack, "autofocus": {"laser_af": False}})
     assert acquisition_data_from_blocks(block.model_dump(), COORDS).piezo_z_range_um == (20.0, 26.0)
 
 
@@ -282,3 +283,21 @@ def test_resolve_carries_laser_af_per_stack_into_the_settings_block():
         {"z_stack": {"nz": 3, "order": "Z FIRST"}, "autofocus": {"laser_af": True, "laser_af_per_stack": True}}
     )
     assert settings_block_from_acquisition(data, "acquisition.yaml").autofocus.laser_af_per_stack is True
+
+
+def test_relative_range_survives_export_and_protocol_blocks():
+    from control.acquisition_yaml_loader import AcquisitionYAMLData
+    from control.core.acquisition_settings import acquisition_data_from_blocks
+    from control.core.fluidics_protocol.resolve import settings_block_from_acquisition
+
+    data = AcquisitionYAMLData(
+        widget_type="wellplate",
+        use_piezo=True,
+        laser_af=True,
+        delta_z_um=2.0,
+        z_stacking_config="FROM BOTTOM",
+        laser_af_relative_range_um=(-5.0, 15.0),
+    )
+    block = settings_block_from_acquisition(data, "acquisition.yaml")
+    assert block.z_stack.laser_af_relative_range_um == [-5.0, 15.0]
+    assert acquisition_data_from_blocks(block.model_dump(), COORDS).laser_af_relative_range_um == (-5.0, 15.0)

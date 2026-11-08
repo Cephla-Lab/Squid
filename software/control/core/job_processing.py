@@ -6,7 +6,7 @@ import time
 import json
 from datetime import datetime
 from contextlib import contextmanager
-from typing import ClassVar, Dict, Generic, List, Optional, Set, Tuple, TypeVar, Union
+from typing import TYPE_CHECKING, ClassVar, Dict, Generic, List, Optional, Set, Tuple, TypeVar, Union
 from uuid import uuid4
 
 from dataclasses import dataclass, field
@@ -28,6 +28,9 @@ from control.core.memory_profiler import (
     set_worker_operation,
     log_memory,
 )
+
+if TYPE_CHECKING:  # imported lazily at run time, in the writer process
+    from control.core.zarr_writer import ZarrWriter
 
 
 @dataclass
@@ -64,6 +67,21 @@ class AcquisitionInfo:
     physical_size_y_um: Optional[float] = None
 
 
+@dataclass(frozen=True)
+class SkippedFrames:
+    """A skip notice: frames of one FOV that a relative z-stack left out because their targets are outside the
+    actuator's travel (never clamped).
+
+    frames: (configuration_idx, z_index) pairs at the carrying CaptureInfo's time_point.
+    frame_shape, dtype: (height, width) and dtype of a real frame of the run, so a writer can create the FOV's
+    array or file without an image (a wholly skipped FOV still exists, empty).
+    """
+
+    frames: Tuple[Tuple[int, int], ...]
+    frame_shape: Tuple[int, int]
+    dtype: str
+
+
 # NOTE(imo): We want this to be fast.  But pydantic does not support numpy serialization natively, which means
 # that we need a custom serializer (which will be slow!).  So, use dataclass here instead.
 @dataclass
@@ -79,6 +97,8 @@ class CaptureInfo:
     configuration_idx: int
     z_piezo_um: Optional[float] = None
     time_point: Optional[int] = None
+    # Set on a skip notice, which carries no image (JobImage(image_array=None)).
+    skipped_frames: Optional[SkippedFrames] = None
 
 
 @dataclass()
@@ -163,6 +183,9 @@ class SaveImageJob(Job):
 
     def run(self) -> bool:
         from control.core.io_simulation import is_simulation_enabled, simulated_tiff_write
+
+        if self.capture_info.skipped_frames is not None:
+            return True  # individual TIFFs write nothing for a skipped frame; coordinates.csv has its row
 
         image = self.image_array()
 
@@ -255,6 +278,11 @@ class SaveOMETiffJob(Job):
 
         from control.core.io_simulation import is_simulation_enabled, simulated_ome_tiff_write
 
+        if self.capture_info.skipped_frames is not None:
+            if not is_simulation_enabled():  # simulated disk I/O writes no file to record them in
+                self._record_skipped_frames(self.capture_info)
+            return True
+
         image = self.image_array()
 
         # Simulated disk I/O mode - encode to buffer, throttle, discard
@@ -290,32 +318,110 @@ class SaveOMETiffJob(Job):
         self._save_ome_tiff(image, self.capture_info)
         return True
 
-    def _save_ome_tiff(self, image: np.ndarray, info: CaptureInfo) -> None:
-        # with reference to Talley's https://github.com/pymmcore-plus/pymmcore-plus/blob/main/src/pymmcore_plus/mda/handlers/_ome_tiff_writer.py and Christoph's https://forum.image.sc/t/how-to-create-an-image-series-ome-tiff-from-python/42730/7
-        ome_tiff_writer.validate_capture_info(info, self.acquisition_info, image)
-
+    def _output_paths(self, info: CaptureInfo) -> Tuple[str, str, str]:
+        """The FOV's .ome.tiff path, its temporary metadata JSON and that JSON's lock file."""
         ome_folder = ome_tiff_writer.ome_output_folder(self.acquisition_info, info)
         ome_tiff_writer.ensure_output_directory(ome_folder)
 
         base_name = ome_tiff_writer.ome_base_name(info)
         output_path = os.path.join(ome_folder, base_name + ".ome.tiff")
         metadata_path = ome_tiff_writer.metadata_temp_path(self.acquisition_info, info, base_name)
-        lock_path = _metadata_lock_path(metadata_path)
+        return output_path, metadata_path, _metadata_lock_path(metadata_path)
+
+    @staticmethod
+    def _create_stack(output_path: str, metadata: Dict) -> None:
+        """Create the FOV's file at its planned shape, every plane zero."""
+        target_dtype = np.dtype(metadata[ome_tiff_writer.DTYPE_KEY])
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        tifffile.imwrite(
+            output_path,
+            shape=tuple(metadata[ome_tiff_writer.SHAPE_KEY]),
+            dtype=target_dtype,
+            metadata=ome_tiff_writer.metadata_for_imwrite(metadata),
+            ome=True,
+        )
+
+    @staticmethod
+    def _write_metadata_and_finish_if_complete(metadata: Dict, metadata_path: str, output_path: str) -> None:
+        # Complete once every planned plane was written or skipped (outside the travel, from a skip notice).
+        skipped_count = len(metadata.get(ome_tiff_writer.SKIPPED_INDICES_KEY, []))
+        is_complete = (
+            metadata[ome_tiff_writer.SAVED_COUNT_KEY] + skipped_count >= metadata[ome_tiff_writer.EXPECTED_COUNT_KEY]
+        )
+        if is_complete:
+            metadata[ome_tiff_writer.COMPLETED_KEY] = True
+
+        # Write metadata (includes completed flag if acquisition is done)
+        ome_tiff_writer.write_metadata(metadata_path, metadata)
+
+        if is_complete:
+            # Finalize OME-XML and clean up temporary files. The skipped planes go into the XML: the JSON goes.
+            with tifffile.TiffFile(output_path) as tif:
+                current_xml = tif.ome_metadata
+            ome_xml = ome_tiff_writer.augment_ome_xml(current_xml, metadata)
+            tifffile.tiffcomment(output_path, ome_xml.encode("utf-8"))
+            if os.path.exists(metadata_path):
+                os.remove(metadata_path)
+
+    @staticmethod
+    def _remove_lock_if_complete(metadata_path: str, lock_path: str) -> None:
+        # Clean up lock file after lock is released (only when acquisition completed).
+        # Race condition note: Between releasing the lock and this cleanup, another process
+        # could theoretically acquire the same lock path. However:
+        # 1. We only attempt removal if metadata_path is gone (acquisition completed)
+        # 2. If another process holds the lock, os.remove fails with OSError (caught below)
+        # 3. This is best-effort cleanup; stale locks are also cleaned by cleanup_stale_metadata_files
+        try:
+            if not os.path.exists(metadata_path):
+                os.remove(lock_path)
+        except OSError:
+            pass  # Lock held by another process, already removed, or platform-specific issue
+
+    def _record_skipped_frames(self, info: CaptureInfo) -> None:
+        """A skip notice: create the FOV's file from the notice's frame shape and dtype if no image did, add the
+        skipped planes to skipped_indices, and finish the file if that completes it."""
+        if info.time_point is None:
+            raise ValueError("CaptureInfo.time_point is required for OME-TIFF saving")
+        notice = info.skipped_frames
+        output_path, metadata_path, lock_path = self._output_paths(info)
+
+        with _acquire_file_lock(lock_path, context=output_path):
+            metadata = ome_tiff_writer.load_metadata(metadata_path)
+            if metadata is None:
+                metadata = ome_tiff_writer.initialize_metadata_for_shape(
+                    self.acquisition_info, info, notice.frame_shape, notice.dtype
+                )
+                self._create_stack(output_path, metadata)
+
+            shape = tuple(metadata[ome_tiff_writer.SHAPE_KEY])
+            time_point = int(info.time_point)
+            written = set(metadata[ome_tiff_writer.WRITTEN_INDICES_KEY])
+            skipped = metadata.setdefault(ome_tiff_writer.SKIPPED_INDICES_KEY, [])
+            for channel_index, z_index in notice.frames:
+                if not (0 <= time_point < shape[0] and 0 <= z_index < shape[1] and 0 <= channel_index < shape[2]):
+                    raise ValueError(
+                        f"Skipped frame (t={time_point}, c={channel_index}, z={z_index}) is outside the OME stack"
+                    )
+                index_key = f"{time_point}-{channel_index}-{z_index}"
+                if index_key not in written and index_key not in skipped:
+                    skipped.append(index_key)
+
+            self._write_metadata_and_finish_if_complete(metadata, metadata_path, output_path)
+
+        self._remove_lock_if_complete(metadata_path, lock_path)
+
+    def _save_ome_tiff(self, image: np.ndarray, info: CaptureInfo) -> None:
+        # with reference to Talley's https://github.com/pymmcore-plus/pymmcore-plus/blob/main/src/pymmcore_plus/mda/handlers/_ome_tiff_writer.py and Christoph's https://forum.image.sc/t/how-to-create-an-image-series-ome-tiff-from-python/42730/7
+        ome_tiff_writer.validate_capture_info(info, self.acquisition_info, image)
+
+        output_path, metadata_path, lock_path = self._output_paths(info)
 
         with _acquire_file_lock(lock_path, context=output_path):
             metadata = ome_tiff_writer.load_metadata(metadata_path)
             if metadata is None:
                 metadata = ome_tiff_writer.initialize_metadata(self.acquisition_info, info, image)
-                target_dtype = np.dtype(metadata[ome_tiff_writer.DTYPE_KEY])
-                if os.path.exists(output_path):
-                    os.remove(output_path)
-                tifffile.imwrite(
-                    output_path,
-                    shape=tuple(metadata[ome_tiff_writer.SHAPE_KEY]),
-                    dtype=target_dtype,
-                    metadata=ome_tiff_writer.metadata_for_imwrite(metadata),
-                    ome=True,
-                )
+                self._create_stack(output_path, metadata)
             else:
                 expected_shape = tuple(metadata[ome_tiff_writer.SHAPE_KEY])
                 if expected_shape[-2:] != image.shape[-2:]:
@@ -353,34 +459,9 @@ class SaveOMETiffJob(Job):
                 metadata[ome_tiff_writer.WRITTEN_INDICES_KEY].append(index_key)
                 metadata[ome_tiff_writer.SAVED_COUNT_KEY] = len(metadata[ome_tiff_writer.WRITTEN_INDICES_KEY])
 
-            # Check if all images have been saved
-            is_complete = metadata[ome_tiff_writer.SAVED_COUNT_KEY] >= metadata[ome_tiff_writer.EXPECTED_COUNT_KEY]
-            if is_complete:
-                metadata[ome_tiff_writer.COMPLETED_KEY] = True
+            self._write_metadata_and_finish_if_complete(metadata, metadata_path, output_path)
 
-            # Write metadata (includes completed flag if acquisition is done)
-            ome_tiff_writer.write_metadata(metadata_path, metadata)
-
-            if is_complete:
-                # Finalize OME-XML and clean up temporary files
-                with tifffile.TiffFile(output_path) as tif:
-                    current_xml = tif.ome_metadata
-                ome_xml = ome_tiff_writer.augment_ome_xml(current_xml, metadata)
-                tifffile.tiffcomment(output_path, ome_xml.encode("utf-8"))
-                if os.path.exists(metadata_path):
-                    os.remove(metadata_path)
-
-        # Clean up lock file after lock is released (only when acquisition completed).
-        # Race condition note: Between releasing the lock and this cleanup, another process
-        # could theoretically acquire the same lock path. However:
-        # 1. We only attempt removal if metadata_path is gone (acquisition completed)
-        # 2. If another process holds the lock, os.remove fails with OSError (caught below)
-        # 3. This is best-effort cleanup; stale locks are also cleaned by cleanup_stale_metadata_files
-        try:
-            if not os.path.exists(metadata_path):
-                os.remove(lock_path)
-        except OSError:
-            pass  # Lock held by another process, already removed, or platform-specific issue
+        self._remove_lock_if_complete(metadata_path, lock_path)
 
 
 @dataclass
@@ -588,7 +669,8 @@ class SaveZarrJob(Job):
             self._hcs_wells_written.add(well_path)
             self._log.debug(f"Wrote HCS well metadata for {region_id}: {fov_count} fields")
 
-    def run(self) -> ZarrWriteResult:
+    def run(self) -> Union[ZarrWriteResult, bool]:
+        """A ZarrWriteResult for an image (the viewer is told the frame is written), True for a skip notice."""
         if self.zarr_writer_info is None:
             raise ValueError(
                 "SaveZarrJob.run() requires zarr_writer_info but it is None. "
@@ -597,6 +679,11 @@ class SaveZarrJob(Job):
             )
 
         from control.core.io_simulation import is_simulation_enabled, simulated_zarr_write
+
+        if self.capture_info.skipped_frames is not None:
+            if not is_simulation_enabled():  # simulated disk I/O writes no array to record them in
+                self._record_skipped_frames(self.capture_info)
+            return True
 
         image = self.image_array()
         info = self.capture_info
@@ -659,13 +746,17 @@ class SaveZarrJob(Job):
         self._save_zarr(image, info, output_path)
         return result
 
-    def _save_zarr(self, image: np.ndarray, info: CaptureInfo, output_path: str) -> None:
-        """Write image to zarr dataset using TensorStore.
+    def _writer_for(
+        self, info: CaptureInfo, output_path: str, frame_shape: Tuple[int, int], dtype: np.dtype
+    ) -> "ZarrWriter":
+        """The writer for this FOV (for this region, in 6D), created at its planned shape, fill value 0, by the
+        FOV's first image or skip notice, whichever comes first.
 
         Args:
-            image: Image array to write
-            info: Capture info with t/c/z indices
+            info: Capture info of the image or skip notice
             output_path: Path to the zarr dataset for this region/FOV
+            frame_shape: (height, width) of a frame
+            dtype: Frame dtype
         """
         from control.core.zarr_writer import ZarrWriter, ZarrAcquisitionConfig
         from control import _def
@@ -691,8 +782,8 @@ class SaveZarrJob(Job):
                     self.zarr_writer_info.t_size,
                     self.zarr_writer_info.c_size,
                     self.zarr_writer_info.z_size,
-                    image.shape[0],
-                    image.shape[1],
+                    frame_shape[0],
+                    frame_shape[1],
                 )
                 is_6d = False
             else:
@@ -703,15 +794,15 @@ class SaveZarrJob(Job):
                     self.zarr_writer_info.t_size,
                     self.zarr_writer_info.c_size,
                     self.zarr_writer_info.z_size,
-                    image.shape[0],
-                    image.shape[1],
+                    frame_shape[0],
+                    frame_shape[1],
                 )
                 is_6d = True
 
             config = ZarrAcquisitionConfig(
                 output_path=output_path,
                 shape=shape,
-                dtype=image.dtype,
+                dtype=dtype,
                 pixel_size_um=self.zarr_writer_info.pixel_size_um or 1.0,
                 z_step_um=self.zarr_writer_info.z_step_um,
                 time_increment_s=self.zarr_writer_info.time_increment_s,
@@ -739,7 +830,36 @@ class SaveZarrJob(Job):
                 mode_str = "non-HCS 5D per-FOV"
             self._log.info(f"Initialized zarr writer ({mode_str}): {output_path}")
 
-        writer = self._zarr_writers[writer_key]
+        return self._zarr_writers[writer_key]
+
+    def _record_skipped_frames(self, info: CaptureInfo) -> None:
+        """A skip notice: create the FOV's array from the notice's frame shape and dtype if no image did (the
+        skipped frames stay at the fill value), and record each skipped frame in the array's _squid metadata."""
+        region_id = str(info.region_id) if info.region_id is not None else "0"
+        fov = info.fov if info.fov is not None else 0
+        output_path = self.zarr_writer_info.get_output_path(region_id, fov)
+        notice = info.skipped_frames
+        writer = self._writer_for(info, output_path, notice.frame_shape, np.dtype(notice.dtype))
+
+        t = info.time_point or 0
+        is_6d = not self.zarr_writer_info.is_hcs and self.zarr_writer_info.use_6d_fov
+        for c, z in notice.frames:
+            writer.record_skipped(t, c, z, fov=fov if is_6d else None)
+        self._log.debug(f"Recorded {len(notice.frames)} skipped frame(s) at t={t}, fov={fov} in {output_path}")
+
+    def _save_zarr(self, image: np.ndarray, info: CaptureInfo, output_path: str) -> None:
+        """Write image to zarr dataset using TensorStore.
+
+        Args:
+            image: Image array to write
+            info: Capture info with t/c/z indices
+            output_path: Path to the zarr dataset for this region/FOV
+        """
+        is_hcs = self.zarr_writer_info.is_hcs
+        use_6d_fov = self.zarr_writer_info.use_6d_fov
+        fov = info.fov if info.fov is not None else 0
+
+        writer = self._writer_for(info, output_path, image.shape[:2], image.dtype)
 
         # Write frame
         t = info.time_point or 0

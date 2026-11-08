@@ -3234,6 +3234,7 @@ def _yaml_data(**overrides):
         contrast_af=False,
         laser_af=False,
         use_piezo=False,
+        laser_af_relative_range_um=None,
         xy_mode="Select Wells",
         wellplate_regions=None,
         flexible_positions=None,

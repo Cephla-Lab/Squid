@@ -60,6 +60,8 @@ class AcquisitionParameters:
     z_range: Tuple[float, float]
     # Set Z-range on a piezo z-stack: (min, max) piezo positions in µm. The stepper holds at z_range.
     piezo_z_range_um: Optional[Tuple[float, float]] = None
+    # Set Range with laser AF on: (z_min, z_max) µm from the laser AF reference plane.
+    laser_af_relative_range_um: Optional[Tuple[float, float]] = None
 
     apply_channel_offset: bool = True
     skip_saving: bool = False

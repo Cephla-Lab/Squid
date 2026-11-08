@@ -1,3 +1,4 @@
+import dataclasses
 import math
 import os
 import queue
@@ -25,6 +26,7 @@ from control.core.multi_point_utils import (
     PlateViewInit,
 )
 from control.core.objective_store import ObjectiveStore
+from control.core.relative_z_range import frame_targets, nz_for_range
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.piezo import PiezoStage
@@ -42,6 +44,7 @@ from control.core.job_processing import (
     SaveOMETiffJob,
     SaveSettings,
     SaveZarrJob,
+    SkippedFrames,
     ZarrWriterInfo,
     AcquisitionInfo,
     Job,
@@ -58,6 +61,15 @@ from squid.config import CameraPixelFormat
 
 # Module-level logger for static methods
 _log = squid.logging.get_logger(__name__)
+
+# A relative Z-range with no valid lock-on record: the run stops when the first FOV's lock-on fails.
+RELATIVE_FIRST_FOV_LOCK_ON_FAILED_MESSAGE = (
+    "Couldn't lock onto the laser AF reference at the first FOV: move near the reference plane, "
+    "or measure a relative z once."
+)
+
+# A relative frame whose target is within this of where the actuator already is takes no move (and no move settle).
+RELATIVE_SAME_TARGET_TOLERANCE_UM = 1e-4
 
 
 def save_job_classes_for_format(file_saving_option: FileSavingOption) -> List[Type[Job]]:
@@ -82,6 +94,13 @@ def _z_steps_below_center(nz: int) -> int:
 
 
 class MultiPointWorker:
+    # Relative-mode state (Set Range with laser AF on). Class defaults so a bare instance (tests build some with
+    # __new__) runs in absolute / plain mode.
+    laser_af_relative_range_um: Optional[Tuple[float, float]] = None
+    _relative_mode: bool = False
+    _anchor_um: Optional[float] = None
+    _require_first_lock_on: bool = False
+
     def __init__(
         self,
         scope: Microscope,
@@ -193,6 +212,27 @@ class MultiPointWorker:
         self.laser_af_per_stack = acquisition_parameters.laser_af_per_stack
         self.z_range = acquisition_parameters.z_range
         self.piezo_z_range_um = acquisition_parameters.piezo_z_range_um
+        # Set Range with laser AF on: (z_min, z_max) µm from each FOV's laser AF anchor, or None.
+        self.laser_af_relative_range_um = acquisition_parameters.laser_af_relative_range_um
+        self._relative_mode = self.laser_af_relative_range_um is not None
+        self._anchor_um = None  # the actuator position (µm) the current FOV's planes are relative to
+        # Where the current FOV's lock-on or last relative move left the actuator (µm), None when unknown: outside a
+        # FOV, during a lock-on, after a failed move. The commanded target, not a readback (a stage reads back in
+        # microsteps), so a frame at the same target as the last one (equal channel offsets) takes no move.
+        self._actuator_at_um: Optional[float] = None
+        self._require_first_lock_on = False  # set per time point by initialize_z_stack
+        self._relative_offsets_um: List[float] = []  # the current FOV's channel offsets, per selected channel
+        self._out_of_travel_by_k: Dict[int, List[str]] = {}  # the current FOV's skipped channels per plane
+        self._skipped_frames: List[Tuple[int, str, float]] = []  # the current FOV's (k, channel, target µm)
+        # Skip notices: each tells the Zarr / OME-TIFF writers one lock-on group's skipped frames, with the shape and
+        # dtype of the run's first frame. Until that frame arrives they wait here; the frame callback (camera
+        # thread) sends them, hence the lock. A run that takes no frame at all sends them at its end.
+        self._skip_notice_lock = threading.Lock()
+        self._pending_skip_notices: List[Tuple[CaptureInfo, Tuple[Tuple[int, int], ...]]] = []
+        self._frame_format: Optional[Tuple[Tuple[int, int], str]] = None  # ((height, width), dtype) of that frame
+        # Per time point, for the run summary (TimepointStats).
+        self._relative_frames_skipped = 0
+        self._relative_fovs_with_skips = 0
 
         self.crop = SEGMENTATION_CROP
 
@@ -570,6 +610,8 @@ class MultiPointWorker:
             # We do this above, but there are some paths that skip the proper end of the acquisition so make
             # sure to always wait for final images here before removing our callback.
             self._wait_for_outstanding_callback_images()
+            # Skip notices still waiting for the run's first frame (it took none) go out while the runners are open.
+            self._flush_pending_skip_notices()
             self._log.debug(self._timing.get_report())
             if this_image_callback_id:
                 self.camera.remove_frame_callback(this_image_callback_id)
@@ -758,6 +800,8 @@ class MultiPointWorker:
             self._laser_af_failures = 0
             self._laser_af_per_stack_successes = 0
             self._laser_af_per_stack_failures = 0
+            self._relative_frames_skipped = 0
+            self._relative_fovs_with_skips = 0
             self.microcontroller.enable_joystick(False)
 
             self._log.debug("multipoint acquisition - time point " + str(self.time_point + 1))
@@ -780,6 +824,13 @@ class MultiPointWorker:
             # finished region scan
             self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
 
+            if self._relative_frames_skipped > 0:
+                # The run summary in the log, with or without Slack (the per-FOV warnings list each frame).
+                self._log.warning(
+                    f"time point {self.time_point + 1}: relative z-stack skipped {self._relative_frames_skipped} "
+                    f"frame(s) outside the travel, not clamped, in {self._relative_fovs_with_skips} FOV(s)"
+                )
+
             # Send Slack timepoint notification via callback (allows main thread to capture screenshot)
             if self._slack_notifier is not None:
                 try:
@@ -799,6 +850,8 @@ class MultiPointWorker:
                         laser_af_failure_reasons=[],
                         laser_af_per_stack_successes=self._laser_af_per_stack_successes,
                         laser_af_per_stack_failures=self._laser_af_per_stack_failures,
+                        relative_frames_skipped=self._relative_frames_skipped,
+                        relative_fovs_with_skips=self._relative_fovs_with_skips,
                     )
                     # Use callback to allow main thread to capture screenshot before sending
                     self.callbacks.signal_slack_timepoint_notification(stats)
@@ -829,14 +882,34 @@ class MultiPointWorker:
             self.piezo.move_to(piezo_max_um if self.z_stacking_config == "FROM TOP" else piezo_min_um)
             self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
+        # A relative range starts the time point at the last lock-on's anchor, not at the Start-time z (usually
+        # Z-max, often outside the capture range). With no valid record the first FOV's lock-on must succeed.
+        if self._relative_mode:
+            record = self.laser_auto_focus_controller.valid_lock_on()
+            if record is not None:
+                self._move_actuator_to_um(record.anchor_um)
+                self._actuator_at_um = None  # tracked inside a FOV only: the move to the first FOV may move Z
+                self._anchor_um = record.anchor_um
+            self._require_first_lock_on = record is None
+
         self.z_pos = self.stage.get_pos().z_mm  # zpos at the beginning of the scan
 
     def initialize_coordinates_dataframe(self):
         base_columns = ["z_level", "x (mm)", "y (mm)", "z (um)", "time"]
         piezo_column = ["z_piezo (um)"] if self.use_piezo else []
-        self.coordinates_pd = pd.DataFrame(columns=["region", "fov"] + base_columns + piezo_column)
+        relative_columns = ["z_rel (um)", "out_of_travel"] if self._relative_mode else []
+        self.coordinates_pd = pd.DataFrame(columns=["region", "fov"] + base_columns + piezo_column + relative_columns)
 
-    def update_coordinates_dataframe(self, region_id, z_level, pos: squid.abc.Pos, fov=None, z_piezo_um=None):
+    def update_coordinates_dataframe(
+        self,
+        region_id,
+        z_level,
+        pos: squid.abc.Pos,
+        fov=None,
+        z_piezo_um=None,
+        z_rel_um=None,
+        skipped_channels=None,
+    ):
         base_data = {
             "z_level": [z_level],
             "x (mm)": [pos.x_mm],
@@ -847,8 +920,12 @@ class MultiPointWorker:
         piezo_data = {}
         if self.use_piezo:
             piezo_data = {"z_piezo (um)": [self.z_piezo_um if z_piezo_um is None else z_piezo_um]}
+        relative_data = {}
+        if self._relative_mode:
+            # The plane's distance from the reference, and the channels left out there (outside the travel).
+            relative_data = {"z_rel (um)": [z_rel_um], "out_of_travel": [";".join(skipped_channels or [])]}
 
-        new_row = pd.DataFrame({"region": [region_id], "fov": [fov], **base_data, **piezo_data})
+        new_row = pd.DataFrame({"region": [region_id], "fov": [fov], **base_data, **piezo_data, **relative_data})
 
         self.coordinates_pd = pd.concat([self.coordinates_pd, new_row], ignore_index=True)
 
@@ -1129,6 +1206,9 @@ class MultiPointWorker:
 
     def acquire_at_position(self, region_id, current_path, fov):
         self._applied_config = None
+        if self._relative_mode:
+            self._acquire_relative(region_id, current_path, fov)
+            return
         af_succeeded = self.perform_autofocus(region_id, fov)
         if not af_succeeded:
             self._log.error(
@@ -1251,13 +1331,482 @@ class MultiPointWorker:
             self._reset_channel_z_offset()
         return z_steps_taken
 
+    # --- Relative z-stack: Set Range with laser AF on, planes relative to each FOV's laser AF anchor ----------
+
+    def _acquire_relative(self, region_id, current_path, fov) -> None:
+        """One FOV of a relative z-stack, in place of perform_autofocus, prepare_z_stack, the stack steps and
+        move_z_back_after_stack.
+
+        Lock on (Z restored to where it was on any failure); with no valid lock-on record a failed first lock-on
+        stops the run. Then every frame is an absolute move to anchor + z_min + k * dz + channel offset; a frame
+        outside the actuator's travel is skipped and reported, never clamped. Z ends at the anchor: a failed return
+        raises, unless another error is already ending the FOV (that one propagates, the failed return is logged).
+        """
+        af_succeeded = self._relative_lock_on(region_id, fov)
+        self._out_of_travel_by_k = {}
+        self._skipped_frames = []
+        in_flight = None
+        try:
+            if not af_succeeded and self._require_first_lock_on:
+                self._log.error(RELATIVE_FIRST_FOV_LOCK_ON_FAILED_MESSAGE)
+                self._abort_due_to_error()
+                return
+            if not af_succeeded:
+                self._log.info(
+                    f"relative z-stack anchor, region '{region_id}' fov {fov}: {self._anchor_um:.3f} µm "
+                    "(lock-on failed: stacking from the restored z)"
+                )
+            if (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
+                # The next time point's lock-on starts here: the anchor on a stepper, so it starts from
+                # displacement 0; the stage z on a piezo scope, where the piezo holds the anchor.
+                self._last_time_point_z_pos[(region_id, fov)] = (
+                    self.stage.get_pos().z_mm if self._actuator_is_piezo() else self._anchor_um / 1000
+                )
+            if self.z_stack_order == "Z FIRST":
+                self._acquire_relative_z_first(region_id, current_path, fov, af_succeeded)
+                self._timepoint_fov_count += 1
+                return
+            targets = self._relative_targets(self.selected_configurations, af_succeeded)
+            skipped = [(c, k) for c, row in enumerate(targets) for k, target in enumerate(row) if target is None]
+            self._report_skipped_frames(region_id, current_path, fov, skipped)
+            self._acquire_relative_channel_first(region_id, current_path, fov, targets)
+            self._timepoint_fov_count += 1
+        except BaseException as e:
+            in_flight = e
+            raise
+        finally:
+            if self._skipped_frames:
+                self._relative_fovs_with_skips += 1
+            self._warn_skipped_frames(region_id, fov)
+            try:
+                self._move_actuator_to_um(self._anchor_um)
+            except Exception:
+                if in_flight is None:
+                    raise  # Z is in an unknown place: the FOV fails
+                # Never replace the error that ended the FOV with the failed return.
+                self._log.error(
+                    f"region '{region_id}' fov {fov}: returning Z to the anchor {self._anchor_um:.3f} µm failed "
+                    f"after {type(in_flight).__name__}: {in_flight}",
+                    exc_info=True,
+                )
+            finally:
+                self._actuator_at_um = None  # outside a FOV the actuator position is not tracked
+
+    def _acquire_relative_channel_first(self, region_id, current_path, fov, targets) -> None:
+        """For each plane k, every channel whose target at k is inside the travel; one coordinates row per k."""
+        z_min_um = self.laser_af_relative_range_um[0]
+        dz_um = abs(self.deltaZ) * 1000
+        nz = self._relative_nz()
+        n_configs = len(self.selected_configurations)
+        first_frame = True  # the FOV's first eligible frame settles after the lock-on
+        for k in range(nz):
+            file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{k:0{FILE_ID_PADDING}}"
+            # Record the plane's nominal, un-offset position (computed even where it lies outside the travel).
+            z_rel_um = z_min_um + k * dz_um
+            nominal_um = self._anchor_um + z_rel_um
+            acquire_pos = self.stage.get_pos()
+            z_piezo_um = None
+            if self._actuator_is_piezo():
+                z_piezo_um = nominal_um
+            else:
+                acquire_pos = acquire_pos.model_copy(update={"z_mm": nominal_um / 1000})
+            self._begin_z_level(region_id, current_path, fov, k, file_ID, acquire_pos)
+
+            for config_idx, config in enumerate(self.selected_configurations):
+                if self.abort_requested_fn():
+                    break
+                target_um = targets[config_idx][k]
+                if target_um is None:
+                    continue
+                self._move_actuator_to_um(target_um, after_lock_on=first_frame)
+                first_frame = False
+                current_image = fov * nz * n_configs + k * n_configs + config_idx + 1
+                self._acquire_channel_image(config, config_idx, file_ID, current_path, k, region_id, fov, current_image)
+
+            self._finish_z_level(
+                region_id,
+                fov,
+                k,
+                acquire_pos,
+                z_piezo_um,
+                z_rel_um=z_rel_um,
+                skipped_channels=self._out_of_travel_by_k.get(k, []),
+            )
+            # On an abort, stop here: the caller handles it once.
+            if self.abort_requested_fn():
+                break
+            self.af_fov_count = self.af_fov_count + 1
+
+    def _acquire_relative_z_first(self, region_id, current_path, fov, af_succeeded) -> None:
+        """Z First: each channel images all of its eligible planes before the next channel.
+
+        With laser AF per stack every later channel returns to the anchor and re-locks from there (never from
+        the previous stack's last plane); its targets, skips and reports come from its own anchor. The first
+        eligible move after each lock-on settles. The channel loop's first pass begins each plane (the
+        coordinates row's data); the rows are written in a finally for every plane reached, with the channels
+        skipped per plane accumulated across channels.
+        """
+        z_min_um = self.laser_af_relative_range_um[0]
+        dz_um = abs(self.deltaZ) * 1000
+        nz = self._relative_nz()
+        n_configs = len(self.selected_configurations)
+        settle = True  # the FOV's first eligible move settles after the per-FOV lock-on
+        reached = []  # (k, acquire_pos, z_piezo_um, z_rel_um) of every plane the first channel began
+        try:
+            for config_idx, config in enumerate(self.selected_configurations):
+                if self.abort_requested_fn():
+                    break
+                if config_idx > 0 and self.laser_af_per_stack:
+                    self._move_actuator_to_um(self._anchor_um)
+                    af_succeeded = self._relative_lock_on(region_id, fov, channel_name=config.name) or af_succeeded
+                    settle = True  # the next eligible move, whichever channel makes it, settles
+                if config_idx == 0 or self.laser_af_per_stack:
+                    # A lock-on group: the whole FOV without AF per stack, else this channel's stack.
+                    targets = self._relative_targets(self.selected_configurations, af_succeeded)
+                    group = [config_idx] if self.laser_af_per_stack else range(n_configs)
+                    self._report_skipped_frames(
+                        region_id,
+                        current_path,
+                        fov,
+                        [(c, k) for c in group for k, target in enumerate(targets[c]) if target is None],
+                    )
+                row = targets[config_idx]
+                for k in range(nz):
+                    if self.abort_requested_fn():
+                        break
+                    file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{k:0{FILE_ID_PADDING}}"
+                    if config_idx == 0:
+                        # Record the plane's nominal, un-offset position (even where it lies outside the travel).
+                        z_rel_um = z_min_um + k * dz_um
+                        nominal_um = self._anchor_um + z_rel_um
+                        acquire_pos = self.stage.get_pos()
+                        z_piezo_um = None
+                        if self._actuator_is_piezo():
+                            z_piezo_um = nominal_um
+                        else:
+                            acquire_pos = acquire_pos.model_copy(update={"z_mm": nominal_um / 1000})
+                        self._begin_z_level(region_id, current_path, fov, k, file_ID, acquire_pos)
+                        reached.append((k, acquire_pos, z_piezo_um, z_rel_um))
+                    if row[k] is not None:
+                        self._move_actuator_to_um(row[k], after_lock_on=settle)
+                        settle = False
+                        current_image = fov * nz * n_configs + config_idx * nz + k + 1
+                        self._acquire_channel_image(
+                            config, config_idx, file_ID, current_path, k, region_id, fov, current_image
+                        )
+                    if config_idx == 0 and not self.abort_requested_fn():
+                        self.af_fov_count = self.af_fov_count + 1
+        finally:
+            # The caller's finally returns Z to the anchor.
+            for k, acquire_pos, z_piezo_um, z_rel_um in reached:
+                self._finish_z_level(
+                    region_id,
+                    fov,
+                    k,
+                    acquire_pos,
+                    z_piezo_um,
+                    z_rel_um=z_rel_um,
+                    skipped_channels=self._out_of_travel_by_k.get(k, []),
+                )
+
+    def _relative_lock_on(self, region_id, fov, channel_name=None) -> bool:
+        """Lock on to the laser AF reference plane. True on success.
+
+        On any failure (a False return or an exception anywhere in the AF) Z is restored absolutely to where it
+        was (z_pre) and settled; a failed restore raises, and run() treats that as fatal. Either way _anchor_um
+        is the actuator position afterwards: the reference plane, or z_pre. A success is recorded as the last
+        lock-on and lifts the first-FOV requirement. Counted per FOV, or per stack when channel_name names the
+        channel re-locking before its stack.
+        """
+        self._actuator_at_um = None  # the AF moves the actuator itself; a failed restore leaves it unknown
+        locked = self._laser_af_anchor(region_id, fov, restore_on_failure=True, channel_name=channel_name)
+        if channel_name is None:
+            if locked:
+                self._laser_af_successes += 1
+            else:
+                self._laser_af_failures += 1
+        elif locked:
+            self._laser_af_per_stack_successes += 1
+        else:
+            self._laser_af_per_stack_failures += 1
+        self._anchor_um = self._actuator_position_um()
+        self._actuator_at_um = self._anchor_um
+        where = f"region '{region_id}' fov {fov}" + (f" before the '{channel_name}' stack" if channel_name else "")
+        if locked:
+            self.laser_auto_focus_controller.record_lock_on()
+            self._require_first_lock_on = False
+            self._log.info(f"relative z-stack anchor, {where}: {self._anchor_um:.3f} µm (locked on)")
+        else:
+            # Whether the stack still runs from here is the caller's call (the first-FOV stop may end the run).
+            self._log.error(f"laser AF lock-on failed, {where}: Z restored to {self._anchor_um:.3f} µm")
+        return locked
+
+    def _relative_nz(self) -> int:
+        """Planes in the relative range at the run's dz (the same Nz the controller derived)."""
+        return nz_for_range(*self.laser_af_relative_range_um, abs(self.deltaZ) * 1000)
+
+    def _relative_targets(self, configs, af_succeeded: bool) -> List[List[Optional[float]]]:
+        """Absolute actuator target (µm) per [channel][k] from the current anchor, None outside the travel."""
+        z_min_um = self.laser_af_relative_range_um[0]
+        self._relative_offsets_um = [self._channel_offset_um(config, af_succeeded) for config in configs]
+        return frame_targets(
+            self._anchor_um,
+            z_min_um,
+            self._relative_nz(),
+            abs(self.deltaZ) * 1000,
+            self._relative_offsets_um,
+            self._actuator_travel_um(),
+        )
+
+    def _channel_offset_um(self, config, af_succeeded: bool) -> float:
+        """The channel's z-offset (µm) from the anchor, under _apply_channel_z_offset's gates, else 0.
+
+        The relative path adds it to each absolute target instead of moving by it (no apply / undo moves, so
+        no clamp).
+        """
+        if not (self.apply_channel_offset and self.do_reflection_af):
+            return 0.0
+        raw_target = config.z_offset_um
+        if raw_target is None:
+            return 0.0
+        if not math.isfinite(raw_target):
+            self._log.warning(f"Channel '{config.name}' has non-finite z_offset_um={raw_target!r}; treating as 0")
+            return 0.0
+        if not af_succeeded:
+            if raw_target:
+                self._log.warning(
+                    f"Skipping per-channel z-offset for '{config.name}' because reflection AF failed for this FOV"
+                )
+            return 0.0
+        return float(raw_target)
+
+    def _actuator_is_piezo(self) -> bool:
+        # The actuator is the one laser AF drives: the piezo whenever the scope has one (its _move_z), else the
+        # stage z. Relative mode refuses a stage stack on a piezo scope, so this matches use_piezo.
+        return getattr(self.laser_auto_focus_controller, "piezo", None) is not None
+
+    def _actuator_position_um(self) -> float:
+        return self.piezo.position if self._actuator_is_piezo() else self.stage.get_pos().z_mm * 1000
+
+    def _actuator_travel_um(self) -> Tuple[float, float]:
+        """The actuator's travel in µm: the piezo's [0, range], or the stage's Z software limits."""
+        if self._actuator_is_piezo():
+            return 0.0, float(self.piezo.range_um)
+        limits = control._def.SOFTWARE_POS_LIMIT
+        return limits.Z_NEGATIVE * 1000, limits.Z_POSITIVE * 1000
+
+    def _move_actuator_to_um(self, um: float, *, after_lock_on: bool = False) -> None:
+        """Absolute actuator move (no clamp: the caller passes a target inside the travel), then settle: the piezo
+        delay in software trigger, or the stage's stabilization time.
+
+        after_lock_on: the move to the first frame after a lock-on (successful or rolled back). It also settles the
+        stabilization time on a piezo, in both trigger modes, as prepare_z_stack does after the per-FOV AF; a
+        stage move settles that anyway. Later steps of the stack keep the per-mode settle only.
+
+        A target the actuator already holds (_actuator_at_um, within RELATIVE_SAME_TARGET_TOLERANCE_UM: the next
+        channel at the same plane and offset, or a plane at the anchor) takes no move and no move settle; the
+        post-lock-on settle still runs.
+        """
+        if self._actuator_at_um is not None and abs(um - self._actuator_at_um) <= RELATIVE_SAME_TARGET_TOLERANCE_UM:
+            if after_lock_on:
+                self._sleep(squid.stage.utils.z_stabilization_time_s())
+            return
+        self._actuator_at_um = None  # unknown until the move succeeds
+        if self._actuator_is_piezo():
+            self.piezo.move_to(um)
+            self.z_piezo_um = um  # only after the move succeeded
+            self._actuator_at_um = um
+            if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+            if after_lock_on:
+                self._sleep(squid.stage.utils.z_stabilization_time_s())
+        else:
+            self.stage.move_z_to(um / 1000)
+            self._actuator_at_um = um
+            self._sleep(squid.stage.utils.z_stabilization_time_s())
+
+    def _report_skipped_frames(self, region_id, current_path, fov, skipped: List[Tuple[int, int]]) -> None:
+        """Per lock-on group hook, called where the targets are computed, before the group's first frame: once per
+        FOV without AF per stack, once per re-locked channel with it.
+
+        skipped: (config_idx, k) pairs, from targets computed by _relative_targets for the current anchor.
+        Accumulates the FOV's skipped channels per plane (the coordinates.csv rows) and the frames for the FOV's
+        single warning (_warn_skipped_frames), counts the frames for the run summary, and sends the group's skip
+        notice to the writers.
+        """
+        names = [config.name for config in self.selected_configurations]
+        z_min_um = self.laser_af_relative_range_um[0]
+        dz_um = abs(self.deltaZ) * 1000
+        for config_idx, k in skipped:
+            self._out_of_travel_by_k.setdefault(k, []).append(names[config_idx])
+            target_um = self._anchor_um + z_min_um + k * dz_um + self._relative_offsets_um[config_idx]
+            self._skipped_frames.append((k, names[config_idx], target_um))
+        if not skipped:
+            return
+        self._relative_frames_skipped += len(skipped)
+        self._send_skip_notice(region_id, current_path, fov, skipped)
+
+    # --- Skip notices: a FOV's skipped frames reach the Zarr and OME-TIFF writers -------------------------------
+
+    def _skip_notice_runners(self) -> List[Tuple[Type[Job], Optional[JobRunner]]]:
+        """The runners that take skip notices: Zarr and OME-TIFF. Individual TIFFs write nothing for a skip."""
+        return [(cls, runner) for cls, runner in self._job_runners if issubclass(cls, (SaveZarrJob, SaveOMETiffJob))]
+
+    def _send_skip_notice(self, region_id, current_path, fov, skipped: List[Tuple[int, int]]) -> None:
+        """Dispatch one lock-on group's skip notice, sized by the run's first frame, or hold it until that frame
+        arrives (a notice never guesses the frame shape)."""
+        if not self._skip_notice_runners():
+            return
+        config_idx, k = skipped[0]
+        info = CaptureInfo(
+            position=self.stage.get_pos(),
+            z_index=k,
+            capture_time=time.time(),
+            configuration=self.selected_configurations[config_idx],
+            save_directory=current_path,
+            file_id=f"{region_id}_{fov:0{FILE_ID_PADDING}}_{k:0{FILE_ID_PADDING}}",
+            region_id=region_id,
+            fov=fov,
+            configuration_idx=config_idx,
+            time_point=self.time_point,
+        )
+        frames = tuple((int(c), int(z)) for c, z in skipped)
+        with self._skip_notice_lock:
+            if self._frame_format is None:
+                self._pending_skip_notices.append((info, frames))
+                return
+            frame_format = self._frame_format
+        self._dispatch_skip_notice(info, frames, frame_format)
+
+    def _dispatch_skip_notice(
+        self, info: CaptureInfo, frames: Tuple[Tuple[int, int], ...], frame_format: Tuple[Tuple[int, int], str]
+    ) -> None:
+        """Send the notice through the Zarr and OME-TIFF runners, in order with their image jobs. A failure is logged
+        and counted as an acquisition error; it never stops the acquisition (the skips stay in coordinates.csv)."""
+        frame_shape, dtype = frame_format
+        notice = dataclasses.replace(info, skipped_frames=SkippedFrames(frames, frame_shape, dtype))
+        for job_class, job_runner in self._skip_notice_runners():
+            job = job_class(
+                capture_info=notice, capture_image=JobImage(image_array=None), save_settings=self._save_settings
+            )
+            try:
+                if job_runner is not None:
+                    sent = job_runner.dispatch(job)
+                else:
+                    job.run()
+                    sent = True
+            except Exception:
+                self._log.exception(f"{job_class.__name__} failed on the skip notice of {self._fov_name(info)}")
+                sent = False
+            if not sent:
+                self._log.error(f"The skip notice of {self._fov_name(info)} did not reach {job_class.__name__}")
+                self._acquisition_error_count += 1
+
+    @staticmethod
+    def _fov_name(info: CaptureInfo) -> str:
+        return f"region '{info.region_id}' fov {info.fov} (t={info.time_point})"
+
+    def _record_first_frame(self, image: np.ndarray) -> None:
+        """Frame callback (camera thread), on the run's first frame after its jobs are dispatched: record its
+        (height, width) and dtype for every skip notice, and send the notices that waited for it."""
+        with self._skip_notice_lock:
+            if self._frame_format is not None:
+                return
+            self._frame_format = ((int(image.shape[0]), int(image.shape[1])), str(image.dtype))
+            pending, self._pending_skip_notices = self._pending_skip_notices, []
+            # Sent under the lock, so a notice the worker reports meanwhile goes out after these.
+            for info, frames in pending:
+                self._dispatch_skip_notice(info, frames, self._frame_format)
+
+    def _flush_pending_skip_notices(self) -> None:
+        """At run end, with the last frames in: notices still waiting mean the run took no frame at all. One dark
+        frame (_frame_shape_without_a_frame) sizes them. If the camera delivers none, nothing can size the arrays:
+        the notices are dropped, logged and counted as an acquisition error (the skips stay in coordinates.csv, the
+        log and the run summary). Never raises, so the cleanup after it always runs."""
+        if not self._relative_mode:
+            return
+        try:
+            with self._skip_notice_lock:
+                pending, self._pending_skip_notices = self._pending_skip_notices, []
+                frame_format = self._frame_format
+            if not pending:
+                return
+            if frame_format is None:
+                frame_format = self._frame_shape_without_a_frame()
+            if frame_format is None:
+                fovs = ", ".join(self._fov_name(info) for info, _ in pending)
+                self._log.error(
+                    f"The camera delivered no frame to size the arrays: {len(pending)} skip notice(s) not sent "
+                    f"({fovs}). Their FOVs may have no Zarr array or OME-TIFF file; the skipped frames are listed "
+                    "in coordinates.csv."
+                )
+                self._acquisition_error_count += 1
+                return
+            for info, frames in pending:
+                self._dispatch_skip_notice(info, frames, frame_format)
+        except Exception:
+            self._log.exception("Sending the pending skip notices failed")
+            self._acquisition_error_count += 1
+
+    def _frame_shape_without_a_frame(self) -> Optional[Tuple[Tuple[int, int], str]]:
+        """((height, width), dtype) of one real, processed frame, so binning, hardware ROI, rotation and software
+        crop are whatever the camera delivers; nothing is derived from its ROI, resolution or crop settings.
+
+        Only for a run that took no frame at all, after its last FOV: the acquisition's illumination is released
+        and no illumination time is sent, so it is a dark frame. The frame callbacks are disabled around it (the
+        documented use for frames outside the acquisition), so it never reaches the save jobs. None, with an error
+        logged, if the camera is not ready within the frame timeout, the trigger fails, or no frame is read.
+        """
+        camera = self.camera
+        camera.enable_callbacks(False)
+        try:
+            timeout_s = self._frame_wait_timeout_s()
+            deadline = time.monotonic() + timeout_s
+            while not camera.get_ready_for_trigger():
+                if time.monotonic() >= deadline:
+                    self._log.error(f"Frame-shape frame: the camera was not ready for a trigger within {timeout_s:g} s")
+                    return None
+                self._sleep(0.001)
+            try:
+                camera.send_trigger()
+            except Exception as e:
+                self._log.error(f"Frame-shape frame: the trigger failed: {e!r}")
+                return None
+            try:
+                camera_frame = camera.read_camera_frame()
+            except Exception as e:
+                self._log.error(f"Frame-shape frame: reading the frame failed: {e!r}")
+                return None
+            image = camera_frame.frame if camera_frame is not None else None
+            if image is None:
+                self._log.error("Frame-shape frame: the camera returned no frame")
+                return None
+            return (int(image.shape[0]), int(image.shape[1])), str(image.dtype)
+        finally:
+            camera.enable_callbacks(True)
+
+    def _warn_skipped_frames(self, region_id, fov) -> None:
+        """One warning per FOV, at its end: every frame left out because its target is outside the travel."""
+        if not self._skipped_frames:
+            return
+        low_um, high_um = self._actuator_travel_um()
+        frames = []
+        for k, name, target_um in self._skipped_frames:
+            reason = f"below {low_um:g} µm" if target_um < low_um else f"past {high_um:g} µm"
+            frames.append(f"plane {k} '{name}' at {target_um:.2f} µm ({reason})")
+        self._log.warning(
+            f"region '{region_id}' fov {fov}: {len(frames)} frame(s) outside the travel "
+            f"[{low_um:g}, {high_um:g}] µm skipped, not clamped: " + "; ".join(frames)
+        )
+
     def _begin_z_level(self, region_id, current_path, fov, z_level, file_ID, acquire_pos=None):
         if acquire_pos is None:
             acquire_pos = self.stage.get_pos()
         metadata = {"x": acquire_pos.x_mm, "y": acquire_pos.y_mm, "z": acquire_pos.z_mm}
         self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
 
-        if z_level == 0 and (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
+        # A relative stack records its anchor instead (_acquire_relative): plane 0 is below the reference.
+        if z_level == 0 and (self.do_reflection_af or self.do_autofocus) and self.Nt > 1 and not self._relative_mode:
             self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
 
         # laser af characterization mode
@@ -1268,9 +1817,19 @@ class MultiPointWorker:
 
         return acquire_pos
 
-    def _finish_z_level(self, region_id, fov, z_level, acquire_pos, z_piezo_um=None):
+    def _finish_z_level(
+        self, region_id, fov, z_level, acquire_pos, z_piezo_um=None, z_rel_um=None, skipped_channels=None
+    ):
         # updates coordinates df
-        self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov, z_piezo_um=z_piezo_um)
+        self.update_coordinates_dataframe(
+            region_id,
+            z_level,
+            acquire_pos,
+            fov,
+            z_piezo_um=z_piezo_um,
+            z_rel_um=z_rel_um,
+            skipped_channels=skipped_channels,
+        )
         self.callbacks.signal_current_fov(acquire_pos.x_mm, acquire_pos.y_mm)
 
     def _acquire_channel_image(self, config, config_idx, file_ID, current_path, z_level, region_id, fov, current_image):
@@ -1348,10 +1907,11 @@ class MultiPointWorker:
         per-channel z-offset gate would apply offsets from an unanchored z.
 
         Z is not reliably unchanged on failure: move_to_target can succeed and leave Z at the reference
-        plane before the region offset raises. With restore_on_failure (the per-stack re-AF) the absolute
-        pre-AF Z is restored (an exception from that restore propagates: run() treats it as fatal) and the
-        piezo cache is re-read on every outcome, since the laser AF controller moves the piezo directly
-        (its _move_z). The per-FOV caller re-reads the cache itself in acquire_at_position.
+        plane before the region offset raises. With restore_on_failure (the per-stack re-AF, and every lock-on
+        of a relative z-stack) the absolute pre-AF Z is restored (an exception from that restore propagates:
+        run() treats it as fatal) and the piezo cache is re-read on every outcome, since the laser AF controller
+        moves the piezo directly (its _move_z). The per-FOV caller re-reads the cache itself in
+        acquire_at_position.
         """
         if restore_on_failure:
             # The controller moves the piezo whenever the scope has one (its _move_z), whichever actuator runs
@@ -1641,6 +2201,10 @@ class MultiPointWorker:
                                 self._log.exception("Failed to execute job, abandoning acquisition!")
                                 self._abort_due_to_error()
                                 return
+
+                    # A relative run's first frame sizes its skip notices; the ones waiting for it go out now.
+                    if self._relative_mode and self._frame_format is None:
+                        self._record_first_frame(image)
 
                 height, width = image.shape[:2]
                 # with self._timing.get_timer("crop_image"):

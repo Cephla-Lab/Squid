@@ -246,3 +246,62 @@ def test_blocks_with_laser_af_per_stack_but_channel_first_are_rejected():
 
     with pytest.raises(ValueError, match="laser_af_per_stack"):
         acquisition_data_from_blocks(settings, coordinates)
+
+
+def test_relative_range_survives_export_and_apply():
+    scope, mpc = _controller_with_piezo()
+    mpc.set_selected_configurations(_channel_names(scope, mpc))
+    mpc.set_use_piezo(True)
+    mpc.set_reflection_af_flag(True)
+    mpc.set_deltaZ(0.002)
+    mpc.z_stacking_config = "FROM BOTTOM"
+    mpc.set_laser_af_relative_range_um((-5.0, 15.0))
+    mpc.set_widget_type("wellplate")
+    mpc.scanCoordinates.add_region_from_fovs("A1", _some_fovs(mpc))
+
+    settings, coordinates = export_acquisition_settings(mpc, mpc.scanCoordinates, scope.objective_store, scope.camera)
+    assert settings["z_stack"]["laser_af_relative_range_um"] == [-5.0, 15.0]
+
+    data = acquisition_data_from_blocks(settings, coordinates)
+    assert data.laser_af_relative_range_um == (-5.0, 15.0)
+
+    scope2, mpc2 = _controller_with_piezo()
+    apply_acquisition_settings(mpc2, mpc2.scanCoordinates, scope2, data)
+    assert mpc2.laser_af_relative_range_um == (-5.0, 15.0)
+    mpc2.set_laser_af_relative_range_um(None)
+    assert mpc2.effective_nz() == mpc2.NZ
+
+
+def _relative_blocks(mpc, scope, **z_stack):
+    """Protocol/TCP blocks for a laser-AF-relative run, -5..+15 µm at dz 2 µm, with no nz (so the input Nz is 1)."""
+    z = {"delta_z_um": 2.0, "config": "FROM BOTTOM", "use_piezo": True, "laser_af_relative_range_um": [-5, 15]}
+    z.update(z_stack)
+    settings = {
+        "channels": _channel_names(scope, mpc),
+        "z_stack": z,
+        "autofocus": {"laser_af": True},
+        "widget_type": "wellplate",
+    }
+    return settings, {"regions": [{"name": "A1", "fovs": _some_fovs(mpc)}]}
+
+
+def test_apply_and_export_report_the_nz_a_relative_range_derives():
+    # -5..+15 µm at dz 2 µm takes 11 planes. The protocol runner sizes the Napari canvas from applied.nz, and an
+    # export writes the Nz the run takes: both 11, not the input Nz of 1.
+    scope, mpc = _controller_with_piezo()
+    data = acquisition_data_from_blocks(*_relative_blocks(mpc, scope))
+    assert data.nz == 1
+
+    applied = apply_acquisition_settings(mpc, mpc.scanCoordinates, scope, data)
+
+    assert applied.nz == 11
+    settings, _ = export_acquisition_settings(mpc, mpc.scanCoordinates, scope.objective_store, scope.camera)
+    assert settings["z_stack"]["nz"] == 11
+
+
+@pytest.mark.parametrize("value", [[-5, 15, 20], [-5], []])
+def test_protocol_blocks_with_a_malformed_relative_range_are_refused(value):
+    scope, mpc = _controller_with_piezo()
+
+    with pytest.raises(ValueError, match="laser_af_relative_range_um must be"):
+        acquisition_data_from_blocks(*_relative_blocks(mpc, scope, laser_af_relative_range_um=value))

@@ -23,6 +23,7 @@ from control.core.multi_point_utils import (
     AcquisitionParameters,
     piezo_z_range_problem,
 )
+from control.core.relative_z_range import nz_for_range, relative_range_problem
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
@@ -96,6 +97,9 @@ def _save_acquisition_yaml(
             "order": params.z_stack_order,
             "z_range_mm": _serialize_for_yaml(params.z_range) if params.z_range else None,
             "piezo_z_range_um": _serialize_for_yaml(params.piezo_z_range_um) if params.piezo_z_range_um else None,
+            "laser_af_relative_range_um": (
+                _serialize_for_yaml(params.laser_af_relative_range_um) if params.laser_af_relative_range_um else None
+            ),
             "use_piezo": params.use_piezo,
         },
         "time_series": {
@@ -179,6 +183,9 @@ def _save_acquisition_yaml(
 
 
 class MultiPointController:
+    # Class default so a bare instance (tests build some with __new__) is in absolute/plain mode.
+    laser_af_relative_range_um: Optional[Tuple[float, float]] = None
+
     def __init__(
         self,
         microscope: Microscope,
@@ -267,6 +274,7 @@ class MultiPointController:
         self.old_images_per_page = 1
         self.z_range: Tuple[float, float] = None
         self.piezo_z_range_um: Optional[Tuple[float, float]] = None
+        self.laser_af_relative_range_um: Optional[Tuple[float, float]] = None
         self.z_stacking_config = control._def.Z_STACKING_CONFIG
         self.z_stack_order = control._def.Z_STACK_ORDER
 
@@ -419,6 +427,20 @@ class MultiPointController:
         """Set Z-range on a piezo stack: (min, max) piezo positions in µm, or None to start from the current piezo."""
         self.piezo_z_range_um = piezo_z_range_um
 
+    def set_laser_af_relative_range_um(self, rng: Optional[Tuple[float, float]]) -> None:
+        """Set Range with laser AF on: (z_min, z_max) µm from the laser AF reference plane, or None."""
+        self.laser_af_relative_range_um = tuple(float(v) for v in rng) if rng is not None else None
+
+    def effective_nz(self) -> int:
+        """Planes per stack for this run: derived from the relative range and dz when one is set, else NZ.
+
+        Every run-wide consumer of Nz (image counts, saved records, run state, AcquisitionParameters)
+        reads this, never self.NZ, so a relative run never uses a stale NZ.
+        """
+        if self.laser_af_relative_range_um is None:
+            return self.NZ
+        return nz_for_range(*self.laser_af_relative_range_um, abs(self.deltaZ) * 1000)
+
     def set_NX(self, N):
         self.NX = N
 
@@ -521,12 +543,15 @@ class MultiPointController:
             "dy(mm)": self.deltaY,
             "Ny": self.NY,
             "dz(um)": self.deltaZ * 1000 if self.deltaZ != 0 else 1,
-            "Nz": self.NZ,
+            "Nz": self.effective_nz(),
             "dt(s)": self.deltat,
             "Nt": self.Nt,
             "with AF": self.do_autofocus,
             "with reflection AF": self.do_reflection_af,
             "with manual focus map": self.use_manual_focus_map,
+            "laser AF relative z-range (um)": (
+                list(self.laser_af_relative_range_um) if self.laser_af_relative_range_um else None
+            ),
         }
         try:  # write objective data if it is available
             current_objective = self.objectiveStore.current_objective
@@ -585,9 +610,10 @@ class MultiPointController:
             ]
             all_regions_coord_count = sum(coords_per_region)
 
-            non_merged_images = self.Nt * self.NZ * all_regions_coord_count * len(self.selected_configurations)
+            nz = self.effective_nz()
+            non_merged_images = self.Nt * nz * all_regions_coord_count * len(self.selected_configurations)
             # When capturing merged images, we capture 1 per fov (where all the configurations are merged)
-            merged_images = self.Nt * self.NZ * all_regions_coord_count if control._def.MERGE_CHANNELS else 0
+            merged_images = self.Nt * nz * all_regions_coord_count if control._def.MERGE_CHANNELS else 0
 
             return non_merged_images + merged_images
         except AttributeError:
@@ -729,7 +755,7 @@ class MultiPointController:
         self.protocol_info = None
         self.last_end_reason = None
         self.last_image_count = 0
-        if not self.validate_acquisition_settings():
+        if not self.validate_acquisition_settings(run_region_laser_af_offsets):
             # emit acquisition finished signal to re-enable the UI
             self.last_end_reason = "failed_to_start"
             self.callbacks.signal_acquisition_finished()
@@ -763,7 +789,10 @@ class MultiPointController:
             self._start_position = self.stage.get_pos()
 
             if self.z_range is None:
-                self.z_range = (self._start_position.z_mm, self._start_position.z_mm + self.deltaZ * (self.NZ - 1))
+                self.z_range = (
+                    self._start_position.z_mm,
+                    self._start_position.z_mm + self.deltaZ * (self.effective_nz() - 1),
+                )
 
             acquisition_scan_coordinates = self.scanCoordinates
             self.run_acquisition_current_fov = False
@@ -970,7 +999,7 @@ class MultiPointController:
                     "regions": len(scan_position_information.scan_region_coords_mm),
                     "fovs": sum(len(c) for c in scan_position_information.scan_region_fov_coords_mm.values()),
                     "channels": len(self.selected_configurations),
-                    "z": self.NZ,
+                    "z": self.effective_nz(),
                 }
                 config_path = (getattr(control._def, "CACHED_CONFIG_FILE_PATH", None) or "").strip() or None
                 self._run_state_writer = squid.acquisition_state.RunStateWriter.start(
@@ -1068,6 +1097,9 @@ class MultiPointController:
                     f"Unknown wellplate format '{self.scanCoordinates.format}', using default 96-well dimensions"
                 )
 
+        nz = self.effective_nz()
+        if nz != self.NZ:
+            self._log.info(f"Nz derived from the laser AF relative range: {nz} (the Nz field says {self.NZ})")
         return AcquisitionParameters(
             experiment_ID=self.experiment_ID,
             base_path=self.base_path,
@@ -1078,7 +1110,7 @@ class MultiPointController:
             deltaX=self.deltaX,
             NY=self.NY,
             deltaY=self.deltaY,
-            NZ=self.NZ,
+            NZ=nz,
             deltaZ=self.deltaZ,
             Nt=self.Nt,
             deltat=self.deltat,
@@ -1096,6 +1128,7 @@ class MultiPointController:
             z_stack_order=self.z_stack_order,
             z_range=self.z_range,
             piezo_z_range_um=self.piezo_z_range_um,
+            laser_af_relative_range_um=self.laser_af_relative_range_um,
             skip_saving=self.skip_saving,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
@@ -1179,23 +1212,60 @@ class MultiPointController:
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
 
-    def validate_acquisition_settings(self) -> bool:
-        """Validate settings before starting acquisition"""
+    def validate_acquisition_settings(self, region_laser_af_offsets: Optional[dict] = None) -> bool:
+        """Validate settings before starting acquisition.
+
+        region_laser_af_offsets: this run's per-region laser AF offsets (they don't combine with a relative range).
+        """
+        relative = self.laser_af_relative_range_um
+        if relative is not None and self.piezo_z_range_um is not None:
+            self._log.error(
+                "Both an absolute and a laser-AF-relative Z-range are set: clear one, then set the range again."
+            )
+            return False
+        if self.piezo_z_range_um is not None and self.do_reflection_af:
+            self._log.error(
+                "An absolute piezo Z-range can't run with laser AF: with laser AF on, Set Range is relative to "
+                "the laser AF reference. Set the range again, or turn laser AF off."
+            )
+            return False
+        if relative is not None and not self.do_reflection_af:
+            self._log.error("A relative Z-range needs laser AF: turn laser AF on, or set the range again.")
+            return False
         if self.do_reflection_af and not self.laserAutoFocusController.laser_af_properties.has_reference:
             self._log.error(
                 "Laser Autofocus Not Ready - Please set the laser autofocus reference position before starting acquisition with laser AF enabled."
             )
             return False
+        if relative is not None:
+            piezo_scope = self.piezo is not None or getattr(self.laserAutoFocusController, "piezo", None) is not None
+            if self.use_piezo and self.piezo is not None:
+                travel_span_um = self.piezo.range_um
+            else:
+                travel_span_um = (
+                    control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE - control._def.SOFTWARE_POS_LIMIT.Z_NEGATIVE
+                ) * 1000
+            problem = relative_range_problem(relative, self.deltaZ * 1000, travel_span_um, self.z_stacking_config)
+            if problem:
+                self._log.error(problem)
+                return False
+            if piezo_scope and not self.use_piezo:
+                self._log.error(
+                    "Laser AF drives the piezo on this microscope, so a relative Z-range needs the z-stack on the "
+                    "piezo: turn on the piezo z-stack, or set the range again."
+                )
+                return False
+            if region_laser_af_offsets:
+                # The offsets come only from the GUI's focus map panel (every other path clears them).
+                self._log.error(
+                    "Per-region laser AF offsets and a relative Z-range don't combine: uncheck Laser AF Offset in "
+                    "the focus map panel, or clear the Z-range and use From Bottom."
+                )
+                return False
         if self.piezo_z_range_um is not None:
             if not self.use_piezo:
                 self._log.error(
                     "The Z-range holds piezo positions, but the z-stack is set to run on the stepper - set the range again."
-                )
-                return False
-            if self.do_reflection_af:
-                self._log.error(
-                    "Laser AF can't run with Set Range: the range is absolute piezo positions and laser AF would "
-                    "move the piezo off them at every FOV. Turn laser AF off, or use From Bottom / From Center."
                 )
                 return False
             problem = piezo_z_range_problem(

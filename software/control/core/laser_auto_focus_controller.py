@@ -1,4 +1,6 @@
+import hashlib
 import time
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import cv2
@@ -17,6 +19,41 @@ from control.piezo import PiezoStage
 from control.models import LaserAFConfig
 from squid.abc import AbstractCamera, AbstractStage
 import squid.logging
+
+
+# Tolerances for "the stage has not moved since the last lock-on".
+LOCK_ON_XY_TOL_MM = 0.001
+LOCK_ON_Z_TOL_MM = 0.0005
+
+LOCK_ON_FAILED_MESSAGE = (
+    "Couldn't lock onto the laser AF reference here: the spot was not found, was too far from the "
+    "reference, or did not match it. Move closer to the reference plane and try again."
+)
+RETURN_AFTER_LOCK_ON_FAILED_MESSAGE = (
+    "Locked onto the laser AF reference, but couldn't move Z back to where it was: Z may be left at the "
+    "reference plane. Check the focus drive, then set the value again."
+)
+
+
+@dataclass(frozen=True)
+class LockOnRecord:
+    """Where, and against which reference, the laser AF last locked onto the reference plane."""
+
+    x_mm: float
+    y_mm: float
+    stage_z_mm: Optional[float]  # only recorded when the actuator is a piezo
+    anchor_um: float  # actuator position at the reference plane
+    identity: tuple
+
+
+@dataclass(frozen=True)
+class RelativeZMeasurement:
+    z_rel_um: float  # z_now - anchor, in actuator um
+    anchor_reused: bool
+
+
+class RelativeZError(Exception):
+    """Raised when a relative z cannot be measured; str() is the user-facing reason."""
 
 
 class LaserAutofocusController(QObject):
@@ -49,6 +86,7 @@ class LaserAutofocusController(QObject):
 
         self.laser_af_properties = LaserAFConfig()
         self.reference_crop = None
+        self.last_lock_on: Optional[LockOnRecord] = None
 
         self.spot_spacing_pixels = None  # spacing between the spots from the two interfaces (unit: pixel)
 
@@ -416,6 +454,129 @@ class LaserAutofocusController(QObject):
         if offset_um:
             self._move_z(offset_um)
 
+    @property
+    def reference_identity(self) -> Optional[tuple]:
+        """Value identity of everything that defines the loaded reference (None without a reference).
+
+        Compared by value so an identical config reload keeps the lock-on record while any swap of
+        the reference, calibration or ROI invalidates it.
+        """
+        props = self.laser_af_properties
+        if not props.has_reference:
+            return None
+        if self.reference_crop is None:
+            image_hash = None
+        else:
+            image_hash = hashlib.sha1(np.ascontiguousarray(self.reference_crop).tobytes()).hexdigest()
+        objective = self.objectiveStore.current_objective if self.objectiveStore else None
+        return (
+            self._current_profile,
+            objective,
+            # rounded: set_reference stores x, a reload computes (x + offset) - offset (not bit-equal)
+            round(props.x_reference, 6) if props.x_reference is not None else None,
+            image_hash,
+            props.pixel_to_um,
+            props.calibration_timestamp,
+            props.x_offset,
+            props.y_offset,
+            props.width,
+            props.height,
+        )
+
+    def actuator_position_um(self) -> float:
+        """Absolute position (um) of the actuator the laser AF moves: the piezo, else the stage z."""
+        if self.piezo is not None:
+            return self.piezo.position
+        return self.stage.get_pos().z_mm * 1000
+
+    def move_actuator_to_um(self, um: float) -> None:
+        if self.piezo is not None:
+            self.piezo.move_to(um)
+            self.signal_piezo_position_update.emit()
+        else:
+            self.stage.move_z_to(um / 1000)
+
+    def record_lock_on(self) -> None:
+        """Record the current position as a lock-on against the current reference."""
+        identity = self.reference_identity
+        if identity is None:
+            self.last_lock_on = None
+            return
+        pos = self.stage.get_pos()
+        self.last_lock_on = LockOnRecord(
+            x_mm=pos.x_mm,
+            y_mm=pos.y_mm,
+            stage_z_mm=pos.z_mm if self.piezo is not None else None,
+            anchor_um=self.actuator_position_um(),
+            identity=identity,
+        )
+
+    def valid_lock_on(self) -> Optional[LockOnRecord]:
+        """The last lock-on record, only while the reference identity is unchanged."""
+        rec = self.last_lock_on
+        if rec is None or rec.identity != self.reference_identity:
+            return None
+        return rec
+
+    def _stage_unchanged_since(self, rec: LockOnRecord) -> bool:
+        pos = self.stage.get_pos()
+        if abs(pos.x_mm - rec.x_mm) > LOCK_ON_XY_TOL_MM or abs(pos.y_mm - rec.y_mm) > LOCK_ON_XY_TOL_MM:
+            return False
+        if self.piezo is not None and rec.stage_z_mm is not None:
+            return abs(pos.z_mm - rec.stage_z_mm) <= LOCK_ON_Z_TOL_MM
+        return True
+
+    def find_anchor_um(self) -> Tuple[float, bool]:
+        """Return (anchor_um, reused). Reuses the last anchor if the stage has not moved; otherwise
+        moves the actuator to the last anchor (or stays put with no valid record), locks on, and
+        leaves the actuator at the new anchor.
+
+        Raises RelativeZError if the lock-on fails.
+        """
+        rec = self.valid_lock_on()
+        if rec is not None and self._stage_unchanged_since(rec):
+            return rec.anchor_um, True
+        try:
+            if rec is not None:
+                self.move_actuator_to_um(rec.anchor_um)
+            locked = self.move_to_target(0.0)
+        except Exception as e:
+            self._log.exception("Laser AF lock-on raised")
+            raise RelativeZError(LOCK_ON_FAILED_MESSAGE) from e
+        if not locked:
+            raise RelativeZError(LOCK_ON_FAILED_MESSAGE)
+        self.record_lock_on()
+        return self.actuator_position_um(), False
+
+    def measure_relative_z_um(self) -> RelativeZMeasurement:
+        """Measure the actuator distance (um) from the laser AF reference plane at the current XY.
+
+        The actuator ends where it started, on success and on failure. When moving it back fails after a
+        good lock-on, RelativeZError says so instead of returning a measurement.
+        """
+        if not self.is_initialized or not self.laser_af_properties.has_reference:
+            raise RelativeZError("Set the laser AF reference first.")
+        z_now = self.actuator_position_um()
+        rec = self.valid_lock_on()
+        moved = rec is None or not self._stage_unchanged_since(rec)
+        try:
+            anchor, reused = self.find_anchor_um()
+        except BaseException:
+            if moved:
+                try:
+                    self.move_actuator_to_um(z_now)
+                except Exception:
+                    # Never mask the original error with a failed restore.
+                    self._log.error("Failed to restore the actuator to its start position", exc_info=True)
+            raise
+        if moved:
+            try:
+                self.move_actuator_to_um(z_now)
+            except Exception as e:
+                # The lock-on worked but Z is not back where the user left it: not a measurement to store.
+                raise RelativeZError(RETURN_AFTER_LOCK_ON_FAILED_MESSAGE) from e
+        return RelativeZMeasurement(z_rel_um=z_now - anchor, anchor_reused=reused)
+
     def set_reference(self) -> bool:
         """Set the current spot position as the reference position.
 
@@ -484,6 +645,9 @@ class LaserAutofocusController(QObject):
             )
 
         self._log.info("Reference spot position set")
+
+        # Setting the reference is a lock-on by definition: the anchor is the actuator position here.
+        self.record_lock_on()
 
         self.signal_reference_changed.emit(True)
         return True

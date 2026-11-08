@@ -1,5 +1,6 @@
 import copy
 import dataclasses
+import json
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -9,7 +10,7 @@ import pytest
 import control._def
 import control.microscope
 from control.core.multi_point_controller import MultiPointController
-from control.core.multi_point_utils import MultiPointControllerFunctions, AcquisitionParameters
+from control.core.multi_point_utils import MultiPointControllerFunctions, AcquisitionParameters, ScanPositionInformation
 
 import tests.control.test_stubs as ts
 
@@ -824,7 +825,7 @@ def test_start_blocker_refuses_an_acquisition_before_anything_moves():
     scope = control.microscope.Microscope.build_from_global_config(True)
     try:
         mpc = ts.get_test_multi_point_controller(microscope=scope)
-        mpc.validate_acquisition_settings = lambda: True
+        mpc.validate_acquisition_settings = lambda *_: True
         mpc.start_blocker = lambda: "the Z lift is moving"
         start = scope.stage.get_pos()
         assert mpc.run_acquisition() is False
@@ -905,3 +906,173 @@ def test_set_z_stacking_config_rejects_an_unknown_name():
     with pytest.raises(ValueError, match="z_stacking_config"):
         MultiPointController.set_z_stacking_config(fake, "FROM NOWHERE")
     assert fake.z_stacking_config == "FROM BOTTOM"
+
+
+# --- Set Range relative to the laser AF reference plane -------------------------------------------------------------
+
+
+def _relative_validation_controller(
+    *, laser_af=True, relative=(-5.0, 15.0), absolute=None, use_piezo=True, config="FROM BOTTOM", delta_z_mm=0.002
+):
+    """A bare controller with just the fields validate_acquisition_settings reads (a 300 um piezo scope)."""
+    from control.piezo import PiezoStage
+
+    c = MultiPointController.__new__(MultiPointController)
+    c._log = MagicMock()
+    c.do_reflection_af = laser_af
+    c.use_piezo = use_piezo
+    c.piezo = PiezoStage(MagicMock(), {"OBJECTIVE_PIEZO_RANGE_UM": 300})
+    c.laserAutoFocusController = MagicMock()
+    c.laserAutoFocusController.laser_af_properties.has_reference = True
+    c.NZ = 3
+    c.deltaZ = delta_z_mm
+    c.z_stacking_config = config
+    c.piezo_z_range_um = absolute
+    c.laser_af_relative_range_um = relative
+    return c
+
+
+def _last_error(c):
+    return c._log.error.call_args.args[0]
+
+
+def test_start_accepts_laser_af_with_a_relative_range():
+    assert _relative_validation_controller().validate_acquisition_settings() is True
+
+
+def test_start_refuses_a_relative_range_with_laser_af_off():
+    c = _relative_validation_controller(laser_af=False)
+    assert c.validate_acquisition_settings() is False
+    assert "needs laser AF" in _last_error(c)
+
+
+def test_start_still_refuses_an_absolute_piezo_range_with_laser_af_on():
+    c = _relative_validation_controller(relative=None, absolute=(20.0, 26.0))
+    assert c.validate_acquisition_settings() is False
+    assert "absolute piezo Z-range can't run with laser AF" in _last_error(c)
+
+
+def test_start_refuses_relative_with_absolute_range_from_top_reversed_too_long_or_stepper_on_piezo_scope():
+    both = _relative_validation_controller(absolute=(20.0, 26.0))
+    assert both.validate_acquisition_settings() is False
+
+    from_top = _relative_validation_controller(config="FROM TOP")
+    assert from_top.validate_acquisition_settings() is False
+    assert "A relative Z-range runs from Z-min up (From Bottom)" in _last_error(from_top)
+
+    reversed_range = _relative_validation_controller(relative=(15.0, -5.0))
+    assert reversed_range.validate_acquisition_settings() is False
+
+    too_long = _relative_validation_controller(relative=(0.0, 400.0))  # 400 um on a 300 um piezo
+    assert too_long.validate_acquisition_settings() is False
+
+    stepper = _relative_validation_controller(use_piezo=False)
+    assert stepper.validate_acquisition_settings() is False
+
+
+@pytest.mark.parametrize("delta_z_mm", [0.0, -0.001, float("nan"), float("inf")])
+def test_start_refuses_a_relative_range_with_invalid_spacing(delta_z_mm):
+    c = _relative_validation_controller(delta_z_mm=delta_z_mm)
+    assert c.validate_acquisition_settings() is False
+
+
+def test_start_refuses_relative_range_with_per_region_offsets():
+    c = _relative_validation_controller()
+    assert c.validate_acquisition_settings({"A1": 3.0}) is False
+    # Per-region offsets come only from the GUI's focus map panel, so the advice names its checkbox; per-region
+    # Z-ranges don't exist in the GUI.
+    assert (
+        _last_error(c) == "Per-region laser AF offsets and a relative Z-range don't combine: uncheck Laser AF Offset "
+        "in the focus map panel, or clear the Z-range and use From Bottom."
+    )
+    assert c.validate_acquisition_settings({}) is True
+
+
+def _relative_run_controller(tmp_path):
+    """A real controller with a 2 um step, range (-5, 15) -> 11 planes, NZ left at 3, 2 FOVs x 2 channels."""
+    control._def.MERGE_CHANNELS = False
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    mpc.set_base_path(str(tmp_path))
+    limits = mpc.stage.get_config()
+    x0, y0, z0 = limits.X_AXIS.MIN_POSITION + 1.0, limits.Y_AXIS.MIN_POSITION + 1.0, limits.Z_AXIS.MIN_POSITION + 1.0
+    mpc.scanCoordinates.add_single_fov_region("r1", center_x=x0, center_y=y0, center_z=z0)
+    mpc.scanCoordinates.add_single_fov_region("r2", center_x=x0 + 0.5, center_y=y0 + 0.5, center_z=z0)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    mpc.set_NZ(3)
+    mpc.set_Nt(1)
+    mpc.set_deltaZ(2.0)  # um
+    mpc.z_stacking_config = "FROM BOTTOM"
+    mpc.set_laser_af_relative_range_um((-5.0, 15.0))
+    mpc.start_new_experiment("relative_run")
+    mpc.timestamp_acquisition_started = 0.0
+    return scope, mpc
+
+
+def test_image_count_estimate_uses_the_derived_nz(tmp_path):
+    scope, mpc = _relative_run_controller(tmp_path)
+    try:
+        assert mpc.effective_nz() == 11
+        assert mpc.get_acquisition_image_count() == 44  # 11 planes x 2 FOVs x 2 channels, not 12
+    finally:
+        scope.close()
+
+
+def test_parameters_json_and_run_state_use_the_derived_nz(tmp_path):
+    scope, mpc = _relative_run_controller(tmp_path)
+    try:
+        params = json.loads((tmp_path / mpc.experiment_ID / "acquisition parameters.json").read_text())
+        assert params["Nz"] == 11
+        assert params["laser AF relative z-range (um)"] == [-5.0, 15.0]
+
+        mpc.validate_acquisition_settings = lambda *_: True
+        with patch("control.core.multi_point_controller.MultiPointWorker"), patch(
+            "control.core.multi_point_controller.squid.acquisition_state.RunStateWriter.start"
+        ) as start:
+            mpc.run_acquisition()
+        assert start.call_args.kwargs["expected"]["z"] == 11
+    finally:
+        scope.close()
+
+
+def test_build_params_uses_the_derived_nz(tmp_path):
+    scope, mpc = _relative_run_controller(tmp_path)
+    try:
+        sp = ScanPositionInformation(scan_region_coords_mm=[], scan_region_names=[], scan_region_fov_coords_mm={})
+        params = mpc.build_params(sp)
+        assert params.NZ == 11
+        assert params.laser_af_relative_range_um == (-5.0, 15.0)
+        assert mpc.NZ == 3  # the field itself stays what was set
+    finally:
+        scope.close()
+
+
+def test_saved_yaml_and_parameters_record_the_relative_range(tmp_path):
+    from control.acquisition_yaml_loader import parse_acquisition_yaml
+    from control.core.multi_point_controller import _save_acquisition_yaml
+
+    scope, mpc = _relative_run_controller(tmp_path)
+    try:
+        mpc.set_reflection_af_flag(True)
+        sp = ScanPositionInformation(scan_region_coords_mm=[], scan_region_names=[], scan_region_fov_coords_mm={})
+        params = dataclasses.replace(mpc.build_params(sp), z_range=(1.0, 1.0))
+        out = tmp_path / "saved"
+        out.mkdir()
+        _save_acquisition_yaml(params, str(out))
+        data = parse_acquisition_yaml(str(out))
+        assert data.laser_af_relative_range_um == (-5.0, 15.0)
+        assert data.nz == 11
+    finally:
+        scope.close()
+
+
+def test_absolute_and_plain_runs_keep_the_nz_they_were_given(tmp_path):
+    scope, mpc = _relative_run_controller(tmp_path)
+    try:
+        mpc.set_laser_af_relative_range_um(None)
+        assert mpc.effective_nz() == 3
+        assert mpc.get_acquisition_image_count() == 3 * 2 * 2
+        mpc.set_piezo_z_range_um((20.0, 26.0))  # absolute mode: Nz is what the widget derived and set
+        assert mpc.effective_nz() == 3
+    finally:
+        scope.close()

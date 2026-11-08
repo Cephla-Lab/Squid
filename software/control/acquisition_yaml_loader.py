@@ -4,6 +4,7 @@ Utilities for parsing and validating acquisition YAML files.
 
 import csv
 import math
+import numbers
 import os
 import yaml
 
@@ -63,6 +64,8 @@ class AcquisitionYAMLData:
     z_range_mm: Optional[Tuple[float, float]] = None
     # Set Z-range on a piezo z-stack, in piezo µm; files written before it existed have none.
     piezo_z_range_um: Optional[Tuple[float, float]] = None
+    # Set Range with laser AF on: (z_min, z_max) in µm from the laser AF reference plane (never with piezo_z_range_um).
+    laser_af_relative_range_um: Optional[Tuple[float, float]] = None
     skip_saving: bool = False
 
 
@@ -122,6 +125,50 @@ def parse_z_stack_order(value) -> str:
 def parse_range(value) -> Optional[Tuple[float, float]]:
     """A saved (min, max) pair as two floats; None when missing or not a pair."""
     return (float(value[0]), float(value[1])) if value and len(value) == 2 else None
+
+
+def _relative_range_pair(value) -> Optional[Tuple[float, float]]:
+    """A saved laser_af_relative_range_um: None when missing or null, else exactly two finite numbers.
+
+    Anything else raises ValueError rather than reading as no range, which would run the acquisition
+    without the window the file asked for.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        if all(isinstance(v, numbers.Real) and not isinstance(v, bool) and math.isfinite(v) for v in value):
+            return float(value[0]), float(value[1])
+    raise ValueError(f"z_stack.laser_af_relative_range_um must be [z_min, z_max] in µm, got {value!r}.")
+
+
+def parse_laser_af_relative_range(
+    z_stack: dict, laser_af: bool, config: str, delta_z_um: float
+) -> Optional[Tuple[float, float]]:
+    """The saved z_stack.laser_af_relative_range_um as (min, max) µm from the laser AF reference, or None.
+
+    Raises ValueError for a value that is not null or two finite numbers, and for a combination the GUI
+    never saves: an absolute piezo range with laser AF on, both ranges together, a relative range with
+    laser AF off, a config other than From Bottom, or a dz that is not finite and positive.
+    """
+    from control.core.relative_z_range import relative_range_problem
+
+    relative = _relative_range_pair(z_stack.get("laser_af_relative_range_um"))
+    absolute = parse_range(z_stack.get("piezo_z_range_um"))
+    if relative is None:
+        if absolute is not None and laser_af:
+            raise ValueError(
+                "An absolute piezo Z-range can't run with laser AF: with laser AF on, Set Range is relative to "
+                "the laser AF reference. Set the range again, or turn laser AF off."
+            )
+        return None
+    if absolute is not None:
+        raise ValueError("The saved z_stack has both piezo_z_range_um and laser_af_relative_range_um: use one.")
+    if not laser_af:
+        raise ValueError("A relative Z-range needs laser AF: turn laser AF on, or set the range again.")
+    problem = relative_range_problem(relative, delta_z_um, math.inf, str(config).upper())
+    if problem:
+        raise ValueError(problem)
+    return relative
 
 
 _FLAG_ON = {"true", "yes", "on", "1"}
@@ -240,6 +287,12 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
         wellplate_format=sample.get("wellplate_format"),
         z_range_mm=parse_range(z_stack.get("z_range_mm")),
         piezo_z_range_um=parse_range(z_stack.get("piezo_z_range_um")),
+        laser_af_relative_range_um=parse_laser_af_relative_range(
+            z_stack,
+            laser_af=bool(autofocus.get("laser_af", False)),
+            config=z_stack.get("config", "FROM BOTTOM"),
+            delta_z_um=z_stack.get("delta_z_mm", 0.001) * 1000,
+        ),
         skip_saving=bool(acq.get("skip_saving", False)),
     )
 
@@ -293,6 +346,7 @@ def validate_hardware(
     current_objective: str,
     current_binning: Tuple[int, int],
     piezo_travel_um: Optional[float] = None,
+    stepper_travel_um: Optional[float] = None,
 ) -> ValidationResult:
     """Validate that YAML settings match current hardware configuration.
 
@@ -301,6 +355,8 @@ def validate_hardware(
         current_objective: Currently selected objective name
         current_binning: Current camera binning as (x, y) tuple
         piezo_travel_um: This microscope's piezo travel, or None when it has no piezo
+        stepper_travel_um: The stepper Z span in µm (default: the software position limits), used for a
+            relative range on a scope without a piezo
 
     Returns:
         ValidationResult indicating whether hardware matches
@@ -337,6 +393,33 @@ def validate_hardware(
                 f"Piezo Z-range outside the travel:\n  YAML: {z_min_um:.1f} to {z_max_um:.1f} µm\n"
                 f"  Current: piezo travel 0 to {piezo_travel_um:.0f} µm"
             )
+
+    rel = yaml_data.laser_af_relative_range_um
+    if rel is not None:
+        import control._def as _def
+        from control.core.relative_z_range import nz_for_range
+
+        span_um = (nz_for_range(rel[0], rel[1], yaml_data.delta_z_um) - 1) * yaml_data.delta_z_um
+        if piezo_travel_um is not None and not yaml_data.use_piezo:
+            # Laser AF drives the piezo on this scope, so the stack must be on it.
+            piezo_mismatch = True
+            messages.append(
+                "Piezo mismatch:\n  YAML: relative Z-range on the stepper\n"
+                "  Current: this microscope's laser AF drives the piezo"
+            )
+        else:
+            if piezo_travel_um is not None:
+                travel_um = piezo_travel_um
+            elif stepper_travel_um is not None:
+                travel_um = stepper_travel_um
+            else:
+                travel_um = (_def.SOFTWARE_POS_LIMIT.Z_POSITIVE - _def.SOFTWARE_POS_LIMIT.Z_NEGATIVE) * 1000
+            if span_um > travel_um:
+                piezo_mismatch = True
+                messages.append(
+                    f"Relative Z-range longer than the travel:\n  YAML: {span_um:.1f} µm\n"
+                    f"  Current: travel {travel_um:.0f} µm"
+                )
 
     return ValidationResult(
         is_valid=not (objective_mismatch or binning_mismatch or piezo_mismatch),

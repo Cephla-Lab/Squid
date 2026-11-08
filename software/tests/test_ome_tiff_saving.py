@@ -308,3 +308,92 @@ def test_job_runner_cleanup_flag() -> None:
         finally:
             # Signal shutdown (don't call shutdown() since process wasn't started)
             runner._shutdown_event.set()
+
+
+def _skip_test_metadata(skipped_indices=None):
+    from control.core import utils_ome_tiff_writer as ome_tiff_writer
+    from control.core.job_processing import AcquisitionInfo, CaptureInfo
+    import squid.abc
+
+    acquisition_info = AcquisitionInfo(
+        total_time_points=2, total_z_levels=3, total_channels=2, channel_names=["DAPI", "GFP"]
+    )
+    info = CaptureInfo(
+        position=squid.abc.Pos(x_mm=0.0, y_mm=0.0, z_mm=0.0, theta_rad=None),
+        z_index=0,
+        capture_time=time.time(),
+        configuration=None,
+        save_directory="unused",
+        file_id="unused",
+        region_id="A1",
+        fov=0,
+        configuration_idx=0,
+        time_point=0,
+    )
+    metadata = ome_tiff_writer.initialize_metadata_for_shape(acquisition_info, info, (6, 4), "uint16")
+    if skipped_indices is not None:
+        metadata[ome_tiff_writer.SKIPPED_INDICES_KEY] = skipped_indices
+    return metadata
+
+
+def test_metadata_from_a_shape_matches_metadata_from_an_image() -> None:
+    from control.core import utils_ome_tiff_writer as ome_tiff_writer
+    from control.core.job_processing import AcquisitionInfo, CaptureInfo
+    import squid.abc
+
+    acquisition_info = AcquisitionInfo(
+        total_time_points=2, total_z_levels=3, total_channels=2, channel_names=["DAPI", "GFP"], time_increment_s=2.0
+    )
+    info = CaptureInfo(
+        position=squid.abc.Pos(x_mm=0.0, y_mm=0.0, z_mm=0.0, theta_rad=None),
+        z_index=0,
+        capture_time=123.0,
+        configuration=None,
+        save_directory="unused",
+        file_id="unused",
+        region_id="A1",
+        fov=0,
+        configuration_idx=0,
+        time_point=0,
+    )
+    image = np.zeros((6, 4), dtype=np.uint16)
+
+    from_shape = ome_tiff_writer.initialize_metadata_for_shape(acquisition_info, info, (6, 4), "uint16")
+
+    assert from_shape == ome_tiff_writer.initialize_metadata(acquisition_info, info, image)
+    assert from_shape[ome_tiff_writer.SHAPE_KEY] == [2, 3, 2, 6, 4]
+    assert ome_tiff_writer.SKIPPED_INDICES_KEY not in from_shape  # a run without skips keeps its metadata
+
+
+def test_augment_ome_xml_lists_skipped_planes_in_a_map_annotation() -> None:
+    from control.core import utils_ome_tiff_writer as ome_tiff_writer
+
+    metadata = _skip_test_metadata(["1-0-2", "0-1-0"])  # t-c-z, as written_indices
+
+    root = ET.fromstring(ome_tiff_writer.augment_ome_xml(None, metadata))
+
+    ns = {"ome": "http://www.openmicroscopy.org/Schemas/OME/2016-06"}
+    annotations = root.findall("ome:StructuredAnnotations/ome:MapAnnotation", ns)
+    assert len(annotations) == 1
+    annotation = annotations[0]
+    assert annotation.get("Namespace") == "squid.skipped_frames"
+    assert [(m.get("K"), m.text) for m in annotation.findall("ome:Value/ome:M", ns)] == [
+        ("0,1,0", "out of travel"),
+        ("1,0,2", "out of travel"),
+    ]
+    image = root.find("ome:Image", ns)
+    refs = image.findall("ome:AnnotationRef", ns)
+    assert [ref.get("ID") for ref in refs] == [annotation.get("ID")]
+    children = [child.tag.split("}")[1] for child in image]
+    assert children.index("AnnotationRef") > children.index("Pixels")  # the schema's order within Image
+    top = [child.tag.split("}")[1] for child in root]
+    assert top.index("StructuredAnnotations") > top.index("Image")
+
+
+def test_augment_ome_xml_without_skips_adds_no_annotation() -> None:
+    from control.core import utils_ome_tiff_writer as ome_tiff_writer
+
+    for metadata in (_skip_test_metadata(), _skip_test_metadata([])):
+        xml = ome_tiff_writer.augment_ome_xml(None, metadata)
+        assert "StructuredAnnotations" not in xml
+        assert "AnnotationRef" not in xml

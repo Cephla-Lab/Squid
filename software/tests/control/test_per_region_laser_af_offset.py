@@ -45,6 +45,8 @@ class _BuildParamsStub:
         self.skip_saving = False
         self.xy_mode = "Current Position"
 
+    laser_af_relative_range_um = None  # absolute/plain mode: effective_nz() is NZ
+    effective_nz = MultiPointController.effective_nz
     build_params = MultiPointController.build_params
 
 

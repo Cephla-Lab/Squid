@@ -857,11 +857,55 @@ def test_wellplate_yaml_with_a_piezo_range_reloads_set_range_and_reaches_the_con
     assert w.combobox_z_mode.currentText() == "Set Range"
     assert (w.entry_minZ.value(), w.entry_maxZ.value(), w.entry_NZ.value()) == (20.0, 26.0, 4)
     assert w.entry_maxZ.maximum() == scope.addons.piezo_stage.range_um
-    assert not w.checkbox_withReflectionAutofocus.isEnabled()
+    # Laser AF stays available in Set Range (it picks the mode); the file's laser AF off keeps the range absolute
+    assert w.checkbox_withReflectionAutofocus.isEnabled()
+    assert not w.checkbox_withReflectionAutofocus.isChecked()
 
     w.configure_controller_from_ui()  # what Start runs
     assert w.multipointController.use_piezo
     assert tuple(w.multipointController.piezo_z_range_um) == (20.0, 26.0)
+    assert w.multipointController.laser_af_relative_range_um is None
+
+
+def test_wellplate_yaml_with_a_relative_range_reloads_relative_set_range_and_reaches_the_controller(
+    qtbot, monkeypatch, confirm_exit_yes
+):
+    from control.acquisition_yaml_loader import AcquisitionYAMLData
+
+    monkeypatch.setattr(control._def, "HAS_OBJECTIVE_PIEZO", True)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    w = win.wellplateMultiPointWidget
+
+    w._apply_yaml_settings(
+        AcquisitionYAMLData(
+            widget_type="wellplate",
+            nz=14,
+            delta_z_um=2.0,
+            use_piezo=True,
+            laser_af=True,
+            laser_af_relative_range_um=(-5.0, 20.0),
+        )
+    )
+
+    assert w.combobox_z_mode.currentText() == "Set Range"
+    assert w.checkbox_withReflectionAutofocus.isChecked() and w.checkbox_withReflectionAutofocus.isEnabled()
+    assert (w.entry_minZ.value(), w.entry_maxZ.value(), w.entry_NZ.value()) == (-5.0, 20.0, 14)
+    travel_um = scope.addons.piezo_stage.range_um
+    assert (w.entry_minZ.minimum(), w.entry_maxZ.maximum()) == (-travel_um, travel_um)
+    assert "from reference" in w.entry_minZ.suffix()
+
+    w.configure_controller_from_ui()  # what Start runs
+    assert tuple(w.multipointController.laser_af_relative_range_um) == (-5.0, 20.0)
+    assert w.multipointController.piezo_z_range_um is None
+
+    w.checkbox_withReflectionAutofocus.setChecked(False)  # a click: back to absolute, the range cleared
+    assert "from reference" not in w.entry_minZ.suffix()
+    assert w.entry_maxZ.maximum() == travel_um and w.entry_minZ.minimum() == 0.0
+    w.configure_controller_from_ui()
+    assert w.multipointController.laser_af_relative_range_um is None
+    assert w.multipointController.piezo_z_range_um is not None
 
 
 def test_wellplate_yaml_moving_the_stack_to_the_stepper_gives_the_entries_the_stepper_limits(

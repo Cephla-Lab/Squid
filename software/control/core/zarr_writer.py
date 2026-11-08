@@ -15,7 +15,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -362,6 +362,9 @@ class ZarrWriter:
         self._finalized = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._owns_loop = False  # True if we created the loop ourselves
+        # Frames left at the fill value on purpose (outside the travel), as index tuples in the array's leading
+        # axis order: (t, c, z) (5D) or (fov, t, c, z) (6D). Kept in memory; finalize() / abort() write them.
+        self._skipped_frames: Set[Tuple[int, ...]] = set()
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         """Get or create the event loop (only used for init/finalize)."""
@@ -677,26 +680,8 @@ class ZarrWriter:
             z: Z-slice index
             fov: FOV index (required for 6D datasets, ignored for 5D)
         """
-        if not self._initialized:
-            raise RuntimeError("Writer not initialized. Call initialize() first.")
-        if self._finalized:
-            raise RuntimeError("Writer already finalized.")
-
+        self._check_frame_index(t, c, z, fov)
         config = self._config
-
-        # Validate indices using config properties
-        if not (0 <= t < config.t_size):
-            raise ValueError(f"Time index {t} out of range [0, {config.t_size})")
-        if not (0 <= c < config.c_size):
-            raise ValueError(f"Channel index {c} out of range [0, {config.c_size})")
-        if not (0 <= z < config.z_size):
-            raise ValueError(f"Z index {z} out of range [0, {config.z_size})")
-
-        if config.ndim == 6:
-            if fov is None:
-                raise ValueError("FOV index required for 6D dataset")
-            if not (0 <= fov < config.fov_size):
-                raise ValueError(f"FOV index {fov} out of range [0, {config.fov_size})")
 
         # Ensure image is correct dtype
         if image.dtype != config.dtype:
@@ -718,6 +703,50 @@ class ZarrWriter:
             log.debug(f"Write complete for frame t={t}, c={c}, z={z}")
         else:
             log.debug(f"Write complete for frame fov={fov}, t={t}, c={c}, z={z}")
+
+    def _check_frame_index(self, t: int, c: int, z: int, fov: Optional[int]) -> None:
+        """Raise unless the writer is open and (t, c, z[, fov]) is a frame of the array."""
+        if not self._initialized:
+            raise RuntimeError("Writer not initialized. Call initialize() first.")
+        if self._finalized:
+            raise RuntimeError("Writer already finalized.")
+
+        config = self._config
+
+        # Validate indices using config properties
+        if not (0 <= t < config.t_size):
+            raise ValueError(f"Time index {t} out of range [0, {config.t_size})")
+        if not (0 <= c < config.c_size):
+            raise ValueError(f"Channel index {c} out of range [0, {config.c_size})")
+        if not (0 <= z < config.z_size):
+            raise ValueError(f"Z index {z} out of range [0, {config.z_size})")
+
+        if config.ndim == 6:
+            if fov is None:
+                raise ValueError("FOV index required for 6D dataset")
+            if not (0 <= fov < config.fov_size):
+                raise ValueError(f"FOV index {fov} out of range [0, {config.fov_size})")
+
+    def record_skipped(self, t: int, c: int, z: int, fov: Optional[int] = None) -> None:
+        """Record a frame left out on purpose (its target was outside the actuator's travel): it stays at the fill
+        value. finalize() (or abort()) lists it in _squid.skipped_frames, sorted, as [t, c, z] (5D) or
+        [fov, t, c, z] (6D), so array[*entry] is the plane. Nothing is written before then: zarr.json is rewritten
+        once, not per frame (coordinates.csv already records every skip as it happens).
+
+        Args:
+            t: Time point index
+            c: Channel index
+            z: Z-slice index
+            fov: FOV index (required for 6D datasets, ignored for 5D)
+        """
+        self._check_frame_index(t, c, z, fov)
+        entry = (int(t), int(c), int(z)) if self._config.ndim == 5 else (int(fov), int(t), int(c), int(z))
+        self._skipped_frames.add(entry)
+
+    def _put_skipped_frames(self, squid_attrs: Dict[str, Any]) -> None:
+        """Add _squid.skipped_frames, sorted, when any frame was recorded (absent otherwise, as before)."""
+        if self._skipped_frames:
+            squid_attrs["skipped_frames"] = [list(entry) for entry in sorted(self._skipped_frames)]
 
     def wait_for_pending(self, timeout_s: Optional[float] = None) -> int:
         """Wait for pending writes (blocking).
@@ -771,6 +800,7 @@ class ZarrWriter:
                 attrs = zarr_json.get("attributes", {})
                 if "_squid" in attrs:
                     attrs["_squid"]["acquisition_complete"] = True
+                    self._put_skipped_frames(attrs["_squid"])
                     zarr_json["attributes"] = attrs
                 with open(zarr_json_path, "w") as f:
                     json.dump(zarr_json, f, indent=2)
@@ -804,6 +834,7 @@ class ZarrWriter:
                     if "_squid" in attrs:
                         attrs["_squid"]["acquisition_complete"] = False
                         attrs["_squid"]["aborted"] = True
+                        self._put_skipped_frames(attrs["_squid"])
                         zarr_json["attributes"] = attrs
                     with open(zarr_json_path, "w") as f:
                         json.dump(zarr_json, f, indent=2)

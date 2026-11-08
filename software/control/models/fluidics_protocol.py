@@ -42,6 +42,7 @@ class ZStackSettings(BaseModel):
     use_piezo: bool = False
     z_range_mm: Optional[List[float]] = None
     piezo_z_range_um: Optional[List[float]] = None
+    laser_af_relative_range_um: Optional[List[float]] = None
 
     @field_validator("order", mode="before")
     @classmethod

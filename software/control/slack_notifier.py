@@ -44,6 +44,9 @@ class TimepointStats:
     # Z First "AF per stack": laser AF re-runs before later channels' stacks, counted apart from the per-FOV AF.
     laser_af_per_stack_successes: int = 0
     laser_af_per_stack_failures: int = 0
+    # Relative Z-range (Set Range with laser AF on): frames left out because their target was outside the travel.
+    relative_frames_skipped: int = 0
+    relative_fovs_with_skips: int = 0
 
 
 @dataclass
@@ -512,6 +515,16 @@ class SlackNotifier:
             if stats.laser_af_per_stack_failures > 0:
                 per_stack_text += f" ({stats.laser_af_per_stack_failures} failed)"
             blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": per_stack_text}})
+
+        # Relative Z-range frames outside the actuator's travel: skipped, never clamped
+        if stats.relative_frames_skipped > 0:
+            frames = stats.relative_frames_skipped
+            fovs = stats.relative_fovs_with_skips
+            skipped_text = (
+                f"*Outside the travel:* {frames:,} frame{'s' if frames != 1 else ''} skipped "
+                f"in {fovs:,} FOV{'s' if fovs != 1 else ''}"
+            )
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": skipped_text}})
 
         experiment_block = self._make_experiment_context_block()
         if experiment_block:
