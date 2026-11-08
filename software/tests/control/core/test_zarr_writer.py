@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 import squid.abc
+import control.core.zarr_writer as zarr_writer
 from control._def import ZarrChunkMode, ZarrCompression
 from control.core.job_processing import (
     SaveSettings,
@@ -514,9 +515,6 @@ class TestZarrWriterCompletion:
         assert not [f for f in os.listdir(metadata_dir) if f.endswith(".tmp")]
 
 
-import control.core.zarr_writer as zarr_writer
-
-
 def plate_attrs(plate_path: str) -> dict:
     with open(os.path.join(plate_path, "zarr.json")) as f:
         return json.load(f)["attributes"]["ome"]
@@ -706,6 +704,8 @@ class TestSaveZarrJobWrittenFields:
         assert calls == [0, 0]
         well = os.path.join(temp_dir, "plate.ome.zarr", "B", "3")
         assert [i["path"] for i in well_attrs(well)["well"]["images"]] == ["0"]
+        # the frame whose registration failed was not written; the retried one was
+        assert squid_of(os.path.join(well, "0"))["planes_written"] == 1
 
 
 class TestZarrWriterInfo:

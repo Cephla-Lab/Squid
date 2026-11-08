@@ -249,6 +249,8 @@ def _atomic_write_json(path: str, obj: dict) -> None:
     tmp_path = f"{path}.{os.getpid()}.tmp"
     with open(tmp_path, "w") as f:
         json.dump(obj, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())  # the bytes are on disk before the rename, so a power cut cannot leave an empty file
     os.replace(tmp_path, path)
 
 
