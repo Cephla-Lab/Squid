@@ -862,3 +862,137 @@ def test_hidden_viewer_removes_the_button_and_menu_entry(gallery, qtbot):
     ]
     _double_click_selected(gallery, qtbot)
     assert seen["squid"] == [] and len(seen["window"]) == 1
+
+
+# ----- importing folders and the first-launch offer -----
+
+
+def _pick_directory(monkeypatch, folder, starts=None):
+    def get_dir(parent, caption, directory):
+        if starts is not None:
+            starts.append(directory)
+        return str(folder)
+
+    monkeypatch.setattr(control.widgets_gallery.QFileDialog, "getExistingDirectory", get_dir)
+
+
+def test_import_button_adds_the_folders_and_previews(gallery, qtbot, saving_root, monkeypatch):
+    write_acquisition(saving_root, "imp_a", start_time=T0 + 10)
+    write_acquisition(saving_root, "imp_b", start_time=T0 + 20)
+    starts = []
+    _pick_directory(monkeypatch, saving_root, starts)
+    gallery._import_root_provider = lambda: str(saving_root)
+
+    gallery.btn_import.click()
+
+    qtbot.waitUntil(lambda: len(gallery.rows()) == 7 and not gallery._loading, timeout=10000)
+    assert starts == [str(saving_root)]
+    assert gallery.btn_import.isEnabled()
+    assert {"imp_a", "imp_b"} <= set(_ids_by_name(gallery))
+    previews = sorted(p.name for p in gallery._store.previews_dir.glob("*.png"))
+    added = [row.entry.id for row in gallery.rows() if row.entry.name in ("imp_a", "imp_b")]
+    assert all(f"{entry_id}.png" in previews for entry_id in added)
+    assert gallery.status_label.text().startswith("Added 2 acquisitions from ")
+    assert "(0 already in the history, 0 snaps skipped)" in gallery.status_label.text()
+
+    gallery.btn_import.click()  # the same folder again adds nothing
+    qtbot.waitUntil(lambda: "Added 0 acquisitions" in gallery.status_label.text(), timeout=10000)
+    assert "(2 already in the history" in gallery.status_label.text()
+    assert len(gallery.rows()) == 7
+
+
+def _ids_by_name(widget):
+    return [row.entry.name for row in widget.rows()]
+
+
+def test_import_button_does_nothing_when_the_dialog_is_cancelled(gallery, monkeypatch):
+    _pick_directory(monkeypatch, "")
+    n_events = len(gallery._store.events())
+    gallery.btn_import.click()
+    assert len(gallery._store.events()) == n_events
+    assert gallery.btn_import.isEnabled()
+
+
+@pytest.fixture
+def marker(tmp_path, monkeypatch):
+    path = tmp_path / "cache" / "gallery_import_offered.txt"
+    monkeypatch.setattr(control.widgets_gallery, "IMPORT_OFFER_MARKER", str(path))
+    monkeypatch.setattr(control._def, "RECORD_SNAPS_IN_HISTORY", True)
+    return path
+
+
+def _new_gallery(qtbot, tmp_path, root, name="history"):
+    widget = AcquisitionGalleryWidget(HistoryStore(tmp_path / name), import_root_provider=lambda: str(root))
+    qtbot.addWidget(widget)
+    return widget
+
+
+def test_initial_offer_asks_once_and_imports_on_yes(qtbot, tmp_path, saving_root, marker, monkeypatch):
+    write_acquisition(saving_root, "first", start_time=T0 + 10)
+    write_acquisition(saving_root, "second", start_time=T0 + 20)
+    asked = []
+
+    def question(parent, title, text, *args):
+        asked.append((title, text))
+        return control.widgets_gallery.QMessageBox.Yes
+
+    monkeypatch.setattr(control.widgets_gallery.QMessageBox, "question", question)
+    widget = _new_gallery(qtbot, tmp_path, saving_root)
+
+    widget.offer_initial_import()
+
+    assert len(asked) == 1 and str(saving_root) in asked[0][1]
+    assert marker.exists()
+    qtbot.waitUntil(lambda: len(widget.rows()) == 2, timeout=10000)
+    widget.shutdown()
+
+    other = _new_gallery(qtbot, tmp_path, saving_root, name="history2")
+    other.offer_initial_import()
+    assert len(asked) == 1  # the marker stops a second question
+    assert other._store.load() == []
+    other.shutdown()
+
+
+def test_initial_offer_writes_the_marker_on_no_and_imports_nothing(qtbot, tmp_path, saving_root, marker, monkeypatch):
+    write_acquisition(saving_root, "first", start_time=T0 + 10)
+    monkeypatch.setattr(
+        control.widgets_gallery.QMessageBox, "question", lambda *a: control.widgets_gallery.QMessageBox.No
+    )
+    widget = _new_gallery(qtbot, tmp_path, saving_root)
+
+    widget.offer_initial_import()
+
+    assert marker.exists()
+    assert widget._store.load() == []
+    widget.shutdown()
+
+
+def test_initial_offer_is_silent_when_the_history_is_not_empty_or_the_folder_has_no_runs(
+    qtbot, tmp_path, saving_root, marker, monkeypatch
+):
+    question = Mock(return_value=control.widgets_gallery.QMessageBox.Yes)
+    monkeypatch.setattr(control.widgets_gallery.QMessageBox, "question", question)
+
+    # an empty saving folder
+    widget = _new_gallery(qtbot, tmp_path, saving_root)
+    widget.offer_initial_import()
+    # a folder that does not exist
+    missing = _new_gallery(qtbot, tmp_path, tmp_path / "nowhere", name="h2")
+    missing.offer_initial_import()
+    # a history that already has entries
+    write_acquisition(saving_root, "first", start_time=T0 + 10)
+    busy = _new_gallery(qtbot, tmp_path, saving_root, name="h3")
+    busy._store.append({"type": "removed", "id": "x"})
+    busy._store.append(
+        {"type": "imported", "id": "e", "kind": "run", "name": "e", "folder": str(saving_root / "first"), "at": T0}
+    )
+    busy.offer_initial_import()
+    # no provider answer
+    none = AcquisitionGalleryWidget(HistoryStore(tmp_path / "h4"), import_root_provider=lambda: None)
+    qtbot.addWidget(none)
+    none.offer_initial_import()
+
+    question.assert_not_called()
+    assert not marker.exists()  # nothing was asked, so a later launch can still offer
+    for w in (widget, missing, busy, none):
+        w.shutdown()

@@ -13,6 +13,7 @@ whenever the history file (or the previews folder) changed.
 import enum
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -32,6 +33,7 @@ from qtpy.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -44,7 +46,8 @@ from qtpy.QtWidgets import (
 
 import control._def
 import squid.logging
-from control.gallery_previews import array_to_pixmap, load_thumbnail_array
+from control.gallery_import import ImportResult, import_folder, scan_acquisitions
+from control.gallery_previews import array_to_pixmap, load_thumbnail_array, write_preview_png
 from control.widgets_gallery_details import (
     NO_SELECTION,
     PREVIEW_SIDE,
@@ -270,11 +273,42 @@ def make_placeholder_pixmap(text: str, size: int) -> QPixmap:
 # ---------------------------------------------------------------------------------------------------------
 
 
+IMPORT_OFFER_MARKER = "cache/gallery_import_offered.txt"  # exists once the first-launch import was offered
+
+
+def import_status_text(folder: str, result: ImportResult) -> str:
+    """The status line after importing a folder."""
+    n = len(result.added)
+    text = (
+        f"Added {n} acquisition{'s' if n != 1 else ''} from {folder} "
+        f"({result.skipped_existing} already in the history, {result.skipped_snaps} snaps skipped)"
+    )
+    if result.errors:
+        k = len(result.errors)
+        text += f"; {k} error{'s' if k != 1 else ''}, see the log"
+    return text
+
+
+def _folder_bytes(folder: str) -> Optional[int]:
+    total = 0
+    try:
+        for dirpath, _dirs, files in os.walk(folder):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(dirpath, name))
+                except OSError:
+                    pass
+    except OSError:
+        return None
+    return total
+
+
 class _GalleryEvents(QObject):
     """Signals the worker threads use to hand results to the GUI thread."""
 
     loaded = Signal(int, object)  # generation, (history stamp, List[GalleryRow])
     thumbnail_ready = Signal(int, str, object)  # generation, entry id, (preview path, mtime, Optional[np.ndarray])
+    imported = Signal(int, str, object)  # import number, folder, ImportResult or an error message (str)
 
 
 class _SortItem(QTableWidgetItem):
@@ -313,8 +347,12 @@ class AcquisitionGalleryWidget(QWidget):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self._store = store
-        self._import_root_provider = import_root_provider  # used by importing (Task 10)
+        self._import_root_provider = (
+            import_root_provider  # where importing starts, and what the first-launch offer scans
+        )
         self._generation = 0
+        self._import_serial = 0
+        self._importing = 0
         self._loading = False
         self._sort_initialised = False
         self._seen_stamp = self._NOT_LOADED
@@ -343,6 +381,7 @@ class AcquisitionGalleryWidget(QWidget):
         self._events = _GalleryEvents()
         self._events.loaded.connect(self._on_loaded)
         self._events.thumbnail_ready.connect(self._on_thumbnail_ready)
+        self._events.imported.connect(self._on_imported)
         self._scan_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gallery-scan")
         self._thumbnail_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gallery-thumb")
 
@@ -379,9 +418,11 @@ class AcquisitionGalleryWidget(QWidget):
         self.view_toggle = QPushButton()
         self.view_toggle.setCheckable(True)  # checked = list view
         self.btn_refresh = QPushButton("Refresh")
+        self.btn_import = QPushButton("Add folder to history")
         top.addStretch(1)
         top.addWidget(self.count_label)
         top.addWidget(self.view_toggle)
+        top.addWidget(self.btn_import)
         top.addWidget(self.btn_refresh)
 
         self.list_widget = QListWidget()
@@ -448,6 +489,7 @@ class AcquisitionGalleryWidget(QWidget):
             lambda checked: self.set_view(GalleryView.LIST if checked else GalleryView.GRID)
         )
         self.btn_refresh.clicked.connect(self.reload)
+        self.btn_import.clicked.connect(self._choose_folder_to_import)
         self.list_widget.itemSelectionChanged.connect(self._on_grid_selection_changed)
         # activated comes for a double-click and for Enter (also connecting doubleClicked would open twice).
         self.list_widget.itemActivated.connect(lambda _item: self.open_selected())
@@ -529,6 +571,97 @@ class AcquisitionGalleryWidget(QWidget):
     def selected_entry(self) -> Optional[HistoryEntry]:
         row = self._shown_row(self._selected_id)
         return row.entry if row is not None else None
+
+    # ----- importing -----
+
+    def _choose_folder_to_import(self) -> None:
+        start = self._import_root_provider()
+        if not start or not os.path.isdir(start):
+            start = os.path.expanduser("~")
+        folder = QFileDialog.getExistingDirectory(self, "Choose a folder of acquisitions", start)
+        if folder:
+            self.import_path(folder)
+
+    def import_path(self, folder: str) -> None:
+        """Add the acquisitions under folder (or folder itself) to the history, on the scan worker thread."""
+        if self._closed:
+            return
+        self._import_serial += 1
+        self._importing += 1
+        self.btn_import.setEnabled(False)
+        self.status_label.setText(f"Adding acquisitions from {folder} …")
+        self._scan_executor.submit(self._import_in_background, self._import_serial, folder)
+
+    def _import_in_background(self, serial: int, folder: str) -> None:
+        try:
+            result = import_folder(
+                self._store,
+                folder,
+                include_snaps=control._def.RECORD_SNAPS_IN_HISTORY,
+                make_preview=self._make_preview,
+            )
+        except Exception as e:
+            self._log.exception(f"Importing {folder} into the acquisition history failed")
+            result = str(e) or type(e).__name__
+        self._emit(self._events.imported, serial, folder, result)
+
+    def _make_preview(self, folder: str, entry_id: str) -> None:
+        """Write the entry's preview PNG and record it in the history (called by the importer for each addition)."""
+        channels = write_preview_png(folder, str(self._store.previews_dir / f"{entry_id}.png"))
+        if channels:
+            self._store.append(
+                {
+                    "type": "preview",
+                    "id": entry_id,
+                    "file": f"{entry_id}.png",
+                    "channels": list(channels),
+                    "bytes_on_disk": _folder_bytes(folder),
+                    "at": time.time(),
+                }
+            )
+
+    def _on_imported(self, serial: int, folder: str, result) -> None:
+        if self._closed:
+            return
+        self._importing = max(0, self._importing - 1)
+        if self._importing == 0:
+            self.btn_import.setEnabled(True)
+        if isinstance(result, ImportResult):
+            for error in result.errors:
+                self._log.warning(f"Importing {folder}: {error}")
+            message = import_status_text(folder, result)
+        else:
+            message = f"Importing {folder} failed: {result}"
+        self.status_label.setText(message)
+        self._status_after_load = message
+        self.reload()
+
+    def offer_initial_import(self) -> None:
+        """At first launch, with an empty history and acquisitions in the saving folder, offer once to add them."""
+        marker = IMPORT_OFFER_MARKER
+        try:
+            if self._store.load() or os.path.exists(marker):
+                return
+            root = self._import_root_provider()
+            if not root or not os.path.isdir(root) or not scan_acquisitions(root):
+                return
+        except Exception:
+            self._log.exception("Checking whether to offer the history import failed")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Add existing acquisitions?",
+            f"Add the acquisitions already in\n{root}\nto the history?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(marker)), exist_ok=True)
+            with open(marker, "w", encoding="utf-8") as f:
+                f.write(f"offered {datetime.now().isoformat()}\n")
+        except OSError:
+            self._log.exception(f"Could not write {marker}")
+        if answer == QMessageBox.Yes:
+            self.import_path(root)
 
     # ----- loading -----
 
