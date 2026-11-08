@@ -42,6 +42,7 @@ _PID_START_TOLERANCE_S = 2.0
 
 # How long a preview job may spend adding up a folder's size before the size is left unknown.
 FOLDER_SIZE_BUDGET_S = 5.0
+FOLDER_SIZE_CHECK_EVERY = 256  # directory entries between two looks at the clock while adding up a folder's size
 
 
 def write_preview_png(folder: str, out_path: str) -> Optional[List[str]]:
@@ -111,28 +112,39 @@ def _expected_images(metadata: dict) -> Optional[int]:
 
 def _folder_size(folder: str, *, clock: Callable[[], float] = time.monotonic) -> Optional[int]:
     """Total size of the files under folder; unreadable entries are skipped and no symlink is followed. None when
-    adding it up takes longer than FOLDER_SIZE_BUDGET_S (a huge run, a slow network drive)."""
+    adding it up takes longer than FOLDER_SIZE_BUDGET_S (a huge run, a slow network drive). The clock is read
+    between directories and every FOLDER_SIZE_CHECK_EVERY entries inside one, so one huge timepoint directory
+    cannot run far past the budget either."""
     deadline = clock() + FOLDER_SIZE_BUDGET_S
     total = 0
+    seen = 0
     stack = [folder]
+
+    def out_of_time() -> bool:
+        if clock() <= deadline:
+            return False
+        _log.info(f"Gave up adding up the size of {folder} after {FOLDER_SIZE_BUDGET_S:g} s")
+        return True
+
     while stack:
-        if clock() > deadline:
-            _log.info(f"Gave up adding up the size of {folder} after {FOLDER_SIZE_BUDGET_S:g} s")
+        if out_of_time():
             return None
         current = stack.pop()
         try:
             with os.scandir(current) as it:
-                entries = list(it)
+                for entry in it:
+                    seen += 1
+                    if seen % FOLDER_SIZE_CHECK_EVERY == 0 and out_of_time():
+                        return None
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
         except OSError:
             continue
-        for entry in entries:
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    stack.append(entry.path)
-                elif entry.is_file(follow_symlinks=False):
-                    total += entry.stat(follow_symlinks=False).st_size
-            except OSError:
-                continue
     return total
 
 

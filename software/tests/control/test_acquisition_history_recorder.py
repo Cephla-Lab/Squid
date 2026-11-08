@@ -761,3 +761,20 @@ def test_consecutive_failed_starts_each_get_their_own_entry(sim_controller):
     assert len(events_of(store, "finished", id_a)) == 1  # the second refusal did not finish A again
     assert len(events_of(store, "finished", id_b)) == 1
     assert mpc.history_entry_id is None
+
+
+def test_folder_size_gives_up_inside_one_large_directory(tmp_path):
+    """The budget is checked while a directory is listed, not only between directories."""
+    big = tmp_path / "big"
+    big.mkdir()
+    for i in range(3 * recorder_module.FOLDER_SIZE_CHECK_EVERY):
+        (big / f"f{i}.bin").write_bytes(b"x")
+    assert recorder_module._folder_size(str(big)) == 3 * recorder_module.FOLDER_SIZE_CHECK_EVERY
+    looks = []
+
+    def clock():  # the start and the look before the one directory are in time; every later look is far past it
+        looks.append(1)
+        return 0.0 if len(looks) <= 2 else 100.0
+
+    assert recorder_module._folder_size(str(big), clock=clock) is None
+    assert len(looks) == 3
