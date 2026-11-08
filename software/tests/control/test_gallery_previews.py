@@ -104,6 +104,27 @@ def test_write_preview_png_writes_a_bounded_rgb_png(saving_root, tmp_path):
     assert bgr[-1, 0, ::-1].tolist() == [0x1F, 0xFF, 0x00]  # 488 lights the bottom half
 
 
+def test_write_preview_png_replaces_the_file_whole(saving_root, tmp_path, monkeypatch):
+    """A preview being upgraded is never seen half-written: it is written beside, then moved over the old one."""
+    folder = write_acquisition(saving_root, "exp", nt=1, with_overview=True)
+    out = tmp_path / "preview.png"
+    out.write_bytes(b"old preview")
+    moves = []
+    real_replace = os.replace
+
+    def replace(src, dst):
+        moves.append((str(src), str(dst), out.read_bytes()))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+
+    assert write_preview_png(str(folder), str(out)) is not None
+
+    assert moves == [(str(out) + ".tmp", str(out), b"old preview")]  # the old file is intact until the move
+    assert cv2.imread(str(out)) is not None
+    assert not os.path.exists(str(out) + ".tmp")
+
+
 def test_write_preview_png_returns_none_without_a_source(saving_root, tmp_path):
     folder = write_acquisition(saving_root, "exp", images="zarr")
     out = str(tmp_path / "preview.png")

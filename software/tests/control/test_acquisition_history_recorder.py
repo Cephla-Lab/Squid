@@ -264,6 +264,59 @@ def test_finished_without_a_preview_source_records_size_but_no_file(store, recor
     assert e.preview is None and e.preview_channels == [] and e.bytes_on_disk == ev["bytes_on_disk"]
 
 
+def test_folder_size_gives_up_past_its_time_budget(saving_root):
+    folder = write_acquisition(saving_root, "sized")
+    assert recorder_module._folder_size(str(folder)) > 0
+    ticks = iter(range(0, 1000, 10))  # every look at the clock is 10 s later
+    assert recorder_module._folder_size(str(folder), clock=lambda: next(ticks)) is None
+    assert recorder_module.FOLDER_SIZE_BUDGET_S == 5.0
+
+
+def test_a_slow_size_walk_leaves_the_size_unknown(store, recorder, params, folder, monkeypatch):
+    monkeypatch.setattr(recorder_module, "_folder_size", lambda folder: None)
+    entry_id = recorder.started(params, str(folder), snap=False, skip_saving=False, protocol=None)
+    recorder.make_preview(entry_id, str(folder)).result(timeout=10)
+    [ev] = events_of(store, "preview", entry_id)
+    assert ev["bytes_on_disk"] is None and ev["file"] == f"{entry_id}.png"
+
+
+def test_previews_asked_for_while_busy_wait_until_idle(store, recorder, params, saving_root):
+    folder_a = write_acquisition(saving_root, "a", with_overview=True)
+    folder_b = write_acquisition(saving_root, "b", with_overview=True)
+    id_a = recorder.started(params, str(folder_a), snap=False, skip_saving=False, protocol=None)
+    id_b = recorder.started(params, str(folder_b), snap=False, skip_saving=False, protocol=None)
+    calls = []
+    real_writer = recorder_module.write_preview_png
+
+    def writer(folder, out_path):
+        calls.append(folder)
+        return real_writer(folder, out_path)
+
+    with patch.object(recorder_module, "write_preview_png", side_effect=writer):
+        recorder.set_busy(True)
+        assert recorder.make_preview(id_a, str(folder_a)) is None
+        assert recorder.make_preview(id_a, str(folder_a), replace=True) is None  # the newest flag is kept
+        assert recorder.make_preview(id_b, str(folder_b)) is None
+        time.sleep(0.2)
+        assert calls == [] and events_of(store, "preview") == []
+
+        futures = recorder.set_busy(False)
+
+        assert len(futures) == 2
+        for f in futures:
+            f.result(timeout=10)
+        assert sorted(calls) == sorted([str(folder_a), str(folder_b)])
+        assert {e["id"] for e in events_of(store, "preview")} == {id_a, id_b}
+        assert recorder.set_busy(False) == []  # flushed once
+        # The kept flag was replace=True: it regenerates even though a preview now exists.
+        recorder.set_busy(True)
+        recorder.make_preview(id_a, str(folder_a))
+        recorder.make_preview(id_a, str(folder_a), replace=True)
+        [again] = recorder.set_busy(False)
+        again.result(timeout=10)
+    assert len(events_of(store, "preview", id_a)) == 2
+
+
 def test_preview_failure_is_contained(store, recorder, params, folder):
     entry_id = recorder.started(params, str(folder), snap=False, skip_saving=False, protocol=None)
     recorder.finished(entry_id, "completed", images=96, expected_images=96)
@@ -472,6 +525,20 @@ def test_reconcile_orphans_closes_running_rounds_inside_a_protocol_run(store, re
     assert store.entry("round").outcome == "failed"
 
 
+def test_reconcile_orphans_closes_an_interrupted_import_from_any_machine(store, recorder):
+    """An import writes protocol_started with no pid and no machine; one that never finished is closed."""
+    running_event(store, "import", pid=None, pid_started_at=None, machine=None, type_="protocol_started")
+    running_event(store, "other", pid=None, pid_started_at=None, machine="scope-2")
+    running_event(store, "live-elsewhere", pid=333, pid_started_at=3000.0, machine="scope-2")
+
+    closed = recorder.reconcile_orphans(pid_alive=lambda pid: True, process_started_at=lambda pid: 3000.0)
+
+    assert closed == 2
+    assert (store.entry("import").outcome, store.entry("import").reason) == ("failed", "interrupted")
+    assert store.entry("other").outcome == "failed"
+    assert store.entry("live-elsewhere").outcome == "running"
+
+
 def test_reconcile_orphans_treats_a_reused_pid_as_dead(store, recorder):
     running_event(store, "reused", pid=111, pid_started_at=1000.0, machine="scope-1")
     running_event(store, "old", pid=222, pid_started_at=None, machine="scope-1")
@@ -552,6 +619,7 @@ def test_null_recorder_does_nothing():
     rec.protocol_started("x", "x", "x")
     rec.protocol_finished("x", "finished")
     assert rec.reconcile_orphans() == 0
+    assert rec.set_busy(True) == [] and rec.set_busy(False) == []
     rec.shutdown()
 
 

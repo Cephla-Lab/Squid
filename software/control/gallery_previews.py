@@ -262,9 +262,15 @@ def write_preview_png(folder: str, out_path: str, max_side: int = PREVIEW_MAX_SI
         out_dir = os.path.dirname(out_path)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
-        if not cv2.imwrite(out_path, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)):
-            _log.error(f"Could not write the preview {out_path}")
+        ok, encoded = cv2.imencode(".png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        if not ok:
+            _log.error(f"Could not encode the preview {out_path}")
             return None
+        # Written beside and moved over the old one, so a reader never sees a half-written preview.
+        tmp_path = out_path + ".tmp"
+        with open(tmp_path, "wb") as f:
+            f.write(encoded.tobytes())
+        os.replace(tmp_path, out_path)
         return list(source.channels)
     except Exception:
         _log.exception(f"Could not make a preview of {folder}")

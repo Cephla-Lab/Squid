@@ -1,7 +1,9 @@
 """Records acquisitions in the per-machine history store: turns the controller's start and end of a run, and the
 GUI's preview requests, into history events and preview jobs.
 
-Nothing here may break an acquisition: every store and preview failure is caught and logged.
+Nothing here may break an acquisition: every store and preview failure is caught and logged. No preview work runs
+while an acquisition does: the GUI marks the recorder busy (set_busy) for the length of a run, and previews asked
+for meanwhile are queued and made once it is over.
 """
 
 import os
@@ -9,14 +11,14 @@ import socket
 import threading
 import time
 from concurrent.futures import Executor, Future
-from typing import Callable, Dict, Iterable, List, Optional, Set
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import psutil
 
 import control._def
 import squid.logging
 import squid.version
-from control.gallery_import import metadata_from_yaml
+from control.gallery_import import _scaled, metadata_from_yaml
 from squid.acquisition_history import HistoryEntry, HistoryStore, entry_id_for
 
 _log = squid.logging.get_logger(__name__)
@@ -37,6 +39,9 @@ _PROTOCOL_OUTCOMES = {
 
 # A recorded process creation time and the live one must agree this closely for the process to be the same one.
 _PID_START_TOLERANCE_S = 2.0
+
+# How long a preview job may spend adding up a folder's size before the size is left unknown.
+FOLDER_SIZE_BUDGET_S = 5.0
 
 
 def write_preview_png(folder: str, out_path: str) -> Optional[List[str]]:
@@ -59,10 +64,6 @@ def _run_outcome(reason: str) -> str:
 # ---------------------------------------------------------------------------------------------------------
 # Metadata
 # ---------------------------------------------------------------------------------------------------------
-
-
-def _scaled(value, factor):
-    return value * factor if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def metadata_from_params(params, experiment_path: str) -> dict:
@@ -108,11 +109,16 @@ def _expected_images(metadata: dict) -> Optional[int]:
 # ---------------------------------------------------------------------------------------------------------
 
 
-def _folder_size(folder: str) -> int:
-    """Total size of the files under folder; unreadable entries are skipped and no symlink is followed."""
+def _folder_size(folder: str, *, clock: Callable[[], float] = time.monotonic) -> Optional[int]:
+    """Total size of the files under folder; unreadable entries are skipped and no symlink is followed. None when
+    adding it up takes longer than FOLDER_SIZE_BUDGET_S (a huge run, a slow network drive)."""
+    deadline = clock() + FOLDER_SIZE_BUDGET_S
     total = 0
     stack = [folder]
     while stack:
+        if clock() > deadline:
+            _log.info(f"Gave up adding up the size of {folder} after {FOLDER_SIZE_BUDGET_S:g} s")
+            return None
         current = stack.pop()
         try:
             with os.scandir(current) as it:
@@ -170,6 +176,8 @@ class AcquisitionHistoryRecorder:
         self._pending: Set[str] = set()  # ids with a preview job submitted and not yet done
         self._replace_after: Dict[str, str] = {}  # id -> folder to regenerate from once the pending job is done
         self._previewed: Set[str] = set()  # ids this recorder has written a preview event for
+        self._busy = False  # an acquisition is running: previews wait
+        self._queued: Dict[str, Tuple[str, bool]] = {}  # id -> (folder, replace) asked for while busy
 
     # --- store access ---------------------------------------------------------------------------------
 
@@ -308,10 +316,31 @@ class AcquisitionHistoryRecorder:
             _log.exception("Could not read the acquisition history")
             return False
 
+    def set_busy(self, active: bool) -> List[Future]:
+        """While busy (an acquisition runs), make_preview only queues; going idle submits the queue, once. The futures
+        of the jobs submitted by going idle."""
+        with self._lock:
+            self._busy = bool(active)
+            if self._busy:
+                return []
+            queued, self._queued = self._queued, {}
+        futures = []
+        for entry_id, (folder, replace) in queued.items():
+            future = self.make_preview(entry_id, folder, replace=replace)
+            if future is not None:
+                futures.append(future)
+        return futures
+
     def make_preview(self, entry_id: str, folder: str, *, replace: bool = False) -> Optional[Future]:
-        """Make (or with replace=True, remake) the entry's preview on the executor; None when nothing was submitted."""
+        """Make (or with replace=True, remake) the entry's preview on the executor; None when nothing was submitted
+        (including while busy: the request is queued, keeping the newest folder and replace flag per id)."""
         if entry_id is None:
             return None
+        with self._lock:
+            if self._busy:
+                self._queued.pop(entry_id, None)
+                self._queued[entry_id] = (folder, replace)
+                return None
         if not replace and self._has_preview(entry_id):
             return None
         with self._lock:
@@ -358,11 +387,16 @@ class AcquisitionHistoryRecorder:
         except Exception:
             _log.exception(f"Could not make the preview of {folder}")
             return
+        try:
+            size = _folder_size(folder)
+        except Exception:
+            _log.exception(f"Could not add up the size of {folder}")
+            size = None
         event = {
             "type": "preview",
             "id": entry_id,
             "channels": list(channels) if channels is not None else [],
-            "bytes_on_disk": _folder_size(folder),
+            "bytes_on_disk": size,
         }
         if channels is not None:
             event["file"] = out_path.name
@@ -410,7 +444,8 @@ class AcquisitionHistoryRecorder:
         pid_alive: Callable[[int], bool] = psutil.pid_exists,
         process_started_at: Callable[[int], Optional[float]] = _process_started_at,
     ) -> int:
-        """Close this machine's entries still `running` whose recording process is gone; the number closed."""
+        """Close this machine's entries still `running` whose recording process is gone, and any entry still `running`
+        with no recording process at all (an import that never finished: it records no machine); the number closed."""
         try:
             entries = self._store.load()
         except Exception:
@@ -418,8 +453,12 @@ class AcquisitionHistoryRecorder:
             return 0
         closed = 0
         for entry in _walk(entries):
-            if not entry.is_running or entry.machine != self._machine:
+            if not entry.is_running:
                 continue
+            if entry.pid is not None and entry.machine != self._machine:
+                continue
+            if entry.pid is None and any(r.is_running for r in entry.rounds):
+                continue  # a protocol run never recorded itself, running through its rounds: closing them closes it
             if self._recording_process_alive(entry, pid_alive, process_started_at):
                 continue
             if entry.kind == "protocol_run":
@@ -479,6 +518,9 @@ class NullAcquisitionHistoryRecorder:
 
     def make_preview(self, entry_id, folder, *, replace=False) -> Optional[Future]:
         return None
+
+    def set_busy(self, active) -> list:
+        return []
 
     def failed_start(self, experiment_path, reason, *, snap=False, skip_saving=False, protocol=None) -> None:
         pass
