@@ -20,12 +20,18 @@ _log = squid.logging.get_logger(__name__)
 VIEWER_PACKAGES: Tuple[str, ...] = ("ndv", "vispy", "tensorstore", "xarray", "dask", "superqt", "pyconify")
 VIEWER_MODULE = "control.ndviewer_light.ndviewer_light"
 SUBMODULE_HINT = "git submodule update --init software/control/ndviewer_light"
-# The bundled viewer requires ndv>=0.5,<0.6: what the pip hint installs for a missing ndv, and the floor
-# the NDViewer tab checks before it builds the viewer (an install that pulled the submodule without
-# upgrading ndv would otherwise get a half-working tab: names lost, navigation dead).
+# The bundled viewer requires ndv>=0.5,<0.6: the floor the NDViewer tab checks before it builds the
+# viewer (an install that pulled the submodule without upgrading ndv would otherwise get a half-working
+# tab: names lost, navigation dead), and the command that installs it. ndv depends on ihist, whose
+# metadata demands numpy>=2 although its wheels run on numpy 1.x; Squid keeps numpy below 2 (FLIR's
+# PySpin for Python 3.10 is numpy 1 only), so both are installed without dependency resolution and
+# ndv's other dependencies follow explicitly. Mirrors setup_22.04.sh.
 NDV_MIN_VERSION = (0, 5)
-NDV_PIP_SPEC = '"ndv>=0.5,<0.6"'
-_PIP_SPECS = {"ndv": NDV_PIP_SPEC}
+NDV_INSTALL_COMMAND = (
+    'pip install --no-deps "ihist>=0.1.3" "ndv>=0.5,<0.6" && '
+    'pip install "cmap>=0.3" "psygnal>=0.12" "pydantic>=2.10" "typing-extensions>=4.10" '
+    '"superqt[iconify]>=0.8.1" "pyconify>=0.2.1" pyopengl'
+)
 
 
 def ndv_version_problem(installed: str) -> Optional[str]:
@@ -38,7 +44,7 @@ def ndv_version_problem(installed: str) -> Optional[str]:
         return None
     return (
         f"NDViewer needs ndv {NDV_MIN_VERSION[0]}.{NDV_MIN_VERSION[1]} or newer; {installed} is installed.\n"
-        f"Upgrade with:  pip install {NDV_PIP_SPEC} pyconify"
+        f"Upgrade with:  {NDV_INSTALL_COMMAND}"
     )
 
 
@@ -71,7 +77,12 @@ class ViewerPreflight:
         lines = []
         if self.missing_packages:
             lines.append(f"Missing Python packages: {', '.join(self.missing_packages)}")
-            lines.append(f"pip install {' '.join(_PIP_SPECS.get(name, name) for name in self.missing_packages)}")
+            # ndv and pyconify come through the ndv install command (numpy stays below 2); the rest plainly
+            others = [name for name in self.missing_packages if name not in ("ndv", "pyconify")]
+            if len(others) < len(self.missing_packages):
+                lines.append(NDV_INSTALL_COMMAND)
+            if others:
+                lines.append(f"pip install {' '.join(others)}")
         if not self.entry_point_exists:
             lines.append(f"The viewer submodule is not checked out ({self.entry_point}).")
             lines.append(f"Run: {SUBMODULE_HINT}")

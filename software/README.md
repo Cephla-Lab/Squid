@@ -10,19 +10,19 @@ Reboot the computer to finish the installation.
 
 ## Upgrading an existing installation
 
-Squid now runs on numpy 2 and the bundled viewer (the NDViewer tab and "Open in Viewer") needs
-ndv 0.5. After `git pull` and `git submodule update --init software/control/ndviewer_light` on an
-installation set up before this change, run once:
+The bundled viewer (the NDViewer tab and "Open in Viewer") needs ndv 0.5. After `git pull` and
+`git submodule update --init software/control/ndviewer_light` on an installation set up before this
+change, run once:
 
 ```
-sudo apt remove -y python3-matplotlib   # Ubuntu's copy shadows pip's under numpy 2; apt may remove python3-pyqtgraph with it, pip's is the one used
-pip install -U "numpy>=2" "pandas>=2.2.2" "scipy>=1.13" "scikit-image>=0.24" "matplotlib>=3.9" "pyqtgraph>=0.13.4" "colorama>=0.4.6" "numcodecs>=0.13" "jax>=0.4.26" "jaxlib>=0.4.26" "ndv>=0.5,<0.6" pyconify "opencv-python-headless>=4.10,<5" "opencv-contrib-python-headless>=4.10,<5"
+pip install --no-deps "ihist>=0.1.3" "ndv>=0.5,<0.6"
+pip install "cmap>=0.3" "psygnal>=0.12" "pydantic>=2.10" "typing-extensions>=4.10" "superqt[iconify]>=0.8.1" "pyconify>=0.2.1" pyopengl
 ```
 
-Without it the NDViewer tab shows this command instead of a viewer, and packages built against
-numpy 1 fail to import. Re-running `setup_22.04.sh` does the same. Vendor camera SDKs installed by
-hand (FLIR Spinnaker/PySpin, Photometrics PyVCAM, IDS peak) are compiled extensions: check that the
-installed build supports numpy 2 before upgrading a machine that uses one.
+numpy stays below 2 (FLIR's PySpin for Python 3.10 is built for numpy 1 only). ndv depends on ihist,
+whose metadata demands numpy 2 although its wheels run on numpy 1.x, which is why both are installed
+without dependency resolution; a plain `pip install ndv` would pull numpy 2 in. Without the upgrade the
+NDViewer tab shows this command instead of a viewer. Re-running `setup_22.04.sh` does the same.
 
 ## Optional or Hardware-specific dependencies
 

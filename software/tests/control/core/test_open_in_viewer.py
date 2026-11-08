@@ -12,6 +12,7 @@ from control.core.open_in_viewer import (
     check_viewer,
     finished_run_dir,
     launch_viewer,
+    NDV_INSTALL_COMMAND,
     ndv_version_problem,
     software_dir,
     viewer_launch_command,
@@ -115,9 +116,9 @@ def test_software_dir_contains_the_control_package():
 
 
 def test_check_viewer_pins_ndv_in_the_install_hint(tmp_path):
-    # The bundled viewer needs ndv>=0.5,<0.6; an unpinned hint would install a version it cannot use
+    # The bundled viewer needs ndv>=0.5,<0.6 installed past ihist's numpy>=2 metadata (numpy stays below 2)
     p = check_viewer(str(tmp_path), find_spec=lambda n: None if n == "ndv" else object(), isfile=lambda f: True)
-    assert 'pip install "ndv>=0.5,<0.6"' in p.problem()
+    assert NDV_INSTALL_COMMAND in p.problem() and "pip install ndv" not in p.problem()
 
 
 @pytest.mark.parametrize("installed", ["0.5.0", "0.5.1.dev2", "0.6.0", "1.0"])
@@ -128,4 +129,4 @@ def test_ndv_version_at_or_above_the_floor_is_fine(installed):
 @pytest.mark.parametrize("installed", ["0.4.1", "0.4.1.dev13+g402ebaf12", "0.3"])
 def test_ndv_below_the_floor_names_the_version_and_the_upgrade(installed):
     problem = ndv_version_problem(installed)
-    assert installed in problem and 'pip install "ndv>=0.5,<0.6" pyconify' in problem
+    assert installed in problem and NDV_INSTALL_COMMAND in problem
