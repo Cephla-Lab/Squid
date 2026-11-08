@@ -81,9 +81,9 @@ class ObjectiveEntry(BaseModel):
     @field_validator("model", "serial", mode="before")
     @classmethod
     def _number_as_text(cls, value):
-        # A hand edit can leave a serial number or model unquoted, which YAML reads as a number.
-        # (It has already dropped leading zeros by now: the file must quote those.) The editor
-        # always writes strings; a bool (YAML `yes`) is still refused as a string.
+        # Free text: a number here (a dict built in code, or a hand edit the file loader could
+        # not restore) becomes its text. The file loader puts back the file's own spelling first
+        # (`0123` stays "0123"); a bool (YAML `yes`) is still refused as a string.
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return str(value)
         return value
@@ -183,9 +183,41 @@ def load_objectives_config(path=None) -> Optional[ObjectivesConfig]:
     return _parse_objectives_text(text, path)
 
 
+class _TextLoader(yaml.SafeLoader):
+    """SafeLoader that leaves plain numeric scalars as text: `0123` loads as "0123", not 83."""
+
+
+_NUMERIC_TAGS = {"tag:yaml.org,2002:int", "tag:yaml.org,2002:float"}
+_TextLoader.yaml_implicit_resolvers = {
+    first: [(tag, regexp) for tag, regexp in resolvers if tag not in _NUMERIC_TAGS]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_FREE_TEXT_FIELDS = ("model", "serial")
+
+
+def _restore_free_text(data, as_text) -> None:
+    """A hand edit can leave `serial: 0123` or `model: 0x1F` unquoted, which YAML 1.1 reads as
+    83 and 31. For the two free-text fields, put the file's own spelling back from a second load
+    that never resolves numbers. Everything else stays as safe_load read it (a bool, YAML `yes`,
+    resolves the same way in both loads and is refused by the model)."""
+    if not isinstance(data, dict) or not isinstance(as_text, dict):
+        return
+    entries, texts = data.get("objectives"), as_text.get("objectives")
+    if not isinstance(entries, list) or not isinstance(texts, list):
+        return
+    for entry, entry_text in zip(entries, texts):
+        if not isinstance(entry, dict) or not isinstance(entry_text, dict):
+            continue
+        for field in _FREE_TEXT_FIELDS:
+            value, spelling = entry.get(field), entry_text.get(field)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and isinstance(spelling, str):
+                entry[field] = spelling
+
+
 def _parse_objectives_text(text: str, path: Path) -> ObjectivesConfig:
     try:
         data = yaml.safe_load(text)
+        _restore_free_text(data, yaml.load(text, Loader=_TextLoader))
     except yaml.YAMLError as e:
         raise ObjectivesConfigError(path, "(file)", f"is not valid YAML: {e}") from e
     if data is None:
