@@ -765,6 +765,8 @@ class HighContentScreeningGui(QMainWindow):
         self.fluidicsProtocolWidget = None  # widgets_fluidics.FluidicsProtocolWidget when RUN_FLUIDICS
         self.qtImagingPort = None
         self._fluidics_protocol_active = False
+        # Preparing through finished, for every entry point (GUI, TCP, fluidics); restart is refused meanwhile.
+        self._acquisition_run_active = False
 
         self.recordTabWidget: QTabWidget = QTabWidget()
         self.cameraTabWidget: QTabWidget = QTabWidget()
@@ -1645,6 +1647,8 @@ class HighContentScreeningGui(QMainWindow):
         self.multipointController.acquisition_preparing.connect(
             lambda: self.liveControlWidget.set_acquisition_running(True)
         )
+        self.multipointController.acquisition_preparing.connect(lambda: setattr(self, "_acquisition_run_active", True))
+        self.multipointController.acquisition_finished.connect(lambda: setattr(self, "_acquisition_run_active", False))
         self.multipointController.signal_acquisition_start.connect(
             lambda: self.liveControlWidget.set_acquisition_running(True)
         )
@@ -3097,8 +3101,24 @@ class HighContentScreeningGui(QMainWindow):
         Performs hardware cleanup, spawns a new process with --skip-init flag,
         then quits the current application. Hardware initialization is skipped in the new
         process since hardware is already in a known state.
+
+        Refused from the moment a run starts preparing until it reports finished: the cleanup would
+        tear the hardware down under the run (a TCP run prepares on the server's thread before its
+        worker exists) and leave the output incomplete. Checked here, not in the dialogs, so every
+        caller is covered.
         """
+        # Fluidics first: its question and its wait for the run to unwind spin the event loop, where a
+        # run (or a fluidics imaging step ending) can change the acquisition state. From the check below
+        # to quit() nothing spins it, and every start must hand acquisition_preparing to this thread, so
+        # no run can start between the check and the cleanup.
         if not self._confirm_end_fluidics_run("restart"):
+            return
+        if self._acquisition_run_active:
+            QMessageBox.warning(
+                self,
+                "Acquisition running",
+                "An acquisition is running. Abort it or wait for it to finish, then restart.",
+            )
             return
 
         self.log.info("Restarting application with --skip-init...")

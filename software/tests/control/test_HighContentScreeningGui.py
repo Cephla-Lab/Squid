@@ -245,6 +245,48 @@ def test_a_run_on_the_gui_thread_locks_live_and_snap_without_waiting(qtbot, conf
         win.liveController.stop_live()
 
 
+def test_restart_is_refused_from_preparing_until_the_run_finishes(qtbot, monkeypatch, confirm_exit_yes):
+    """Every "Restart now" (Preferences, Objectives editor) goes through restart_application: it must not tear the
+    hardware down under a run. A TCP run prepares the hardware on the server's thread (MCU waits, focus maps) before
+    its worker exists, so acquisition_in_progress() is still False then: restart stays refused from preparing until
+    the run reports finished, and works again afterwards."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    calls = []
+    monkeypatch.setattr(win, "_cleanup_for_restart", lambda: calls.append("cleanup"))
+    monkeypatch.setattr(control.gui_hcs.subprocess, "Popen", lambda *a, **k: calls.append("spawn"))
+    monkeypatch.setattr(control.gui_hcs.QApplication.instance(), "quit", lambda: calls.append("quit"))
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a, **k: calls.append(("warning", text)))
+
+    thread = threading.Thread(target=win.multipointController.callbacks.signal_acquisition_preparing)
+    thread.start()
+    qtbot.waitUntil(lambda: not thread.is_alive(), timeout=5000)
+    assert not win.multipointController.acquisition_in_progress()  # no worker yet
+
+    win.restart_application()
+    assert len(calls) == 1 and calls[0][0] == "warning", calls
+    assert "acquisition is running" in calls[0][1]
+
+    win.multipointController.acquisition_finished.emit()  # every run, failed starts included, ends with it
+    calls.clear()
+
+    # A run that starts while the fluidics question is open (that dialog spins the event loop) is still caught.
+    def a_run_starts_during_the_fluidics_question(action):
+        win.multipointController.acquisition_preparing.emit()
+        return True
+
+    monkeypatch.setattr(win, "_confirm_end_fluidics_run", a_run_starts_during_the_fluidics_question)
+    win.restart_application()
+    assert len(calls) == 1 and calls[0][0] == "warning", calls
+    win.multipointController.acquisition_finished.emit()
+    calls.clear()
+
+    monkeypatch.setattr(win, "_confirm_end_fluidics_run", lambda action: True)
+    win.restart_application()
+    assert calls == ["cleanup", "spawn", "quit"]
+
+
 def test_image_display_signals_connected_once(qtbot, monkeypatch, confirm_exit_yes):
     """Regression: make_connections and makeNapariConnections both used to wire the
     non-Napari image-display signals, causing slots to fire twice per click/scroll."""
