@@ -66,6 +66,7 @@ from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
 import control._def
 import control.lighting
+import control.theme as theme
 import control.utils
 import control.utils_acquisition
 import control.microscope
@@ -841,6 +842,7 @@ class HighContentScreeningGui(QMainWindow):
         config_action.setMenuRole(QAction.NoRole)
         config_action.triggered.connect(self.openPreferences)
         settings_menu.addAction(config_action)
+        self._build_appearance_menu(settings_menu)
 
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             led_matrix_action = QAction("LED Matrix", self)
@@ -2025,6 +2027,67 @@ class HighContentScreeningGui(QMainWindow):
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             dialog = widgets.LedMatrixSettingsDialog(self.liveController.led_array)
             dialog.exec_()
+
+    def _build_appearance_menu(self, settings_menu):
+        """Settings > Appearance: Light / Dark / Classic. Classic <-> skinned changes apply after a restart."""
+        self._pending_theme = None
+        self.appearance_actions = {}
+        appearance_menu = settings_menu.addMenu("Appearance")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for name in theme.THEMES:
+            action = QAction(name.capitalize(), self)
+            action.setMenuRole(QAction.NoRole)
+            action.setCheckable(True)
+            group.addAction(action)
+            appearance_menu.addAction(action)
+            action.triggered.connect(lambda _=False, c=name: self._on_theme_chosen(c))
+            self.appearance_actions[name] = action
+        self._appearance_group = group
+        self._refresh_appearance_labels()
+
+    def _refresh_appearance_labels(self):
+        active = theme.manager().current
+        pending = self._pending_theme if self._pending_theme not in (None, active) else None
+        for name, action in self.appearance_actions.items():
+            action.setText(name.capitalize() + (" (after restart)" if name == pending else ""))
+        self.appearance_actions[pending or active].setChecked(True)
+
+    def _on_theme_chosen(self, choice):
+        manager = theme.manager()
+        saved = theme.save_theme_choice(control._def.CACHED_CONFIG_FILE_PATH, choice)
+        if manager.needs_restart(choice):
+            if not saved:
+                self._pending_theme = None
+                self._refresh_appearance_labels()
+                QMessageBox.warning(
+                    self,
+                    "Appearance",
+                    "The theme could not be saved to the machine configuration file, so it cannot change at the next start.",
+                )
+                return
+            self._pending_theme = choice
+            self._refresh_appearance_labels()
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Restart Required")
+            msg.setText("The theme has been saved. This change requires a restart to take effect.")
+            msg.setInformativeText("Would you like to restart now?")
+            msg.setIcon(QMessageBox.Information)
+            restart_btn = msg.addButton("Restart Now", QMessageBox.AcceptRole)
+            msg.addButton("Later", QMessageBox.RejectRole)
+            msg.exec_()
+            if msg.clickedButton() == restart_btn:
+                self.restart_application()
+            return
+        manager.apply(choice)
+        self._pending_theme = None
+        self._refresh_appearance_labels()
+        if not saved:
+            QMessageBox.warning(
+                self,
+                "Appearance",
+                "The theme was applied for this session but could not be saved to the machine configuration file.",
+            )
 
     def openPreferences(self):
         if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
