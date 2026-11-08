@@ -1,4 +1,5 @@
 import threading
+import time
 import unittest.mock
 
 import pytest
@@ -193,17 +194,32 @@ def test_live_and_snap_are_locked_while_an_acquisition_runs(qtbot, confirm_exit_
     assert live_widget.btn_snap.isEnabled()
 
 
-def test_live_and_snap_lock_while_a_run_prepares_on_another_thread(qtbot, confirm_exit_yes):
-    """A TCP run prepares on the server's thread while the GUI still takes clicks: the lock must land when
-    preparation begins, not when the worker starts."""
+def test_a_run_on_another_thread_waits_for_live_and_snap_to_lock_before_preparing(qtbot, confirm_exit_yes, monkeypatch):
+    """A TCP run prepares on the server's thread while the GUI still takes clicks. Its preparing callback must not
+    return until the GUI thread has locked Live and Snap, or the run could stop live and use the camera first."""
     win = _gui_with_live_started_from_the_button(qtbot)
     live_widget = win.liveControlWidget
-    try:
-        server_thread = threading.Thread(target=win.multipointController.callbacks.signal_acquisition_preparing)
-        server_thread.start()
-        server_thread.join(5)
+    order = []
+    set_running = live_widget.set_acquisition_running
 
-        qtbot.waitUntil(lambda: not live_widget.btn_live.isEnabled(), timeout=2000)
+    def recording_set_running(running):
+        order.append(f"lock={running}")
+        set_running(running)
+
+    monkeypatch.setattr(live_widget, "set_acquisition_running", recording_set_running)
+
+    def server_thread():
+        win.multipointController.callbacks.signal_acquisition_preparing()
+        order.append("preparing returned")
+
+    try:
+        thread = threading.Thread(target=server_thread)
+        thread.start()
+        time.sleep(0.3)  # the GUI thread is busy: anything queued to it cannot run yet
+        qtbot.waitUntil(lambda: not thread.is_alive(), timeout=5000)
+
+        assert order == ["lock=True", "preparing returned"]
+        assert not live_widget.btn_live.isEnabled()
         assert not live_widget.btn_snap.isEnabled()
         assert live_widget.btn_live.isChecked()  # live is still on: the run has not stopped it yet
 
@@ -211,6 +227,20 @@ def test_live_and_snap_lock_while_a_run_prepares_on_another_thread(qtbot, confir
         win.multipointController.acquisition_finished.emit()  # every failed start sends it too
         assert live_widget.btn_live.isEnabled()
         assert live_widget.btn_snap.isEnabled()
+    finally:
+        win.liveController.stop_live()
+
+
+def test_a_run_on_the_gui_thread_locks_live_and_snap_without_waiting(qtbot, confirm_exit_yes):
+    """GUI-started and fluidics runs prepare on the GUI thread: the lock is direct there (a blocking call to the
+    thread's own event loop would never run)."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    live_widget = win.liveControlWidget
+    try:
+        win.multipointController.callbacks.signal_acquisition_preparing()
+
+        assert not live_widget.btn_live.isEnabled()
+        assert not live_widget.btn_snap.isEnabled()
     finally:
         win.liveController.stop_live()
 
