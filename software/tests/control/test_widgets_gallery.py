@@ -1317,3 +1317,42 @@ def test_initial_offer_is_silent_when_the_history_is_not_empty_or_the_folder_has
     assert not marker.exists()  # nothing was asked, so a later launch can still offer
     for w in (widget, missing, busy, none):
         w.shutdown()
+
+
+def test_showing_the_gallery_again_tests_the_folders_again(gallery, qtbot, store_with_entries):
+    """A drive plugged back in changes neither the history nor the previews, so a show must re-test the folders."""
+    folder = store_with_entries.folders["complete"]
+    assert _row(gallery, "complete").availability == "online"
+    gallery.hide()
+    shutil.rmtree(folder)
+    gallery.show()
+    qtbot.waitUntil(lambda: _row(gallery, "complete").availability == "folder_missing", timeout=10000)
+    gallery.hide()
+    folder.mkdir()
+    gallery.show()
+    qtbot.waitUntil(lambda: _row(gallery, "complete").availability == "online", timeout=10000)
+
+
+def test_a_protocol_run_is_searched_by_what_its_rounds_used(tmp_path):
+    """Channels, objective, sample and format live on the rounds, which are hidden under the parent."""
+    store = HistoryStore(tmp_path / "history")
+    run_dir = tmp_path / "run"
+    store.append({"type": "protocol_started", "id": "run", "name": "screen", "folder": str(run_dir), "at": T0})
+    store.append(
+        {
+            "type": "started",
+            "id": "round1",
+            "name": "round1",
+            "folder": str(run_dir / "round1"),
+            "parent": "run",
+            "metadata": _metadata(
+                ["Fluorescence 488 nm Ex"], objective="40x", image_format="OME-Zarr", sample="384 well plate"
+            ),
+            "at": T0 + 1,
+        }
+    )
+    [row] = build_rows(store.load())
+    assert row.entry.kind == "protocol_run"
+    for needle in ("screen", "round1", "488", "40x", "zarr", "384"):
+        assert matches(row, needle, "All"), needle
+    assert not matches(row, "561", "All")

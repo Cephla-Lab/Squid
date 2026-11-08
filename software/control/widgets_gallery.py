@@ -127,10 +127,16 @@ def image_format_of(entry: HistoryEntry) -> Optional[str]:
     return md.get("image_format") or image_format_for_saving_option(md.get("file_format"))
 
 
-def _search_text(entry: HistoryEntry) -> str:
+def _search_parts(entry: HistoryEntry) -> list:
     md = entry.metadata
     parts = [entry.name, md.get("wellplate_format"), *_channels(entry), md.get("objective"), image_format_of(entry)]
-    parts += _protocol_names(entry)
+    return parts + _protocol_names(entry)
+
+
+def _search_text(entry: HistoryEntry) -> str:
+    parts = _search_parts(entry)
+    for round_entry in entry.rounds:  # a protocol run's channels, objective, sample and format live on its rounds
+        parts += _search_parts(round_entry)
     return " ".join(str(p) for p in parts if p).lower()
 
 
@@ -1349,7 +1355,9 @@ class AcquisitionGalleryWidget(QWidget):
         super().showEvent(event)
         if not self._closed:
             self._timer.start()
-            self._reload_if_changed()
+            # A full reload, not only when the history changed: the folders are tested again on the worker, so a
+            # drive plugged back in (which changes neither the history nor the previews) comes back online.
+            self.reload()
         self.signal_shown.emit()
 
     def hideEvent(self, event):  # noqa: N802 (Qt naming)

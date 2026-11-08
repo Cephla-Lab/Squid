@@ -6,7 +6,7 @@ The Gallery tab is the view onto Squid's acquisition history: a per-machine reco
 
 Entries are listed newest first, as a grid of picture tiles or as a table (list view). The choice is remembered across sessions in `cache/last_gallery_view.yaml`.
 
-- **Toolbar**: a search box (matches name, sample, channel, objective and format), status chips (All, Running, Complete, Aborted, Failed, Offline, Snaps, each with a count), the grid/list switch, "Add folder to history" and Refresh.
+- **Toolbar**: a search box (matches name, sample, channel, objective and format; for a protocol run, those of its rounds too), status chips (All, Running, Complete, Aborted, Failed, Offline, Snaps, each with a count), the grid/list switch, "Add folder to history" and Refresh.
 - **Grid tiles**: the preview with a status badge in its top-left corner (Complete, Aborted at x%, Failed, Running with progress, Drive offline, Folder missing, Unknown; the badge colour tells the status apart at a glance) and, for snaps, a `Snap` tag in the top-right corner. Under it three lines: `name · date and time` (a protocol run adds its number of rounds), `objective · sample`, and the scan summary `channels · FOVs · Nz · Nt` (Nz and Nt only when more than one). Anything not known is left out. The tooltip repeats the status with the folder and the full summary.
 - **List rows**: the same badged thumbnail, then name, started, sample, objective, channels, FOVs, Nz / Nt, format and status columns. The list view can be sorted by any column.
 - **Details pane** for the selected entry: a large preview with one chip per channel (click to toggle that channel in the composite), the metadata, a "Details" expander with the raw text of the run's `acquisition.yaml`, and the action buttons.
