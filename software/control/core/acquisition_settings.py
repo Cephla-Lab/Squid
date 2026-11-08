@@ -15,6 +15,7 @@ import control.utils
 from control.acquisition_yaml_loader import (
     AcquisitionYAMLData,
     parse_laser_af_per_stack,
+    parse_laser_af_relative_range,
     parse_range,
     parse_z_stack_order,
 )
@@ -190,6 +191,7 @@ def apply_acquisition_settings(
     else:
         controller.z_range = None  # run_acquisition derives it from the current z and the stack
     controller.set_piezo_z_range_um(data.piezo_z_range_um)
+    controller.set_laser_af_relative_range_um(data.laser_af_relative_range_um)
     controller.set_focus_map(None)
     controller.set_region_laser_af_offsets({})
     controller.set_skip_saving(data.skip_saving)
@@ -237,6 +239,11 @@ def export_acquisition_settings(controller, scan_coordinates, objective_store, c
             "z_range_mm": [float(v) for v in controller.z_range] if controller.z_range else None,
             "piezo_z_range_um": (
                 [float(v) for v in controller.piezo_z_range_um] if controller.piezo_z_range_um else None
+            ),
+            "laser_af_relative_range_um": (
+                [float(v) for v in controller.laser_af_relative_range_um]
+                if controller.laser_af_relative_range_um
+                else None
             ),
         },
         "autofocus": {
@@ -305,5 +312,11 @@ def acquisition_data_from_blocks(settings: dict, coordinates: dict) -> Acquisiti
         wellplate_format=coordinates.get("wellplate_format"),
         z_range_mm=parse_range(z_stack.get("z_range_mm")),
         piezo_z_range_um=parse_range(z_stack.get("piezo_z_range_um")),
+        laser_af_relative_range_um=parse_laser_af_relative_range(
+            z_stack,
+            laser_af=bool(autofocus.get("laser_af", False)),
+            config=str(z_stack.get("config", "FROM CENTER")),
+            delta_z_um=float(z_stack.get("delta_z_um", 1.0)),
+        ),
         skip_saving=bool(settings.get("skip_saving", False)),
     )

@@ -246,3 +246,27 @@ def test_blocks_with_laser_af_per_stack_but_channel_first_are_rejected():
 
     with pytest.raises(ValueError, match="laser_af_per_stack"):
         acquisition_data_from_blocks(settings, coordinates)
+
+
+def test_relative_range_survives_export_and_apply():
+    scope, mpc = _controller_with_piezo()
+    mpc.set_selected_configurations(_channel_names(scope, mpc))
+    mpc.set_use_piezo(True)
+    mpc.set_reflection_af_flag(True)
+    mpc.set_deltaZ(0.002)
+    mpc.z_stacking_config = "FROM BOTTOM"
+    mpc.set_laser_af_relative_range_um((-5.0, 15.0))
+    mpc.set_widget_type("wellplate")
+    mpc.scanCoordinates.add_region_from_fovs("A1", _some_fovs(mpc))
+
+    settings, coordinates = export_acquisition_settings(mpc, mpc.scanCoordinates, scope.objective_store, scope.camera)
+    assert settings["z_stack"]["laser_af_relative_range_um"] == [-5.0, 15.0]
+
+    data = acquisition_data_from_blocks(settings, coordinates)
+    assert data.laser_af_relative_range_um == (-5.0, 15.0)
+
+    scope2, mpc2 = _controller_with_piezo()
+    apply_acquisition_settings(mpc2, mpc2.scanCoordinates, scope2, data)
+    assert mpc2.laser_af_relative_range_um == (-5.0, 15.0)
+    mpc2.set_laser_af_relative_range_um(None)
+    assert mpc2.effective_nz() == mpc2.NZ

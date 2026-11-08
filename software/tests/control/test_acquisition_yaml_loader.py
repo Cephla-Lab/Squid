@@ -754,3 +754,69 @@ class TestLaserAfPerStack:
         from control.acquisition_yaml_loader import parse_acquisition_dict
 
         assert parse_acquisition_dict({"z_stack": {"nz": 3}}).laser_af_per_stack is False
+
+
+class TestLaserAfRelativeRange:
+    def _dict(self, **z_stack):
+        z = {"nz": 3, "delta_z_mm": 0.002, "config": "FROM BOTTOM", "laser_af_relative_range_um": [-5, 15]}
+        z.update(z_stack)
+        return {"z_stack": z, "autofocus": {"laser_af": True}}
+
+    def test_relative_range_round_trips_and_requires_laser_af_and_from_bottom(self, tmp_path):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        assert parse_acquisition_dict(self._dict()).laser_af_relative_range_um == (-5.0, 15.0)
+
+        no_af = self._dict()
+        no_af["autofocus"] = {"laser_af": False}
+        with pytest.raises(ValueError, match="needs laser AF"):
+            parse_acquisition_dict(no_af)
+
+        with pytest.raises(ValueError, match="A relative Z-range runs from Z-min up"):
+            parse_acquisition_dict(self._dict(config="FROM TOP"))
+
+    def test_saved_yaml_reads_back_the_relative_range(self, tmp_path):
+        (tmp_path / "acquisition.yaml").write_text(
+            "z_stack:\n  delta_z_mm: 0.002\n  config: FROM BOTTOM\n  laser_af_relative_range_um: [-5, 15]\n"
+            "autofocus:\n  laser_af: true\n"
+        )
+        assert parse_acquisition_yaml(str(tmp_path)).laser_af_relative_range_um == (-5.0, 15.0)
+
+    def test_relative_and_absolute_range_together_are_refused(self):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        with pytest.raises(ValueError, match="both"):
+            parse_acquisition_dict(self._dict(piezo_z_range_um=[20, 26]))
+
+    @pytest.mark.parametrize("delta_z_um", [0.0, -1.0, float("nan"), float("inf")])
+    def test_relative_range_with_invalid_spacing_is_refused_at_load(self, delta_z_um):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        with pytest.raises(ValueError, match="positive"):
+            parse_acquisition_dict(self._dict(delta_z_mm=delta_z_um / 1000))
+
+    def test_absolute_piezo_range_with_laser_af_is_still_refused_at_load(self):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        data = self._dict(piezo_z_range_um=[20, 26])
+        del data["z_stack"]["laser_af_relative_range_um"]
+        with pytest.raises(ValueError, match="absolute piezo Z-range can't run with laser AF"):
+            parse_acquisition_dict(data)
+
+    def test_validate_hardware_refuses_a_relative_range_this_scope_cannot_run(self):
+        def data(use_piezo, rng=(-5.0, 15.0)):
+            return AcquisitionYAMLData(
+                widget_type="wellplate",
+                use_piezo=use_piezo,
+                laser_af=True,
+                delta_z_um=2.0,
+                z_stacking_config="FROM BOTTOM",
+                laser_af_relative_range_um=rng,
+            )
+
+        on_piezo_scope = lambda d: validate_hardware(d, "20x", (1, 1), piezo_travel_um=300.0)
+        assert on_piezo_scope(data(use_piezo=True)).is_valid is True
+        assert on_piezo_scope(data(use_piezo=False)).is_valid is False
+        too_long = on_piezo_scope(data(use_piezo=True, rng=(0.0, 400.0)))
+        assert too_long.is_valid is False and too_long.piezo_mismatch is True
+        assert validate_hardware(data(use_piezo=False), "20x", (1, 1), piezo_travel_um=None).is_valid is True

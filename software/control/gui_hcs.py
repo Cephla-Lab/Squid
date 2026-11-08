@@ -304,7 +304,7 @@ class QtMultiPointController(MultiPointController, QObject):
         # TODO mpc napari signals
         self._napari_inited_for_this_acquisition = False
         if not self.run_acquisition_current_fov:
-            self.signal_set_display_tabs.emit(self.selected_configurations, self.NZ, self.xy_mode)
+            self.signal_set_display_tabs.emit(self.selected_configurations, parameters.NZ, self.xy_mode)
         else:
             self.signal_set_display_tabs.emit(self.selected_configurations, 2, self.xy_mode)
         self.signal_acquisition_start.emit()
