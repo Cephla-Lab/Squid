@@ -135,3 +135,24 @@ def test_launch_without_a_command_raises_the_reason():
 
 def test_def_flags_default():
     assert control._def.NDVIEWER_LIGHT_COMMAND == "" and control._def.RECORD_SNAPS_IN_HISTORY is False
+
+
+def test_windows_command_lines_split_by_double_quotes_only(monkeypatch):
+    """CommandLineToArgvW rules: an apostrophe in a path is not a quote, and a quoted value keeps its content."""
+    from control.ndviewer_launcher import _split_preference
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _split_preference(r"C:\Users\O'Brien\ndviewer-light.exe --flag") == [
+        r"C:\Users\O'Brien\ndviewer-light.exe",
+        "--flag",
+    ]
+    assert _split_preference(r'viewer.exe --data="C:\a b"') == ["viewer.exe", r"--data=C:\a b"]
+    assert _split_preference(r'"C:\Program Files\x\v.exe" path') == [r"C:\Program Files\x\v.exe", "path"]
+    with pytest.raises(ValueError):
+        _split_preference('"unterminated')
+
+
+def test_an_unparsable_preference_is_ignored_with_a_warning(caplog):
+    res = _resolve('"unterminated')
+    assert res.source != "preference"
+    assert "Ignoring the ndviewer_light location" in caplog.text

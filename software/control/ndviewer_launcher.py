@@ -13,6 +13,7 @@ import sys
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
+import squid.logging
 from squid.acquisition_history import history_dir
 
 _SOFTWARE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -20,6 +21,8 @@ _DEFAULT_SUBMODULE_MAIN = os.path.join(_SOFTWARE_DIR, "control", "ndviewer_light
 
 NOT_INSTALLED_REASON = "ndviewer_light is not installed: pip install it, or set its location in Preferences > Views"
 LOG_FILE_NAME = "ndviewer_light.log"
+
+_log = squid.logging.get_logger(__name__)
 
 
 def default_log_path() -> str:
@@ -52,10 +55,21 @@ def _package_importable() -> bool:
         return False
 
 
+def _split_windows_command_line(text: str) -> List[str]:
+    """Split as Windows programs do (CommandLineToArgvW): only double quotes group words and a backslash is an
+    ordinary character, so a path with an apostrophe splits and a quoted value such as --data="C:\a b" keeps its
+    content without the quotes."""
+    lexer = shlex.shlex(text, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    lexer.quotes = '"'
+    lexer.escape = ""
+    return list(lexer)
+
+
 def _split_preference(preference: str) -> List[str]:
     if sys.platform == "win32":
-        tokens = shlex.split(preference, posix=False)
-        return [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
+        return _split_windows_command_line(preference)
     return shlex.split(preference)
 
 
@@ -72,7 +86,8 @@ def _resolve_preference(preference: str, python: str) -> Optional[LauncherResolu
         )
     try:
         tokens = _split_preference(preference)
-    except ValueError:
+    except ValueError as e:
+        _log.warning(f"Ignoring the ndviewer_light location {preference!r} from Preferences: {e}")
         return None
     if tokens and (os.path.isabs(tokens[0]) is False or os.path.isfile(tokens[0])):
         # A command line such as "uv run ndviewer-light": trust the user's text.
