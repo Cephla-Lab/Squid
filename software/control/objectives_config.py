@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import yaml
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from control.atomic_file import NotDurableError, write_atomically
 from control.objective_changer_constants import NIMOTION_TURRET_SLOTS, XERYON_SLOTS
@@ -77,6 +77,16 @@ class ObjectiveEntry(BaseModel):
     slot: Optional[int] = None
     model: str = ""
     serial: str = ""
+
+    @field_validator("model", "serial", mode="before")
+    @classmethod
+    def _number_as_text(cls, value):
+        # A hand edit can leave a serial number or model unquoted, which YAML reads as a number.
+        # (It has already dropped leading zeros by now: the file must quote those.) The editor
+        # always writes strings; a bool (YAML `yes`) is still refused as a string.
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+        return value
 
 
 class ObjectivesConfig(BaseModel):

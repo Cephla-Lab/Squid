@@ -136,6 +136,29 @@ class TestParse:
         loaded = oc.load_objectives_config(path)
         assert loaded.objectives[0].model == "20× water"
 
+    def test_unquoted_numeric_model_and_serial_load_as_strings(self, tmp_path):
+        """A hand edit can leave a serial number or model unquoted; YAML then hands pydantic an int,
+        which must not stop startup. (The YAML parser has already folded such a value by now, so
+        quoting is still what keeps leading zeros.)"""
+        path = tmp_path / "objectives.yaml"
+        path.write_text(
+            "version: 1\nchanger: {kind: nimotion_turret}\nobjectives:\n"
+            "  - {name: 20x, magnification: 20, na: 0.8, tube_lens_f_mm: 180, slot: 3, model: 20, serial: 12345}\n"
+        )
+        loaded = oc.load_objectives_config(path)
+        assert loaded.objectives[0].model == "20"
+        assert loaded.objectives[0].serial == "12345"
+
+    def test_only_numbers_are_accepted_as_model_and_serial_text(self):
+        data = _data()
+        data["objectives"][0]["serial"] = 1.5
+        assert _valid(data).objectives[0].serial == "1.5"
+        data["objectives"][0]["serial"] = True  # YAML `yes`: not a serial number
+        with pytest.raises(ObjectivesConfigError) as err:
+            oc.parse_objectives_config(data)
+        assert err.value.field == "objectives.0.serial"
+        assert "string" in err.value.reason
+
 
 class TestValidate:
     def test_at_least_one_objective(self):
