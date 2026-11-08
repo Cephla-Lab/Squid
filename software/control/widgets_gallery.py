@@ -7,7 +7,9 @@ It never opens a dataset itself: it emits the chosen acquisition folder, and the
 
 Loading the history and decoding previews run on worker threads; results reach the widget through Qt signals,
 tagged with a generation so a reload started later always wins. While the tab is visible a timer reloads it
-whenever the history file (or the previews folder) changed.
+whenever the history file (or the previews folder) changed. Every test of a data folder (online, acquisition.yaml
+present) is made while loading, on the worker; selecting a row or a progress tick never touches the data folders.
+Importing runs on its own worker so a long import never holds up a reload.
 """
 
 import enum
@@ -15,13 +17,13 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Tuple
 
 import yaml
-from qtpy.QtCore import QObject, QSize, Qt, QTimer, QUrl, Signal
-from qtpy.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPixmap
+from qtpy.QtCore import QObject, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from qtpy.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QIcon, QPainter, QPixmap
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -46,7 +48,7 @@ from qtpy.QtWidgets import (
 
 import control._def
 import squid.logging
-from control.gallery_import import ImportResult, import_folder, scan_acquisitions
+from control.gallery_import import ImportResult, import_folder, is_acquisition_folder
 from control.gallery_previews import array_to_pixmap, load_thumbnail_array, write_preview_png
 from control.widgets_gallery_details import (
     NO_SELECTION,
@@ -74,6 +76,9 @@ class GalleryRow:
     availability: str  # "online" | "drive_offline" | "folder_missing"
     status_label: str
     search_text: str
+    has_settings: bool = False  # the entry's folder holds an acquisition.yaml
+    # A protocol run's rounds: round id -> (availability, has_settings); empty for other entries.
+    round_states: Dict[str, Tuple[str, bool]] = field(default_factory=dict)
 
 
 def _percent(fraction: float) -> int:
@@ -122,17 +127,29 @@ def _search_text(entry: HistoryEntry) -> str:
     return " ".join(str(p) for p in parts if p).lower()
 
 
+def _folder_state(entry: HistoryEntry) -> Tuple[str, bool]:
+    """(availability, has_settings) of the entry's folder: path tests, made on the loading worker only."""
+    availability = folder_availability(entry.folder)
+    has_settings = (
+        availability == "online" and bool(entry.folder) and os.path.isfile(os.path.join(entry.folder, YAML_FILE))
+    )
+    return availability, has_settings
+
+
 def build_rows(entries: List[HistoryEntry], running_fraction: Optional[float] = None) -> List[GalleryRow]:
-    """One row per top-level history entry, in the given order (the store's newest first)."""
+    """One row per top-level history entry, in the given order (the store's newest first). Tests the folders (of a
+    protocol run's rounds too), so it runs on a worker thread."""
     rows = []
     for entry in entries:
-        availability = folder_availability(entry.folder)
+        availability, has_settings = _folder_state(entry)
         rows.append(
             GalleryRow(
                 entry=entry,
                 availability=availability,
                 status_label=status_label_for(entry, availability, running_fraction),
                 search_text=_search_text(entry),
+                has_settings=has_settings,
+                round_states={r.id: _folder_state(r) for r in entry.rounds} if entry.kind == "protocol_run" else {},
             )
         )
     return rows
@@ -199,6 +216,30 @@ def summary_lines(entry: HistoryEntry) -> List[str]:
     return lines
 
 
+def _plural(n, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def tile_text(entry: HistoryEntry) -> str:
+    """A grid tile's caption: `name · date`, then `objective · sample`, then `channels · FOVs · Nz / Nt`; a line or
+    a part that is not known is left out (Nz and Nt only when more than one)."""
+    md = entry.metadata
+    name = f"{entry.name} · {_plural(len(entry.rounds), 'round')}" if entry.kind == "protocol_run" else entry.name
+    first = f"{name} · {datetime.fromtimestamp(entry.started_at):%Y-%m-%d %H:%M}" if entry.started_at else name
+    second = " · ".join(str(md[k]) for k in ("objective", "wellplate_format") if md.get(k))
+    scan = []
+    channels = _channels(entry)
+    if channels:
+        scan.append(_plural(len(channels), "channel"))
+    if isinstance(md.get("num_fovs"), int) and not isinstance(md.get("num_fovs"), bool):
+        scan.append(_plural(md["num_fovs"], "FOV"))
+    for key, word in (("nz", "Nz"), ("nt", "Nt")):
+        n = md.get(key)
+        if isinstance(n, int) and not isinstance(n, bool) and n > 1:
+            scan.append(f"{word} {n}")
+    return "\n".join(line for line in (first, second, " · ".join(scan)) if line)
+
+
 # ---------------------------------------------------------------------------------------------------------
 # Remembered view (the widgets_mosaic cache/ pattern)
 # ---------------------------------------------------------------------------------------------------------
@@ -252,6 +293,60 @@ def square_tile(pixmap: QPixmap, size: int) -> QPixmap:
     return tile
 
 
+SNAP_BADGE_COLOUR = QColor(128, 90, 170)
+
+
+def status_badge_colour(status_label: str) -> QColor:
+    """The badge background for a status label (the colour carries the status where the text is too small)."""
+    label = status_label[len("Snap · ") :] if status_label.startswith("Snap · ") else status_label
+    if label.startswith("Running"):
+        return QColor(40, 110, 200)
+    if label.startswith("Complete"):
+        return QColor(45, 140, 70)
+    if label.startswith("Aborted"):
+        return QColor(205, 135, 30)
+    if label.startswith("Failed"):
+        return QColor(190, 50, 50)
+    if label in _AVAILABILITY_LABELS.values():
+        return QColor(110, 110, 110)
+    return QColor(80, 80, 80)
+
+
+def paint_status_badge(tile: QPixmap, status_label: str, *, snap: bool) -> QPixmap:
+    """A copy of the tile with the status badge in the top-left corner (a filled rounded rectangle, coloured by
+    status, with the status text) and, for a snap, a `Snap` tag in the top-right corner."""
+    out = QPixmap(tile)
+    label = status_label[len("Snap · ") :] if status_label.startswith("Snap · ") else status_label
+    painter = QPainter(out)
+    try:
+        painter.setRenderHint(QPainter.Antialiasing)
+        font = QFont()
+        font.setPointSize(8)
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+        height = metrics.height() + 4
+        margin = 4
+
+        def badge(x: float, text: str, colour: QColor) -> None:
+            width = max(metrics.horizontalAdvance(text) + 10, 20)
+            if x < 0:
+                x = out.width() - margin - width
+            rect = QRectF(x, margin, width, height)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(colour)
+            painter.drawRoundedRect(rect, 4, 4)
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawText(rect, Qt.AlignCenter, text)
+
+        badge(margin, label, status_badge_colour(label))
+        if snap:
+            badge(-1, "Snap", SNAP_BADGE_COLOUR)
+    finally:
+        painter.end()
+    return out
+
+
 def make_placeholder_pixmap(text: str, size: int) -> QPixmap:
     """A neutral tile carrying a short text, for entries without a loadable image."""
     pixmap = QPixmap(size, size)
@@ -289,18 +384,7 @@ def import_status_text(folder: str, result: ImportResult) -> str:
     return text
 
 
-def _folder_bytes(folder: str) -> Optional[int]:
-    total = 0
-    try:
-        for dirpath, _dirs, files in os.walk(folder):
-            for name in files:
-                try:
-                    total += os.path.getsize(os.path.join(dirpath, name))
-                except OSError:
-                    pass
-    except OSError:
-        return None
-    return total
+IMPORT_WAIT_REASON = "Wait for the running acquisition to finish"
 
 
 class _GalleryEvents(QObject):
@@ -309,6 +393,7 @@ class _GalleryEvents(QObject):
     loaded = Signal(int, object)  # generation, (history stamp, List[GalleryRow])
     thumbnail_ready = Signal(int, str, object)  # generation, entry id, (preview path, mtime, Optional[np.ndarray])
     imported = Signal(int, str, object)  # import number, folder, ImportResult or an error message (str)
+    offer_checked = Signal(str, bool)  # the saving folder, whether it holds acquisitions
 
 
 class _SortItem(QTableWidgetItem):
@@ -377,12 +462,19 @@ class AcquisitionGalleryWidget(QWidget):
         self._action_states: Dict[str, ActionState] = NO_SELECTION
         self._preview_placeholders: Dict[str, QPixmap] = {}
         self._status_after_load: Optional[str] = None  # an action's message, kept over the reload's own
+        # (base pixmap cacheKey, status label, snap) -> the tile with its status badge, shared by grid and table
+        self._badged: Dict[Tuple[int, str, bool], QPixmap] = {}
+        self._acquiring = False
+        self._deferred_import: Optional[str] = None  # the first-launch import accepted during an acquisition
+        self._offer_pending = False  # the first-launch offer's folder check is running
 
         self._events = _GalleryEvents()
         self._events.loaded.connect(self._on_loaded)
         self._events.thumbnail_ready.connect(self._on_thumbnail_ready)
         self._events.imported.connect(self._on_imported)
+        self._events.offer_checked.connect(self._on_offer_checked)
         self._scan_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gallery-scan")
+        self._import_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gallery-import")
         self._thumbnail_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gallery-thumb")
 
         self._placeholder_loading = make_placeholder_pixmap("Loading…", self.THUMBNAIL_SIZE)
@@ -428,7 +520,7 @@ class AcquisitionGalleryWidget(QWidget):
         self.list_widget = QListWidget()
         self.list_widget.setViewMode(QListWidget.IconMode)
         self.list_widget.setIconSize(QSize(self.THUMBNAIL_SIZE, self.THUMBNAIL_SIZE))
-        self.list_widget.setGridSize(QSize(self.THUMBNAIL_SIZE + 24, self.THUMBNAIL_SIZE + 52))
+        self.list_widget.setGridSize(QSize(self.THUMBNAIL_SIZE + 24, self.THUMBNAIL_SIZE + 68))
         self.list_widget.setResizeMode(QListWidget.Adjust)
         self.list_widget.setMovement(QListWidget.Static)
         self.list_widget.setUniformItemSizes(True)
@@ -476,6 +568,7 @@ class AcquisitionGalleryWidget(QWidget):
         splitter.setCollapsible(0, False)
 
         self.status_label = QLabel("")
+        self.status_label.setTextFormat(Qt.PlainText)
         self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         layout = QVBoxLayout(self)
@@ -562,6 +655,19 @@ class AcquisitionGalleryWidget(QWidget):
         self._window = (bool(available), reason)
         self._show_details()
 
+    def set_acquiring(self, active: bool) -> None:
+        """While an acquisition runs nothing is imported (no preview work during a run): the import button is off
+        and an accepted first-launch import waits until it is over."""
+        self._acquiring = bool(active)
+        self._update_import_button()
+        if not self._acquiring and self._deferred_import is not None:
+            folder, self._deferred_import = self._deferred_import, None
+            self.import_path(folder)
+
+    def _update_import_button(self) -> None:
+        self.btn_import.setEnabled(not self._acquiring and self._importing == 0)
+        self.btn_import.setToolTip(IMPORT_WAIT_REASON if self._acquiring else "")
+
     def select_entry(self, entry_id: str) -> bool:
         if not any(row.entry.id == entry_id for row in self._shown):
             return False
@@ -583,14 +689,14 @@ class AcquisitionGalleryWidget(QWidget):
             self.import_path(folder)
 
     def import_path(self, folder: str) -> None:
-        """Add the acquisitions under folder (or folder itself) to the history, on the scan worker thread."""
+        """Add the acquisitions under folder (or folder itself) to the history, on the import worker thread."""
         if self._closed:
             return
         self._import_serial += 1
         self._importing += 1
-        self.btn_import.setEnabled(False)
+        self._update_import_button()
         self.status_label.setText(f"Adding acquisitions from {folder} …")
-        self._scan_executor.submit(self._import_in_background, self._import_serial, folder)
+        self._import_executor.submit(self._import_in_background, self._import_serial, folder)
 
     def _import_in_background(self, serial: int, folder: str) -> None:
         try:
@@ -606,7 +712,8 @@ class AcquisitionGalleryWidget(QWidget):
         self._emit(self._events.imported, serial, folder, result)
 
     def _make_preview(self, folder: str, entry_id: str) -> None:
-        """Write the entry's preview PNG and record it in the history (called by the importer for each addition)."""
+        """Write the entry's preview PNG and record it in the history (called by the importer for each addition).
+        The size on disk is left unknown: walking every file of every imported folder is not cheap."""
         channels = write_preview_png(folder, str(self._store.previews_dir / f"{entry_id}.png"))
         if channels:
             self._store.append(
@@ -615,7 +722,7 @@ class AcquisitionGalleryWidget(QWidget):
                     "id": entry_id,
                     "file": f"{entry_id}.png",
                     "channels": list(channels),
-                    "bytes_on_disk": _folder_bytes(folder),
+                    "bytes_on_disk": None,
                     "at": time.time(),
                 }
             )
@@ -624,8 +731,7 @@ class AcquisitionGalleryWidget(QWidget):
         if self._closed:
             return
         self._importing = max(0, self._importing - 1)
-        if self._importing == 0:
-            self.btn_import.setEnabled(True)
+        self._update_import_button()
         if isinstance(result, ImportResult):
             for error in result.errors:
                 self._log.warning(f"Importing {folder}: {error}")
@@ -637,17 +743,56 @@ class AcquisitionGalleryWidget(QWidget):
         self.reload()
 
     def offer_initial_import(self) -> None:
-        """At first launch, with an empty history and acquisitions in the saving folder, offer once to add them."""
+        """At first launch, with an empty history and acquisitions in the saving folder, offer once to add them.
+
+        The history and the marker (local files) are checked here; whether the saving folder (possibly on a slow
+        network drive) holds acquisitions is checked on the scan worker, and the question comes after."""
         marker = IMPORT_OFFER_MARKER
         try:
             if self._store.load() or os.path.exists(marker):
                 return
             root = self._import_root_provider()
-            if not root or not os.path.isdir(root) or not scan_acquisitions(root):
-                return
         except Exception:
             self._log.exception("Checking whether to offer the history import failed")
             return
+        if not root or self._closed:
+            return
+        self._offer_pending = True
+        try:
+            self._scan_executor.submit(self._check_offer_in_background, root)
+        except RuntimeError:  # shut down
+            self._offer_pending = False
+
+    @staticmethod
+    def _holds_acquisitions(root: str) -> bool:
+        """Whether root is an acquisition folder or has one directly under it; stops at the first one found."""
+        if not os.path.isdir(root):
+            return False
+        if is_acquisition_folder(root):
+            return True
+
+        def is_candidate(d) -> bool:
+            try:
+                return not d.name.startswith(".") and d.is_dir(follow_symlinks=False)
+            except OSError:
+                return False
+
+        with os.scandir(root) as it:
+            return any(is_acquisition_folder(d.path) for d in it if is_candidate(d))
+
+    def _check_offer_in_background(self, root: str) -> None:
+        try:
+            found = self._holds_acquisitions(root)
+        except Exception:
+            self._log.exception(f"Checking {root} for acquisitions to offer for import failed")
+            found = False
+        self._emit(self._events.offer_checked, root, found)
+
+    def _on_offer_checked(self, root: str, found: bool) -> None:
+        self._offer_pending = False
+        if self._closed or not found:
+            return
+        marker = IMPORT_OFFER_MARKER
         answer = QMessageBox.question(
             self,
             "Add existing acquisitions?",
@@ -660,7 +805,12 @@ class AcquisitionGalleryWidget(QWidget):
                 f.write(f"offered {datetime.now().isoformat()}\n")
         except OSError:
             self._log.exception(f"Could not write {marker}")
-        if answer == QMessageBox.Yes:
+        if answer != QMessageBox.Yes:
+            return
+        if self._acquiring:
+            self._deferred_import = root
+            self.status_label.setText(f"The acquisitions in {root} will be added once the acquisition finishes")
+        else:
             self.import_path(root)
 
     # ----- loading -----
@@ -757,11 +907,10 @@ class AcquisitionGalleryWidget(QWidget):
         self.list_widget.clear()
         self._items = {}
         for row in self._shown:
-            item = QListWidgetItem(self._tile_text(row.entry))
+            item = QListWidgetItem(tile_text(row.entry))
             item.setData(self._ROLE_ID, row.entry.id)
             item.setTextAlignment(Qt.AlignHCenter | Qt.AlignTop)
-            item.setSizeHint(QSize(self.THUMBNAIL_SIZE + 20, self.THUMBNAIL_SIZE + 48))
-            item.setIcon(QIcon(self._cached_or_placeholder(row.entry)))
+            item.setSizeHint(QSize(self.THUMBNAIL_SIZE + 20, self.THUMBNAIL_SIZE + 64))
             self.list_widget.addItem(item)
             self._items[row.entry.id] = item
             self._show_row_status(row)
@@ -778,8 +927,11 @@ class AcquisitionGalleryWidget(QWidget):
             entry, md = row.entry, row.entry.metadata
             started = f"{datetime.fromtimestamp(entry.started_at):%Y-%m-%d %H:%M}" if entry.started_at else ""
             nz_nt = " / ".join("" if md.get(k) is None else str(md[k]) for k in ("nz", "nt"))
+            name = (
+                f"{entry.name} · {_plural(len(entry.rounds), 'round')}" if entry.kind == "protocol_run" else entry.name
+            )
             cells = [
-                (self._tile_text(entry).split("\n")[0], None),
+                (name, None),
                 (started, n - r),  # sorts as the store's order: newest first when descending
                 (md.get("wellplate_format") or "", None),
                 (md.get("objective") or "", None),
@@ -796,7 +948,6 @@ class AcquisitionGalleryWidget(QWidget):
                 item.setData(self._ROLE_ID, entry.id)
                 table.setItem(r, c, item)
             name_item = table.item(r, 0)
-            name_item.setIcon(QIcon(self._cached_or_placeholder(entry)))
             self._table_name_items[entry.id] = name_item
             self._table_status_items[entry.id] = table.item(r, self._COL_STATUS)
             self._show_row_status(row)
@@ -805,21 +956,32 @@ class AcquisitionGalleryWidget(QWidget):
         table.setSortingEnabled(True)
 
     def _show_row_status(self, row: GalleryRow) -> None:
+        """The row's status in its tooltip, its table cell and its tile's badge (grid and table share the tile)."""
         tooltip = "\n".join([row.status_label, row.entry.folder, *summary_lines(row.entry)])
+        icon = QIcon(self._badged_tile(row, self._cached_or_placeholder(row.entry)))
         item = self._items.get(row.entry.id)
         if item is not None:
             item.setToolTip(tooltip)
+            item.setIcon(icon)
         status_item = self._table_status_items.get(row.entry.id)
         if status_item is not None:
             status_item.setText(row.status_label)
         name_item = self._table_name_items.get(row.entry.id)
         if name_item is not None:
             name_item.setToolTip(tooltip)
+            name_item.setIcon(icon)
 
-    @staticmethod
-    def _tile_text(entry: HistoryEntry) -> str:
-        name = f"{entry.name} · {len(entry.rounds)} rounds" if entry.kind == "protocol_run" else entry.name
-        return f"{name}\n{datetime.fromtimestamp(entry.started_at):%Y-%m-%d %H:%M}" if entry.started_at else name
+    _BADGE_CACHE_LIMIT = 2000
+
+    def _badged_tile(self, row: GalleryRow, base: QPixmap) -> QPixmap:
+        snap = row.entry.kind == "snap"
+        key = (base.cacheKey(), row.status_label, snap)
+        badged = self._badged.get(key)
+        if badged is None:
+            if len(self._badged) >= self._BADGE_CACHE_LIMIT:
+                self._badged.clear()
+            badged = self._badged[key] = paint_status_badge(base, row.status_label, snap=snap)
+        return badged
 
     # ----- selection -----
 
@@ -863,13 +1025,17 @@ class AcquisitionGalleryWidget(QWidget):
             return
         entry = row.entry
         target = open_target(entry)
-        target_availability = row.availability if target is entry else folder_availability(target.folder)
+        # Folder states come from the load (build_rows, on the worker): nothing here touches the data folders.
+        if target is entry:
+            target_availability, target_settings = row.availability, row.has_settings
+        else:
+            target_availability, target_settings = row.round_states.get(target.id, ("folder_missing", False))
         target_online = target_availability == "online"
         self._action_states = action_states(
             entry,
             row.availability,
             target_availability=target_availability,
-            has_settings=target_online and self._has_settings(target),
+            has_settings=target_online and target_settings,
             squid=self._squid,
             window=self._window,
         )
@@ -886,7 +1052,7 @@ class AcquisitionGalleryWidget(QWidget):
         if entry.kind == "protocol_run":
             rounds = []
             for r in entry.rounds:
-                availability = folder_availability(r.folder)
+                availability = row.round_states.get(r.id, ("folder_missing", False))[0]
                 states = action_states(r, availability, squid=self._squid, window=self._window)
                 label = status_label_for(r, availability, self._running_fraction if r.is_running else None)
                 rounds.append((r, label, states["open_in_squid"], states["open_in_window"]))
@@ -907,10 +1073,6 @@ class AcquisitionGalleryWidget(QWidget):
         return self._preview_placeholders[text]
 
     # ----- actions -----
-
-    @staticmethod
-    def _has_settings(entry: HistoryEntry) -> bool:
-        return bool(entry.folder) and os.path.isfile(os.path.join(entry.folder, YAML_FILE))
 
     def _allowed(self, action: str) -> Optional[HistoryEntry]:
         """The selected entry when the action is allowed on it; otherwise None, with the reason in the status line."""
@@ -1111,7 +1273,8 @@ class AcquisitionGalleryWidget(QWidget):
         self._set_thumbnail(entry.id, pixmap)
 
     def _set_thumbnail(self, entry_id: str, pixmap: QPixmap) -> None:
-        icon = QIcon(pixmap)
+        row = next((r for r in self._all_rows if r.entry.id == entry_id), None)
+        icon = QIcon(self._badged_tile(row, pixmap) if row is not None else pixmap)
         for item in (self._items.get(entry_id), self._table_name_items.get(entry_id)):
             if item is not None:
                 item.setIcon(icon)
@@ -1139,8 +1302,5 @@ class AcquisitionGalleryWidget(QWidget):
             self._closed = True
         self._timer.stop()
         self._scan_executor.shutdown(wait=False, cancel_futures=True)
+        self._import_executor.shutdown(wait=False, cancel_futures=True)
         self._thumbnail_executor.shutdown(wait=False, cancel_futures=True)
-
-
-def _escape(text: str) -> str:
-    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

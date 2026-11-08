@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import threading
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -17,6 +18,7 @@ import control._def
 import control.widgets_gallery
 from control.gallery_import import import_folder
 from control.widgets_gallery import (
+    SNAP_BADGE_COLOUR,
     STATUS_FILTERS,
     AcquisitionGalleryWidget,
     GalleryRow,
@@ -24,7 +26,9 @@ from control.widgets_gallery import (
     build_rows,
     filter_counts,
     matches,
+    status_badge_colour,
     status_label_for,
+    tile_text,
 )
 from control.widgets_gallery_details import format_size, format_value, metadata_rows
 from squid.acquisition_history import HistoryEntry, HistoryStore
@@ -237,7 +241,9 @@ def test_gallery_lists_the_history_newest_first(gallery):
     assert gallery.count_label.text() == "5"
     assert "5 acquisitions" in gallery.status_label.text()
     item = gallery.list_widget.item(4)
-    assert item.text() == f"complete\n{datetime.fromtimestamp(T0):%Y-%m-%d %H:%M}"
+    assert item.text() == (
+        f"complete · {datetime.fromtimestamp(T0):%Y-%m-%d %H:%M}\n20x · 96 well plate\n2 channels · 8 FOVs · Nz 3 · Nt 2"
+    )
     assert item.toolTip().startswith("Complete")
     assert "Channels (2): BF LED matrix full, Fluorescence 488 nm Ex" in item.toolTip()
     assert "Objective: 20x (20x)" in item.toolTip()
@@ -264,10 +270,103 @@ def test_a_protocol_run_tile_counts_its_rounds(qtbot, tmp_path, monkeypatch):
     try:
         widget.reload()
         qtbot.waitUntil(lambda: len(widget.rows()) == 1, timeout=10000)
-        assert widget.list_widget.item(0).text() == f"screen · 2 rounds\n{datetime.fromtimestamp(T0):%Y-%m-%d %H:%M}"
+        assert widget.list_widget.item(0).text() == f"screen · 2 rounds · {datetime.fromtimestamp(T0):%Y-%m-%d %H:%M}"
+        assert widget._table_name_items["run"].text() == "screen · 2 rounds"
         assert widget.rows()[0].status_label == "Running · round 2"
     finally:
         widget.shutdown()
+
+
+def test_tile_text_shows_what_is_known():
+    entry = HistoryEntry(id="a", kind="run", name="a", folder="x", started_at=T0, metadata=_metadata(["BF"]))
+    date = f"{datetime.fromtimestamp(T0):%Y-%m-%d %H:%M}"
+    assert tile_text(entry) == f"a · {date}\n20x · 96 well plate\n1 channel · 8 FOVs · Nz 3 · Nt 2"
+    entry.metadata = {"objective": "10x", "num_fovs": 1, "nz": 1, "nt": 5}
+    assert tile_text(entry) == f"a · {date}\n10x\n1 FOV · Nt 5"
+    assert tile_text(HistoryEntry(id="b", kind="run", name="b", folder="x")) == "b"
+
+
+def _icon_pixel(item, x, y, size=180):
+    return item.icon().pixmap(size, size).toImage().pixelColor(x, y)
+
+
+def test_tiles_carry_a_status_badge_coloured_by_status(gallery, qtbot):
+    qtbot.waitUntil(lambda: gallery._thumbnail_cache.get("complete") is not None, timeout=10000)
+    complete, aborted, snap = (gallery._items[i] for i in ("complete", "aborted", "snap"))
+    assert _icon_pixel(complete, 6, 9) == status_badge_colour("Complete")
+    assert _icon_pixel(aborted, 6, 9) == status_badge_colour("Aborted at 38%")
+    assert status_badge_colour("Complete") != status_badge_colour("Aborted at 38%")
+    assert complete.icon().pixmap(180, 180).cacheKey() != aborted.icon().pixmap(180, 180).cacheKey()
+    # The snap tag sits in the top-right corner; other tiles have none there.
+    assert _icon_pixel(snap, 173, 9) == SNAP_BADGE_COLOUR
+    assert _icon_pixel(complete, 173, 9) != SNAP_BADGE_COLOUR
+    # The table shows the same badged tile.
+    table_icon = gallery._table_name_items["aborted"].icon()
+    assert table_icon.pixmap(180, 180).toImage().pixelColor(6, 9) == status_badge_colour("Aborted")
+    # A progress tick repaints the running tile's badge.
+    gallery.set_running_progress(0.5)
+    assert _icon_pixel(gallery._items["running"], 6, 9) == status_badge_colour("Running 50%")
+
+
+def test_selection_and_progress_never_touch_the_data_folders(gallery, store_with_entries):
+    calls = []
+    main = threading.main_thread()
+
+    def spy(name, original):
+        def wrapper(*args, **kwargs):
+            if threading.current_thread() is main:
+                calls.append((name, args))
+            return original(*args, **kwargs)
+
+        return wrapper
+
+    with pytest.MonkeyPatch.context() as mp:
+        for name in ("exists", "isfile", "isdir"):
+            mp.setattr(os.path, name, spy(name, getattr(os.path, name)))
+        mp.setattr(control.widgets_gallery, "folder_availability", spy("availability", lambda f: "online"))
+        for entry_id in ("complete", "offline", "running", "aborted"):
+            gallery.select_entry(entry_id)
+            gallery.set_running_progress(0.25)
+    data = str(store_with_entries.folders["complete"].parent)
+    assert [c for c in calls if c[0] == "availability" or any(data in str(a) for a in c[1])] == []
+
+
+def test_a_reload_is_not_held_up_by_a_running_import(gallery, qtbot, saving_root, monkeypatch):
+    write_acquisition(saving_root, "slow", start_time=T0 + 10)
+    entered, release = threading.Event(), threading.Event()
+
+    def blocking_preview(folder, out_path):
+        entered.set()
+        release.wait(20)
+        return None
+
+    monkeypatch.setattr(control.widgets_gallery, "write_preview_png", blocking_preview)
+    try:
+        gallery.import_path(str(saving_root))
+        assert entered.wait(10)
+        gallery._store.append({"type": "started", "id": "new", "kind": "run", "name": "new", "folder": "x", "at": T0})
+        gallery.reload()
+        qtbot.waitUntil(lambda: "new" in _ids(gallery), timeout=5000)
+        assert not release.is_set()
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: "slow" in _ids_by_name(gallery) and gallery.btn_import.isEnabled(), timeout=10000)
+
+
+def test_the_import_button_waits_for_a_running_acquisition(gallery, qtbot, saving_root):
+    gallery.set_acquiring(True)
+    assert not gallery.btn_import.isEnabled()
+    assert gallery.btn_import.toolTip() == "Wait for the running acquisition to finish"
+    write_acquisition(saving_root, "imp", start_time=T0 + 10)
+    gallery.import_path(str(saving_root))  # an import already asked for still finishes, but leaves the button off
+    qtbot.waitUntil(lambda: "imp" in _ids_by_name(gallery), timeout=10000)
+    assert not gallery.btn_import.isEnabled()
+    gallery.set_acquiring(False)
+    assert gallery.btn_import.isEnabled() and gallery.btn_import.toolTip() == ""
+
+
+def test_the_status_line_is_plain_text(gallery):
+    assert gallery.status_label.textFormat() == Qt.PlainText
 
 
 def test_grid_and_list_show_the_same_rows_and_the_view_is_remembered(gallery, tmp_path, monkeypatch):
@@ -384,11 +483,14 @@ def test_a_missing_or_broken_preview_keeps_its_format_placeholder(gallery, qtbot
         entry = _row(gallery, id_).entry
         placeholder = gallery._format_placeholder(entry)
         assert gallery._thumbnail_cache[id_][2] is placeholder
-        # Pixmap identity: offscreen Qt draws no text, so every placeholder has the same pixels.
+        # Pixmap identity: offscreen Qt draws no text, so every placeholder has the same pixels. The tile is the
+        # placeholder with its status badge, shared by the grid and the table.
+        badged = gallery._badged_tile(_row(gallery, id_), placeholder).cacheKey()
+        loading = gallery._badged_tile(_row(gallery, id_), gallery._placeholder_loading).cacheKey()
         for item in (gallery._items[id_], gallery._table_name_items[id_]):
             tile = item.icon().pixmap(size, size).cacheKey()
-            assert tile == placeholder.cacheKey()
-            assert tile != gallery._placeholder_loading.cacheKey()
+            assert tile == badged
+            assert tile != loading
     _reload_and_wait(gallery, qtbot)
     assert submitted == []  # failures are remembered, not decoded again
 
@@ -607,6 +709,11 @@ def test_running_entry_only_shows_the_folder(gallery, qtbot, opened_urls, store_
     entries = dict(_menu_entries(gallery))
     assert entries["Open in Squid"] is False and entries["Open in window"] is False
     assert entries["Show folder"] is True
+    assert entries["Remove from history"] is False and entries["Locate…"] is False
+    n_events = len(gallery._store.events())
+    gallery.remove_selected()
+    assert len(gallery._store.events()) == n_events
+    assert "Wait for the acquisition to finish" in gallery.status_label.text()
 
 
 def test_offline_entry_allows_only_copy_locate_and_remove(gallery):
@@ -644,6 +751,8 @@ def test_load_settings_requires_an_online_yaml(gallery, qtbot, store_with_entrie
     (folder / "acquisition.yaml").write_text("acquisition:\n  experiment_id: complete\n", encoding="utf-8")
     gallery.select_entry("aborted")
     gallery.select_entry("complete")
+    assert not gallery.btn_load_settings.isEnabled()  # folder states are refreshed by a reload, not by selecting
+    _reload_and_wait(gallery, qtbot)
 
     assert gallery.btn_load_settings.isEnabled()
     qtbot.waitUntil(lambda: "experiment_id: complete" in gallery.raw_yaml_text.toPlainText(), timeout=10000)
@@ -892,6 +1001,8 @@ def test_import_button_adds_the_folders_and_previews(gallery, qtbot, saving_root
     previews = sorted(p.name for p in gallery._store.previews_dir.glob("*.png"))
     added = [row.entry.id for row in gallery.rows() if row.entry.name in ("imp_a", "imp_b")]
     assert all(f"{entry_id}.png" in previews for entry_id in added)
+    preview_events = [e for e in gallery._store.events() if e["type"] == "preview" and e["id"] in added]
+    assert len(preview_events) == 2 and all(e["bytes_on_disk"] is None for e in preview_events)  # no size walk
     assert gallery.status_label.text().startswith("Added 2 acquisitions from ")
     assert "(0 already in the history, 0 snaps skipped)" in gallery.status_label.text()
 
@@ -927,6 +1038,12 @@ def _new_gallery(qtbot, tmp_path, root, name="history"):
     return widget
 
 
+def _offer(widget, qtbot):
+    """Make the first-launch offer and wait for its folder check (on the scan worker) to come back."""
+    widget.offer_initial_import()
+    qtbot.waitUntil(lambda: not widget._offer_pending, timeout=10000)
+
+
 def test_initial_offer_asks_once_and_imports_on_yes(qtbot, tmp_path, saving_root, marker, monkeypatch):
     write_acquisition(saving_root, "first", start_time=T0 + 10)
     write_acquisition(saving_root, "second", start_time=T0 + 20)
@@ -938,16 +1055,24 @@ def test_initial_offer_asks_once_and_imports_on_yes(qtbot, tmp_path, saving_root
 
     monkeypatch.setattr(control.widgets_gallery.QMessageBox, "question", question)
     widget = _new_gallery(qtbot, tmp_path, saving_root)
+    checked_on = []
+    real_check = control.widgets_gallery.is_acquisition_folder
+    monkeypatch.setattr(
+        control.widgets_gallery,
+        "is_acquisition_folder",
+        lambda path: checked_on.append(threading.current_thread()) or real_check(path),
+    )
 
-    widget.offer_initial_import()
+    _offer(widget, qtbot)
 
+    assert checked_on and threading.main_thread() not in checked_on  # the saving folder is read off the GUI thread
     assert len(asked) == 1 and str(saving_root) in asked[0][1]
     assert marker.exists()
     qtbot.waitUntil(lambda: len(widget.rows()) == 2, timeout=10000)
     widget.shutdown()
 
     other = _new_gallery(qtbot, tmp_path, saving_root, name="history2")
-    other.offer_initial_import()
+    _offer(other, qtbot)
     assert len(asked) == 1  # the marker stops a second question
     assert other._store.load() == []
     other.shutdown()
@@ -960,10 +1085,29 @@ def test_initial_offer_writes_the_marker_on_no_and_imports_nothing(qtbot, tmp_pa
     )
     widget = _new_gallery(qtbot, tmp_path, saving_root)
 
-    widget.offer_initial_import()
+    _offer(widget, qtbot)
 
     assert marker.exists()
     assert widget._store.load() == []
+    widget.shutdown()
+
+
+def test_initial_offer_accepted_during_an_acquisition_imports_once_it_is_over(
+    qtbot, tmp_path, saving_root, marker, monkeypatch
+):
+    write_acquisition(saving_root, "first", start_time=T0 + 10)
+    monkeypatch.setattr(
+        control.widgets_gallery.QMessageBox, "question", lambda *a: control.widgets_gallery.QMessageBox.Yes
+    )
+    widget = _new_gallery(qtbot, tmp_path, saving_root)
+    widget.set_acquiring(True)
+
+    _offer(widget, qtbot)
+    qtbot.wait(300)
+
+    assert marker.exists() and widget._store.load() == []
+    widget.set_acquiring(False)
+    qtbot.waitUntil(lambda: len(widget.rows()) == 1, timeout=10000)
     widget.shutdown()
 
 
@@ -975,10 +1119,10 @@ def test_initial_offer_is_silent_when_the_history_is_not_empty_or_the_folder_has
 
     # an empty saving folder
     widget = _new_gallery(qtbot, tmp_path, saving_root)
-    widget.offer_initial_import()
+    _offer(widget, qtbot)
     # a folder that does not exist
     missing = _new_gallery(qtbot, tmp_path, tmp_path / "nowhere", name="h2")
-    missing.offer_initial_import()
+    _offer(missing, qtbot)
     # a history that already has entries
     write_acquisition(saving_root, "first", start_time=T0 + 10)
     busy = _new_gallery(qtbot, tmp_path, saving_root, name="h3")
@@ -986,11 +1130,11 @@ def test_initial_offer_is_silent_when_the_history_is_not_empty_or_the_folder_has
     busy._store.append(
         {"type": "imported", "id": "e", "kind": "run", "name": "e", "folder": str(saving_root / "first"), "at": T0}
     )
-    busy.offer_initial_import()
+    _offer(busy, qtbot)
     # no provider answer
     none = AcquisitionGalleryWidget(HistoryStore(tmp_path / "h4"), import_root_provider=lambda: None)
     qtbot.addWidget(none)
-    none.offer_initial_import()
+    _offer(none, qtbot)
 
     question.assert_not_called()
     assert not marker.exists()  # nothing was asked, so a later launch can still offer

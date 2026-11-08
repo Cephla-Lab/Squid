@@ -243,7 +243,7 @@ def action_states(
         "load_settings": settings,
         "copy_path": ActionState(bool(entry.folder), "" if entry.folder else "No folder recorded"),
         "locate": ActionState(not running, RUNNING_REASON if running else ""),
-        "remove": ActionState(True),
+        "remove": ActionState(not running, RUNNING_REASON if running else ""),
     }
 
 
