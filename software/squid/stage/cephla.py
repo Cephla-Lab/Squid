@@ -4,6 +4,7 @@ from typing import Optional, Callable
 import control.microcontroller
 import control._def as _def
 import control.utils as utils
+from control.startup_homing import require_objective_lowered
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig, AxisConfig
 
@@ -160,7 +161,16 @@ class CephlaStage(AbstractStage):
     def get_state(self) -> StageStage:
         return StageStage(busy=self._microcontroller.is_busy())
 
-    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+    def reports_stopped(self) -> bool:
+        # Not get_state().busy: that is the host's flag, which abort_current_command() clears without stopping anything.
+        try:
+            return self._microcontroller.reported_idle_since_last_command()
+        except Exception:
+            return False
+
+    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True, objective_lowered: bool = False):
+        if x or y:
+            require_objective_lowered(objective_lowered, "Home XY")
         # NOTE(imo): Arbitrarily use max speed / 5 for homing speed.  It'd be better to have it exactly!
         x_timeout = self._calc_move_timeout(
             self.get_config().X_AXIS.MAX_POSITION - self.get_config().X_AXIS.MIN_POSITION,
@@ -184,11 +194,13 @@ class CephlaStage(AbstractStage):
         )
 
         if x and y:
-            self._microcontroller.home_xy(homing_direction_x=x_dir, homing_direction_y=y_dir)
+            self._microcontroller.home_xy(
+                homing_direction_x=x_dir, homing_direction_y=y_dir, objective_lowered=objective_lowered
+            )
         elif x:
-            self._microcontroller.home_x(homing_direction=x_dir)
+            self._microcontroller.home_x(homing_direction=x_dir, objective_lowered=objective_lowered)
         elif y:
-            self._microcontroller.home_y(homing_direction=y_dir)
+            self._microcontroller.home_y(homing_direction=y_dir, objective_lowered=objective_lowered)
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(max(x_timeout, y_timeout))
 
