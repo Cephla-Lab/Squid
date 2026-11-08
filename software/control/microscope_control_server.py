@@ -757,6 +757,10 @@ class MicroscopeControlServer:
             self.multipoint_controller.set_NX(1)  # Already handled by flexible regions
             self.multipoint_controller.set_NY(1)
             self.multipoint_controller.set_NZ(1)  # No Z-stack for now
+            # A Set Range left on the shared controller by a GUI run would override NZ: a relative range derives
+            # its own Nz (and needs laser AF), a piezo range sets the plane. Clear both, as the snap paths do.
+            self.multipoint_controller.set_piezo_z_range_um(None)
+            self.multipoint_controller.set_laser_af_relative_range_um(None)
             self.multipoint_controller.set_Nt(1)  # Single timepoint
 
             # Set the selected channels

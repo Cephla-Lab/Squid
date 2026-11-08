@@ -434,3 +434,73 @@ class TestHelperMethods:
         mpc.set_selected_configurations.assert_called_with(["Channel1"])
         mock_server.scan_coordinates.clear_regions.assert_called_once()
         assert mock_server.scan_coordinates.add_region.called
+
+
+class TestRunAcquisitionClearsStickyZRanges:
+    """run_acquisition takes one plane per FOV. A Set Range a GUI run left on the shared controller (absolute piezo or
+    laser-AF-relative) must not turn it into a z-stack, nor get it refused for laser AF being off."""
+
+    CHANNEL = "BF LED matrix full"
+
+    @pytest.fixture
+    def mock_server(self):
+        server = create_mock_server(channels=[self.CHANNEL])
+        server._parse_wells = lambda wells, wellplate_format: {"B6": (56.31, 19.75)}
+        server.microscope.live_controller.get_channels.return_value = [create_mock_channel(self.CHANNEL)]
+        return server
+
+    def test_clears_both_z_ranges_before_starting(self, mock_server, tmp_path):
+        mock_server._cmd_run_acquisition(wells="B6", channels=[self.CHANNEL], nx=1, ny=1, base_path=str(tmp_path))
+
+        mpc = mock_server.multipoint_controller
+        mpc.set_piezo_z_range_um.assert_called_once_with(None)
+        mpc.set_laser_af_relative_range_um.assert_called_once_with(None)
+        names = [c[0] for c in mpc.mock_calls]
+        assert names.index("set_piezo_z_range_um") < names.index("run_acquisition")
+        assert names.index("set_laser_af_relative_range_um") < names.index("run_acquisition")
+
+    def test_a_relative_range_left_by_a_gui_run_does_not_make_a_stack(self, tmp_path):
+        import control._def
+        import control.microscope
+        import tests.control.test_stubs as ts
+        from control.piezo import PiezoStage
+
+        control._def.MERGE_CHANNELS = False
+        scope = control.microscope.Microscope.build_from_global_config(True)
+        mpc = ts.get_test_multi_point_controller(microscope=scope)
+        mpc.piezo = PiezoStage(MagicMock(), {"OBJECTIVE_PIEZO_RANGE_UM": 300})
+        # What a GUI relative run leaves behind: a 20 µm range at dz 2 µm (11 planes), laser AF on.
+        mpc.set_deltaZ(2.0)
+        mpc.set_reflection_af_flag(True)
+        mpc.set_laser_af_relative_range_um((-10.0, 10.0))
+        assert mpc.effective_nz() == 11
+
+        server = create_mock_server()
+        server.microscope = scope
+        server.multipoint_controller = mpc
+        server.scan_coordinates = mpc.scanCoordinates
+        limits = scope.stage.get_config()
+        center = (limits.X_AXIS.MIN_POSITION + 5.0, limits.Y_AXIS.MIN_POSITION + 5.0)
+        server._parse_wells = lambda wells, wellplate_format: {"A1": center}
+        channel = scope.live_controller.get_channels(scope.objective_store.current_objective)[0].name
+        at_start = []
+        mpc.run_acquisition = lambda *a, **k: (
+            at_start.append((mpc.effective_nz(), mpc.piezo_z_range_um, mpc.laser_af_relative_range_um)) or True
+        )
+
+        server._cmd_run_acquisition(wells="A1", channels=[channel], nx=1, ny=1, base_path=str(tmp_path))
+
+        assert at_start == [(1, None, None)]
+
+    def test_run_from_yaml_without_a_range_clears_a_stale_relative_range(self, tmp_path):
+        server = create_mock_server()
+        yaml_path = tmp_path / "acquisition.yaml"
+        yaml_path.write_text(SAMPLE_WELLPLATE_YAML)  # no piezo or relative range
+
+        server._cmd_run_acquisition_from_yaml(yaml_path=str(yaml_path), base_path=str(tmp_path))
+
+        mpc = server.multipoint_controller
+        mpc.set_laser_af_relative_range_um.assert_called_once_with(None)
+        mpc.set_piezo_z_range_um.assert_called_once_with(None)
+        names = [c[0] for c in mpc.mock_calls]
+        assert names.index("set_laser_af_relative_range_um") < names.index("run_acquisition")
