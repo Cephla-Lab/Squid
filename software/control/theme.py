@@ -630,8 +630,12 @@ def save_theme_choice(ini_path: Optional[str], choice: str) -> bool:
     """Write ``ui_theme = choice`` into ``[GENERAL]`` of ``ini_path``; False if it cannot be written."""
     if not ini_path:
         return False
+    import io
+    import os
+    import tempfile
     from configparser import ConfigParser, Error as ConfigParserError
 
+    tmp_name = None
     try:
         if not Path(ini_path).is_file():
             return False
@@ -640,8 +644,20 @@ def save_theme_choice(ini_path: Optional[str], choice: str) -> bool:
         if not config.has_section("GENERAL"):
             config.add_section("GENERAL")
         config.set("GENERAL", "ui_theme", choice)
-        with open(ini_path, "w") as file:
-            config.write(file)
+        buffer = io.StringIO()
+        config.write(buffer)
+        # Write beside the ini, then swap it in: the ini is either untouched or fully replaced.
+        fd, tmp_name = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(ini_path)), suffix=".tmp")
+        with os.fdopen(fd, "w") as file:
+            file.write(buffer.getvalue())
+        os.replace(tmp_name, ini_path)
+        tmp_name = None
         return True
     except (OSError, ConfigParserError):
         return False
+    finally:
+        if tmp_name is not None:
+            try:
+                os.remove(tmp_name)
+            except OSError:
+                pass
