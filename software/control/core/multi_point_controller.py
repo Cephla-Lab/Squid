@@ -1256,9 +1256,10 @@ class MultiPointController:
                 )
                 return False
             if region_laser_af_offsets:
+                # The offsets come only from the GUI's focus map panel (every other path clears them).
                 self._log.error(
-                    "Per-region laser AF offsets and a relative Z-range don't combine: clear the offsets, or use "
-                    "per-region Z-ranges."
+                    "Per-region laser AF offsets and a relative Z-range don't combine: uncheck Laser AF Offset in "
+                    "the focus map panel, or clear the Z-range and use From Bottom."
                 )
                 return False
         if self.piezo_z_range_um is not None:
