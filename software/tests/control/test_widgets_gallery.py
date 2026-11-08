@@ -1370,11 +1370,14 @@ def test_showing_the_gallery_during_a_load_does_not_restart_it(gallery):
 
 
 def test_a_reload_of_the_same_rows_keeps_the_scroll_position(gallery, qtbot):
+    """Also with the first tile selected: restoring the selection scrolls it into view, which must not win."""
     gallery.resize(gallery.THUMBNAIL_SIZE + 60, 160)  # the five tiles overflow the grid
     QApplication.processEvents()
     gallery.list_widget.doItemsLayout()
     bar = gallery.list_widget.verticalScrollBar()
     assert bar.maximum() > 0
+    assert gallery.select_entry(_ids(gallery)[0])
     bar.setValue(bar.maximum())
     _reload_and_wait(gallery, qtbot)
     assert bar.value() == bar.maximum() > 0
+    assert gallery.list_widget.currentItem().data(gallery._ROLE_ID) == _ids(gallery)[0]

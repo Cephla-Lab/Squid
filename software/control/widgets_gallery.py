@@ -964,15 +964,16 @@ class AcquisitionGalleryWidget(QWidget):
             self._populate_table(reset_sort)
         finally:
             self._syncing_selection = False
-        if [row.entry.id for row in self._shown] == shown_before:
-            # A reload that lists the same entries (a show of the tab, a progress tick) keeps the scroll position.
-            for view, value in zip((self.list_widget, self.table_widget), scroll_before):
-                view.doItemsLayout()  # the icon grid lays itself out later otherwise, and would clamp the value to 0
-                view.verticalScrollBar().setValue(value)
         total, shown = len(self._all_rows), len(self._shown)
         self.count_label.setText(f"{shown} of {total}" if shown != total else f"{total}")
         selected = self._selected_id if self._shown_row(self._selected_id) is not None else None
         self._set_selected(selected)
+        if [row.entry.id for row in self._shown] == shown_before:
+            # A reload that lists the same entries (a show of the tab, a progress tick) keeps the scroll position.
+            # After the selection is restored: making an item current scrolls it into view.
+            for view, value in zip((self.list_widget, self.table_widget), scroll_before):
+                view.doItemsLayout()  # the icon grid lays itself out later otherwise, and would clamp the value to 0
+                view.verticalScrollBar().setValue(value)
 
     def _populate_grid(self) -> None:
         self.list_widget.clear()
