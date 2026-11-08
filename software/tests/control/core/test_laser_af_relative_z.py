@@ -8,6 +8,7 @@ import pytest
 from qtpy.QtCore import QObject
 
 from control.core.laser_auto_focus_controller import (
+    LOCK_ON_FAILED_MESSAGE,
     LaserAutofocusController,
     RelativeZError,
 )
@@ -235,8 +236,9 @@ def test_failed_measure_stores_nothing_and_leaves_the_actuator_at_z_now(ctrl, mo
     ctrl.stage.x_mm += 1.0
     ctrl.piezo.position = 140.0
     ctrl.fail_mode = mode
-    with pytest.raises(RelativeZError, match="Couldn't lock onto the laser AF reference here"):
+    with pytest.raises(RelativeZError) as e:
         ctrl.measure_relative_z_um()
+    assert str(e.value) == LOCK_ON_FAILED_MESSAGE
     assert ctrl.piezo.position == 140.0
     assert ctrl.last_lock_on is before
 
@@ -280,3 +282,56 @@ def test_stepper_scope_measures_and_moves_the_stage(ctrl_without_piezo):
     assert c.move_to_target_started_at[-1] == pytest.approx(1000.0)
     assert (m.anchor_reused, m.z_rel_um) == (False, pytest.approx(15.0))
     assert c.stage.z_mm == pytest.approx(1.02)
+
+
+def test_failed_pre_move_raises_relative_z_error_and_restores(ctrl):
+    ctrl.piezo.position = 100.0
+    ctrl.record_lock_on()
+    ctrl.stage.x_mm += 1.0
+    ctrl.piezo.position = 140.0
+    real_move_to = ctrl.piezo.move_to
+    calls = []
+
+    def flaky(um):
+        calls.append(um)
+        if len(calls) == 1:
+            raise OSError("piezo offline")
+        real_move_to(um)
+
+    ctrl.piezo.move_to = flaky
+    with pytest.raises(RelativeZError) as e:
+        ctrl.measure_relative_z_um()
+    assert str(e.value) == LOCK_ON_FAILED_MESSAGE
+    assert isinstance(e.value.__cause__, OSError)
+    assert ctrl.move_to_target_calls == []
+    assert ctrl.piezo.position == 140.0  # restore to z_now still attempted
+
+
+def test_failed_restore_does_not_mask_the_original_error(ctrl):
+    ctrl.record_lock_on()
+    ctrl.stage.x_mm += 1.0
+    ctrl.fail_mode = "false"
+    ctrl.piezo.move_to = MagicMock(side_effect=OSError("restore failed"))
+    with pytest.raises(RelativeZError) as e:
+        ctrl.measure_relative_z_um()
+    assert str(e.value) == LOCK_ON_FAILED_MESSAGE
+
+
+def _non_round_trip_pair():
+    for x in np.arange(10.0, 11.0, 0.0173):
+        for off in (8, 16, 24, 40):
+            if (float(x) + off) - off != float(x):
+                return float(x), off
+    raise AssertionError("no non-round-tripping pair found")
+
+
+def test_set_reference_then_identical_reload_keeps_the_record(ctrl):
+    x, off = _non_round_trip_pair()
+    ctrl.laser_af_properties = ctrl.laser_af_properties.model_copy(update={"x_offset": off, "spot_crop_size": 8})
+    ctrl.image = np.random.default_rng(1).random((32, 64)).astype(np.float32) + 1.0
+    ctrl._get_laser_spot_centroid = lambda *a, **k: (x, 16.0)
+    assert ctrl.set_reference() is True
+    assert ctrl.valid_lock_on() is not None
+    saved = ctrl._config_repo.save_laser_af_config.call_args[0][2]
+    ctrl.initialize_manual(saved)
+    assert ctrl.valid_lock_on() is not None

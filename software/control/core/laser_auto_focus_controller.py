@@ -25,6 +25,11 @@ import squid.logging
 LOCK_ON_XY_TOL_MM = 0.001
 LOCK_ON_Z_TOL_MM = 0.0005
 
+LOCK_ON_FAILED_MESSAGE = (
+    "Couldn't lock onto the laser AF reference here: the spot was not found, was too far from the "
+    "reference, or did not match it. Move closer to the reference plane and try again."
+)
+
 
 @dataclass(frozen=True)
 class LockOnRecord:
@@ -463,7 +468,8 @@ class LaserAutofocusController(QObject):
         return (
             self._current_profile,
             objective,
-            props.x_reference,
+            # rounded: set_reference stores x, a reload computes (x + offset) - offset (not bit-equal)
+            round(props.x_reference, 6) if props.x_reference is not None else None,
             image_hash,
             props.pixel_to_um,
             props.calibration_timestamp,
@@ -526,24 +532,17 @@ class LaserAutofocusController(QObject):
         rec = self.valid_lock_on()
         if rec is not None and self._stage_unchanged_since(rec):
             return rec.anchor_um, True
-        if rec is not None:
-            self.move_actuator_to_um(rec.anchor_um)
         try:
+            if rec is not None:
+                self.move_actuator_to_um(rec.anchor_um)
             locked = self.move_to_target(0.0)
         except Exception as e:
             self._log.exception("Laser AF lock-on raised")
-            raise RelativeZError(self._lock_on_failed_message()) from e
+            raise RelativeZError(LOCK_ON_FAILED_MESSAGE) from e
         if not locked:
-            raise RelativeZError(self._lock_on_failed_message())
+            raise RelativeZError(LOCK_ON_FAILED_MESSAGE)
         self.record_lock_on()
         return self.actuator_position_um(), False
-
-    @staticmethod
-    def _lock_on_failed_message() -> str:
-        return (
-            "Couldn't lock onto the laser AF reference here (spot not found, displacement out of range, "
-            "or the spot does not match the reference). Move near the reference plane and try again."
-        )
 
     def measure_relative_z_um(self) -> RelativeZMeasurement:
         """Measure the actuator distance (um) from the laser AF reference plane at the current XY.
@@ -559,7 +558,11 @@ class LaserAutofocusController(QObject):
             anchor, reused = self.find_anchor_um()
         finally:
             if moved:
-                self.move_actuator_to_um(z_now)
+                try:
+                    self.move_actuator_to_um(z_now)
+                except Exception:
+                    # Never mask the original error with a failed restore.
+                    self._log.error("Failed to restore the actuator to its start position", exc_info=True)
         return RelativeZMeasurement(z_rel_um=z_now - anchor, anchor_reused=reused)
 
     def set_reference(self) -> bool:
