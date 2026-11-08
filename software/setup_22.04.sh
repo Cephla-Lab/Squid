@@ -70,13 +70,16 @@ python3 -m pip install --upgrade pip
 # builds) from the old apt line; pip then installs numpy 2 builds that shadow them (user site comes first).
 # colorama>=0.4.6: pyqtgraph >= 0.13 imports it; apt's 0.4.4 satisfies a bare `colorama` and is removed
 # again by the autoremove below, so the floor makes pip install its own copy.
-pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy>=2" tifffile "scipy>=1.13" "matplotlib>=3.9" "pyqtgraph>=0.13.4" "colorama>=0.4.6" pyreadline3
+# pandas/scikit-image/numcodecs/jax floors: an existing install keeps a version pip already finds
+# ("Requirement already satisfied"), and the releases before these were built against numpy 1
+# (pandas 2.2.1 even pins numpy<2) and fail to import under numpy 2 ("numpy.dtype size changed").
+pip3 install qtpy pyserial "pandas>=2.2.2" imageio crc==1.3.0 lxml "numpy>=2" tifffile "scipy>=1.13" "matplotlib>=3.9" "pyqtgraph>=0.13.4" "colorama>=0.4.6" "numcodecs>=0.13" "jax>=0.4.26" "jaxlib>=0.4.26" pyreadline3
 # opencv<5: OpenCV 5 (2026-07) is what pip picks with numpy 2; Squid is tested on the 4.x API.
-pip3 install "opencv-python-headless<5" "opencv-contrib-python-headless<5"
+pip3 install "opencv-python-headless>=4.10,<5" "opencv-contrib-python-headless>=4.10,<5"
 # mcp<2: mcp 2.0 dropped the decorator API that the MCP bridge (mcp_microscope_server.py) is written against
 # ndv>=0.5,<0.6 + pyconify: what control/ndviewer_light requires (pyconify through superqt[iconify]).
 # aicsimageio is gone: its only user was control/stitcher.py, which nothing imports.
-pip3 install napari==0.5.4 scikit-image dask_image ome_zarr basicpy pytest pytest-qt pytest-xvfb gitpython pydantic_xml pyvisa pyvisa-py pyusb hidapi filelock lxml_html_clean psutil "mcp<2" "ndv>=0.5,<0.6" pyconify
+pip3 install napari==0.5.4 "scikit-image>=0.24" dask_image ome_zarr basicpy pytest pytest-qt pytest-xvfb gitpython pydantic_xml pyvisa pyvisa-py pyusb hidapi filelock lxml_html_clean psutil "mcp<2" "ndv>=0.5,<0.6" pyconify
 
 # Optional: PI V-308 / C-414 focus stage (USE_PI_FOCUS_STAGE). Safe to skip if unused;
 # squid.stage.pi imports it lazily and only needs it to connect to real hardware, so
