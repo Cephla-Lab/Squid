@@ -8603,7 +8603,8 @@ class WellplateMultiPointWidget(
         self.btn_setSavingDir = QPushButton("Browse")
         self.btn_setSavingDir.setDefault(False)
         self.btn_setSavingDir.setIcon(QIcon("icon/folder.png"))
-        self.btn_setSavingDir.setFixedWidth(btn_width)
+        # Never narrower than its own icon and text (a styled button can need more than the spin box beside it).
+        self.btn_setSavingDir.setFixedWidth(max(btn_width, self.btn_setSavingDir.sizeHint().width()))
 
         self.lineEdit_savingDir = QLineEdit()
         last_path = get_last_used_saving_path()

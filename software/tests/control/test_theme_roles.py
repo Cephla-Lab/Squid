@@ -135,8 +135,20 @@ def test_button_state_rules_exist():
         'QPushButton[role="primary"]:hover',
         'QPushButton[role="primary"]:pressed',
         'QPushButton[role="action"][on="true"]:disabled',
+        'QPushButton[role="primary"]:checked',
     ):
         assert rule in qss
+
+
+def test_set_role_switches_off_a_state_left_out_of_a_later_call(qapp):
+    m = theme.install(qapp, "light")
+    try:
+        b = QPushButton()
+        theme.set_role(b, "action", on=True)
+        theme.set_role(b, "action")
+        assert b.property("on") is False
+    finally:
+        m.apply("classic")
 
 
 def test_every_classic_role_has_a_light_rule():

@@ -156,7 +156,7 @@ LIGHT = Tokens(
     error_icon_bg="#dc2626",
     warn_bg="#fefce8",
     warn_fg="#8a5a00",
-    warn_icon_bg="#eab308",
+    warn_icon_bg="#ca8a04",
     warn_dot="#ca8a04",
     control_height=26,
     control_radius=4,
@@ -231,7 +231,8 @@ DARK = Tokens(
     checkbox_size=14,
 )
 
-# Classic never gets a stylesheet; only the row tokens and input_bg are read, and they are today's literals.
+# Classic never gets a stylesheet; only the row tokens, input_bg and the status-widget tokens are read, and they
+# are today's literals. Each one is spelled out so a change to LIGHT cannot reach Classic.
 CLASSIC = replace(
     LIGHT,
     input_bg="#ffffff",
@@ -249,6 +250,7 @@ CLASSIC = replace(
     icon_button_hover_fg="#000",
     popup_bg="white",
     popup_border="#aaa",
+    popup_header_bg="#f5f5f5",
     popup_header_border="#ddd",
     popup_row_border="#eee",
     popup_time_fg="#666",
@@ -259,17 +261,23 @@ CLASSIC = replace(
     dismiss_fg="#666",
     dismiss_hover_bg="#ccc",
     dismiss_hover_fg="#333",
+    error_bg="#fef2f2",
+    error_fg="#b91c1c",
+    error_icon_bg="#dc2626",
+    warn_bg="#fefce8",
     warn_fg="#a16207",
+    warn_icon_bg="#eab308",
+    warn_dot="#ca8a04",
 )
 
-# Lengths the stylesheet uses beyond the geometry tokens, logical px at 96 dpi. Input and button paddings are
-# tight on purpose: they keep size hints within a few px of Fusion's so the Controls dock does not widen.
-# control_height is not applied as a min-height for the same reason.
+# Lengths the stylesheet uses beyond the geometry tokens, logical px at 96 dpi. Input and button paddings keep
+# size hints close to Fusion's: wide enough that no text clips, tight enough that the Controls column stays
+# within 3 % of Classic's width. control_height is not applied as a min-height for the same reason.
 _LENGTHS = {
     "input_pad_y": 1,
-    "input_pad_x": 2,
+    "input_pad_x": 4,
     "button_pad_y": 2,
-    "button_pad_x": 3,
+    "button_pad_x": 8,
     "tab_pad_y": 2,
     "tab_pad_x": 10,
     "tab_gap": 2,
@@ -324,6 +332,9 @@ QTabBar::tab {{ background: {tab_tray}; color: {muted}; border: none; border-bot
 QTabBar::tab:hover:!selected {{ color: {text}; }}
 QTabBar::tab:selected {{ background: {tab_selected}; color: {text}; border-bottom-color: {shadow}; }}
 QTabBar::tab:disabled {{ color: {disabled_text}; }}
+QTabBar QToolButton {{ background: {button_bg}; color: {text}; border: {hair} solid {button_border}; border-radius: {control_radius}; }}
+QTabBar QToolButton:hover {{ background: {header}; }}
+QTabBar QToolButton:disabled {{ background: {ground}; border-color: {border}; }}
 
 /* Inputs: flat, 1 px border with a darker bottom edge, accent border on focus */
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{ background: {input_bg}; color: {text}; border: {hair} solid {input_border}; border-bottom-color: {input_border_bottom}; border-radius: {control_radius}; padding: {input_pad_y} {input_pad_x}; selection-background-color: {accent}; selection-color: {accent_text}; }}
@@ -331,8 +342,9 @@ QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{ border
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{ background: {ground}; color: {disabled_text}; border-bottom-color: {input_border}; }}
 QComboBox QAbstractItemView {{ background: {input_bg}; color: {text}; border: {hair} solid {border}; selection-background-color: {accent_soft}; selection-color: {text}; }}
 
-/* Item views */
-QListWidget, QTableWidget, QTreeWidget {{ background: {input_bg}; alternate-background-color: {surface}; color: {text}; border: {hair} solid {input_border}; border-radius: {control_radius}; gridline-color: {border}; selection-background-color: {accent_soft}; selection-color: {text}; }}
+/* Item views; a selected cell or row is the solid accent, as Classic's Fusion highlight */
+QListWidget, QTableWidget, QTreeWidget {{ background: {input_bg}; alternate-background-color: {surface}; color: {text}; border: {hair} solid {input_border}; border-radius: {control_radius}; gridline-color: {input_border}; }}
+QListView, QTableView, QTreeView {{ selection-background-color: {accent}; selection-color: {accent_text}; }}
 QHeaderView::section {{ background: {header}; color: {muted}; border: none; border-right: {hair} solid {border}; border-bottom: {hair} solid {border}; padding: {input_pad_y} {input_pad_x}; }}
 
 /* Scroll bars: thin, no arrow buttons */
@@ -368,6 +380,7 @@ QPushButton[role="primary"] {{ background: {accent}; color: {accent_text}; borde
 QPushButton[role="primary"]:disabled {{ background: {accent_soft}; color: {disabled_text}; border-color: {accent_soft}; }}
 QPushButton[role="primary"]:hover {{ background: {primary_hover}; border-color: {primary_hover}; }}
 QPushButton[role="primary"]:pressed {{ background: {primary_pressed}; border-color: {primary_pressed}; }}
+QPushButton[role="primary"]:checked {{ background: {primary_checked}; border-color: {text}; }}
 QPushButton[role="action"][on="true"] {{ background: {accent_soft}; border-color: {accent}; }}
 QPushButton[role="action"][on="true"]:disabled {{ background: {ground}; color: {disabled_text}; border-color: {border}; }}
 QPushButton[role="action-bold"] {{ font-weight: bold; }}
@@ -471,6 +484,8 @@ def build_stylesheet(tokens: Tokens, scale: float, icon_dir: Optional[Path]) -> 
     values["hair"] = "1px"
     values["primary_hover"] = _mix(tokens.accent, tokens.text, 0.85)
     values["primary_pressed"] = _mix(tokens.accent, tokens.text, 0.7)
+    # A checkable primary (Live) that is on: one step past pressed, so on and off read apart at a glance.
+    values["primary_checked"] = _mix(tokens.accent, tokens.text, 0.6)
 
     qss = _BASE_QSS.format(**values)
     if icon_dir is not None:

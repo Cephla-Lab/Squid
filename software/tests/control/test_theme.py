@@ -83,6 +83,53 @@ def test_stylesheet_styles_cards_by_role_not_every_frame():
     )  # QLabel inherits QFrame; a bare selector would border every label
 
 
+@pytest.mark.parametrize("tokens", [theme.LIGHT, theme.DARK], ids=["light", "dark"])
+def test_item_view_selection_is_the_solid_accent(tokens):
+    # Ruling 19: a selected well or row reads like Classic's solid Fusion highlight; accent_soft is too faint.
+    qss = theme.build_stylesheet(tokens, 1.0, None)
+    rule = next(line for line in qss.splitlines() if line.startswith("QListView, QTableView, QTreeView {"))
+    assert f"selection-background-color: {tokens.accent};" in rule
+    assert f"selection-color: {tokens.accent_text};" in rule
+    assert f"gridline-color: {tokens.input_border};" in qss
+
+
+@pytest.mark.parametrize("tokens", [theme.LIGHT, theme.DARK], ids=["light", "dark"])
+def test_spin_box_as_wide_as_a_button_shows_a_percentage_whole(qtbot, qapp, tokens, tmp_path):
+    # LiveControlWidget fixes the Illumination spin box to the Live/Autolevel button width (widgets.py).
+    from qtpy.QtGui import QFont
+    from qtpy.QtWidgets import QDoubleSpinBox, QHBoxLayout, QPushButton, QWidget
+
+    font = qapp.font()
+    qapp.setFont(QFont("Segoe UI", 8))  # the skinned font on Windows; elsewhere the nearest match
+    icons = theme.write_theme_icons(tokens, tmp_path)  # styled arrows, as in the running application
+    qapp.setStyleSheet(theme.build_stylesheet(tokens, theme.scale_factor(qapp), icons))
+    try:
+        window = QWidget()
+        qtbot.addWidget(window)
+        layout = QHBoxLayout(window)
+        button = QPushButton("Autolevel")
+        spin = QDoubleSpinBox()
+        spin.setMaximum(100)
+        spin.setSuffix("%")
+        spin.setValue(39)
+        layout.addWidget(button)
+        layout.addWidget(spin)
+        spin.setFixedWidth(button.sizeHint().width())
+        window.show()
+        qtbot.waitExposed(window)
+        edit = spin.lineEdit()
+        assert edit.width() >= edit.fontMetrics().horizontalAdvance(spin.text()) + 4  # QLineEdit's 2 px margins
+    finally:
+        qapp.setStyleSheet("")
+        qapp.setFont(font)
+
+
+def test_tab_bar_scroll_buttons_follow_the_button_tokens():
+    qss = theme.build_stylesheet(theme.DARK, 1.0, None)
+    rule = next(line for line in qss.splitlines() if line.startswith("QTabBar QToolButton {"))
+    assert theme.DARK.button_bg in rule
+
+
 def test_stylesheet_without_icon_dir_has_no_url_references():
     assert "url(" not in theme.build_stylesheet(theme.DARK, 1.0, None)
 
