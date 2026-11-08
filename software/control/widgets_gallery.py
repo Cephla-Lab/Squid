@@ -305,6 +305,7 @@ class AcquisitionGalleryWidget(QWidget):
         self._import_root_provider = import_root_provider  # used by importing (Task 10)
         self._generation = 0
         self._loading = False
+        self._sort_initialised = False
         self._seen_stamp = self._NOT_LOADED
         self._running_fraction: Optional[float] = None
         self._status_filter = "All"
@@ -315,8 +316,9 @@ class AcquisitionGalleryWidget(QWidget):
         self._items: Dict[str, QListWidgetItem] = {}
         self._table_name_items: Dict[str, QTableWidgetItem] = {}
         self._table_status_items: Dict[str, QTableWidgetItem] = {}
-        # entry id -> (preview path, preview mtime, pixmap); reused across reloads
-        self._thumbnail_cache: Dict[str, Tuple[str, float, QPixmap]] = {}
+        # entry id -> (preview path, preview mtime, pixmap); reused across reloads. A preview that is missing
+        # (mtime None) or does not decode is cached with its format placeholder, so it is not retried until it changes.
+        self._thumbnail_cache: Dict[str, Tuple[str, Optional[float], QPixmap]] = {}
         self._closed = False
         self._lock = threading.Lock()
 
@@ -555,7 +557,8 @@ class AcquisitionGalleryWidget(QWidget):
         self._loading = False
         self._seen_stamp = stamp
         self._all_rows = rows
-        self._populate(reset_sort=True)
+        self._populate(reset_sort=not self._sort_initialised)  # later reloads keep the user's table sort
+        self._sort_initialised = True
         n = len(rows)
         self.status_label.setText(f"{n} acquisition{'s' if n != 1 else ''} in the history")
         for row in rows:
@@ -778,11 +781,13 @@ class AcquisitionGalleryWidget(QWidget):
         try:
             mtime = os.stat(path).st_mtime
         except OSError:
-            self._set_thumbnail(entry.id, self._format_placeholder(entry))
-            return
+            mtime = None
         cached = self._thumbnail_cache.get(entry.id)
         if cached is not None and cached[0] == path and cached[1] == mtime:
             return  # the views already show it
+        if mtime is None:
+            self._cache_failed_preview(entry, path, mtime)
+            return
         self._thumbnail_executor.submit(self._load_thumbnail_in_background, generation, entry.id, path, mtime)
 
     def _load_thumbnail_in_background(self, generation: int, entry_id: str, path: str, mtime: float) -> None:
@@ -799,11 +804,16 @@ class AcquisitionGalleryWidget(QWidget):
         if row is None:
             return
         if array is None:
-            self._set_thumbnail(entry_id, self._format_placeholder(row.entry))
+            self._cache_failed_preview(row.entry, path, mtime)
             return
         pixmap = square_tile(array_to_pixmap(array), self.THUMBNAIL_SIZE)
         self._thumbnail_cache[entry_id] = (path, mtime, pixmap)
         self._set_thumbnail(entry_id, pixmap)
+
+    def _cache_failed_preview(self, entry: HistoryEntry, path: str, mtime: Optional[float]) -> None:
+        pixmap = self._format_placeholder(entry)
+        self._thumbnail_cache[entry.id] = (path, mtime, pixmap)
+        self._set_thumbnail(entry.id, pixmap)
 
     def _set_thumbnail(self, entry_id: str, pixmap: QPixmap) -> None:
         icon = QIcon(pixmap)

@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 import pytest
 import yaml
+from qtpy.QtCore import Qt
 
 import control._def
 import control.widgets_gallery
@@ -346,6 +347,60 @@ def test_thumbnails_load_from_the_preview_png(gallery, qtbot):
     assert "running" not in gallery._thumbnail_cache  # a running entry keeps the "Running…" placeholder
     assert "aborted" not in gallery._thumbnail_cache  # no preview: the placeholder with the format text
     assert not gallery._items["aborted"].icon().isNull()
+
+
+def test_a_missing_or_broken_preview_keeps_its_format_placeholder(gallery, qtbot):
+    store = gallery._store
+    (store.previews_dir / "broken.png").write_bytes(b"not a png at all")
+    for id_, file in (("broken", "broken.png"), ("missing", "missing.png")):
+        store.append(
+            {
+                "type": "imported",
+                "id": id_,
+                "kind": "run",
+                "name": id_,
+                "folder": "x",
+                "started_at": T0 - 100,
+                "outcome": "complete",
+                "metadata": {"image_format": "OME-Zarr"},
+            }
+        )
+        store.append({"type": "preview", "id": id_, "file": file, "channels": []})
+    _reload_and_wait(gallery, qtbot)
+    qtbot.waitUntil(lambda: {"broken", "missing"} <= set(gallery._thumbnail_cache), timeout=10000)
+    submitted = []
+    real_submit = gallery._thumbnail_executor.submit
+    gallery._thumbnail_executor.submit = lambda *args: submitted.append(args) or real_submit(*args)
+
+    gallery.filter_edit.setText("o")  # re-populates both views from the cache
+
+    size = AcquisitionGalleryWidget.THUMBNAIL_SIZE
+    for id_ in ("broken", "missing"):
+        entry = _row(gallery, id_).entry
+        placeholder = gallery._format_placeholder(entry)
+        assert gallery._thumbnail_cache[id_][2] is placeholder
+        # Pixmap identity: offscreen Qt draws no text, so every placeholder has the same pixels.
+        for item in (gallery._items[id_], gallery._table_name_items[id_]):
+            tile = item.icon().pixmap(size, size).cacheKey()
+            assert tile == placeholder.cacheKey()
+            assert tile != gallery._placeholder_loading.cacheKey()
+    _reload_and_wait(gallery, qtbot)
+    assert submitted == []  # failures are remembered, not decoded again
+
+
+def test_a_reload_keeps_the_users_table_sort(gallery, qtbot):
+    table = gallery.table_widget
+    table.sortItems(0, Qt.AscendingOrder)
+    assert table.item(0, 0).text() == "aborted"
+    gallery._store.append({"type": "started", "id": "mmm", "kind": "run", "name": "mmm", "folder": "x"})
+
+    _reload_and_wait(gallery, qtbot)
+
+    assert len(gallery.rows()) == 6
+    header = table.horizontalHeader()
+    assert (header.sortIndicatorSection(), header.sortIndicatorOrder()) == (0, Qt.AscendingOrder)
+    names = [table.item(r, 0).text() for r in range(table.rowCount())]
+    assert names == sorted(names) and names[0] == "aborted"
 
 
 def test_reload_keeps_the_selection_and_picks_up_new_events(gallery, qtbot, store_with_entries):
