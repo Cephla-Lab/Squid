@@ -113,6 +113,6 @@ def test_software_dir_contains_the_control_package():
 
 
 def test_check_viewer_pins_ndv_in_the_install_hint(tmp_path):
-    # The bundled viewer needs ndv>=0.4,<0.5; an unpinned hint would install a version it cannot use
+    # The bundled viewer needs ndv>=0.5,<0.6; an unpinned hint would install a version it cannot use
     p = check_viewer(str(tmp_path), find_spec=lambda n: None if n == "ndv" else object(), isfile=lambda f: True)
-    assert 'pip install "ndv>=0.4,<0.5"' in p.problem()
+    assert 'pip install "ndv>=0.5,<0.6"' in p.problem()

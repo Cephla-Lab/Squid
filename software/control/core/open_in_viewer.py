@@ -17,11 +17,11 @@ _log = squid.logging.get_logger(__name__)
 
 # Top-level packages the viewer imports. Checked with find_spec on the top-level name only: a dotted
 # find_spec would import the parent packages, and the submodule's shim imports the viewer and Qt.
-VIEWER_PACKAGES: Tuple[str, ...] = ("ndv", "vispy", "tensorstore", "xarray", "dask", "superqt")
+VIEWER_PACKAGES: Tuple[str, ...] = ("ndv", "vispy", "tensorstore", "xarray", "dask", "superqt", "pyconify")
 VIEWER_MODULE = "control.ndviewer_light.ndviewer_light"
 SUBMODULE_HINT = "git submodule update --init software/control/ndviewer_light"
-# What the pip hint installs for a missing package: the bundled viewer requires ndv>=0.4,<0.5
-_PIP_SPECS = {"ndv": '"ndv>=0.4,<0.5"'}
+# What the pip hint installs for a missing package: the bundled viewer requires ndv>=0.5,<0.6
+_PIP_SPECS = {"ndv": '"ndv>=0.5,<0.6"'}
 
 
 def software_dir() -> str:
