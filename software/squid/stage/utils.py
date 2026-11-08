@@ -150,10 +150,15 @@ def objective_is_retracted(z_mm: float) -> bool:
 
 
 def retract_objective(stage: AbstractStage):
-    """Z to OBJECTIVE_RETRACTED_POS_MM, then wait for the stage to stop, unless the objective is already retracted
-    (objective_is_retracted): a Z at or below the retracted position stays, so this never moves the objective toward
-    the sample."""
-    if not objective_is_retracted(stage.get_pos().z_mm):
+    """The objective to its clear position. A V-308 goes through its home(z), its configured retract: on an upright
+    system the positive travel limit, where OBJECTIVE_RETRACTED_POS_MM can be next to the sample.
+
+    A stepper Z goes to OBJECTIVE_RETRACTED_POS_MM, then waits for the stage to stop, unless the objective is already
+    retracted (objective_is_retracted): a Z at or below the retracted position stays, so this never moves the objective
+    toward the sample."""
+    if _def.USE_PI_FOCUS_STAGE:
+        stage.home(x=False, y=False, z=True, theta=False)
+    elif not objective_is_retracted(stage.get_pos().z_mm):
         stage.move_z_to(_def.OBJECTIVE_RETRACTED_POS_MM)
         stage.wait_for_idle(_def.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
 

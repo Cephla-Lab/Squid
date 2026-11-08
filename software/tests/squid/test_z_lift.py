@@ -733,6 +733,30 @@ def test_the_return_to_a_restored_loading_position_clears_the_sample_first_and_r
     assert squid.stage.utils.load_loading_state() is None
 
 
+def test_the_return_to_a_restored_loading_position_retracts_a_v308_through_its_home(monkeypatch):
+    """A V-308 retracts to where its home(z) is configured to, before the lift lowers: OBJECTIVE_RETRACTED_POS_MM can be
+    toward the sample."""
+    monkeypatch.setattr(_def, "USE_PI_FOCUS_STAGE", True)
+    events = []
+    stage = _recording_stage(events, z_mm=2.5, height=4.0)
+    stage.home.side_effect = lambda *a, **k: events.append("z_home")
+    stage._scanning_position_z_mm, stage._scanning_position_lift_mm = 1.2, (2.0, "96 well plate")
+    squid.stage.utils.return_to_loading_position(stage, is_wellplate=False)
+    assert events == ["z_home", "lift_lower", "y", "x"]
+    stage.home.assert_called_once_with(x=False, y=False, z=True, theta=False)
+    assert stage._scanning_position_z_mm == 1.2 and stage._scanning_position_lift_mm == (2.0, "96 well plate")
+
+
+def test_the_move_to_loading_retracts_a_v308_through_its_home_and_remembers_its_z(monkeypatch):
+    monkeypatch.setattr(_def, "USE_PI_FOCUS_STAGE", True)
+    events = []
+    stage = _recording_stage(events, z_mm=2.5)
+    stage.home.side_effect = lambda *a, **k: events.append("z_home")
+    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
+    assert events[:2] == ["z_home", "lift_lower"]
+    assert stage._scanning_position_z_mm == 2.5
+
+
 def test_the_loading_state_is_recorded_before_xy_moves():
     events = []
     stage = _recording_stage(events)

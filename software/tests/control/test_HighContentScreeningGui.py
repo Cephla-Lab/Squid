@@ -873,10 +873,22 @@ def test_already_homed_away_from_the_loading_position_clears_the_sample_before_x
     assert scope.z_lift.get_position_mm() == pytest.approx(3.0, abs=1e-3)  # still raised: a warm start keeps it
     scope.stage.move_z_to(1.5)  # and the return had lowered the objective to its working height
     moves = _record_moves(monkeypatch, scope)
+    real_home = scope.stage.home
+
+    def spy_home(**kwargs):
+        moves.append(("z_home", kwargs["z"]))
+        real_home(**kwargs)
+        moves.append(("z_at", scope.stage.get_pos().z_mm))
+
+    monkeypatch.setattr(scope.stage, "home", spy_home)
     gui = _gui_on(qtbot, scope)
 
     first_xy = next(i for i, (label, _) in enumerate(moves) if label in ("x", "y"))
-    assert moves[:first_xy] == [("z", control._def.OBJECTIVE_RETRACTED_POS_MM), ("lift", scope.z_lift.lowered_mm)]
+    assert moves[:first_xy] == [
+        ("z_home", True),
+        ("z_at", pytest.approx(control._def.OBJECTIVE_RETRACTED_POS_MM, abs=1e-3)),
+        ("lift", scope.z_lift.lowered_mm),
+    ]
     loading_x, loading_y = control._def.SLIDE_POSITION.LOADING_X_MM, control._def.SLIDE_POSITION.LOADING_Y_MM
     assert moves[first_xy:] == [("y", 15), ("x", 35), ("y", loading_y), ("x", loading_x)]
     assert scope.z_lift.is_lowered()
