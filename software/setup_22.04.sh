@@ -41,7 +41,7 @@ sudo apt install python3-pip -y
 # PyQt5 from apt (Squid's binding); pyqtgraph comes from pip below. apt's python3-pyqtgraph drags in
 # Ubuntu 22.04's matplotlib 3.5 / scipy 1.8 / numpy 1.21, and its mpl_toolkits is a regular package that
 # shadows the one in pip's matplotlib (mplot3d then imports a name removed in matplotlib 3.8).
-sudo apt install python3-pyqt5 -y
+sudo apt install python3-pyqt5 python3-pyqt5.qtopengl -y  # qtopengl: vispy's PyQt5 backend imports PyQt5.QtOpenGL
 sudo apt install python3-pyqt5.qtsvg
 
 sudo apt-get install git -y
