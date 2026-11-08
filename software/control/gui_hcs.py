@@ -49,6 +49,7 @@ from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.mosaic_utils import parse_well_id
+from control.core.open_in_viewer import RunSnapshot, finished_run_dir
 from control.core.multi_point_utils import (
     MultiPointControllerFunctions,
     AcquisitionParameters,
@@ -194,6 +195,7 @@ class QtAutoFocusController(AutoFocusController, QObject):
 
 class QtMultiPointController(MultiPointController, QObject):
     acquisition_finished = Signal()
+    acquisition_preparing = Signal()
     signal_acquisition_start = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
@@ -254,6 +256,7 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_overall_progress=self._signal_overall_progress_fn,
                 signal_region_progress=self._signal_region_progress_fn,
                 signal_plate_view_init=self._signal_plate_view_init_fn,
+                signal_acquisition_preparing=self._signal_acquisition_preparing_fn,
                 signal_timepoint_finished=self._signal_timepoint_finished_fn,
                 signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
                 signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
@@ -280,6 +283,25 @@ class QtMultiPointController(MultiPointController, QObject):
         self._ndviewer_region_idx_offset: list = []  # [0, 5, ...] region_idx -> flat FOV offset
         self._ndviewer_mode: NDViewerMode = NDViewerMode.INACTIVE  # Current viewer mode
         self._ndviewer_region_index_map: dict = {}  # {region_name: region_idx} for 6D mode
+        # The run's folder and skip-saving state, captured at start for the Open in Viewer button
+        self.open_in_viewer_snapshot: Optional[RunSnapshot] = None
+
+    def _signal_acquisition_preparing_fn(self):
+        # Live and Snap must be locked before the run touches live or the camera. A run on another thread (the TCP
+        # server's) waits here until the GUI thread has run the slots; a queued emit would let it go on first. A run on
+        # the GUI thread emits directly: a blocking call into its own event loop could never run.
+        # QObject.thread: MultiPointController's acquisition-thread attribute shadows the method.
+        if QThread.currentThread() is QObject.thread(self):
+            self.acquisition_preparing.emit()
+        else:
+            QMetaObject.invokeMethod(self, "_emit_acquisition_preparing", Qt.BlockingQueuedConnection)
+
+    @Slot()
+    def _emit_acquisition_preparing(self):
+        try:  # Qt swallows exceptions in a slot called through BlockingQueuedConnection
+            self.acquisition_preparing.emit()
+        except Exception:
+            self._log.exception("Locking Live and Snap for a run that is preparing failed")
 
     def _signal_acquisition_start_fn(self, parameters: AcquisitionParameters):
         # TODO mpc napari signals
@@ -297,6 +319,9 @@ class QtMultiPointController(MultiPointController, QObject):
         base = parameters.base_path
         exp_id = parameters.experiment_ID
         save_target = os.path.join(base, exp_id) if (base and exp_id) else None
+        # Captured now, not read back at finish: the fluidics imaging port restores base_path in its own
+        # acquisition_finished slot, so the controller's fields at finish time can name the wrong folder.
+        self.open_in_viewer_snapshot = RunSnapshot(save_target, bool(parameters.skip_saving))
         self.signal_acquisition_save_target.emit(save_target)
 
         # NDViewer push-based API: emit start_acquisition signal
@@ -849,6 +874,12 @@ class HighContentScreeningGui(QMainWindow):
         channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
         advanced_menu.addAction(channel_config_action)
 
+        # Objectives (machine_configs/objectives.yaml; takes effect after a restart)
+        objectives_action = QAction("Objectives...", self)
+        objectives_action.setMenuRole(QAction.NoRole)
+        objectives_action.triggered.connect(self.openObjectivesEditor)
+        advanced_menu.addAction(objectives_action)
+
         # Filter Wheel Configuration (only shown if filter wheel is enabled)
         if USE_EMISSION_FILTER_WHEEL:
             filter_wheel_config_action = QAction("Filter Wheel Configuration", self)
@@ -878,6 +909,11 @@ class HighContentScreeningGui(QMainWindow):
             filter_wheel_tuning_action.setMenuRole(QAction.NoRole)
             filter_wheel_tuning_action.triggered.connect(self.openFilterWheelTuning)
             utils_menu.addAction(filter_wheel_tuning_action)
+
+        illumination_calibration_action = QAction("Illumination Power Calibration...", self)
+        illumination_calibration_action.setMenuRole(QAction.NoRole)
+        illumination_calibration_action.triggered.connect(self.openIntensityCalibration)
+        utils_menu.addAction(illumination_calibration_action)
 
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
@@ -1603,10 +1639,27 @@ class HighContentScreeningGui(QMainWindow):
         # RAM monitor widget connections - use controller signals which fire AFTER memory monitor is created
         self.multipointController.signal_acquisition_start.connect(self._connect_ram_monitor_widget)
         self.multipointController.acquisition_finished.connect(self._disconnect_ram_monitor_widget)
+        # Open in Viewer button: disabled while a run is in flight, pointed at the run's folder once it ends
+        self.multipointController.signal_acquisition_start.connect(self._clear_open_in_viewer_target)
+        self.multipointController.acquisition_finished.connect(self._set_open_in_viewer_target)
 
         # Backpressure monitor widget connections - fires AFTER worker is created
         self.multipointController.signal_acquisition_start.connect(self._connect_backpressure_monitor_widget)
         self.multipointController.acquisition_finished.connect(self._disconnect_backpressure_monitor_widget)
+
+        # The controller stops live at the start of every run (GUI, TCP, fluidics) and, only when the INI sets
+        # resume_live_after_acquisition, turns it back on at the end: Live and Snap are locked in between.
+        # The lock lands on preparing, before the run stops live: a TCP run prepares on the server's thread
+        # while the GUI still takes clicks. The start re-syncs the button once live is off.
+        self.multipointController.acquisition_preparing.connect(
+            lambda: self.liveControlWidget.set_acquisition_running(True)
+        )
+        self.multipointController.signal_acquisition_start.connect(
+            lambda: self.liveControlWidget.set_acquisition_running(True)
+        )
+        self.multipointController.acquisition_finished.connect(
+            lambda: self.liveControlWidget.set_acquisition_running(False)
+        )
 
         # NDViewer push-based API connections
         if self.ndviewerTab is not None:
@@ -1879,6 +1932,23 @@ class HighContentScreeningGui(QMainWindow):
         if self.unifiedMosaicWidget is not None:
             self.unifiedMosaicWidget.set_acquisition_save_target(save_target)
 
+    def _set_open_in_viewer_target(self) -> None:
+        """After a run: point the Multichannel Acquisition tab's Open in Viewer button at the run's folder.
+
+        Reads the snapshot taken at start and the end reason only, never the controller's base_path /
+        experiment_ID: the fluidics imaging port's acquisition_finished slot restores those and may run first.
+        """
+        controller = self.multipointController
+        if controller.last_end_reason == "failed_to_start":
+            return  # nothing ran (Start with nothing to acquire): the previously finished run stays openable
+        run_dir = finished_run_dir(controller.open_in_viewer_snapshot, controller.last_end_reason)
+        if self.napariMultiChannelWidget is not None:
+            self.napariMultiChannelWidget.set_finished_run_dir(run_dir)
+
+    def _clear_open_in_viewer_target(self) -> None:
+        if self.napariMultiChannelWidget is not None:
+            self.napariMultiChannelWidget.set_finished_run_dir(None)
+
     def _on_timepoint_finished(self, time_point: int):
         if self.unifiedMosaicWidget is not None:
             self.unifiedMosaicWidget.save_for_timepoint(time_point)
@@ -2006,6 +2076,8 @@ class HighContentScreeningGui(QMainWindow):
             for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget):
                 if tab is not None:
                     dialog.signal_config_changed.connect(tab.update_z_order_dropdown_visibility)
+            if self.napariMultiChannelWidget is not None:
+                dialog.signal_config_changed.connect(self.napariMultiChannelWidget.update_open_in_viewer_visibility)
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")
@@ -2559,10 +2631,59 @@ class HighContentScreeningGui(QMainWindow):
         )
         dialog.exec_()
 
+    def openIntensityCalibration(self):
+        """Open Utils > Illumination Power Calibration...: measure DAC-driven illumination channels with a power meter
+        and make their intensity linear in power. See control/widgets_intensity_calibration.py."""
+        from control.lighting import IntensityControlMode
+        from control.widgets_intensity_calibration import IntensityCalibrationDialog
+        from squid.intensity_calibration_run import CalibrationSession, measured_in_label
+
+        def busy_reason():
+            if self.liveController is not None and self.liveController.is_live:
+                return "Live view is running. Stop it first: the calibration drives the light itself."
+            if self.liveController_focus_camera is not None and self.liveController_focus_camera.is_live:
+                return "The laser autofocus camera is live. Stop it first: it triggers through the same controller."
+            if self.multipointController is not None and self.multipointController.acquisition_in_progress():
+                return "An acquisition is running."
+            return None
+
+        def restore_live_channel():
+            # A run or the test beam leaves the controller on its last port at DAC 0; live start and snap only turn
+            # the light on. Re-send the live channel (through the new calibration, if one was saved).
+            if self.liveController.currentConfiguration is not None and self.liveController.control_illumination:
+                self.liveController.update_illumination()
+
+        illumination = self.microscope.illumination_controller
+        session = CalibrationSession(
+            self.microcontroller,
+            self.microscope.config_repo,
+            dac_driven=illumination.light_source_type is None
+            and illumination.intensity_control_mode == IntensityControlMode.SquidControllerDAC,
+        )
+        measured_in = measured_in_label(
+            self.microscope.config_repo.has_confocal(), self.liveController.is_confocal_mode()
+        )
+        dialog = IntensityCalibrationDialog(
+            session, measured_in, busy_reason=busy_reason, restore_illumination=restore_live_channel, parent=self
+        )
+        dialog.exec_()
+        if self.liveController.currentConfiguration is not None:
+            # suffix, tooltip and cap of the live intensity control follow a saved calibration
+            self.liveControlWidget.update_ui_for_mode(self.liveController.currentConfiguration)
+
     def openFilterWheelConfigEditor(self):
         """Open the filter wheel configuration dialog"""
         dialog = widgets.FilterWheelConfiguratorDialog(self.microscope.config_repo, self)
         dialog.signal_config_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openObjectivesEditor(self):
+        """Open the Objectives editor (Settings > Advanced > Objectives...)."""
+        from control.widgets_objectives import ObjectivesEditorDialog
+
+        dialog = ObjectivesEditorDialog.for_current_machine(
+            self.microscope.config_repo, on_restart=self.restart_application, parent=self
+        )
         dialog.exec_()
 
     def _refresh_channel_lists(self):

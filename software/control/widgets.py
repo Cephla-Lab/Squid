@@ -22,6 +22,7 @@ from control.core.config import ConfigRepository
 from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.mosaic_utils import format_well_id
+from control.core.open_in_viewer import check_viewer, launch_viewer, software_dir
 from control.core.geometry_utils import calculate_well_coverage, default_scan_shape, get_effective_well_size
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
@@ -63,6 +64,7 @@ from squid.stage.utils import (
     objective_is_retracted,
 )
 from squid.config import CameraPixelFormat
+from squid.intensity_calibration import CALIBRATIONS_DIR_NAME, calibration_status, intensity_tooltip
 
 # set QT_API environment variable
 os.environ["QT_API"] = "pyqt5"
@@ -1163,6 +1165,51 @@ class _ZRangeMixin:
             self.multipointController.set_piezo_z_range_um(None)
 
 
+class _OpenInViewerButtonMixin:
+    """The opt-in "Open in Viewer" button (SHOW_OPEN_IN_VIEWER_BUTTON), hosted by the Multichannel
+    Acquisition tab, where the run's images appear.
+
+    After a run finishes the GUI hands the host the run's folder (set_finished_run_dir) and the button
+    opens it in ndviewer_light, in a separate process. Hidden while the setting is off; disabled until a
+    run has finished. The Qt-free rules and the launch live in control.core.open_in_viewer. (It is not
+    in the multipoint tabs' button column: a third button there clipped Start Acquisition's two-line
+    label, and an extra row squeezed the channel list on short screens.)
+    """
+
+    NO_RUN_TOOLTIP = "No finished acquisition yet"
+
+    def _create_open_in_viewer_button(self) -> QPushButton:
+        self._finished_run_dir: Optional[str] = None
+        button = QPushButton("Open in Viewer")
+        button.setEnabled(False)
+        button.setToolTip(self.NO_RUN_TOOLTIP)
+        button.clicked.connect(self._open_in_viewer)
+        button.setVisible(control._def.SHOW_OPEN_IN_VIEWER_BUTTON)
+        return button
+
+    def update_open_in_viewer_visibility(self) -> None:
+        """Re-apply the opt-in setting, e.g. after Preferences changed it at runtime; nothing else changes."""
+        self.btn_openInViewer.setVisible(control._def.SHOW_OPEN_IN_VIEWER_BUTTON)
+
+    def set_finished_run_dir(self, run_dir: Optional[str]) -> None:
+        """The folder the button opens (a finished run), or None to disable it (a run just started)."""
+        self._finished_run_dir = run_dir
+        self.btn_openInViewer.setEnabled(bool(run_dir))
+        self.btn_openInViewer.setToolTip(run_dir or self.NO_RUN_TOOLTIP)
+
+    def _open_in_viewer(self) -> None:
+        if not self._finished_run_dir:
+            return
+        preflight = check_viewer(software_dir())
+        if not preflight.ok:
+            QMessageBox.warning(self, "Open in Viewer", preflight.problem())
+            return
+        try:
+            launch_viewer(self._finished_run_dir, software_dir())
+        except Exception as e:
+            QMessageBox.critical(self, "Open in Viewer", str(e))
+
+
 class _LaserAfPerStackMixin:
     """The Z First "AF per stack" checkbox: laser AF before each later channel's stack.
 
@@ -1488,6 +1535,15 @@ class PreferencesDialog(QDialog):
             "Off, every acquisition started from the GUI runs Channel First."
         )
         layout.addRow("Z-stack Order Dropdown:", self.z_stack_order_dropdown_checkbox)
+
+        # Open in Viewer button next to Start Acquisition (opens the finished run in ndviewer_light). Applies live.
+        self.open_in_viewer_checkbox = QCheckBox()
+        self.open_in_viewer_checkbox.setChecked(self._get_config_bool("GENERAL", "show_open_in_viewer_button", False))
+        self.open_in_viewer_checkbox.setToolTip(
+            "Show an Open in Viewer button next to Start Acquisition.\n"
+            "After a run finishes it opens that run in ndviewer_light."
+        )
+        layout.addRow("Open in Viewer Button:", self.open_in_viewer_checkbox)
 
         self.tab_widget.addTab(tab, "Acquisition")
 
@@ -2377,6 +2433,11 @@ class PreferencesDialog(QDialog):
             "enable_z_stack_order_selection",
             "true" if self.z_stack_order_dropdown_checkbox.isChecked() else "false",
         )
+        self.config.set(
+            "GENERAL",
+            "show_open_in_viewer_button",
+            "true" if self.open_in_viewer_checkbox.isChecked() else "false",
+        )
 
         # Camera settings
         self.config.set("CAMERA_CONFIG", "binning_factor_default", str(self.binning_spinbox.value()))
@@ -2571,6 +2632,7 @@ class PreferencesDialog(QDialog):
         # Flexible multipoint
         control._def.ENABLE_FLEXIBLE_MULTIPOINT = self.flexible_multipoint_checkbox.isChecked()
         control._def.ENABLE_Z_STACK_ORDER_SELECTION = self.z_stack_order_dropdown_checkbox.isChecked()
+        control._def.SHOW_OPEN_IN_VIEWER_BUTTON = self.open_in_viewer_checkbox.isChecked()
 
         # Click to Move
         control._def.ENABLE_CLICK_TO_MOVE = self.click_to_move_enable_checkbox.isChecked()
@@ -2760,6 +2822,11 @@ class PreferencesDialog(QDialog):
         new_val = self.z_stack_order_dropdown_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Z-stack Order Dropdown", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_bool("GENERAL", "show_open_in_viewer_button", False)
+        new_val = self.open_in_viewer_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Open in Viewer Button", str(old_val), str(new_val), False))
 
         # Camera settings (require restart)
         old_val = self._get_config_int("CAMERA_CONFIG", "binning_factor_default", 2)
@@ -5243,6 +5310,35 @@ class ProfileWidget(QFrame):
         return self.dropdown_profiles.currentText()
 
 
+class GappedSpinBox(QDoubleSpinBox):
+    """An intensity box for a source that jumps on from nothing (a laser's threshold, an LED driver's input offset): it gives no power between 0 and
+    its lowest, so a value there - typed, dragged or saved - becomes that lowest power, and stepping down from it
+    goes to 0 (off)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._lowest = 0.0
+
+    def set_lowest(self, lowest: float) -> None:
+        self._lowest = max(0.0, float(lowest))
+        self.setValue(self.value())
+
+    def _snapped(self, value: float) -> float:
+        return self._lowest if 0 < value < self._lowest else value
+
+    def setValue(self, value: float) -> None:
+        super().setValue(self._snapped(value))
+
+    def valueFromText(self, text: str) -> float:
+        return self._snapped(super().valueFromText(text))
+
+    def stepBy(self, steps: int) -> None:
+        if steps < 0 and 0 < self.value() <= self._lowest:
+            self.setValue(0.0)
+        else:
+            self.setValue(self.value() + steps * self.singleStep())
+
+
 class CappedSlider(QSlider):
     """Slider whose usable range can be capped below its full range.
 
@@ -5471,7 +5567,7 @@ class LiveControlWidget(QFrame):
         self.slider_illuminationIntensity.setValue(100)
         self.slider_illuminationIntensity.setSingleStep(2)
 
-        self.entry_illuminationIntensity = QDoubleSpinBox()
+        self.entry_illuminationIntensity = GappedSpinBox()
         self.entry_illuminationIntensity.setKeyboardTracking(False)
         self.entry_illuminationIntensity.setMinimum(0)
         self.entry_illuminationIntensity.setMaximum(100)
@@ -5616,6 +5712,14 @@ class LiveControlWidget(QFrame):
             # sample is already being exposed.
             _sync_live_button(self, "Stop", "Live", self.btn_snap)
 
+    def set_acquisition_running(self, running):
+        """An acquisition stops live on its own and owns the camera and the light while it runs: show the
+        real live state, and lock Live and Snap until it finishes."""
+        _sync_live_button(self, "Stop", "Live", self.btn_snap)
+        self.btn_live.setEnabled(not running)
+        if running:
+            self.btn_snap.setEnabled(False)
+
     def snap(self):
         """Acquire and display one frame with the current live configuration."""
         if self.liveController.is_live:
@@ -5690,6 +5794,12 @@ class LiveControlWidget(QFrame):
                 intensity_cap = self.liveController.get_intensity_cap_percent(self.currentConfiguration)
                 self.slider_illuminationIntensity.set_cap(intensity_cap)
                 self.entry_illuminationIntensity.setMaximum(intensity_cap)
+                # Say in the tooltip what the % means: power (calibrated), DAC output, or the source's own scale
+                description = self.liveController.get_intensity_description(self.currentConfiguration)
+                self.entry_illuminationIntensity.setToolTip(intensity_tooltip(description))
+                # A source that jumps on gives nothing between 0 and its lowest power; the lookup sends a request
+                # there to that power, and the box shows it
+                self.entry_illuminationIntensity.set_lowest(float(description.get("lowest_percent", 0.0)))
                 self.entry_illuminationIntensity.setValue(self.currentConfiguration.illumination_intensity)
                 self.entry_zOffset.setValue(self._safe_z_offset_value(self.currentConfiguration.z_offset_um))
         finally:
@@ -8488,7 +8598,11 @@ def _warn_if_coordinates_stale(widget, stamp):
 
 
 class WellplateMultiPointWidget(
-    AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, _ZRangeMixin, QFrame
+    AcquisitionYAMLDropMixin,
+    _ApplyChannelOffsetMixin,
+    _LaserAfPerStackMixin,
+    _ZRangeMixin,
+    QFrame,
 ):
 
     signal_acquisition_started = Signal(bool)
@@ -11731,7 +11845,7 @@ class AlignmentWidget(QWidget):
         self._display.hide_alignment_reference()
 
 
-class NapariMultiChannelWidget(QWidget):
+class NapariMultiChannelWidget(_OpenInViewerButtonMixin, QWidget):
     # Writing a frame into its layer is a cheap copy, but refreshing the viewer re-slices
     # every layer and recomputes its thumbnail, so refreshes are coalesced to at most one
     # per interval. Without this, a large z-stack queues frames faster than the GUI thread
@@ -11777,6 +11891,9 @@ class NapariMultiChannelWidget(QWidget):
         self.viewerWidget = self.viewer.window._qt_window
         self.layout = QVBoxLayout()
         self.layout.addWidget(self.viewerWidget)
+        # Opt-in "Open in Viewer" under the canvas, the full width of the tab; hidden by default.
+        self.btn_openInViewer = self._create_open_in_viewer_button()
+        self.layout.addWidget(self.btn_openInViewer)
         self.setLayout(self.layout)
         self.customizeViewer()
 
@@ -15162,6 +15279,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
     COL_WAVELENGTH = 3
     COL_MAX_OUTPUT = 4
     COL_CALIBRATION = 5
+    COL_CALIBRATION_STATUS = 6
 
     def __init__(self, config_repo, parent=None):
         super().__init__(parent)
@@ -15188,9 +15306,17 @@ class IlluminationChannelConfiguratorDialog(QDialog):
 
         # Table for illumination channels
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(
-            ["Name", "Type", "Controller Port", "Wavelength (nm)", "Max Output", "Calibration File"]
+            [
+                "Name",
+                "Type",
+                "Controller Port",
+                "Wavelength (nm)",
+                "Max Output",
+                "Calibration File",
+                "Calibration Status",
+            ]
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -15297,6 +15423,24 @@ class IlluminationChannelConfiguratorDialog(QDialog):
             full_path = self._get_calibration_full_path(channel.intensity_calibration_file)
             calib_item = QTableWidgetItem(full_path)
             self.table.setItem(row, self.COL_CALIBRATION, calib_item)
+
+            # Calibration status (read-only): which file applies and whether it still fits this machine
+            status_item = QTableWidgetItem(self._calibration_status(channel))
+            status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, self.COL_CALIBRATION_STATUS, status_item)
+
+    def _calibration_status(self, channel) -> str:
+        if channel.wavelength_nm is None:
+            return ""
+        return calibration_status(
+            self.config_repo.machine_configs_path / CALIBRATIONS_DIR_NAME,
+            channel.intensity_calibration_file,
+            channel.wavelength_nm,
+            control._def.ILLUMINATION_INTENSITY_FACTOR,
+            channel.max_output,
+            controller_port=channel.controller_port,
+            source_code=self.illumination_config.get_source_code(channel),
+        )
 
     def _on_type_changed(self, row, new_type):
         """Handle type change - update wavelength, max output and controller port defaults"""

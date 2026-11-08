@@ -56,6 +56,15 @@ sudo cp drivers\ and\ libraries/toupcam/linux/udev/99-toupcam.rules /etc/udev/ru
 </details>
 
 <details>
+<summary>Add udev rules for Thorlabs power meters (Illumination Power Calibration)</summary>
+
+```
+sudo cp drivers\ and\ libraries/thorlabs/linux/udev/99-thorlabs-pm16.rules /etc/udev/rules.d
+```
+Then unplug and re-plug the meter. Setup on macOS and Windows: [docs/illumination-power-calibration.md](docs/illumination-power-calibration.md).
+</details>
+
+<details>
 <summary>Installing drivers and libraries for Hamamatsu camera support</summary>
 
 Open the `software/drivers and libraries/hamamatsu` folder in terminal and run the following

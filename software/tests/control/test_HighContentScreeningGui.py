@@ -1,3 +1,5 @@
+import threading
+import time
 import unittest.mock
 
 import pytest
@@ -133,6 +135,114 @@ def test_acquisition_finished_flushes_napari_multichannel_viewer(qtbot, monkeypa
     win.togglePerformanceMode()
     win.multipointController.acquisition_finished.emit()
     assert calls == [win.napariMultiChannelWidget] * 3
+
+
+def _gui_with_live_started_from_the_button(qtbot):
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    win.liveControlWidget.btn_live.click()
+    assert win.liveController.is_live and win.liveControlWidget.btn_live.isChecked()
+    return win
+
+
+def test_live_button_shows_live_off_when_an_acquisition_stops_it(qtbot, confirm_exit_yes):
+    """MultiPointController stops live itself, for GUI, TCP and fluidics runs alike: the button must follow."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    button = win.liveControlWidget.btn_live
+
+    win.liveController.stop_live()  # what run_acquisition does before the worker starts
+    win.multipointController.signal_acquisition_start.emit()
+
+    assert not button.isChecked()
+    assert button.text() == "Live"
+
+
+def test_live_button_follows_live_at_the_end_of_an_acquisition(qtbot, confirm_exit_yes):
+    """A run that fails to start reports only the finish; an INI-enabled resume turns live back on before it."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    button = win.liveControlWidget.btn_live
+
+    win.liveController.stop_live()
+    win.multipointController.acquisition_finished.emit()
+    assert not button.isChecked()
+    assert button.text() == "Live"
+
+    win.liveController.start_live()  # resume_live_after_acquisition = True
+    try:
+        win.multipointController.acquisition_finished.emit()
+        assert button.isChecked()
+        assert button.text() == "Stop"
+        assert button.isEnabled()
+        assert not win.liveControlWidget.btn_snap.isEnabled()  # no snapping while live
+    finally:
+        win.liveController.stop_live()
+
+
+def test_live_and_snap_are_locked_while_an_acquisition_runs(qtbot, confirm_exit_yes):
+    """The acquisition owns the camera and the light: neither button may start live or snap until it finishes."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    live_widget = win.liveControlWidget
+
+    win.liveController.stop_live()
+    win.multipointController.signal_acquisition_start.emit()
+    assert not live_widget.btn_live.isEnabled()
+    assert not live_widget.btn_snap.isEnabled()
+
+    win.multipointController.acquisition_finished.emit()
+    assert live_widget.btn_live.isEnabled()
+    assert live_widget.btn_snap.isEnabled()
+
+
+def test_a_run_on_another_thread_waits_for_live_and_snap_to_lock_before_preparing(qtbot, confirm_exit_yes, monkeypatch):
+    """A TCP run prepares on the server's thread while the GUI still takes clicks. Its preparing callback must not
+    return until the GUI thread has locked Live and Snap, or the run could stop live and use the camera first."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    live_widget = win.liveControlWidget
+    order = []
+    set_running = live_widget.set_acquisition_running
+
+    def recording_set_running(running):
+        order.append(f"lock={running}")
+        set_running(running)
+
+    monkeypatch.setattr(live_widget, "set_acquisition_running", recording_set_running)
+
+    def server_thread():
+        win.multipointController.callbacks.signal_acquisition_preparing()
+        order.append("preparing returned")
+
+    try:
+        thread = threading.Thread(target=server_thread)
+        thread.start()
+        time.sleep(0.3)  # the GUI thread is busy: anything queued to it cannot run yet
+        qtbot.waitUntil(lambda: not thread.is_alive(), timeout=5000)
+
+        assert order == ["lock=True", "preparing returned"]
+        assert not live_widget.btn_live.isEnabled()
+        assert not live_widget.btn_snap.isEnabled()
+        assert live_widget.btn_live.isChecked()  # live is still on: the run has not stopped it yet
+
+        win.liveController.stop_live()
+        win.multipointController.acquisition_finished.emit()  # every failed start sends it too
+        assert live_widget.btn_live.isEnabled()
+        assert live_widget.btn_snap.isEnabled()
+    finally:
+        win.liveController.stop_live()
+
+
+def test_a_run_on_the_gui_thread_locks_live_and_snap_without_waiting(qtbot, confirm_exit_yes):
+    """GUI-started and fluidics runs prepare on the GUI thread: the lock is direct there (a blocking call to the
+    thread's own event loop would never run)."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    live_widget = win.liveControlWidget
+    try:
+        win.multipointController.callbacks.signal_acquisition_preparing()
+
+        assert not live_widget.btn_live.isEnabled()
+        assert not live_widget.btn_snap.isEnabled()
+    finally:
+        win.liveController.stop_live()
 
 
 def test_image_display_signals_connected_once(qtbot, monkeypatch, confirm_exit_yes):
@@ -397,3 +507,129 @@ def test_wellplate_yaml_moving_the_stack_to_the_stepper_gives_the_entries_the_st
     w._apply_yaml_settings(AcquisitionYAMLData(widget_type="wellplate", nz=4, delta_z_um=2.0, use_piezo=False))
 
     assert w.entry_minZ.maximum() == control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
+
+
+# ---- Open in Viewer button (opt-in; opens the finished run in a separate ndviewer_light process) ----
+
+import dataclasses  # noqa: E402
+import time  # noqa: E402
+
+from control.core.multi_point_utils import ScanPositionInformation  # noqa: E402
+from control.core.open_in_viewer import RunSnapshot, ViewerPreflight, check_viewer, software_dir  # noqa: E402
+
+
+def _gui(qtbot):
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    return win
+
+
+def test_open_in_viewer_button_is_hidden_unless_opted_in(qtbot, monkeypatch, confirm_exit_yes):
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", False)
+    win = _gui(qtbot)
+    tab = win.napariMultiChannelWidget  # the button lives where the run's images appear
+    assert tab.btn_openInViewer.isHidden()
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    tab.update_open_in_viewer_visibility()
+    assert not tab.btn_openInViewer.isHidden() and not tab.btn_openInViewer.isEnabled()
+
+
+def test_open_in_viewer_enables_after_a_finished_run(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    win = _gui(qtbot)
+    tab = win.napariMultiChannelWidget
+    c = win.multipointController
+    (tmp_path / "run").mkdir()
+    c.open_in_viewer_snapshot = RunSnapshot(str(tmp_path / "run"), False)
+    c.last_end_reason = "user_abort"
+    c.acquisition_finished.emit()
+    assert tab.btn_openInViewer.isEnabled() and tab.btn_openInViewer.toolTip() == str(tmp_path / "run")
+    launched = []
+    monkeypatch.setattr(control.widgets, "check_viewer", lambda sd: ViewerPreflight((), "x", True))
+    monkeypatch.setattr(control.widgets, "launch_viewer", lambda run_dir, sd: launched.append((run_dir, sd)))
+    tab.btn_openInViewer.click()
+    assert launched == [(str(tmp_path / "run"), software_dir())]
+    c.signal_acquisition_start.emit()
+    assert not tab.btn_openInViewer.isEnabled() and tab.btn_openInViewer.toolTip() == "No finished acquisition yet"
+
+
+def test_open_in_viewer_uses_the_folder_captured_at_start_not_the_restored_base_path(
+    qtbot, monkeypatch, confirm_exit_yes, tmp_path
+):
+    # The fluidics imaging port (widgets_fluidics/qt_imaging_port.py) restores controller.base_path in its own
+    # acquisition_finished slot; whichever slot runs first, the button must get the run's folder.
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    win = _gui(qtbot)
+    c = win.multipointController
+    (tmp_path / "protocol_run").mkdir()
+    c.open_in_viewer_snapshot = RunSnapshot(str(tmp_path / "protocol_run"), False)
+    c.last_end_reason = "completed"
+    c.set_base_path(str(tmp_path / "operator_dir"))  # what the port's restore leaves behind
+    c.experiment_ID = "stale"
+    c.acquisition_finished.emit()
+    tab = win.napariMultiChannelWidget
+    assert tab.btn_openInViewer.isEnabled()
+    assert tab.btn_openInViewer.toolTip() == str(tmp_path / "protocol_run")
+
+
+def test_snapshot_is_taken_at_acquisition_start(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
+    win = _gui(qtbot)
+    c = win.multipointController
+    # _signal_acquisition_start_fn is the start callback that emits signal_acquisition_save_target. It reads the
+    # whole AcquisitionParameters (scan information, selected configurations, NZ, ...), so build real ones the
+    # way run_acquisition does, from a controller set up for a run.
+    c.set_base_path(str(tmp_path))
+    c.start_new_experiment("exp", add_timestamp=False)
+    c.set_skip_saving(True)
+    c.selected_configurations = []
+    c.run_acquisition_current_fov = False
+    c.timestamp_acquisition_started = time.time()  # run_acquisition sets this before build_params
+    params = c.build_params(ScanPositionInformation.from_scan_coordinates(c.scanCoordinates))
+    c._signal_acquisition_start_fn(params)
+    assert c.open_in_viewer_snapshot == RunSnapshot(str(tmp_path / "exp"), True)
+    c._signal_acquisition_start_fn(dataclasses.replace(params, skip_saving=False))
+    assert c.open_in_viewer_snapshot == RunSnapshot(str(tmp_path / "exp"), False)
+
+
+def test_open_in_viewer_shows_the_preflight_problem_instead_of_launching(
+    qtbot, monkeypatch, confirm_exit_yes, tmp_path
+):
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    win = _gui(qtbot)
+    tab = win.napariMultiChannelWidget
+    tab.set_finished_run_dir(str(tmp_path))
+    shown = []
+    monkeypatch.setattr(control.widgets.QMessageBox, "warning", lambda *a: shown.append(a[2]))
+    monkeypatch.setattr(control.widgets, "check_viewer", lambda sd: check_viewer(sd, isfile=lambda f: False))
+    monkeypatch.setattr(control.widgets, "launch_viewer", lambda *a: pytest.fail("launched"))
+    tab.btn_openInViewer.click()
+    assert shown and "git submodule update --init" in shown[0]
+
+
+def test_toggling_the_preference_keeps_the_finished_run(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    win = _gui(qtbot)
+    tab = win.napariMultiChannelWidget
+    tab.set_finished_run_dir(str(tmp_path))
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", False)
+    tab.update_open_in_viewer_visibility()
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    tab.update_open_in_viewer_visibility()
+    assert tab.btn_openInViewer.isEnabled() and tab.btn_openInViewer.toolTip() == str(tmp_path)
+
+
+def test_a_run_that_fails_to_start_keeps_the_previous_finished_run(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
+    # Start pressed with nothing to acquire: the controller reports failed_to_start through acquisition_finished
+    # without ever emitting signal_acquisition_start, so the last finished run must stay openable.
+    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
+    win = _gui(qtbot)
+    c = win.multipointController
+    (tmp_path / "run").mkdir()
+    c.open_in_viewer_snapshot = RunSnapshot(str(tmp_path / "run"), False)
+    c.last_end_reason = "completed"
+    c.acquisition_finished.emit()
+    c.last_end_reason = "failed_to_start"
+    c.acquisition_finished.emit()
+    t = win.napariMultiChannelWidget
+    assert t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == str(tmp_path / "run")

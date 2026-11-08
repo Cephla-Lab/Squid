@@ -189,6 +189,10 @@ class MultiPointControllerFunctions:
     # Default no-op lambda avoids None checks at every call site. Unlike mutable defaults
     # (lists/dicts), lambdas are safe as defaults since they're not modified.
     signal_plate_view_init: Callable[[PlateViewInit], None] = lambda *a, **kw: None
+    # A run passed its start checks and is about to stop live and prepare the hardware. Sent from the
+    # caller's thread (the TCP server's, for a TCP run); every start that then fails sends
+    # signal_acquisition_finished, so a lock taken on this always comes off.
+    signal_acquisition_preparing: Callable[[], None] = lambda *a, **kw: None
     signal_timepoint_finished: Callable[[int], None] = lambda *a, **kw: None
     # Optional Slack notification callbacks (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint_notification: Callable[["TimepointStats"], None] = lambda *a, **kw: None

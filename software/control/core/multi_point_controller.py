@@ -549,6 +549,10 @@ class MultiPointController:
         acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_binned_um()
         acquisition_parameters["tube_lens_mm"] = control._def.TUBE_LENS_MM
         acquisition_parameters["confocal_mode"] = self.liveController.is_confocal_mode()
+        acquisition_parameters["illumination"] = {
+            channel.name: self.liveController.get_intensity_description(channel)
+            for channel in self.selected_configurations
+        }
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))
         f.close()
@@ -753,6 +757,8 @@ class MultiPointController:
         hardware_prepared = False
         self._run_state_writer = squid.acquisition_state.NullRunStateWriter()
         try:
+            # First in the try: from here every failed start reaches the finally below and reports finished.
+            self.callbacks.signal_acquisition_preparing()
             self._log.info("start multipoint")
             self._start_position = self.stage.get_pos()
 
@@ -802,7 +808,7 @@ class MultiPointController:
             if self.liveController.is_live:
                 self.liveController_was_live_before_multipoint = True
                 try:
-                    self.liveController.stop_live()  # @@@ to do: also uncheck the live button
+                    self.liveController.stop_live()  # the GUI's Live button is locked already; it follows on signal_acquisition_start
                 except TimeoutError:
                     # Live is already stopped and its trigger timer cancelled by this
                     # point; the idle wait below is the recovery, so don't abort here.
