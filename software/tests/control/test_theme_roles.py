@@ -34,6 +34,7 @@ def test_classic_literals_are_pinned():
     assert s["callout-warning"] == "background-color: #fff3cd; padding: 10px; border-radius: 4px;"
     assert s["card"] == ""
     assert s["group-plain"] == ""
+    assert s["drop-target"] == " {cls} {{ border: 3px dashed #4a90d9; }}"
 
 
 def test_set_role_in_classic_applies_the_literal(qapp):
@@ -130,3 +131,35 @@ def test_button_state_rules_exist():
         'QPushButton[role="action"][on="true"]:disabled',
     ):
         assert rule in qss
+
+
+def test_every_classic_role_has_a_light_rule():
+    qss = theme.build_stylesheet(theme.LIGHT, 1.0, None)
+    for key in theme.CLASSIC_STYLES:
+        if key == "drop-target":  # a format template for *[dropTarget="true"], not a role
+            continue
+        name, _, state = key.partition(":")
+        selector = f'[role="{name}"]' + (f'[{state}="true"]' if state else "")
+        assert selector in qss, key
+
+
+def test_drop_target_feedback_classic_restores_original_sheet(qapp):
+    theme.install(qapp, "classic")
+    w = QWidget()
+    w.setStyleSheet("color: red;")
+    theme.set_drop_target_feedback(w, True)
+    assert w.styleSheet() == "color: red; QWidget { border: 3px dashed #4a90d9; }"
+    theme.set_drop_target_feedback(w, False)
+    assert w.styleSheet() == "color: red;"
+
+
+def test_drop_target_feedback_light_sets_property(qapp):
+    m = theme.install(qapp, "light")
+    try:
+        w = QWidget()
+        theme.set_drop_target_feedback(w, True)
+        assert w.property("dropTarget") is True and w.styleSheet() == ""
+        theme.set_drop_target_feedback(w, False)
+        assert w.property("dropTarget") is False
+    finally:
+        m.apply("classic")

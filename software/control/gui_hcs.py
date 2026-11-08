@@ -1464,22 +1464,24 @@ class HighContentScreeningGui(QMainWindow):
 
         if control._def.SIMULATED_DISK_IO_ENABLED:
             simulated_io_banner = QLabel("  SIMULATED DISK I/O - Images are encoded but NOT saved to disk  ")
-            simulated_io_banner.setStyleSheet(
-                "background-color: #FF6B6B; color: white; font-weight: bold; padding: 8px;"
-            )
+            theme.set_role(simulated_io_banner, "banner-danger")
             simulated_io_banner.setAlignment(Qt.AlignCenter)
             layout.addWidget(simulated_io_banner)
 
+        theme.set_role(self.profileWidget, "card")
+        theme.set_role(self.liveControlWidget, "card")
         layout.addWidget(self.profileWidget)
         layout.addWidget(self.liveControlWidget)
 
         layout.addWidget(self.cameraTabWidget)
 
         if SHOW_DAC_CONTROL:
+            theme.set_role(self.dacControlWidget, "card")
             layout.addWidget(self.dacControlWidget)
 
         # Create a widget to hold sample settings and navigation viewer
         navigation_section_widget = QWidget()
+        theme.set_role(navigation_section_widget, "card")
         navigation_section_layout = QVBoxLayout()
         navigation_section_layout.setContentsMargins(0, 0, 0, 0)
         navigation_section_layout.setSpacing(0)

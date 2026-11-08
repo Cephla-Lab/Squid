@@ -713,6 +713,8 @@ CLASSIC_STYLES = {
     "callout-warning": "background-color: #fff3cd; padding: 10px; border-radius: 4px;",
     "card": "",
     "group-plain": "",
+    # Format template: {cls} is the widget's class name (drag-and-drop highlight, see set_drop_target_feedback).
+    "drop-target": " {cls} {{ border: 3px dashed #4a90d9; }}",
 }
 
 
@@ -747,5 +749,22 @@ def set_role(widget: QWidget, role: str, **states: bool) -> None:
     if role == "card":
         # A stylesheet background/border paints on a QWidget subclass only with this attribute.
         widget.setAttribute(Qt.WA_StyledBackground, True)
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+
+
+def set_drop_target_feedback(widget: QWidget, active: bool) -> None:
+    """Show or clear the dashed drag-and-drop highlight on ``widget``."""
+    if manager().is_classic():
+        if active:
+            if not hasattr(widget, "_original_stylesheet"):
+                widget._original_stylesheet = widget.styleSheet()
+            widget.setStyleSheet(
+                widget._original_stylesheet + CLASSIC_STYLES["drop-target"].format(cls=type(widget).__name__)
+            )
+        elif hasattr(widget, "_original_stylesheet"):
+            widget.setStyleSheet(widget._original_stylesheet)
+        return
+    widget.setProperty("dropTarget", active)
     widget.style().unpolish(widget)
     widget.style().polish(widget)

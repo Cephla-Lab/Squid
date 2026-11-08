@@ -89,6 +89,7 @@ from scipy.spatial import Delaunay
 import shutil
 from control._def import *
 from control.lighting import LightSourceType
+import control.theme as theme
 from control.widgets_homing import confirm_nosepiece_lowered
 from PIL import Image, ImageDraw, ImageFont
 
@@ -1020,25 +1021,19 @@ class AcquisitionYAMLDropMixin:
                 file_path = url.toLocalFile()
                 if self._is_valid_yaml_drop(file_path):
                     event.accept()
-                    # Visual feedback - dashed border (store original for restore)
-                    if not hasattr(self, "_original_stylesheet"):
-                        self._original_stylesheet = self.styleSheet()
-                    self.setStyleSheet(
-                        self._original_stylesheet + f" {self.__class__.__name__} {{ border: 3px dashed #4a90d9; }}"
-                    )
+                    # Visual feedback - dashed border
+                    theme.set_drop_target_feedback(self, True)
                     return
         event.ignore()
 
     def dragLeaveEvent(self, event):
         """Handle drag leave event."""
-        if hasattr(self, "_original_stylesheet"):
-            self.setStyleSheet(self._original_stylesheet)
+        theme.set_drop_target_feedback(self, False)
         event.accept()
 
     def dropEvent(self, event):
         """Handle drop event for YAML file or folder."""
-        if hasattr(self, "_original_stylesheet"):
-            self.setStyleSheet(self._original_stylesheet)
+        theme.set_drop_target_feedback(self, False)
         paths = [u.toLocalFile() for u in event.mimeData().urls()]
         yaml_paths = [self._resolve_yaml_path(p) for p in paths if self._is_valid_yaml_drop(p)]
         if yaml_paths:
@@ -1285,7 +1280,7 @@ class AcquisitionYAMLMismatchDialog(QDialog):
         # Mismatch details
         message_label = QLabel(validation_result.message)
         message_label.setWordWrap(True)
-        message_label.setStyleSheet("background-color: #fff3cd; padding: 10px; border-radius: 4px;")
+        theme.set_role(message_label, "callout-warning")
         layout.addWidget(message_label)
 
         layout.addSpacing(10)
@@ -1295,7 +1290,7 @@ class AcquisitionYAMLMismatchDialog(QDialog):
             "Please update your hardware settings to match the YAML file, then drag and drop again."
         )
         instruction_label.setWordWrap(True)
-        instruction_label.setStyleSheet("color: #666;")
+        theme.set_role(instruction_label, "note")
         layout.addWidget(instruction_label)
 
         layout.addSpacing(15)
@@ -1498,7 +1493,7 @@ class PreferencesDialog(QDialog):
 
         # Restart warning label
         restart_label = QLabel("Note: Camera settings require software restart to take effect.")
-        restart_label.setStyleSheet("color: #666; font-style: italic;")
+        theme.set_role(restart_label, "hint")
         layout.addRow(restart_label)
 
         # Default Binning Factor
@@ -1668,7 +1663,7 @@ class PreferencesDialog(QDialog):
                 "spot and that images are sharp."
             )
             prior_note.setWordWrap(True)
-            prior_note.setStyleSheet("color: #666; font-style: italic;")
+            theme.set_role(prior_note, "hint")
             prior_layout.addRow(prior_note)
 
             prior_group.content.addLayout(prior_layout)
@@ -1939,7 +1934,7 @@ class PreferencesDialog(QDialog):
 
         # Legend for restart indicator
         legend_label = QLabel("* Requires software restart to take effect")
-        legend_label.setStyleSheet("color: #666; font-style: italic;")
+        theme.set_role(legend_label, "hint")
         layout.addWidget(legend_label)
 
         layout.addStretch()
@@ -2103,7 +2098,7 @@ class PreferencesDialog(QDialog):
 
         # Legend
         legend_label = QLabel("* Requires software restart to take effect")
-        legend_label.setStyleSheet("color: #666; font-style: italic;")
+        theme.set_role(legend_label, "hint")
         layout.addWidget(legend_label)
 
         layout.addStretch()
@@ -2263,7 +2258,7 @@ class PreferencesDialog(QDialog):
         spinbox.setValue(value)
         spinbox.setToolTip(tooltip)
         physical_label = QLabel()
-        physical_label.setStyleSheet("color: #666;")
+        theme.set_role(physical_label, "note")
 
         def show_physical(steps):
             physical_label.setText(f"≈ {steps * physical_per_step:.1f} {unit}" if physical_per_step else "")
@@ -3139,7 +3134,7 @@ class PreferencesDialog(QDialog):
             note_label = QLabel(
                 "Note: Settings marked [restart required] will only take effect after restarting the software."
             )
-            note_label.setStyleSheet("color: #666; font-style: italic;")
+            theme.set_role(note_label, "hint")
             note_label.setWordWrap(True)
             layout.addWidget(note_label)
 
@@ -3247,7 +3242,7 @@ class StageUtils(QDialog):
         self.btn_zero_Z.setDefault(False)
 
         self.btn_load_slide = QPushButton("Move To Loading Position")
-        self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_load_slide, "action")
 
         # Connect buttons to functions
         self.btn_home_X.clicked.connect(self.home_x)
@@ -3400,7 +3395,7 @@ class StageUtils(QDialog):
     def _callback_loading_position_reached(self, success: bool, error_message: str):
         """The move to the loading position ended (on the GUI thread, from _queued_slot)."""
         self.slide_position = "loading"
-        self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
+        theme.set_role(self.btn_load_slide, "action", on=True)
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live and not self.keep_live_off_at_loading:
@@ -3420,7 +3415,7 @@ class StageUtils(QDialog):
             )
             return
         self.slide_position = "scanning"
-        self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_load_slide, "action")
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live:
@@ -3575,7 +3570,7 @@ class LaserAutofocusSettingWidget(QWidget):
         # Live button
         self.btn_live = QPushButton("Start Live")
         self.btn_live.setCheckable(True)
-        self.btn_live.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_live, "primary")
 
         # Exposure time control
         exposure_layout = QHBoxLayout()
@@ -3673,7 +3668,7 @@ class LaserAutofocusSettingWidget(QWidget):
         initialize_group = QFrame()
         initialize_layout = QVBoxLayout()
         self.initialize_button = QPushButton("Initialize")
-        self.initialize_button.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.initialize_button, "action")
         initialize_layout.addWidget(self.initialize_button)
         initialize_group.setLayout(initialize_layout)
 
@@ -5423,7 +5418,7 @@ class LiveControlWidget(QFrame):
         self.btn_live.setCheckable(True)
         self.btn_live.setChecked(False)
         self.btn_live.setDefault(False)
-        self.btn_live.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_live, "primary")
         self.btn_live.setSizePolicy(sizePolicy)
         self.btn_live.setToolTip("Start/stop continuous live imaging with the current Live Configuration.")
 
@@ -5434,7 +5429,7 @@ class LiveControlWidget(QFrame):
         self.btn_snap = QPushButton("Snap")
         self.btn_snap.setCheckable(False)
         self.btn_snap.setDefault(False)
-        self.btn_snap.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_snap, "action")
         self.btn_snap.setSizePolicy(sizePolicy)
         self.btn_snap.setToolTip("View a single frame with the current Live Configuration, to reduce photobleaching.")
 
@@ -7331,7 +7326,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)  # opt-in
 
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
-        self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_startAcquisition, "primary")
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -8748,7 +8743,7 @@ class WellplateMultiPointWidget(
         self.checkbox_skipSaving.setChecked(False)
 
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
-        self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_startAcquisition, "primary")
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -15119,7 +15114,7 @@ class WavelengthWidget(QWidget):
         layout.addWidget(self.spinbox)
 
         self.na_label = QLabel("N/A")
-        self.na_label.setStyleSheet("color: gray;")
+        theme.set_role(self.na_label, "note-gray")
         layout.addWidget(self.na_label)
 
         # Set initial state
@@ -15191,7 +15186,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
             "Only change these settings when necessary."
         )
         warning_label.setWordWrap(True)
-        warning_label.setStyleSheet("color: #CC0000; font-weight: bold;")
+        theme.set_role(warning_label, "danger")
         layout.addWidget(warning_label)
 
         # Table for illumination channels
@@ -15645,7 +15640,7 @@ class ControllerPortMappingDialog(QDialog):
             "USB ports are for LED matrix patterns, D ports are for lasers."
         )
         info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: gray; font-style: italic;")
+        theme.set_role(info_label, "hint-gray")
         layout.addWidget(info_label)
 
         # Table for port mappings
@@ -15755,7 +15750,7 @@ class SourceCodeWidget(QWidget):
         layout.addWidget(self.spinbox)
 
         self.na_label = QLabel("N/A")
-        self.na_label.setStyleSheet("color: gray;")
+        theme.set_role(self.na_label, "note-gray")
         layout.addWidget(self.na_label)
 
         # Set initial state
@@ -15827,15 +15822,14 @@ class RAMMonitorWidget(QWidget):
         self.label_available = self._create_value_label(fm.horizontalAdvance("888.8 GB"))
 
         # Separator and descriptor labels
-        separator_style = "color: #666;"
         self.label_separator1 = QLabel("|")
-        self.label_separator1.setStyleSheet(separator_style)
+        theme.set_role(self.label_separator1, "note")
         self.label_peak_label = QLabel("peak:")
-        self.label_peak_label.setStyleSheet(separator_style)
+        theme.set_role(self.label_peak_label, "note")
         self.label_separator2 = QLabel("|")
-        self.label_separator2.setStyleSheet(separator_style)
+        theme.set_role(self.label_separator2, "note")
         self.label_available_label = QLabel("available:")
-        self.label_available_label.setStyleSheet(separator_style)
+        theme.set_role(self.label_available_label, "note")
 
         layout.addWidget(self.label_icon)
         layout.addWidget(self.label_current)
@@ -16018,10 +16012,10 @@ class BackpressureMonitorWidget(QWidget):
         self.label_bytes = self._create_value_label(fm.horizontalAdvance("8888.8/8888.8 MB"))
 
         self.label_separator = QLabel("|")
-        self.label_separator.setStyleSheet("color: #666;")
+        theme.set_role(self.label_separator, "note")
 
         self.label_throttled = QLabel("")
-        self.label_throttled.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        theme.set_role(self.label_throttled, "danger-soft")
 
         layout.addWidget(self.label_prefix)
         layout.addWidget(self.label_jobs)
