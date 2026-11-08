@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 import squid.abc
+import squid.stage.utils
 from control._def import TriggerMode
 from control.core.laser_auto_focus_controller import LockOnRecord
 from control.core.multi_point_worker import MultiPointWorker, SummarizeResult
@@ -232,6 +233,12 @@ def _scan(w, coords, region_id="A1"):
     w.scan_region_coords_mm = {region_id: coords[0]}
 
 
+def _logged(w):
+    """Every message the worker logged, at any level."""
+    calls = w._log.info.call_args_list + w._log.warning.call_args_list + w._log.error.call_args_list
+    return [str(c.args[0]) for c in calls if c.args]
+
+
 def test_channel_first_images_every_plane_relative_to_each_fovs_anchor(tmp_path):
     w = _worker(tmp_path, references=[100.0, 108.0], piezo=_FakePiezo(position=90.0))
 
@@ -276,6 +283,7 @@ def test_lock_on_that_moves_then_raises_restores_z_pre(tmp_path):
     assert (w._laser_af_successes, w._laser_af_failures) == (0, 1)
     assert w.piezo.position == pytest.approx(100.0)
     assert len(w.laser_auto_focus_controller.records) == 1  # a failed lock-on writes no record
+    assert any("stacking from" in m for m in _logged(w))
 
 
 class _PiezoDiesAfter(_FakePiezo):
@@ -382,6 +390,7 @@ def test_no_record_requires_the_first_fov_lock_on_and_stops_before_imaging(tmp_p
     assert w._abort_cause == "error"
     assert any(c.args and c.args[0] == FIRST_FOV_MESSAGE for c in w._log.error.call_args_list)
     assert w.piezo.position == pytest.approx(150.0)  # the failed lock-on left Z at z_pre
+    assert not any("stacking from" in m for m in _logged(w))  # the run stops: nothing is stacked
 
 
 def test_no_record_moves_to_the_first_fov_and_its_coordinate_z_before_locking_on(tmp_path):
@@ -482,3 +491,60 @@ def test_time_lapse_restore_uses_the_anchor_on_a_stepper(tmp_path, piezo_scope):
     w.time_point = 1
     w.move_to_coordinate((10.0, 20.0), "A1", 0)
     assert w.stage.z_mm == pytest.approx(1.0)
+
+
+_Z_SETTLE_S = 0.0123  # a stabilization time no other sleep uses
+
+
+def _record_events(w, monkeypatch):
+    """One ordered log of lock-ons, piezo moves, sleeps and frames."""
+    monkeypatch.setattr(squid.stage.utils, "z_stabilization_time_s", lambda: _Z_SETTLE_S)
+    events = []
+    real_move = w.piezo.move_to
+    w.piezo.move_to = lambda um: (events.append(("move", um)), real_move(um))[1]
+    w._sleep = lambda sec: events.append(("sleep", sec))
+    af = w.laser_auto_focus_controller
+    real_af = af.move_to_target
+    af.move_to_target = lambda um: (events.append(("af",)), real_af(um))[1]
+    real_acquire = w.acquire_camera_image
+    w.acquire_camera_image = lambda *a, **k: (events.append(("frame",)), real_acquire(*a, **k))[1]
+    return events
+
+
+@pytest.mark.parametrize("trigger_mode", [TriggerMode.HARDWARE, TriggerMode.SOFTWARE])
+@pytest.mark.parametrize("fail_calls", [(), (1,)])
+def test_the_first_frame_after_the_lock_on_settles_once_in_both_trigger_modes(
+    tmp_path, monkeypatch, trigger_mode, fail_calls
+):
+    """Ruling R8: as prepare_z_stack after the per-FOV AF, the move to the FOV's first frame settles the
+    stabilization time, in hardware trigger too; the later plane steps keep the per-mode piezo delay only."""
+    w = _worker(tmp_path, references=[100.0], fail_calls=fail_calls, record_anchor_um=100.0)
+    w.liveController.trigger_mode = trigger_mode
+    events = _record_events(w, monkeypatch)
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    first_frame = events.index(("frame",))
+    last_move = max(i for i, e in enumerate(events[:first_frame]) if e[0] == "move")
+    assert events.index(("af",)) < last_move  # the move to the first frame comes after the lock-on
+    assert ("sleep", _Z_SETTLE_S) in events[last_move:first_frame]
+    after_first_frame = events[first_frame:]
+    assert ("sleep", _Z_SETTLE_S) not in after_first_frame  # the plane steps do not each add it
+    later_sleeps = [e[1] for e in after_first_frame if e[0] == "sleep"]
+    if trigger_mode == TriggerMode.HARDWARE:
+        assert later_sleeps == []
+    else:
+        assert later_sleeps and all(sec == pytest.approx(0.02) for sec in later_sleeps)  # MULTIPOINT_PIEZO_DELAY_MS
+
+
+def test_a_fov_with_no_eligible_frame_does_not_settle(tmp_path, monkeypatch):
+    # anchor 1, range -10..-4: every target (-9 .. -3) is below the piezo travel.
+    w = _worker(tmp_path, relative_range=(-10.0, -4.0), references=[1.0])
+    w.liveController.trigger_mode = TriggerMode.HARDWARE
+    events = _record_events(w, monkeypatch)
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    assert w.frames == []
+    assert ("sleep", _Z_SETTLE_S) not in events
+    assert w.piezo.position == pytest.approx(1.0)

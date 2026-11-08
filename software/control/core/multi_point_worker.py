@@ -1316,6 +1316,11 @@ class MultiPointWorker:
                 self._log.error(RELATIVE_FIRST_FOV_LOCK_ON_FAILED_MESSAGE)
                 self._abort_due_to_error()
                 return
+            if not af_succeeded:
+                self._log.info(
+                    f"relative z-stack anchor, region '{region_id}' fov {fov}: {self._anchor_um:.3f} µm "
+                    "(lock-on failed: stacking from the restored z)"
+                )
             if (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
                 # The next time point's lock-on starts here: the anchor on a stepper, so it starts from
                 # displacement 0; the stage z on a piezo scope, where the piezo holds the anchor.
@@ -1336,6 +1341,7 @@ class MultiPointWorker:
         dz_um = abs(self.deltaZ) * 1000
         nz = self._relative_nz()
         n_configs = len(self.selected_configurations)
+        first_frame = True  # the FOV's first eligible frame settles after the lock-on
         for k in range(nz):
             file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{k:0{FILE_ID_PADDING}}"
             # Record the plane's nominal, un-offset position (computed even where it lies outside the travel).
@@ -1355,7 +1361,8 @@ class MultiPointWorker:
                 target_um = targets[config_idx][k]
                 if target_um is None:
                     continue
-                self._move_actuator_to_um(target_um)
+                self._move_actuator_to_um(target_um, after_lock_on=first_frame)
+                first_frame = False
                 current_image = fov * nz * n_configs + k * n_configs + config_idx + 1
                 self._acquire_channel_image(config, config_idx, file_ID, current_path, k, region_id, fov, current_image)
 
@@ -1394,14 +1401,13 @@ class MultiPointWorker:
             self._laser_af_per_stack_failures += 1
         self._anchor_um = self._actuator_position_um()
         where = f"region '{region_id}' fov {fov}" + (f" before the '{channel_name}' stack" if channel_name else "")
-        self._log.info(f"relative z-stack anchor, {where}: {self._anchor_um:.3f} µm")
         if locked:
             self.laser_auto_focus_controller.record_lock_on()
             self._require_first_lock_on = False
+            self._log.info(f"relative z-stack anchor, {where}: {self._anchor_um:.3f} µm (locked on)")
         else:
-            self._log.error(
-                f"laser AF lock-on failed, {where}: Z restored to {self._anchor_um:.3f} µm, stacking from there"
-            )
+            # Whether the stack still runs from here is the caller's call (the first-FOV stop may end the run).
+            self._log.error(f"laser AF lock-on failed, {where}: Z restored to {self._anchor_um:.3f} µm")
         return locked
 
     def _relative_nz(self) -> int:
@@ -1458,13 +1464,21 @@ class MultiPointWorker:
         limits = control._def.SOFTWARE_POS_LIMIT
         return limits.Z_NEGATIVE * 1000, limits.Z_POSITIVE * 1000
 
-    def _move_actuator_to_um(self, um: float) -> None:
-        """Absolute actuator move (no clamp: the caller passes a target inside the travel), then settle."""
+    def _move_actuator_to_um(self, um: float, *, after_lock_on: bool = False) -> None:
+        """Absolute actuator move (no clamp: the caller passes a target inside the travel), then settle: the piezo
+        delay in software trigger, or the stage's stabilization time.
+
+        after_lock_on: the move to the first frame after a lock-on (successful or rolled back). It also settles the
+        stabilization time on a piezo, in both trigger modes, as prepare_z_stack does after the per-FOV AF; a
+        stage move settles that anyway. Later steps of the stack keep the per-mode settle only.
+        """
         if self._actuator_is_piezo():
             self.piezo.move_to(um)
             self.z_piezo_um = um  # only after the move succeeded
             if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+            if after_lock_on:
+                self._sleep(squid.stage.utils.z_stabilization_time_s())
         else:
             self.stage.move_z_to(um / 1000)
             self._sleep(squid.stage.utils.z_stabilization_time_s())
