@@ -764,6 +764,7 @@ class TestLaserAFConfig:
         [
             ("dual_left", SpotDetectionMode.NTH_FROM_LEFT, 1),
             ("dual_right", SpotDetectionMode.NTH_FROM_RIGHT, 1),
+            ("multi_left", SpotDetectionMode.NTH_FROM_LEFT, 1),
             ("multi_right", SpotDetectionMode.NTH_FROM_RIGHT, 1),
             ("multi_second_right", SpotDetectionMode.NTH_FROM_RIGHT, 2),
         ],

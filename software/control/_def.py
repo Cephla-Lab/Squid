@@ -546,10 +546,12 @@ class SpotDetectionMode(Enum):
 
 
 # Mode names written by configs before spot_index existed; each picked a fixed spot on one side.
-# (multi_second_right was never implemented; it now reads as the 2nd spot from the right.)
+# (multi_second_right was never implemented; it now reads as the 2nd spot from the right.
+# multi_left / multi_right are the names used by the laser AF improvement branch, PR #473.)
 _LEGACY_SPOT_DETECTION_MODES = {
     "dual_left": (SpotDetectionMode.NTH_FROM_LEFT, 1),
     "dual_right": (SpotDetectionMode.NTH_FROM_RIGHT, 1),
+    "multi_left": (SpotDetectionMode.NTH_FROM_LEFT, 1),
     "multi_right": (SpotDetectionMode.NTH_FROM_RIGHT, 1),
     "multi_second_right": (SpotDetectionMode.NTH_FROM_RIGHT, 2),
 }
