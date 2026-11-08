@@ -12,6 +12,8 @@ Use the real display: the offscreen platform renders no text on this machine.
 """
 
 import argparse
+import glob
+import shutil
 import multiprocessing
 import os
 import runpy
@@ -22,6 +24,55 @@ SOFTWARE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHOT_DELAY_MS = 4000
 EXPECTED_SHOTS = 8
 _run = {"saved": 0, "failed": False}  # outcome of the GUI run; decides the process exit code
+
+
+CONFIG_CACHE = os.path.join("cache", "config_file_path.txt")
+MACHINE_INI_DIR = os.path.join("cache", "ui_screenshot")
+# What _install_machine_ini changed, so _restore_config can undo it. None while nothing is installed.
+_config_state = None
+
+
+def _default_machine_ini():
+    """The single *.ini in cache/ui_screenshot/, or None."""
+    inis = glob.glob(os.path.join(SOFTWARE_DIR, MACHINE_INI_DIR, "*.ini"))
+    return inis[0] if len(inis) == 1 else None
+
+
+def _install_machine_ini(ini_path):
+    """Make control._def select ini_path for this run. Must run before any `control` import."""
+    global _config_state
+    name = os.path.basename(ini_path)
+    target = os.path.join(SOFTWARE_DIR, name)
+    copied = not os.path.exists(target)
+    if copied:
+        shutil.copyfile(ini_path, target)
+    cache_path = os.path.join(SOFTWARE_DIR, CONFIG_CACHE)
+    previous = None
+    if os.path.exists(cache_path):
+        with open(cache_path, "rb") as f:
+            previous = f.read()
+    _config_state = {"copied": target if copied else None, "cache_path": cache_path, "previous": previous}
+    # _def compares the cached value against the strings of this exact glob expression.
+    entries = [p for p in glob.glob("." + "/" + "configuration*.ini") if os.path.basename(p) == name]
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "w") as f:
+        f.write(entries[0])
+
+
+def _restore_config():
+    """Undo _install_machine_ini. Safe to call more than once."""
+    global _config_state
+    state, _config_state = _config_state, None
+    if state is None:
+        return
+    if state["copied"] and os.path.exists(state["copied"]):
+        os.remove(state["copied"])
+    if state["previous"] is None:
+        if os.path.exists(state["cache_path"]):
+            os.remove(state["cache_path"])
+    else:
+        with open(state["cache_path"], "wb") as f:
+            f.write(state["previous"])
 
 
 def _run_exit_code(code):
@@ -66,6 +117,7 @@ def _install_process_hygiene():
         for p in multiprocessing.active_children():
             p.terminate()
             p.join(2)
+        _restore_config()
         real_exit(_run_exit_code(code))
 
     os._exit = exit_after_reaping_children
@@ -178,11 +230,13 @@ def _shoot(app, out_dir):
         app.quit()
 
 
-def run_gui(out_dir, theme, font_spec):
+def run_gui(out_dir, theme, font_spec, machine_ini):
     print(f"PID {os.getpid()}", flush=True)
     os.makedirs(out_dir, exist_ok=True)
     os.chdir(SOFTWARE_DIR)
     sys.path.insert(0, SOFTWARE_DIR)
+    if machine_ini:
+        _install_machine_ini(machine_ini)
     os.environ.setdefault("QT_API", "pyqt5")
     sys.argv = ["main_hcs.py", "--simulation"]
 
@@ -223,11 +277,19 @@ def main():
     parser.add_argument("--out", required=True, help="directory for PNGs (and diff.png with --compare)")
     parser.add_argument("--theme", choices=("light", "dark", "classic"), help="sets control._def.UI_THEME")
     parser.add_argument("--font", help='application font override, "Family:pt"')
+    parser.add_argument(
+        "--machine-ini",
+        help="machine ini installed for the run only (default: the single *.ini in cache/ui_screenshot/, if any)",
+    )
     parser.add_argument("--compare", nargs=2, metavar=("A", "B"), help="compare two PNGs instead of running the GUI")
     args = parser.parse_args()
     if args.compare:
         return compare_images(args.compare[0], args.compare[1], args.out)
-    return run_gui(os.path.abspath(args.out), args.theme, args.font)
+    machine_ini = os.path.abspath(args.machine_ini) if args.machine_ini else _default_machine_ini()
+    try:
+        return run_gui(os.path.abspath(args.out), args.theme, args.font, machine_ini)
+    finally:
+        _restore_config()
 
 
 if __name__ == "__main__":
