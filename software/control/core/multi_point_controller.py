@@ -281,10 +281,15 @@ class MultiPointController:
         """The acquisition history entry of the running acquisition, or None."""
         return self._history_entry_id
 
-    def _record_failed_start(self, reason: str, acquire_current_fov: bool, run_protocol_info: Optional[dict]) -> None:
-        """Record in the acquisition history a start that never launched a worker, then forget the entry."""
+    def _record_failed_start(
+        self, reason: str, acquire_current_fov: bool, run_protocol_info: Optional[dict], *, own_entry: bool
+    ) -> None:
+        """Record in the acquisition history a start that never launched a worker. With own_entry, this call's own
+        `started` entry is finished as failed and forgotten. A refusal before anything started (own_entry=False)
+        records a failed start of its own: the entry id then held belongs to a run still in progress (a Snap refused
+        by the start blocker while a flexible acquisition runs on a Z-lift system), and is left alone."""
         try:
-            if self._history_entry_id is not None:
+            if own_entry and self._history_entry_id is not None:
                 self.history_recorder.finished(
                     self._history_entry_id, reason, images=0, expected_images=self._expected_image_count
                 )
@@ -299,7 +304,8 @@ class MultiPointController:
         except Exception:
             self._log.exception("Failed to record the failed acquisition start in the acquisition history")
         finally:
-            self._history_entry_id = None
+            if own_entry:
+                self._history_entry_id = None
 
     def _start_prewarmed_job_runner(self):
         """Start a job runner subprocess that warms up in the background.
@@ -754,20 +760,22 @@ class MultiPointController:
         self.protocol_info = None
         self.last_end_reason = None
         self.last_image_count = 0
-        self._expected_image_count = 0
         if not self.validate_acquisition_settings():
             # emit acquisition finished signal to re-enable the UI
             self.last_end_reason = "failed_to_start"
-            self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info)
+            self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry=False)
             self.callbacks.signal_acquisition_finished()
             return False
         refusal = self.start_blocker() if self.start_blocker is not None else None
         if refusal:
             self._log.error(f"Acquisition not started: {refusal}")
             self.last_end_reason = "failed_to_start"
-            self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info)
+            self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry=False)
             self.callbacks.signal_acquisition_finished()
             return False
+        self._expected_image_count = (
+            0  # after the refusals: a refused start must not blank a running acquisition's count
+        )
         self._start_per_acquisition_log()
 
         # Start memory monitoring for the acquisition (if enabled)
@@ -1087,7 +1095,7 @@ class MultiPointController:
                     except Exception:
                         self._log.exception("Failed to restore camera/live state after a failed acquisition start")
                 self.last_end_reason = "failed_to_start"
-                self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info)
+                self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry=True)
                 try:
                     self.callbacks.signal_acquisition_finished()
                 except Exception:

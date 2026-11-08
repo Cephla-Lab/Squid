@@ -778,3 +778,33 @@ def test_folder_size_gives_up_inside_one_large_directory(tmp_path):
 
     assert recorder_module._folder_size(str(big), clock=clock) is None
     assert len(looks) == 3
+
+
+def test_a_start_refused_during_a_run_leaves_the_running_entry_alone(sim_controller):
+    """A Snap refused by the start blocker while an acquisition runs (a Z-lift system) must neither finish the
+    run's entry as failed nor blank its expected image count."""
+    mpc, tt, store = sim_controller.mpc, sim_controller.tt, sim_controller.store
+    seen = []
+    tt_start = mpc.callbacks.signal_acquisition_start
+
+    def on_start(params):  # the run has been recorded as started; its worker is about to run
+        tt_start(params)
+        entry_id, expected = mpc.history_entry_id, mpc._expected_image_count
+        mpc.start_blocker = lambda: "the Z lift is busy"
+        try:
+            seen.append(mpc.run_acquisition(acquire_current_fov=True))
+        finally:
+            mpc.start_blocker = None
+        tt.finished_event.clear()  # the refusal reported a finish; the real one is still to come
+        seen.append((mpc.history_entry_id, mpc._expected_image_count) == (entry_id, expected))
+
+    mpc.callbacks = dataclasses.replace(mpc.callbacks, signal_acquisition_start=on_start)
+    assert mpc.run_acquisition() is True
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    assert seen == [False, True]
+    entry = store.entry(entry_id_for(os.path.join(mpc.base_path, mpc.experiment_ID)))
+    assert (entry.outcome, entry.fraction_done) == ("complete", 1.0)
+    assert len(events_of(store, "finished", entry.id)) == 1
+    assert mpc.history_entry_id is None
