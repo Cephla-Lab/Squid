@@ -194,6 +194,7 @@ class QtAutoFocusController(AutoFocusController, QObject):
 
 class QtMultiPointController(MultiPointController, QObject):
     acquisition_finished = Signal()
+    acquisition_preparing = Signal()
     signal_acquisition_start = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
@@ -254,6 +255,7 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_overall_progress=self._signal_overall_progress_fn,
                 signal_region_progress=self._signal_region_progress_fn,
                 signal_plate_view_init=self._signal_plate_view_init_fn,
+                signal_acquisition_preparing=self._signal_acquisition_preparing_fn,
                 signal_timepoint_finished=self._signal_timepoint_finished_fn,
                 signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
                 signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
@@ -280,6 +282,23 @@ class QtMultiPointController(MultiPointController, QObject):
         self._ndviewer_region_idx_offset: list = []  # [0, 5, ...] region_idx -> flat FOV offset
         self._ndviewer_mode: NDViewerMode = NDViewerMode.INACTIVE  # Current viewer mode
         self._ndviewer_region_index_map: dict = {}  # {region_name: region_idx} for 6D mode
+
+    def _signal_acquisition_preparing_fn(self):
+        # Live and Snap must be locked before the run touches live or the camera. A run on another thread (the TCP
+        # server's) waits here until the GUI thread has run the slots; a queued emit would let it go on first. A run on
+        # the GUI thread emits directly: a blocking call into its own event loop could never run.
+        # QObject.thread: MultiPointController's acquisition-thread attribute shadows the method.
+        if QThread.currentThread() is QObject.thread(self):
+            self.acquisition_preparing.emit()
+        else:
+            QMetaObject.invokeMethod(self, "_emit_acquisition_preparing", Qt.BlockingQueuedConnection)
+
+    @Slot()
+    def _emit_acquisition_preparing(self):
+        try:  # Qt swallows exceptions in a slot called through BlockingQueuedConnection
+            self.acquisition_preparing.emit()
+        except Exception:
+            self._log.exception("Locking Live and Snap for a run that is preparing failed")
 
     def _signal_acquisition_start_fn(self, parameters: AcquisitionParameters):
         # TODO mpc napari signals
@@ -719,7 +738,7 @@ class HighContentScreeningGui(QMainWindow):
         self.objectivesWidget: Optional[widgets.ObjectivesWidget] = None
         self.filterControllerWidget: Optional[widgets.FilterControllerWidget] = None
         self.squidFilterWidget: Optional[widgets.SquidFilterWidget] = None
-        self.laserEngineWidget: Optional[LaserEngineWidget] = None
+        self.laserEngineWidget: Optional[QWidget] = None
         self.versaLaseWidget: Optional[VersaLaseWidget] = None
         self.recordingControlWidget: Optional[widgets.RecordingWidget] = None
         self.wellplateFormatWidget: Optional[widgets.WellplateFormatWidget] = None
@@ -812,7 +831,6 @@ class HighContentScreeningGui(QMainWindow):
 
                 if ENABLE_WELLPLATE_MULTIPOINT:
                     self.wellplateMultiPointWidget.init_z()
-                self.flexibleMultiPointWidget.init_z()
 
         # Create the menu bar
         menubar = self.menuBar()
@@ -1045,8 +1063,13 @@ class HighContentScreeningGui(QMainWindow):
                 self.emission_filter_wheel, self.liveController, config_repo=self.microscope.config_repo
             )
 
-        if USE_SQUID_LASER_ENGINE and self.microscope.addons.squid_laser_engine is not None:
+        if LASER_ENGINE == "v1" and self.microscope.addons.squid_laser_engine is not None:
             self.laserEngineWidget = LaserEngineWidget(self.microscope.addons.squid_laser_engine)
+
+        if LASER_ENGINE == "v2" and self.microscope.addons.squid_laser_engine is not None:
+            from control.laser_engine_v2_widget import LaserEngineV2Widget
+
+            self.laserEngineWidget = LaserEngineV2Widget(self.microscope.addons.squid_laser_engine)
 
         if self.microscope.illumination_controller.light_source_type == LightSourceType.VersaLase:
             self.versaLaseWidget = VersaLaseWidget(
@@ -1610,6 +1633,20 @@ class HighContentScreeningGui(QMainWindow):
         self.multipointController.signal_acquisition_start.connect(self._connect_backpressure_monitor_widget)
         self.multipointController.acquisition_finished.connect(self._disconnect_backpressure_monitor_widget)
 
+        # The controller stops live at the start of every run (GUI, TCP, fluidics) and, only when the INI sets
+        # resume_live_after_acquisition, turns it back on at the end: Live and Snap are locked in between.
+        # The lock lands on preparing, before the run stops live: a TCP run prepares on the server's thread
+        # while the GUI still takes clicks. The start re-syncs the button once live is off.
+        self.multipointController.acquisition_preparing.connect(
+            lambda: self.liveControlWidget.set_acquisition_running(True)
+        )
+        self.multipointController.signal_acquisition_start.connect(
+            lambda: self.liveControlWidget.set_acquisition_running(True)
+        )
+        self.multipointController.acquisition_finished.connect(
+            lambda: self.liveControlWidget.set_acquisition_running(False)
+        )
+
         # NDViewer push-based API connections
         if self.ndviewerTab is not None:
             # TIFF mode signals
@@ -1998,11 +2035,16 @@ class HighContentScreeningGui(QMainWindow):
                 CACHED_CONFIG_FILE_PATH,
                 parent=self,
                 on_restart=self.restart_application,
+                stage=self.stage,
             )
             dialog.signal_config_changed.connect(self._update_ram_monitor_visibility)
             dialog.signal_config_changed.connect(
                 lambda: self.navigationWidget.set_click_to_move(control._def.ENABLE_CLICK_TO_MOVE)
             )
+            # The Z-stack order dropdown preference applies live: the tabs re-read the flag.
+            for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget):
+                if tab is not None:
+                    dialog.signal_config_changed.connect(tab.update_z_order_dropdown_visibility)
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")

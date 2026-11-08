@@ -41,11 +41,47 @@ cd firmware/joystick
 pio run -t upload
 ```
 
-**Important:** Before uploading, verify only one Teensy is connected:
+### Choosing the board by serial number
+
+With one Teensy connected, `pio run -t upload` flashes it. With two or more connected (a controller
+and a joystick panel, or two controllers), the upload is refused until you name the board by its
+serial number:
+
 ```bash
-pio device list
+pio run -e teensy41 -t upload --upload-port 12345678
 ```
-If multiple devices appear, disconnect the extras before uploading. The upload tool may not warn you and could flash the wrong board.
+
+The refusal lists every connected Teensy with its serial number, model and USB location. Use the
+number the Teensy Loader shows, or the USB serial number that `pio device list` and Squid's
+`CONTROLLER_SN` show. (Teensy firmware reports serial numbers below 10,000,000 multiplied by 10 over
+USB, so `1234567` and `12345670` name the same board; both are accepted.)
+
+The upload is also refused when the chosen board is a different model from the one the environment
+builds for (for example, a joystick image aimed at the controller), and while any *other* Teensy is
+in the bootloader: `--upload-port` only decides which board is asked to reboot, while the Teensy
+Loader programs whichever board is in the bootloader, so a second board waiting there could receive
+the image. Unplug or power-cycle that board first. After programming, the board must
+reboot and come back running with the same serial number within 30 seconds, or the upload is
+reported as failed. The checks live in [`tools/teensy_select_upload.py`](tools/teensy_select_upload.py).
+
+Selecting by serial number needs the Teensy Loader application. On platforms that fall back to
+`teensy_loader_cli` (Linux ARM), `--upload-port` is refused and a bare upload flashes the first board
+found, so connect only one there.
+
+### Choosing the controller at upload time
+
+Camera trigger wiring differs between controller generations, so the pin map is selected when
+you flash:
+
+| Controller | Command | Camera trigger | Trigger-ready input |
+|---|---|---|---|
+| Previous controllers (default) | `pio run -e teensy41 -t upload` | pins 29–32 through an inverting stage — the firmware drives the pin LOW to assert | none |
+| New controller | `pio run -e teensy41_newctrl -t upload` | pin 19, wired directly to the GPIO — the firmware drives the pin HIGH to assert | pin 18 (3.3 V max) |
+
+Both present an **active-high** trigger at the camera connector. Flashing the wrong profile is
+not subtle: the camera receives no trigger (wrong pins) and acquisitions time out.
+Arduino IDE: for the new controller add `#define SQUID_CONTROLLER_NEWCTRL` at the top of
+`src/controller_profile.h`.
 
 ### Common Commands
 

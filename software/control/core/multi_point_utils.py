@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Optional, Callable, TYPE_CHECKING
 
@@ -57,12 +58,16 @@ class AcquisitionParameters:
 
     z_stacking_config: str
     z_range: Tuple[float, float]
+    # Set Z-range on a piezo z-stack: (min, max) piezo positions in µm. The stepper holds at z_range.
+    piezo_z_range_um: Optional[Tuple[float, float]] = None
 
     apply_channel_offset: bool = True
     skip_saving: bool = False
 
     # "CHANNEL FIRST" (all channels at each z level) or "Z FIRST" (full z stack per channel)
     z_stack_order: str = "CHANNEL FIRST"
+    # Z First only: run laser AF before each later channel's stack (opt-in; the first channel keeps the per-FOV AF).
+    laser_af_per_stack: bool = False
 
     # Plate dimensions (only used when xy_mode is plate-based, e.g. "Select Wells").
     plate_num_rows: int = 8  # For 96-well plate
@@ -75,6 +80,47 @@ class AcquisitionParameters:
     # keyed by region_id. Empty unless the focus-map + laser-AF combined mode is active,
     # in which case each FOV in a region targets that region's offset instead of 0.
     region_laser_af_offsets: Dict[str, float] = field(default_factory=dict)
+
+
+def piezo_z_range_problem(
+    piezo_z_range_um: Tuple[float, float], nz: int, delta_z_um: float, z_stacking_config: str, travel_um: float
+) -> Optional[str]:
+    """Why a Set Z-range piezo stack cannot run, or None when every plane is inside the travel [0, travel_um].
+
+    The worker starts the stack at Z-max and steps down by delta_z_um for "FROM TOP", otherwise starts at
+    Z-min and steps up: nz planes in all. The widget sets nz = ceil((max - min) / dz) + 1, so the last plane
+    can land up to one dz past the far end of the range. "FROM CENTER" is refused: the worker would centre
+    the stack on Z-min, half of it below the range. So is a range that is not two numbers with Z-min at or
+    below Z-max: a reversed one would pass the travel check while the stack never covers it.
+    """
+    if z_stacking_config == "FROM CENTER":
+        return (
+            "A Z-range runs from Z-min up (From Bottom) or from Z-max down (From Top), not From Center: "
+            "choose From Bottom, or clear the range."
+        )
+    z_min_um, z_max_um = piezo_z_range_um
+    if not (math.isfinite(z_min_um) and math.isfinite(z_max_um) and z_min_um <= z_max_um):
+        return (
+            f"The Z-range must run from Z-min up to Z-max, got {z_min_um:.1f} to {z_max_um:.1f} µm: "
+            "set the range again."
+        )
+    span_um = delta_z_um * (nz - 1)
+    if z_stacking_config == "FROM TOP":
+        first_um, last_um = z_max_um, z_max_um - span_um
+    else:
+        first_um, last_um = z_min_um, z_min_um + span_um
+    low_um, high_um = min(first_um, last_um), max(first_um, last_um)
+    if low_um < 0.0:
+        return (
+            f"The z-stack would reach {low_um:.1f} µm, {-low_um:.1f} µm below the piezo's travel "
+            f"(0 to {travel_um:.0f} µm): reduce Nz or dz, or raise Z-min."
+        )
+    if high_um > travel_um:
+        return (
+            f"The z-stack would reach {high_um:.1f} µm, {high_um - travel_um:.1f} µm past the piezo's travel "
+            f"(0 to {travel_um:.0f} µm): reduce Nz or dz, or lower Z-max."
+        )
+    return None
 
 
 @dataclass
@@ -143,6 +189,10 @@ class MultiPointControllerFunctions:
     # Default no-op lambda avoids None checks at every call site. Unlike mutable defaults
     # (lists/dicts), lambdas are safe as defaults since they're not modified.
     signal_plate_view_init: Callable[[PlateViewInit], None] = lambda *a, **kw: None
+    # A run passed its start checks and is about to stop live and prepare the hardware. Sent from the
+    # caller's thread (the TCP server's, for a TCP run); every start that then fails sends
+    # signal_acquisition_finished, so a lock taken on this always comes off.
+    signal_acquisition_preparing: Callable[[], None] = lambda *a, **kw: None
     signal_timepoint_finished: Callable[[int], None] = lambda *a, **kw: None
     # Optional Slack notification callbacks (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint_notification: Callable[["TimepointStats"], None] = lambda *a, **kw: None

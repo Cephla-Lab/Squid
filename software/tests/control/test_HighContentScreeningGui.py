@@ -1,3 +1,5 @@
+import threading
+import time
 import unittest.mock
 
 import pytest
@@ -6,6 +8,7 @@ import control._def
 
 import control.gui_hcs
 import control.widgets
+from qtpy.QtCore import QCoreApplication, QEvent
 from qtpy.QtWidgets import QMessageBox
 
 import control.microscope
@@ -37,6 +40,23 @@ def test_create_simulated_hcs_with_or_without_piezo(qtbot, confirm_exit_yes):
     scope_without = control.microscope.Microscope.build_from_global_config(True)
     without_piezo = control.gui_hcs.HighContentScreeningGui(microscope=scope_without, is_simulation=True)
     qtbot.add_widget(without_piezo)
+
+
+def test_destroying_the_gui_neither_crashes_nor_leaves_timers_firing_at_deleted_widgets(qtbot, confirm_exit_yes):
+    """Regression: FlexibleMultiPointWidget added one QSpacerItem to several layouts, so the
+    layouts freed it once each (a segfault when Qt ran the window's DeferredDelete), and
+    ImageDisplayWindow's unparented update timer kept firing at the deleted QLabels."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+
+    win.close()
+    win.deleteLater()
+    # Run the pending delete now, rather than whenever a later event loop happens to service it.
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    # The update timer fires every 100 ms; a RuntimeError ("wrapped C/C++ object ... has been
+    # deleted") in its slot is reported by pytest-qt as a failure of this test.
+    qtbot.wait(500)
 
 
 def test_tab_change_to_simple_recording_does_not_raise(qtbot, monkeypatch, confirm_exit_yes):
@@ -115,6 +135,114 @@ def test_acquisition_finished_flushes_napari_multichannel_viewer(qtbot, monkeypa
     win.togglePerformanceMode()
     win.multipointController.acquisition_finished.emit()
     assert calls == [win.napariMultiChannelWidget] * 3
+
+
+def _gui_with_live_started_from_the_button(qtbot):
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    win.liveControlWidget.btn_live.click()
+    assert win.liveController.is_live and win.liveControlWidget.btn_live.isChecked()
+    return win
+
+
+def test_live_button_shows_live_off_when_an_acquisition_stops_it(qtbot, confirm_exit_yes):
+    """MultiPointController stops live itself, for GUI, TCP and fluidics runs alike: the button must follow."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    button = win.liveControlWidget.btn_live
+
+    win.liveController.stop_live()  # what run_acquisition does before the worker starts
+    win.multipointController.signal_acquisition_start.emit()
+
+    assert not button.isChecked()
+    assert button.text() == "Live"
+
+
+def test_live_button_follows_live_at_the_end_of_an_acquisition(qtbot, confirm_exit_yes):
+    """A run that fails to start reports only the finish; an INI-enabled resume turns live back on before it."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    button = win.liveControlWidget.btn_live
+
+    win.liveController.stop_live()
+    win.multipointController.acquisition_finished.emit()
+    assert not button.isChecked()
+    assert button.text() == "Live"
+
+    win.liveController.start_live()  # resume_live_after_acquisition = True
+    try:
+        win.multipointController.acquisition_finished.emit()
+        assert button.isChecked()
+        assert button.text() == "Stop"
+        assert button.isEnabled()
+        assert not win.liveControlWidget.btn_snap.isEnabled()  # no snapping while live
+    finally:
+        win.liveController.stop_live()
+
+
+def test_live_and_snap_are_locked_while_an_acquisition_runs(qtbot, confirm_exit_yes):
+    """The acquisition owns the camera and the light: neither button may start live or snap until it finishes."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    live_widget = win.liveControlWidget
+
+    win.liveController.stop_live()
+    win.multipointController.signal_acquisition_start.emit()
+    assert not live_widget.btn_live.isEnabled()
+    assert not live_widget.btn_snap.isEnabled()
+
+    win.multipointController.acquisition_finished.emit()
+    assert live_widget.btn_live.isEnabled()
+    assert live_widget.btn_snap.isEnabled()
+
+
+def test_a_run_on_another_thread_waits_for_live_and_snap_to_lock_before_preparing(qtbot, confirm_exit_yes, monkeypatch):
+    """A TCP run prepares on the server's thread while the GUI still takes clicks. Its preparing callback must not
+    return until the GUI thread has locked Live and Snap, or the run could stop live and use the camera first."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    live_widget = win.liveControlWidget
+    order = []
+    set_running = live_widget.set_acquisition_running
+
+    def recording_set_running(running):
+        order.append(f"lock={running}")
+        set_running(running)
+
+    monkeypatch.setattr(live_widget, "set_acquisition_running", recording_set_running)
+
+    def server_thread():
+        win.multipointController.callbacks.signal_acquisition_preparing()
+        order.append("preparing returned")
+
+    try:
+        thread = threading.Thread(target=server_thread)
+        thread.start()
+        time.sleep(0.3)  # the GUI thread is busy: anything queued to it cannot run yet
+        qtbot.waitUntil(lambda: not thread.is_alive(), timeout=5000)
+
+        assert order == ["lock=True", "preparing returned"]
+        assert not live_widget.btn_live.isEnabled()
+        assert not live_widget.btn_snap.isEnabled()
+        assert live_widget.btn_live.isChecked()  # live is still on: the run has not stopped it yet
+
+        win.liveController.stop_live()
+        win.multipointController.acquisition_finished.emit()  # every failed start sends it too
+        assert live_widget.btn_live.isEnabled()
+        assert live_widget.btn_snap.isEnabled()
+    finally:
+        win.liveController.stop_live()
+
+
+def test_a_run_on_the_gui_thread_locks_live_and_snap_without_waiting(qtbot, confirm_exit_yes):
+    """GUI-started and fluidics runs prepare on the GUI thread: the lock is direct there (a blocking call to the
+    thread's own event loop would never run)."""
+    win = _gui_with_live_started_from_the_button(qtbot)
+    live_widget = win.liveControlWidget
+    try:
+        win.multipointController.callbacks.signal_acquisition_preparing()
+
+        assert not live_widget.btn_live.isEnabled()
+        assert not live_widget.btn_snap.isEnabled()
+    finally:
+        win.liveController.stop_live()
 
 
 def test_image_display_signals_connected_once(qtbot, monkeypatch, confirm_exit_yes):
@@ -333,3 +461,49 @@ def test_there_is_one_utils_menu_with_every_utility(qtbot, monkeypatch, confirm_
     assert len(menus) == 1
     items = [action.text() for action in menus[0].menu().actions()]
     assert items[:3] == ["Stage Utils", "Reset Objective Turret", "Workflow Runner..."]
+
+
+@pytest.mark.parametrize("start_on_piezo", [False, True])
+def test_wellplate_yaml_with_a_piezo_range_reloads_set_range_and_reaches_the_controller(
+    qtbot, monkeypatch, confirm_exit_yes, start_on_piezo
+):
+    from control.acquisition_yaml_loader import AcquisitionYAMLData
+
+    monkeypatch.setattr(control._def, "HAS_OBJECTIVE_PIEZO", True)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    w = win.wellplateMultiPointWidget
+    w.checkbox_usePiezo.setChecked(start_on_piezo)
+
+    w._apply_yaml_settings(
+        AcquisitionYAMLData(
+            widget_type="wellplate", nz=4, delta_z_um=2.0, use_piezo=True, piezo_z_range_um=(20.0, 26.0)
+        )
+    )
+
+    assert w.combobox_z_mode.currentText() == "Set Range"
+    assert (w.entry_minZ.value(), w.entry_maxZ.value(), w.entry_NZ.value()) == (20.0, 26.0, 4)
+    assert w.entry_maxZ.maximum() == scope.addons.piezo_stage.range_um
+    assert not w.checkbox_withReflectionAutofocus.isEnabled()
+
+    w.configure_controller_from_ui()  # what Start runs
+    assert w.multipointController.use_piezo
+    assert tuple(w.multipointController.piezo_z_range_um) == (20.0, 26.0)
+
+
+def test_wellplate_yaml_moving_the_stack_to_the_stepper_gives_the_entries_the_stepper_limits(
+    qtbot, monkeypatch, confirm_exit_yes
+):
+    from control.acquisition_yaml_loader import AcquisitionYAMLData
+
+    monkeypatch.setattr(control._def, "HAS_OBJECTIVE_PIEZO", True)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    w = win.wellplateMultiPointWidget
+    w.checkbox_usePiezo.setChecked(True)
+
+    w._apply_yaml_settings(AcquisitionYAMLData(widget_type="wellplate", nz=4, delta_z_um=2.0, use_piezo=False))
+
+    assert w.entry_minZ.maximum() == control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000

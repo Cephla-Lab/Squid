@@ -1,7 +1,8 @@
 import copy
 import dataclasses
 import threading
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -725,6 +726,100 @@ def test_run_acquisition_continues_when_stop_live_times_out_but_mcu_recovers():
     assert tt.image_count == mpc.get_acquisition_image_count()
 
 
+# --- Live after an acquisition -----------------------------------------------
+# Live is off once an acquisition ends, whether or not it was on before. A machine that
+# wants live back sets resume_live_after_acquisition = True in its INI.
+
+
+def _controller_with_live_on():
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.liveController.start_live()
+    assert mpc.liveController.is_live
+    return scope, tt, mpc
+
+
+def test_live_is_off_after_an_acquisition_that_started_with_live_on():
+    scope, tt, mpc = _controller_with_live_on()
+
+    assert mpc.run_acquisition() is True
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    assert mpc.last_end_reason == "completed"
+    assert not mpc.liveController.is_live
+
+
+def test_live_is_off_after_an_acquisition_that_fails_to_start_with_live_on():
+    scope, tt, mpc = _controller_with_live_on()
+    mpc.set_gen_focus_map_flag(True)
+    mpc.scanCoordinates.get_scan_bounds = lambda: None  # the focus-map early return, after live is stopped
+
+    assert mpc.run_acquisition() is False
+
+    assert mpc.last_end_reason == "failed_to_start"
+    assert not mpc.liveController.is_live
+
+
+def test_live_comes_back_after_an_acquisition_when_the_ini_asks_for_it(monkeypatch):
+    monkeypatch.setattr(control._def, "RESUME_LIVE_AFTER_ACQUISITION", True)
+    scope, tt, mpc = _controller_with_live_on()
+    try:
+        assert mpc.run_acquisition() is True
+        assert tt.finished_event.wait(30)
+        mpc.thread.join(10)
+
+        assert mpc.liveController.is_live
+    finally:
+        mpc.liveController.stop_live()
+
+
+def _record_run_events(mpc):
+    """Wrap the run's callbacks to record (event, live on?) in the order they fire."""
+    events = []
+    callbacks = mpc.callbacks
+
+    def start(params):
+        events.append(("start", mpc.liveController.is_live))
+        callbacks.signal_acquisition_start(params)
+
+    def finished():
+        events.append(("finished", mpc.liveController.is_live))
+        callbacks.signal_acquisition_finished()
+
+    mpc.callbacks = dataclasses.replace(
+        callbacks,
+        signal_acquisition_preparing=lambda: events.append(("preparing", mpc.liveController.is_live)),
+        signal_acquisition_start=start,
+        signal_acquisition_finished=finished,
+    )
+    return events
+
+
+def test_preparing_is_reported_before_the_run_stops_live():
+    """The GUI locks Live and Snap on this. A TCP run prepares on the server's thread (stopping live, autofocusing
+    for a focus map) while the GUI still takes clicks, so it must come before the run touches live or the camera."""
+    scope, tt, mpc = _controller_with_live_on()
+    events = _record_run_events(mpc)
+
+    assert mpc.run_acquisition() is True
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    assert events == [("preparing", True), ("start", False), ("finished", False)]
+
+
+def test_a_start_that_fails_after_preparing_still_reports_finished():
+    """Finished is what unlocks Live and Snap, so a start that fails once preparing was sent must still send it."""
+    scope, tt, mpc = _controller_with_live_on()
+    events = _record_run_events(mpc)
+    mpc.set_gen_focus_map_flag(True)
+    mpc.scanCoordinates.get_scan_bounds = lambda: None  # the focus-map early return, after live is stopped
+
+    assert mpc.run_acquisition() is False
+
+    assert events == [("preparing", True), ("finished", False)]
+
+
 def test_start_blocker_refuses_an_acquisition_before_anything_moves():
     scope = control.microscope.Microscope.build_from_global_config(True)
     try:
@@ -737,3 +832,76 @@ def test_start_blocker_refuses_an_acquisition_before_anything_moves():
         assert scope.stage.get_pos() == start
     finally:
         scope.close()
+
+
+def test_finish_is_reported_when_the_stage_stops_answering_mid_run():
+    """A dead stage controller fails the worker's next move and then the move back to the start position. The run
+    must still report its end, or the GUI stays in "acquiring" with no acquisition left to abort."""
+    import squid.exceptions
+
+    scope, tt, mpc = _controller_with_tracker()
+    real_move_x_to = scope.stage.move_x_to
+    calls = []
+
+    def move_x_to(x_mm, *args, **kwargs):
+        calls.append(x_mm)
+        if len(calls) > 2:
+            raise squid.exceptions.SquidTimeout("stage stopped answering")
+        return real_move_x_to(x_mm, *args, **kwargs)
+
+    with patch.object(scope.stage, "move_x_to", side_effect=move_x_to):
+        mpc.run_acquisition()
+        assert tt.finished_event.wait(30)
+        mpc.thread.join(10)
+
+    assert len(calls) > 3, "the move back to the start position was not attempted"
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "error"
+    assert not mpc.acquisition_in_progress()
+
+
+def test_a_failed_hardware_restore_does_not_skip_the_software_state(tmp_path):
+    """Restoring the mode fails (e.g. the controller is gone). The steps that touch no device - the .done file, the
+    camera's callback flag - must still happen, and the end of the run must still be reported."""
+    import squid.exceptions
+
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.scanCoordinates.remove_region("region_grid")
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("acquisition", add_timestamp=False)
+    scope.camera.enable_callbacks(False)  # run_acquisition() turns them on; the restore must turn them back off
+
+    real_set_mode = mpc.liveController.set_microscope_mode
+
+    def set_mode(*args, **kwargs):
+        if mpc.multiPointWorker is not None and mpc.multiPointWorker.end_reason is not None:
+            raise squid.exceptions.SquidTimeout("controller stopped answering")  # only the post-run restore
+        return real_set_mode(*args, **kwargs)
+
+    with patch.object(mpc.liveController, "set_microscope_mode", side_effect=set_mode):
+        mpc.run_acquisition()
+        assert tt.finished_event.wait(30)
+        mpc.thread.join(10)
+
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "completed"
+    assert (tmp_path / "acquisition" / ".done").exists()
+    assert scope.camera.get_callbacks_enabled() is False
+
+
+@pytest.mark.parametrize("name", ["FROM BOTTOM", "FROM CENTER", "FROM TOP"])
+def test_set_z_stacking_config_takes_the_config_name(name):
+    from control.core.multi_point_controller import MultiPointController
+
+    fake = SimpleNamespace(z_stacking_config="FROM BOTTOM", _log=MagicMock())
+    MultiPointController.set_z_stacking_config(fake, name)
+    assert fake.z_stacking_config == name
+
+
+def test_set_z_stacking_config_rejects_an_unknown_name():
+    from control.core.multi_point_controller import MultiPointController
+
+    fake = SimpleNamespace(z_stacking_config="FROM BOTTOM", _log=MagicMock())
+    with pytest.raises(ValueError, match="z_stacking_config"):
+        MultiPointController.set_z_stacking_config(fake, "FROM NOWHERE")
+    assert fake.z_stacking_config == "FROM BOTTOM"

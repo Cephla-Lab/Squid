@@ -10,6 +10,7 @@ interpreter shutdown (daemon threads frozen inside C code during
 finalization).
 """
 
+import collections
 import logging
 import os
 import shutil
@@ -32,6 +33,7 @@ import control.microscope
 from control.core.multi_point_controller import MultiPointController
 
 from tests.control.test_stubs import cleanup_stub_acquisition_dirs
+from tests.sharding import files_for_shard, parse_shard
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,29 @@ logger = logging.getLogger(__name__)
 # pytest's tmp_path — tmp_path would cost a mkdir per test suite-wide, and the
 # breadcrumb writer creates parent dirs itself.
 _CLEANUP_STATE_DIR = os.path.join(tempfile.gettempdir(), f"squid-test-watchdog-cleanup-{os.getpid()}")
+
+
+def pytest_report_header(config):
+    shard = os.environ.get("SQUID_TEST_SHARD")
+    return f"SQUID_TEST_SHARD={shard}: running this shard's test files only" if shard else None
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config, items):
+    """With SQUID_TEST_SHARD=k/n (CI), keep only shard k's test files; the rest are deselected."""
+    spec = os.environ.get("SQUID_TEST_SHARD")
+    if not spec:
+        return
+    try:
+        index, total = parse_shard(spec)
+    except ValueError as e:
+        raise pytest.UsageError(str(e))
+    tests_per_file = collections.Counter(item.nodeid.split("::")[0] for item in items)
+    keep = files_for_shard(tests_per_file, tests_per_file, index, total)
+    deselected = [item for item in items if item.nodeid.split("::")[0] not in keep]
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = [item for item in items if item.nodeid.split("::")[0] in keep]
 
 
 def pytest_sessionfinish(session, exitstatus):
