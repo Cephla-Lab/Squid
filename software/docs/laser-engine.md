@@ -112,8 +112,8 @@ The 560 nm fiber laser sits behind an AOM and a shutter. Each has one job:
 - **Intensity** in Squid (the 560 channel's intensity) is the AOM amplitude: line 3's set-point, 0-5 V, full scale =
   full transmission. The AOM's on/off input is the controller's D3 TTL, so exposure timing works as for the other
   lines. Without a calibration the intensity is linear in AOM volts (50 % = 2.5 V). Calibrated (at the laser power set
-  in this tab), it is % of the power at the AOM's peak transmission, which may be below 5 V; the calibration is the
-  AOM's transmission shape, so it holds at any laser power.
+  in this tab), it is % of the power at the AOM's peak transmission, which may be below 5 V. The AOM's output depends
+  on its recent use, and other laser powers are untested: see `illumination-power-calibration.md`.
 - **Shutter**: a mechanical shutter, never moved per exposure and not part of line 3's readiness. Its mode is set in
   the tab:
   - **On use** (default): open while line 3 is READY **and** something uses the 560 (section 2: live view on the 560

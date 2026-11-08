@@ -210,8 +210,9 @@ def test_ceiling_and_run_notes(instrument):
     assert side.ceiling_text(_target(side, "Fluorescence 560 nm Ex")) == "5 V"
     notes = side.run_notes([_target(side, "Fluorescence 488 nm Ex"), _target(side, "Fluorescence 560 nm Ex")])
     assert notes == [
-        "Fluorescence 560 nm Ex is measured at the 560 nm laser power set in the Laser Engine tab (300 mW); its "
-        "calibration holds at any laser power."
+        "Fluorescence 560 nm Ex is measured at the 560 nm laser power set in the Laser Engine tab (300 mW). The AOM "
+        "warms up during the run and its output depends on recent use, by more than 50 % between idle and continuous "
+        "use, so this line can fail verification; other laser powers are untested."
     ]
 
 

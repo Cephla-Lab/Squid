@@ -851,6 +851,6 @@ def intensity_tooltip(description: Dict[str, object]) -> str:
     if "source_power_mw_at_calibration" in description:
         text += (
             f" The mW is at the {float(description['source_power_mw_at_calibration']):.0f} mW 560 nm laser power it was "
-            "measured at; the % holds at any laser power."
+            "measured at; it depends on the AOM's recent use, and other laser powers are untested."
         )
     return text

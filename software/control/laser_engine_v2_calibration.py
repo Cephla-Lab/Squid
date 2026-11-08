@@ -244,7 +244,9 @@ class EngineCalibration:
                 else:
                     notes.append(
                         f"{target.name} is measured at the 560 nm laser power set in the Laser Engine tab "
-                        f"({mw:.0f} mW); its calibration holds at any laser power."
+                        f"({mw:.0f} mW). The AOM warms up during the run and its output depends on recent use, by "
+                        "more than 50 % between idle and continuous use, so this line can fail verification; other "
+                        "laser powers are untested."
                     )
         return notes
 

@@ -88,8 +88,13 @@ firmware ceiling (amps, or volts for the DF 560 nm AOM): the sweep goes up to it
   the engine's reason and the light off.
 - The verification sets each requested % through the engine's own intensity call, the one live view and
   acquisitions use.
-- DF 560 nm: calibrated at the laser power set in the Laser Engine tab. The calibration is the AOM's transmission, so
-  it holds at any laser power; 100 % is the peak transmission, which may be below 5 V.
+- DF 560 nm: calibrated at the laser power set in the Laser Engine tab. 100 % is the peak transmission, which may be
+  below 5 V. The AOM's output depends on its recent use. On the first unit measured, output at a fixed drive was flat
+  for about 2 s, then rose over the next 20-60 s of continuous drive (about 10 % at low drive, 50-75 % from about 30 %
+  of full drive) and fell back within about a minute of rest. Measured in one held state, the whole curve was about
+  1.7 times brighter warmed up than idle, with the same shape to about 4 %. The sweep warms the AOM as it goes and its
+  checks run partly cooled, so this line can fail verification and the saved curve can be off at mid-range. Whether
+  the % holds at other laser powers is untested beyond one point. The test beam also warms the AOM.
 - A calibration records the engine's serial number, variant, line and ceiling, and applies only while they match: with
   another engine (or after a firmware change of the ceiling) the line runs linear in its drive and its status says
   "recalibrate". Recalibrate after replacing or realigning a diode; the engine cannot tell.
