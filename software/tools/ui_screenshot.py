@@ -30,6 +30,7 @@ CONFIG_CACHE = os.path.join("cache", "config_file_path.txt")
 MACHINE_INI_DIR = os.path.join("cache", "ui_screenshot")
 # What _install_machine_ini changed, so _restore_config can undo it. None while nothing is installed.
 _config_state = None
+_aside_state = None  # (original path, set-aside path) of persisted GUI state, or None
 
 
 def _default_machine_ini():
@@ -59,9 +60,22 @@ def _install_machine_ini(ini_path):
         f.write(entries[0])
 
 
+def _set_aside_persisted_gui_state():
+    """Hide the GUI state Squid persists between runs (the acquisition-widget checkboxes), so every capture
+    starts from the widget defaults rather than whatever the last session, test or run left behind."""
+    global _aside_state
+    path = os.path.join(SOFTWARE_DIR, "cache", "multipoint_widget_config.yaml")
+    if os.path.exists(path):
+        _aside_state = (path, path + ".ui_screenshot_aside")
+        os.replace(*_aside_state)
+
+
 def _restore_config():
-    """Undo _install_machine_ini. Safe to call more than once."""
-    global _config_state
+    """Undo _install_machine_ini and _set_aside_persisted_gui_state. Safe to call more than once."""
+    global _config_state, _aside_state
+    aside, _aside_state = _aside_state, None
+    if aside is not None:
+        os.replace(aside[1], aside[0])  # also replaces any file the run wrote
     state, _config_state = _config_state, None
     if state is None:
         return
@@ -155,6 +169,26 @@ def _install_dialog_stubs():
     homing.confirm_nosepiece_lowered = lambda *args, **kwargs: True
 
 
+def _install_private_instance_lock():
+    """Simulation touches no hardware, so do not compete for Squid's single-instance lock or log files."""
+    import control.single_instance as single_instance
+
+    private_path = os.path.join(SOFTWARE_DIR, MACHINE_INI_DIR, "squid-ui-screenshot.lock")
+    real_acquire = single_instance.acquire_single_instance_lock
+
+    def acquire(lock_path=None):
+        os.makedirs(os.path.dirname(private_path), exist_ok=True)
+        return real_acquire(private_path if lock_path is None else lock_path)
+
+    single_instance.acquire_single_instance_lock = acquire
+
+    # Another instance holds the default log file open, and rotating it fails on Windows: log privately too.
+    import squid.logging
+
+    private_logs = os.path.join(SOFTWARE_DIR, MACHINE_INI_DIR, "logs")
+    squid.logging.get_default_log_directory = lambda: private_logs
+
+
 def _install_font_override(font_spec):
     from qtpy.QtGui import QFont
     from qtpy.QtWidgets import QApplication
@@ -235,6 +269,7 @@ def run_gui(out_dir, theme, font_spec, machine_ini):
     os.makedirs(out_dir, exist_ok=True)
     os.chdir(SOFTWARE_DIR)
     sys.path.insert(0, SOFTWARE_DIR)
+    _set_aside_persisted_gui_state()
     if machine_ini:
         _install_machine_ini(machine_ini)
     os.environ.setdefault("QT_API", "pyqt5")
@@ -245,6 +280,7 @@ def run_gui(out_dir, theme, font_spec, machine_ini):
 
     _install_process_hygiene()
     _install_dialog_stubs()
+    _install_private_instance_lock()
     if theme:
         import control._def
 
