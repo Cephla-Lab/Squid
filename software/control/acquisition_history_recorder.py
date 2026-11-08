@@ -12,11 +12,11 @@ from concurrent.futures import Executor, Future
 from typing import Callable, Dict, Iterable, List, Optional, Set
 
 import psutil
-import yaml
 
 import control._def
 import squid.logging
 import squid.version
+from control.gallery_import import metadata_from_yaml
 from squid.acquisition_history import HistoryEntry, HistoryStore, entry_id_for
 
 _log = squid.logging.get_logger(__name__)
@@ -37,8 +37,6 @@ _PROTOCOL_OUTCOMES = {
 
 # A recorded process creation time and the live one must agree this closely for the process to be the same one.
 _PID_START_TOLERANCE_S = 2.0
-
-_YAML_FILE_NAME = "acquisition.yaml"
 
 
 def write_preview_png(folder: str, out_path: str) -> Optional[List[str]]:
@@ -63,98 +61,38 @@ def _run_outcome(reason: str) -> str:
 # ---------------------------------------------------------------------------------------------------------
 
 
-def _read_yaml(folder: str) -> dict:
-    """The folder's acquisition.yaml as a dict; {} when it is missing, unreadable or not a mapping."""
-    try:
-        with open(os.path.join(folder, _YAML_FILE_NAME), "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _get(data: dict, *keys):
-    """data[k1][k2]..., or None when any level is missing or not a mapping."""
-    for key in keys:
-        if not isinstance(data, dict):
-            return None
-        data = data.get(key)
-    return data
-
-
 def _scaled(value, factor):
     return value * factor if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def metadata_from_params(params, experiment_path: str) -> dict:
-    """The gallery's metadata for a run: from its AcquisitionParameters, with the fields only acquisition.yaml holds
-    (widget type, objective, wellplate format) read from the folder (None when it cannot be read)."""
-    data = _read_yaml(experiment_path)
+    """The gallery's metadata for a run: the folder's acquisition.yaml fields (metadata_from_yaml: widget type,
+    objective, wellplate format, ...), overlaid with what the run's AcquisitionParameters know."""
+    metadata = metadata_from_yaml(experiment_path)
     spi = getattr(params, "scan_position_information", None)
     region_names = getattr(spi, "scan_region_names", None)
     fov_coords = getattr(spi, "scan_region_fov_coords_mm", None)
     configurations = getattr(params, "selected_configurations", None) or []
-    return {
-        "experiment_id": getattr(params, "experiment_ID", None),
-        "widget_type": _get(data, "acquisition", "widget_type"),
-        "xy_mode": getattr(params, "xy_mode", None),
-        "objective": _get(data, "objective", "name"),
-        "magnification": _get(data, "objective", "magnification"),
-        "pixel_size_um": _get(data, "objective", "pixel_size_um"),
-        "wellplate_format": _get(data, "sample", "wellplate_format"),
-        "channels": [getattr(c, "name", str(c)) for c in configurations],
-        "num_regions": len(region_names) if region_names is not None else None,
-        "num_fovs": sum(len(c) for c in fov_coords.values()) if isinstance(fov_coords, dict) else None,
-        "nz": getattr(params, "NZ", None),
-        "dz_um": _scaled(getattr(params, "deltaZ", None), 1000.0),
-        "nt": getattr(params, "Nt", None),
-        "dt_s": getattr(params, "deltat", None),
-        "z_stacking_config": getattr(params, "z_stacking_config", None),
-        "use_piezo": getattr(params, "use_piezo", None),
-        "contrast_af": getattr(params, "do_autofocus", None),
-        "laser_af": getattr(params, "do_reflection_autofocus", None),
-        "laser_af_per_stack": getattr(params, "laser_af_per_stack", None),
-        "start_time": getattr(params, "acquisition_start_time", None),
-    }
-
-
-def _metadata_from_yaml(folder: str) -> dict:
-    """The same keys as metadata_from_params, from the folder's acquisition.yaml alone (a run that failed to start
-    has no AcquisitionParameters to hand). Task 5's metadata_from_folder replaces this."""
-    data = _read_yaml(folder)
-    scan = _get(data, "wellplate_scan", "regions")
-    if scan is None:
-        scan = _get(data, "flexible_scan", "positions")
-    regions = scan if isinstance(scan, list) else None
-    channels = _get(data, "channels")
-    return {
-        "experiment_id": _get(data, "acquisition", "experiment_id") or os.path.basename(os.path.normpath(folder)),
-        "widget_type": _get(data, "acquisition", "widget_type"),
-        "xy_mode": _get(data, "acquisition", "xy_mode"),
-        "objective": _get(data, "objective", "name"),
-        "magnification": _get(data, "objective", "magnification"),
-        "pixel_size_um": _get(data, "objective", "pixel_size_um"),
-        "wellplate_format": _get(data, "sample", "wellplate_format"),
-        "channels": (
-            [c.get("name") for c in channels if isinstance(c, dict) and c.get("name")]
-            if isinstance(channels, list)
-            else []
-        ),
-        "num_regions": len(regions) if regions is not None else None,
-        "num_fovs": (
-            sum(len(r.get("fovs") or []) for r in regions if isinstance(r, dict)) if regions is not None else None
-        ),
-        "nz": _get(data, "z_stack", "nz"),
-        "dz_um": _scaled(_get(data, "z_stack", "delta_z_mm"), 1000.0),
-        "nt": _get(data, "time_series", "nt"),
-        "dt_s": _get(data, "time_series", "delta_t_s"),
-        "z_stacking_config": _get(data, "z_stack", "config"),
-        "use_piezo": _get(data, "z_stack", "use_piezo"),
-        "contrast_af": _get(data, "autofocus", "contrast_af"),
-        "laser_af": _get(data, "autofocus", "laser_af"),
-        "laser_af_per_stack": _get(data, "autofocus", "laser_af_per_stack"),
-        "start_time": _get(data, "acquisition", "start_time"),
-    }
+    metadata.update(
+        {
+            "experiment_id": getattr(params, "experiment_ID", None),
+            "xy_mode": getattr(params, "xy_mode", None),
+            "channels": [getattr(c, "name", str(c)) for c in configurations],
+            "num_regions": len(region_names) if region_names is not None else None,
+            "num_fovs": sum(len(c) for c in fov_coords.values()) if isinstance(fov_coords, dict) else None,
+            "nz": getattr(params, "NZ", None),
+            "dz_um": _scaled(getattr(params, "deltaZ", None), 1000.0),
+            "nt": getattr(params, "Nt", None),
+            "dt_s": getattr(params, "deltat", None),
+            "z_stacking_config": getattr(params, "z_stacking_config", None),
+            "use_piezo": getattr(params, "use_piezo", None),
+            "contrast_af": getattr(params, "do_autofocus", None),
+            "laser_af": getattr(params, "do_reflection_autofocus", None),
+            "laser_af_per_stack": getattr(params, "laser_af_per_stack", None),
+            "start_time": getattr(params, "acquisition_start_time", None),
+        }
+    )
+    return metadata
 
 
 def _expected_images(metadata: dict) -> Optional[int]:
@@ -341,7 +279,7 @@ class AcquisitionHistoryRecorder:
             if self._store.entry(entry_id) is not None:
                 # The folder already has an entry (e.g. a refused restart in a finished run's folder): keep it.
                 return
-            metadata = _metadata_from_yaml(experiment_path)
+            metadata = metadata_from_yaml(experiment_path)
             metadata.update(self._common_metadata())
             metadata["expected_images"] = _expected_images(metadata)
             self._store.append(self._started_event(experiment_path, metadata, snap=snap, protocol=protocol))

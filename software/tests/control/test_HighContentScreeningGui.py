@@ -406,7 +406,7 @@ def test_gallery_tab_routes_open_and_load_settings_to_the_right_tabs(qtbot, conf
 
     from qtpy.QtWidgets import QWidget
 
-    from tests.control.test_widgets_gallery import write_acquisition
+    from tests.control.gallery_fixtures import write_acquisition
 
     scope = control.microscope.Microscope.build_from_global_config(True)
     win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)

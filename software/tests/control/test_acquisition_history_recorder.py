@@ -21,7 +21,7 @@ from control.acquisition_history_recorder import (
     metadata_from_params,
 )
 from squid.acquisition_history import HistoryStore, entry_id_for
-from tests.control.test_widgets_gallery import write_acquisition
+from tests.control.gallery_fixtures import write_acquisition
 
 CHANNELS = ["BF LED matrix full", "Fluorescence 488 nm Ex"]
 
@@ -154,6 +154,8 @@ def test_metadata_from_params_reads_the_params_and_the_yaml(params, folder):
         "laser_af": True,
         "laser_af_per_stack": False,
         "start_time": 1762596000.0,
+        "image_format": None,
+        "protocol": None,
     }
 
 

@@ -17,7 +17,7 @@ from control.gallery_previews import (
     stretch_to_unit,
     write_preview_png,
 )
-from tests.control.test_widgets_gallery import saving_root, write_acquisition  # noqa: F401  (saving_root is a fixture)
+from tests.control.gallery_fixtures import saving_root, write_acquisition  # noqa: F401  (saving_root is a fixture)
 
 BF = "BF LED matrix full"
 F488 = "Fluorescence 488 nm Ex"
