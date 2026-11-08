@@ -979,9 +979,11 @@ def test_start_refuses_a_relative_range_with_invalid_spacing(delta_z_mm):
 def test_start_refuses_relative_range_with_per_region_offsets():
     c = _relative_validation_controller()
     assert c.validate_acquisition_settings({"A1": 3.0}) is False
+    # Per-region offsets come only from the GUI's focus map panel, so the advice names its checkbox; per-region
+    # Z-ranges don't exist in the GUI.
     assert (
-        _last_error(c) == "Per-region laser AF offsets and a relative Z-range don't combine: clear the offsets, "
-        "or use per-region Z-ranges."
+        _last_error(c) == "Per-region laser AF offsets and a relative Z-range don't combine: uncheck Laser AF Offset "
+        "in the focus map panel, or clear the Z-range and use From Bottom."
     )
     assert c.validate_acquisition_settings({}) is True
 
