@@ -1,6 +1,7 @@
 """Colour composite previews of an acquisition: from the mosaic overview, or from the first field of view."""
 
 import os
+import shutil
 
 import cv2
 import numpy as np
@@ -56,6 +57,40 @@ def test_find_preview_source_falls_back_to_first_fov_images(saving_root):
     assert src.kind == "images" and set(src.image_paths) == {BF, F488}
     assert all(os.path.basename(p).startswith("A1_0_0_") for p in src.image_paths.values())
     assert sorted(src.channels) == sorted([BF, F488])
+
+
+def test_find_preview_source_reads_the_first_fov_of_a_multipage_stack(saving_root, tmp_path):
+    folder = write_acquisition(saving_root, "exp", images="multipage", nz=3)
+    src = find_preview_source(str(folder))
+    assert src.kind == "stack" and src.channels == [BF, F488]
+    assert os.path.basename(src.stack_path) == "A1_0_stack.tiff"
+
+    planes = load_channel_planes(src, PREVIEW_MAX_SIDE)
+    assert list(planes) == [BF, F488]
+    assert all(plane.shape == (48, 64) and plane.any() for plane in planes.values())  # z=0, not the black z>0
+    assert write_preview_png(str(folder), str(tmp_path / "p.png")) == [BF, F488]
+
+
+def test_find_preview_source_reads_t0_z0_of_an_ome_tiff(saving_root, tmp_path):
+    folder = write_acquisition(saving_root, "exp", images="ome", nz=3, nt=2)
+    src = find_preview_source(str(folder))
+    assert src.kind == "ome" and src.channels == [BF, F488]
+    assert src.ome_path.endswith(os.path.join("ome_tiff", "A1_0.ome.tiff"))
+
+    planes = load_channel_planes(src, PREVIEW_MAX_SIDE)
+    assert list(planes) == [BF, F488]
+    assert all(plane.shape == (48, 64) and plane.any() for plane in planes.values())  # only t=0, z=0 is lit
+    assert write_preview_png(str(folder), str(tmp_path / "p.png")) == [BF, F488]
+
+
+def test_find_preview_source_finds_an_ome_tiff_inside_the_first_timepoint(saving_root):
+    folder = write_acquisition(saving_root, "exp", images="ome", nz=1, nt=1)
+    os.makedirs(folder / "0" / "ome_tiff")
+    os.replace(folder / "ome_tiff" / "B2_0.ome.tiff", folder / "0" / "ome_tiff" / "B2_0.ome.tiff")
+    shutil.rmtree(folder / "ome_tiff")
+    src = find_preview_source(str(folder))
+    assert src.kind == "ome" and src.ome_path.endswith(os.path.join("0", "ome_tiff", "B2_0.ome.tiff"))
+    assert list(load_channel_planes(src, PREVIEW_MAX_SIDE)) == [BF, F488]
 
 
 def test_find_preview_source_none_for_zarr_without_overview(saving_root):

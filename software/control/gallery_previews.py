@@ -1,6 +1,7 @@
 """Preview images for the acquisition gallery: a colour composite of an acquisition's mosaic overview or,
 without one, of its first field of view, plus the single-image thumbnail helpers the gallery list uses."""
 
+import json
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -29,14 +30,22 @@ _IMAGE_NAME = re.compile(
     r"^(?P<region>[^_]+)_(?P<fov>\d+)_(?P<z>\d+)_(?P<channel>.+)\.(tiff|tif|bmp|png|jpg|jpeg)$", re.IGNORECASE
 )
 _OVERVIEW_NAME = re.compile(r"^mosaic_.*\.ome\.tiff?$", re.IGNORECASE)
+# MULTI_PAGE_TIFF: <timepoint>/<region>_<fov>_stack.tiff, one page per (z, channel)
+_STACK_NAME = re.compile(r"^(?P<region>.+)_(?P<fov>\d+)_stack\.tiff?$", re.IGNORECASE)
+# OME_TIFF: ome_tiff/<region>_<fov>.ome.tiff, one TZCYX series per FOV
+_OME_NAME = re.compile(r"^(?P<region>.+)_(?P<fov>\d+)\.ome\.tiff?$", re.IGNORECASE)
+_TIFF_PAGE_NAME = 285
 
 
 @dataclass
 class PreviewSource:
-    kind: str = "none"  # "overview" | "images" | "none"
+    kind: str = "none"  # "overview" | "images" | "stack" | "ome" | "none"
     overview_path: Optional[str] = None
     image_paths: Dict[str, str] = field(default_factory=dict)  # channel name -> first-FOV image file
     channels: List[str] = field(default_factory=list)
+    stack_path: Optional[str] = None  # the first FOV's multi-page TIFF
+    stack_pages: Dict[str, int] = field(default_factory=dict)  # channel name -> page index (lowest z)
+    ome_path: Optional[str] = None  # the first FOV's OME-TIFF
 
 
 def _timepoint_dirs(folder: str) -> List[Tuple[int, str]]:
@@ -71,16 +80,8 @@ def _overview_plane_count(path: str) -> int:
         return 0
 
 
-def _overview_channel_names(path: str) -> List[str]:
-    """Sidecar yaml channel_names, else the OME Channel names, else channel 1..N."""
-    stem = re.sub(r"\.ome\.tiff?$", "", path, flags=re.IGNORECASE)
-    try:
-        with open(stem + ".yaml", "r", encoding="utf-8") as f:
-            names = (yaml.safe_load(f) or {}).get("channel_names")
-        if isinstance(names, list) and names:
-            return [str(n) for n in names]
-    except Exception:
-        pass
+def _ome_channel_names(path: str) -> List[str]:
+    """The Name of every OME Channel element in the file; empty when any is unnamed or there is no OME XML."""
     try:
         with tifffile.TiffFile(path) as tif:
             xml_text = tif.ome_metadata
@@ -91,6 +92,22 @@ def _overview_channel_names(path: str) -> List[str]:
                 return names
     except Exception:
         pass
+    return []
+
+
+def _overview_channel_names(path: str) -> List[str]:
+    """Sidecar yaml channel_names, else the OME Channel names, else channel 1..N."""
+    stem = re.sub(r"\.ome\.tiff?$", "", path, flags=re.IGNORECASE)
+    try:
+        with open(stem + ".yaml", "r", encoding="utf-8") as f:
+            names = (yaml.safe_load(f) or {}).get("channel_names")
+        if isinstance(names, list) and names:
+            return [str(n) for n in names]
+    except Exception:
+        pass
+    names = _ome_channel_names(path)
+    if names:
+        return names
     return [f"channel {i + 1}" for i in range(_overview_plane_count(path))]
 
 
@@ -117,17 +134,91 @@ def _first_fov_images(timepoint_path: str) -> Dict[str, str]:
     return {channel: best[channel][1] for channel in sorted(best)}
 
 
+def _first_fov_file(directory: str, pattern) -> Optional[str]:
+    """The file in directory matching pattern with the smallest (region, fov); None when there is none."""
+    candidates = []
+    try:
+        with os.scandir(directory) as it:
+            for entry in it:
+                m = pattern.match(entry.name)
+                if m and entry.is_file():
+                    candidates.append((m["region"], int(m["fov"]), entry.path))
+    except OSError:
+        return None
+    return min(candidates)[2] if candidates else None
+
+
+def _stack_channel_pages(path: str) -> Dict[str, int]:
+    """Channel name -> index of its lowest-z page in a multi-page TIFF, channels in acquisition order. The writer
+    stores the channel in each page's PageName tag and channel / z_level in its description JSON. A stack whose
+    pages name no channel gives its first page as "channel 1"."""
+    best: Dict[str, Tuple[int, int]] = {}  # channel -> (z, page index)
+    try:
+        with tifffile.TiffFile(path) as tif:
+            for i, page in enumerate(tif.pages):
+                try:
+                    info = json.loads(page.description) if page.description else {}
+                except ValueError:
+                    info = {}
+                info = info if isinstance(info, dict) else {}
+                tag = page.tags.get(_TIFF_PAGE_NAME)
+                name = tag.value if tag is not None and isinstance(tag.value, str) and tag.value else None
+                name = name or (str(info["channel"]) if info.get("channel") else None)
+                if name is None:
+                    continue
+                z = info.get("z_level")
+                z = z if isinstance(z, int) and not isinstance(z, bool) else i
+                if name not in best or z < best[name][0]:
+                    best[name] = (z, i)
+            if not best and len(tif.pages):
+                return {"channel 1": 0}
+    except Exception:
+        _log.exception(f"Cannot read the stack {path}")
+        return {}
+    return {name: page for name, (_, page) in best.items()}
+
+
+def _ome_plane_count(path: str) -> int:
+    try:
+        with tifffile.TiffFile(path) as tif:
+            series = tif.series[0]
+            axes, shape = series.axes, series.shape
+    except Exception:
+        _log.exception(f"Cannot read the OME-TIFF {path}")
+        return 0
+    return int(shape[axes.index("C")]) if "C" in axes else 1
+
+
 def find_preview_source(folder: str) -> PreviewSource:
-    """The latest timepoint's mosaic overview if any timepoint has one, else the first FOV's channel images."""
+    """The latest timepoint's mosaic overview if any timepoint has one, else the first FOV of the first timepoint:
+    its channel images, its multi-page TIFF stack, or its OME-TIFF."""
     timepoints = _timepoint_dirs(folder)
     for _, path in reversed(timepoints):
         overview = _overview_in(path)
         if overview:
             return PreviewSource("overview", overview_path=overview, channels=_overview_channel_names(overview))
     if timepoints:
-        images = _first_fov_images(timepoints[0][1])
+        first = timepoints[0][1]
+        images = _first_fov_images(first)
         if images:
             return PreviewSource("images", image_paths=images, channels=list(images))
+        stack = _first_fov_file(first, _STACK_NAME)
+        if stack:
+            pages = _stack_channel_pages(stack)
+            if pages:
+                return PreviewSource("stack", stack_path=stack, stack_pages=pages, channels=list(pages))
+    ome_dirs = [os.path.join(folder, "ome_tiff")]
+    if timepoints:
+        ome_dirs += [os.path.join(timepoints[0][1], "ome_tiff"), timepoints[0][1]]
+    for directory in ome_dirs:
+        ome = _first_fov_file(directory, _OME_NAME)
+        if ome:
+            count = _ome_plane_count(ome)
+            if count:
+                names = _ome_channel_names(ome)
+                if len(names) != count:
+                    names = [f"channel {i + 1}" for i in range(count)]
+                return PreviewSource("ome", ome_path=ome, channels=names)
     return PreviewSource()
 
 
@@ -169,6 +260,42 @@ def _read_overview_planes(source: PreviewSource, max_side: int) -> Dict[str, np.
     return planes
 
 
+def _read_stack_planes(source: PreviewSource, max_side: int) -> Dict[str, np.ndarray]:
+    planes: Dict[str, np.ndarray] = {}
+    with tifffile.TiffFile(source.stack_path) as tif:
+        for channel, index in source.stack_pages.items():
+            try:
+                plane = _to_plane(tif.pages[index].asarray(), max_side)
+            except Exception:
+                _log.exception(f"Cannot read page {index} of {source.stack_path}")
+                continue
+            if plane is not None:
+                planes[channel] = plane
+    return planes
+
+
+def _read_ome_planes(source: PreviewSource, max_side: int) -> Dict[str, np.ndarray]:
+    """t=0, z=0 (index 0 on every axis but C, Y, X and samples) of the first series, one plane per channel."""
+    planes: Dict[str, np.ndarray] = {}
+    with tifffile.TiffFile(source.ome_path) as tif:
+        series = tif.series[0]
+        outer = [(axis, size) for axis, size in zip(series.axes, series.shape) if axis not in "YXS"]
+        sizes = tuple(size for _, size in outer)
+        count = dict(outer).get("C", 1)
+        for c in range(count):
+            name = source.channels[c] if c < len(source.channels) else f"channel {c + 1}"
+            index = tuple(c if axis == "C" else 0 for axis, _ in outer)
+            try:
+                page = series.pages[int(np.ravel_multi_index(index, sizes)) if sizes else 0]
+                plane = _to_plane(page.asarray(), max_side) if page is not None else None
+            except Exception:
+                _log.exception(f"Cannot read channel {c} of {source.ome_path}")
+                continue
+            if plane is not None:
+                planes[name] = plane
+    return planes
+
+
 def _read_single_image(path: str, max_side: int) -> Optional[np.ndarray]:
     if os.path.splitext(path)[1].lower() in (".tif", ".tiff"):
         array = tifffile.imread(path)
@@ -188,6 +315,18 @@ def load_channel_planes(source: PreviewSource, max_side: int) -> Dict[str, np.nd
             return _read_overview_planes(source, max_side)
         except Exception:
             _log.exception(f"Cannot read the overview {source.overview_path}")
+            return {}
+    if source.kind == "stack" and source.stack_path:
+        try:
+            return _read_stack_planes(source, max_side)
+        except Exception:
+            _log.exception(f"Cannot read the stack {source.stack_path}")
+            return {}
+    if source.kind == "ome" and source.ome_path:
+        try:
+            return _read_ome_planes(source, max_side)
+        except Exception:
+            _log.exception(f"Cannot read the OME-TIFF {source.ome_path}")
             return {}
     planes: Dict[str, np.ndarray] = {}
     if source.kind == "images":

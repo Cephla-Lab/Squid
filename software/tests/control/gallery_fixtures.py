@@ -59,11 +59,36 @@ def write_acquisition(
                     safe = ch.replace(" ", "_")
                     tifffile.imwrite(tp / f"{region}_{fov}_0_{safe}.tiff", image)
     elif images == "multipage":
-        tifffile.imwrite(tp / "A1_0_stack.tiff", np.stack([image, image]))
+        # As SaveImageJob.save_image (MULTI_PAGE_TIFF) appends them: one page per (z, channel), z outermost, the
+        # channel in PageName and channel / z_level in the page description JSON. Pages above z=0 are black.
+        for region, n in regions:
+            for fov in range(n):
+                for z in range(nz):
+                    for ci, ch in enumerate(channels):
+                        page = image if z == 0 else np.zeros_like(image)
+                        metadata = {"z_level": z, "channel": ch, "channel_index": ci, "region_id": region, "fov": fov}
+                        with tifffile.TiffWriter(tp / f"{region}_{fov}_stack.tiff", append=True) as writer:
+                            writer.write(
+                                page,
+                                metadata=metadata,
+                                description=json.dumps(metadata),
+                                extratags=[(285, "s", 0, ch, False)],
+                            )
     elif images == "ome":
+        # As SaveOMETiffJob writes them: ome_tiff/<region>_<fov>.ome.tiff, a TZCYX stack with the OME Channel names.
+        # Only t=0, z=0 is lit.
         ome = folder / "ome_tiff"
         ome.mkdir()
-        tifffile.imwrite(ome / "A1_0.ome.tiff", np.stack([image, image]), metadata={"axes": "CYX"})
+        stack = np.zeros((nt, nz, len(channels), *image.shape), dtype=np.uint16)
+        stack[0, 0] = image
+        for region, n in regions:
+            for fov in range(n):
+                tifffile.imwrite(
+                    ome / f"{region}_{fov}.ome.tiff",
+                    stack,
+                    metadata={"axes": "TZCYX", "Channel": {"Name": list(channels)}},
+                    ome=True,
+                )
     elif images == "zarr":
         (folder / "zarr" / "A1" / "fov_0.ome.zarr").mkdir(parents=True)
         (folder / "zarr" / "A1" / "fov_0.ome.zarr" / "zarr.json").write_text("{}")
