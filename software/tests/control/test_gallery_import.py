@@ -164,3 +164,52 @@ def test_metadata_from_folder_matches_the_recorder_key_set(saving_root):
 def test_import_of_an_unreadable_root_reports_an_error_not_an_exception(store, tmp_path):
     result = import_folder(store, str(tmp_path / "does_not_exist"), include_snaps=False)
     assert result.added == [] and len(result.errors) == 1
+
+
+def test_a_raising_make_preview_is_reported_and_never_leaves_a_run_open(store, saving_root):
+    plain = write_acquisition(saving_root, "a_2026-11-08_10-00-00.000000", start_time=START)
+    run = write_protocol_run(saving_root, "run_7", rounds=3)
+
+    def boom(folder, entry_id):
+        raise RuntimeError("no preview")
+
+    result = import_folder(store, str(saving_root), include_snaps=False, make_preview=boom)
+
+    assert len(result.added) == 5 and len(result.errors) == 4  # plain + run + 3 rounds; one error per preview
+    parent = store.entry(entry_id_for(str(run)))
+    assert parent.outcome == "complete" and not parent.is_running and len(parent.rounds) == 3
+    assert store.entry(entry_id_for(str(plain))) is not None
+
+
+def test_a_root_that_is_a_protocol_run_is_imported_as_one_grouped_run(store, saving_root):
+    run = write_protocol_run(saving_root, "run_7", rounds=2)
+
+    result = import_folder(store, str(run), include_snaps=False)
+
+    entries = store.load()
+    assert len(entries) == 1 and entries[0].kind == "protocol_run" and len(entries[0].rounds) == 2
+    assert len(result.added) == 3
+
+
+def test_a_run_whose_rounds_are_all_known_is_skipped_whole(store, saving_root):
+    run = write_protocol_run(saving_root, "run_7", rounds=2)
+    for r in protocol_rounds(str(run)):  # the rounds are in the history, but not their parent run
+        import_folder(store, r, include_snaps=False)
+    before = len(store.events())
+
+    result = import_folder(store, str(saving_root), include_snaps=False)
+
+    assert result.added == [] and result.skipped_existing == 1 and len(store.events()) == before
+
+
+def test_a_partly_known_run_imports_only_the_unknown_rounds_under_the_parent(store, saving_root):
+    run = write_protocol_run(saving_root, "run_7", rounds=3, status=None)
+    first = protocol_rounds(str(run))[0]
+    import_folder(store, first, include_snaps=False)
+
+    result = import_folder(store, str(saving_root), include_snaps=False)
+
+    assert result.skipped_existing == 1 and len(result.added) == 3  # the parent and two rounds
+    parent = store.entry(entry_id_for(str(run)))
+    assert len(parent.rounds) == 2 and entry_id_for(first) not in [r.id for r in parent.rounds]
+    assert parent.outcome == "complete" and parent.reason == "derived"

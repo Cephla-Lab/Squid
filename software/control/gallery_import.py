@@ -547,6 +547,17 @@ def _known_ids(store: HistoryStore) -> set:
     return ids
 
 
+def _run_preview(make_preview, folder: str, entry_id: str, result: ImportResult) -> None:
+    """make_preview(folder, entry_id), contained: a raising callback is logged and reported, never propagated."""
+    if make_preview is None:
+        return
+    try:
+        make_preview(folder, entry_id)
+    except Exception as e:
+        _log.exception(f"Preview callback failed for {folder}")
+        result.errors.append(f"{folder}: preview failed: {e}")
+
+
 def _import_protocol_run(
     store: HistoryStore, run_dir: str, rounds: List[str], known: set, result: ImportResult, make_preview
 ) -> None:
@@ -559,6 +570,9 @@ def _import_protocol_run(
     manifest = _read_manifest(run_dir)
     events = [_imported_event(r, kind="run", parent=run_id) for r in rounds]
     events = [e for e in events if e["id"] not in known]
+    if not events:
+        result.skipped_existing += 1  # every round is in the history already: nothing to group
+        return
     result.skipped_existing += len(rounds) - len(events)
     started = [e["started_at"] for e in events if e["started_at"] is not None]
     first = _round_protocol(rounds[0]) or {}
@@ -579,19 +593,27 @@ def _import_protocol_run(
         }
     )
     result.added.append(run_id)
-    for event in events:
-        store.append(event)
-        result.added.append(event["id"])
-        if make_preview is not None:
-            make_preview(event["folder"], event["id"])
-    status = manifest.get("status")
-    if status in _PROTOCOL_END_WORDS:
-        outcome, reason = map_protocol_outcome(status), status
-    else:
-        outcome = "complete" if events and all(e["outcome"] == "complete" for e in events) else "aborted"
-        reason = "derived"
-    ended = _number(manifest.get("ended_at")) or (max(started) if started else None) or _folder_started_at(run_dir, {})
-    store.append({"type": "protocol_finished", "id": run_id, "outcome": outcome, "reason": reason, "ended_at": ended})
+    imported = []
+    try:
+        for event in events:
+            store.append(event)
+            imported.append(event)
+            result.added.append(event["id"])
+            _run_preview(make_preview, event["folder"], event["id"], result)
+    finally:
+        # Once protocol_started is written the run must be closed, whatever happened to its rounds.
+        status = manifest.get("status")
+        if status in _PROTOCOL_END_WORDS:
+            outcome, reason = map_protocol_outcome(status), status
+        else:
+            outcome = "complete" if imported and all(e["outcome"] == "complete" for e in imported) else "aborted"
+            reason = "derived"
+        ended = (
+            _number(manifest.get("ended_at")) or (max(started) if started else None) or _folder_started_at(run_dir, {})
+        )
+        store.append(
+            {"type": "protocol_finished", "id": run_id, "outcome": outcome, "reason": reason, "ended_at": ended}
+        )
 
 
 def import_folder(
@@ -612,7 +634,7 @@ def import_folder(
     root = os.path.normpath(root)
     try:
         known = _known_ids(store)
-        if is_acquisition_folder(root):
+        if is_acquisition_folder(root) or protocol_rounds(root):
             candidates = [root]
         else:
             with os.scandir(root) as it:
@@ -641,8 +663,7 @@ def import_folder(
                 continue
             store.append(_imported_event(path, kind="snap" if snap else "run"))
             result.added.append(entry_id)
-            if make_preview is not None:
-                make_preview(os.path.abspath(path), entry_id)
+            _run_preview(make_preview, os.path.abspath(path), entry_id, result)
         except Exception as e:
             _log.exception(f"Could not import {path}")
             result.errors.append(f"{path}: {e}")
