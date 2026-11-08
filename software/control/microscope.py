@@ -386,12 +386,14 @@ class MicroscopeAddons:
         self.sci_microscopy_led_array = sci_microscopy_led_array
         self.squid_laser_engine = squid_laser_engine
 
-    def prepare_for_use(self, skip_init: bool = False):
+    def prepare_for_use(self, skip_init: bool = False, piezo_um: Optional[float] = None):
         """
         Prepare all the addon hardware for immediate use.
 
         Args:
             skip_init: If True, skip homing operations (e.g., during restart).
+            piezo_um: Where the controller reports the objective piezo is (a warm start): it stays there instead of
+                homing.
         """
         if self.emission_filter_wheel:
             fw_config = squid.config.get_filter_wheel_config()
@@ -407,7 +409,10 @@ class MicroscopeAddons:
                     if not self.emission_filter_wheel.position_is_known(wheel_index):
                         _home_filter_wheels(self.emission_filter_wheel, wheel_index)
         if self.piezo_stage and not skip_init:
-            self.piezo_stage.home()
+            if piezo_um is None:
+                self.piezo_stage.home()
+            else:
+                self.piezo_stage.adopt_position(piezo_um)
         if self.squid_laser_engine:
             # start() may raise if the USB device is missing — intentional hard fail
             # when a laser engine is configured so we don't silently disable it.
@@ -759,13 +764,14 @@ class Microscope:
         self._config_repo = repo
         self.illumination_controller.config_repo = repo
 
-    def _confirm_startup_homing(self, skip_init: bool) -> bool:
+    def _confirm_startup_homing(self, skip_init: bool, warm: bool) -> bool:
         """Piezo-only: the stop sign before startup moves what can hit the sample with the nosepiece up - the stage to
-        its X and Y limit switches (not on a restart, skip_init), or an objective changer, which every startup turns to
-        the default objective (a Xeryon re-homes first, even on a restart) with no Z motor to clear the objective. True
-        when the nosepiece was confirmed lowered, False when startup needs no confirmation. Declined, or no one to ask:
-        closes the hardware (construction fails, so no caller can) and raises, before anything of startup runs."""
-        stage_homes = not skip_init and startup_needs_objective_prompt()
+        its X and Y limit switches (not on a restart, skip_init, nor on a warm start), or an objective changer, which
+        every startup turns to the default objective (a Xeryon re-homes first, even on a restart) with no Z motor to
+        clear the objective. True when the nosepiece was confirmed lowered, False when startup needs no confirmation.
+        Declined, or no one to ask: closes the hardware (construction fails, so no caller can) and raises, before
+        anything of startup runs."""
+        stage_homes = not skip_init and not warm and startup_needs_objective_prompt()
         changer_moves = control._def.IS_PIEZO_ONLY and self.addons.objective_changer is not None
         if not (stage_homes or changer_moves):
             return False
@@ -783,11 +789,14 @@ class Microscope:
         return True
 
     def _prepare_for_use(self, skip_init: bool = False):
+        mcu = self.low_level_drivers.microcontroller
+        warm = mcu is not None and mcu.startup_was_warm  # a warm start homes no stage axis
         # Before anything moves: the piezo homes next (toward the sample), then X and Y go to their limit switches, then
         # an objective changer homes and turns.
-        objective_lowered = self._confirm_startup_homing(skip_init)
+        objective_lowered = self._confirm_startup_homing(skip_init, warm)
         self.low_level_drivers.prepare_for_use(skip_init=skip_init)
-        self.addons.prepare_for_use(skip_init=skip_init)
+        # A warm start leaves the piezo where the controller says it is (and homes it when the controller has no code)
+        self.addons.prepare_for_use(skip_init=skip_init, piezo_um=mcu.startup_piezo_um() if warm else None)
 
         # Configure serial watchdog for illumination safety (requires firmware v1.1+)
         if self.low_level_drivers.microcontroller:
@@ -844,9 +853,15 @@ class Microscope:
                 if self.z_lift is not None:
                     self._log.info(f"Setting Z lift limits: [{self.z_lift.min_mm},{self.z_lift.max_mm}]")
                     self.z_lift.apply_limits()
-                self.home_xyz(objective_lowered=objective_lowered)
-                self._raise_z_lift_to_sample_height()
-                self.startup_homing = StartupHoming.HOMED
+                if warm:
+                    # The controller vouched that the stage is still homed under this configuration (the
+                    # Microcontroller's startup query): no home_xyz and no lift raise. The stage stays where the last
+                    # session left it.
+                    self.startup_homing = StartupHoming.ALREADY_HOMED
+                else:
+                    self.home_xyz(objective_lowered=objective_lowered)
+                    self._raise_z_lift_to_sample_height()
+                    self.startup_homing = StartupHoming.HOMED
             except TimeoutError:
                 self._log.error("Hardware setup timed out, resetting microcontroller")
                 if self.low_level_drivers.microcontroller:
@@ -857,6 +872,15 @@ class Microscope:
             self._start_focus_wheel_router()
 
         if self.addons.objective_changer:
+            if (
+                control._def.USE_XERYON
+                and self.startup_homing is StartupHoming.ALREADY_HOMED
+                and squid.stage.utils.z_is_referenced()
+            ):
+                # A normal startup has homed (a V-308: retracted) Z by now; a warm one homed nothing, so Z is where
+                # the last session left it (after a crash, possibly at focus height). It retracts before the Xeryon
+                # moves. (A turret's home() retracts Z itself.)
+                squid.stage.utils.retract_objective(self.stage)
             # Xeryon always re-homes (findIndex is fast and required). The turret skips
             # homing on a software restart: the controller retains its position counter
             # across close()/re-init (the motor is de-energized but the drive stays

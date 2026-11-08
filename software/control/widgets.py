@@ -6177,7 +6177,7 @@ class PiezoWidget(QFrame):
     def __init__(self, piezo: PiezoStage, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.piezo = piezo
-        self.piezo_displacement_um = 0.00
+        self.piezo_displacement_um = piezo.position  # after a warm start, where the last session left it
         self.add_components()
 
     def add_components(self):
@@ -6185,7 +6185,7 @@ class PiezoWidget(QFrame):
         self.slider = QSlider(Qt.Horizontal, self)
         self.slider.setMinimum(0)
         self.slider.setMaximum(int(self.piezo.range_um * 100))  # Multiplied by 100 for 0.01 precision
-        self.slider.setValue(int(self.piezo._home_position_um * 100))
+        self.slider.setValue(int(self.piezo_displacement_um * 100))
 
         self.spinBox = QDoubleSpinBox(self)
         self.spinBox.setRange(0.0, self.piezo.range_um)
@@ -6193,7 +6193,7 @@ class PiezoWidget(QFrame):
         self.spinBox.setSingleStep(1)
         self.spinBox.setSuffix(" μm")
         self.spinBox.setKeyboardTracking(False)
-        self.spinBox.setValue(self.piezo._home_position_um)
+        self.spinBox.setValue(self.piezo_displacement_um)
 
         # Row 3: Home Button
         self.home_btn = QPushButton(f" Set to {self.piezo._home_position_um} μm ", self)

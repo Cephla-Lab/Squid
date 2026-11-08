@@ -72,3 +72,11 @@ int16_t tmc_driver_config_stallguard(TMC4361ATypeDef *tmc4361A, int8_t sensitivi
   if (tmc4361A->driver_type == DRIVER_TMC2660) return tmc2660_driver_config_stallguard(tmc4361A, sensitivity, filter_en, vstall_lim);
   return 0;
 }
+
+bool tmc_config_intact(TMC4361ATypeDef *tmc4361A) {
+  uint32_t expected;
+  if (tmc4361A->driver_type == DRIVER_TMC2240) expected = TMC_SPIOUT_CONF_2240;
+  else if (tmc4361A->driver_type == DRIVER_TMC2660) expected = TMC_SPIOUT_CONF_2660;
+  else return false;  // no identified driver: its init() never ran, so there is no configuration to be intact
+  return (uint32_t)tmc4361A_readInt(tmc4361A, TMC4361A_SPIOUT_CONF) == expected;
+}
