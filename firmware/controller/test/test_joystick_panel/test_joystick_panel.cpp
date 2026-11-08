@@ -3,6 +3,7 @@
 
 // Include sources directly for native tests (env:native builds no src/ code into tests)
 #include "utils/joystick_panel.cpp"
+#include "utils/crc8.cpp"
 
 static JoystickPanelLink link;
 
@@ -110,11 +111,38 @@ void test_wrong_size_and_nonzero_last_byte_are_dropped(void) {
     uint8_t p[JP_MSG_LENGTH];
     make_packet(p, 1000, 0, 0);
     TEST_ASSERT_FALSE(jp_on_packet(&link, p, JP_MSG_LENGTH - 1, 0, &in));
-    p[9] = 0x5A;
+    p[9] = crc8ccitt(p, JP_MSG_LENGTH - 1) ^ 0x01;   // neither 0 nor the checksum
     TEST_ASSERT_FALSE(jp_on_packet(&link, p, JP_MSG_LENGTH, 0, &in));
     TEST_ASSERT_EQUAL_INT32(7, in.focus_delta);   // untouched
     TEST_ASSERT_FALSE(link.connected);            // and a dropped packet is not a sign of life
     TEST_ASSERT_FALSE(link.have_wheel_baseline);
+}
+
+// A packet captured from a panel on a rig (2026-11-07): the last byte is CRC8-CCITT of bytes 0-8.
+// Requiring 0 there dropped every packet, and that panel's joystick and wheel did nothing.
+void test_packet_with_a_valid_checksum_is_accepted(void) {
+    const uint8_t p[JP_MSG_LENGTH] = {0xff, 0xff, 0xf6, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x01, 0x38};
+    JoystickPanelInput in;
+    TEST_ASSERT_EQUAL_HEX8(0x38, crc8ccitt(p, JP_MSG_LENGTH - 1));
+    TEST_ASSERT_TRUE(jp_on_packet(&link, p, JP_MSG_LENGTH, 0, &in));
+    TEST_ASSERT_TRUE(link.connected);
+    TEST_ASSERT_EQUAL_INT32(-2368, link.wheel_pos);
+}
+
+void test_checksummed_panel_arms_and_drives_xy(void) {
+    JoystickPanelInput in;
+    uint8_t p[JP_MSG_LENGTH];
+    for (uint32_t t = 0; t < JP_CENTERED_PACKETS; t++) {
+        make_packet(p, 1000, 0, 0);
+        p[9] = crc8ccitt(p, JP_MSG_LENGTH - 1);
+        TEST_ASSERT_TRUE(jp_on_packet(&link, p, JP_MSG_LENGTH, t, &in));
+    }
+    TEST_ASSERT_TRUE(link.xy_armed);
+    make_packet(p, 1000, 300, -40);
+    p[9] = crc8ccitt(p, JP_MSG_LENGTH - 1);
+    TEST_ASSERT_TRUE(jp_on_packet(&link, p, JP_MSG_LENGTH, 10, &in));
+    TEST_ASSERT_EQUAL_INT16(300, in.delta_x);
+    TEST_ASSERT_EQUAL_INT16(-40, in.delta_y);
 }
 
 void test_implausible_wheel_jump_is_dropped_and_rebaselined(void) {
@@ -171,6 +199,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_joystick_reads_centred_until_armed);
     RUN_TEST(test_timeout_disarms_the_joystick);
     RUN_TEST(test_wrong_size_and_nonzero_last_byte_are_dropped);
+    RUN_TEST(test_packet_with_a_valid_checksum_is_accepted);
+    RUN_TEST(test_checksummed_panel_arms_and_drives_xy);
     RUN_TEST(test_implausible_wheel_jump_is_dropped_and_rebaselined);
     RUN_TEST(test_wheel_jump_keeps_the_timeout_running);
     RUN_TEST(test_wheel_step_across_int32_extremes_is_rejected);
