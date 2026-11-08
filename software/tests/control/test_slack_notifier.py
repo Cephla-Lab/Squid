@@ -246,6 +246,17 @@ class TestSlackNotifierTimepointNotifications:
         assert "Laser AF:* 3/3 FOVs succeeded" in rendered
         assert "Laser AF per stack:* 5/6 stacks succeeded (1 failed)" in rendered
 
+    def test_timepoint_message_reports_frames_skipped_outside_travel(self, notifier):
+        with mock.patch.object(notifier, "_queue_message") as mock_queue:
+            notifier.notify_timepoint_complete(self._timepoint_stats())
+            assert "travel" not in self._rendered(mock_queue.call_args[0][0])  # nothing skipped: no line
+
+            stats = self._timepoint_stats(relative_frames_skipped=12, relative_fovs_with_skips=3)
+            notifier.notify_timepoint_complete(stats)
+            rendered = self._rendered(mock_queue.call_args[0][0])
+        assert "Outside the travel:* 12 frames skipped in 3 FOVs" in rendered
+        assert "Laser AF:* 3/3 FOVs succeeded" in rendered
+
     def test_notify_timepoint_respects_flag(self):
         """Test that notify_timepoint_complete respects flag."""
         control._def.SlackNotifications.ENABLED = True

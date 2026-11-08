@@ -6,9 +6,11 @@ its actuator directly, like LaserAutofocusController._move_z. acquire_camera_ima
 """
 
 import contextlib
+import json
 import os
+import threading
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import numpy as np
 import pytest
@@ -16,9 +18,19 @@ import pytest
 import squid.abc
 import squid.stage.utils
 from control._def import TriggerMode
+from control.core.job_processing import (
+    CaptureInfo,
+    SaveImageJob,
+    SaveOMETiffJob,
+    SaveSettings,
+    SaveZarrJob,
+    ZarrWriterInfo,
+)
 from control.core.laser_auto_focus_controller import LockOnRecord
 from control.core.multi_point_worker import MultiPointWorker, SummarizeResult
 from control.core.relative_z_range import nz_for_range
+from squid.abc import CameraFrame, CameraFrameFormat
+from squid.config import CameraPixelFormat
 
 FIRST_FOV_MESSAGE = (
     "Couldn't lock onto the laser AF reference at the first FOV: move near the reference plane, "
@@ -203,6 +215,15 @@ def _worker(
     w._backpressure = MagicMock()
     w._summarize_runner_outputs = MagicMock(return_value=SummarizeResult(none_failed=True, had_results=False))
     w._abort_on_failed_job = True
+    w._acquisition_error_count = 0
+    w.experiment_path = os.path.join(w.base_path, "exp")
+    # Skip notices: no save runner unless a test adds one (no runner, no notice); no frame seen yet.
+    w._job_runners = []
+    w._save_settings = SaveSettings()
+    w._skip_notice_lock = threading.Lock()
+    w._pending_skip_notices = []
+    w._frame_format = None
+    w._relative_frames_skipped = w._relative_fovs_with_skips = 0
     w.initialize_coordinates_dataframe()
 
     w.frames = []
@@ -258,7 +279,7 @@ def test_planes_follow_the_channel_offset_and_skip_only_frames_past_travel(tmp_p
     w = _worker(tmp_path, relative_range=(-2.0, 0.0), offsets={"A": 0.0, "B": 5.0}, references=[1.0])
     reported = []
     real_report = w._report_skipped_frames
-    w._report_skipped_frames = lambda r, f, s: (reported.append(list(s)), real_report(r, f, s))[1]
+    w._report_skipped_frames = lambda r, p, f, s: (reported.append(list(s)), real_report(r, p, f, s))[1]
 
     w.acquire_at_position("A1", str(tmp_path), 0)
 
@@ -685,6 +706,7 @@ def test_one_skipped_frames_warning_per_fov_listing_every_channel(tmp_path, orde
     assert "plane 0 'A'" in warnings[0] and "plane 0 'B'" in warnings[0]
     assert "2 frame(s)" in warnings[0]
     assert list(w.coordinates_pd["out_of_travel"]) == ["A;B", ""]
+    assert (w._relative_frames_skipped, w._relative_fovs_with_skips) == (2, 1)  # one FOV, however many groups
 
 
 def test_without_af_per_stack_the_targets_are_computed_once_per_fov(tmp_path):
@@ -728,3 +750,382 @@ def test_z_first_settle_carries_past_an_entirely_skipped_relocked_channel(tmp_pa
     assert len(afs) == 3 and len(sleeps) == 2  # A's first move, C's first move: B had none
     assert afs[0] < sleeps[0] < frames[0]
     assert afs[2] < sleeps[1] < frames[4]
+
+
+# --- Skip notices: the skipped frames reach the Zarr and OME-TIFF writers ------------------------------------
+
+
+class _FakeRunner:
+    """Records what the worker dispatches, in one event list shared with the frames."""
+
+    def __init__(self, name, events):
+        self.name, self.events, self.jobs = name, events, []
+
+    def dispatch(self, job):
+        self.jobs.append(job)
+        self.events.append((self.name, job))
+        return True
+
+    def wait_ready(self, timeout_s=None):
+        return True
+
+
+class _InlineRunner(_FakeRunner):
+    """Runs each job at once, with the writer info JobRunner.dispatch injects."""
+
+    def __init__(self, name, events, zarr_writer_info):
+        super().__init__(name, events)
+        self.zarr_writer_info = zarr_writer_info
+
+    def dispatch(self, job):
+        super().dispatch(job)
+        job.zarr_writer_info = self.zarr_writer_info
+        job.run()
+        return True
+
+
+def _runners(w, events):
+    runners = {cls: _FakeRunner(cls.__name__, events) for cls in (SaveZarrJob, SaveOMETiffJob, SaveImageJob)}
+    w._job_runners = list(runners.items())
+    return runners
+
+
+def _notices(runner):
+    return [job.capture_info for job in runner.jobs if job.capture_info.skipped_frames is not None]
+
+
+def _arm_frame_callback(w):
+    """The state _image_callback needs; with a trigger outstanding (cleared event) a frame it receives is saved."""
+    w._ready_for_next_trigger = threading.Event()
+    w._ready_for_next_trigger.set()
+    w._image_callback_idle = threading.Event()
+    w._image_callback_idle.set()
+    w._current_capture_info = None
+    w._first_job_dispatched = True
+    w._timepoint_image_count = w.image_count = 0
+    w._run_state = MagicMock()
+    w._emit_plate_layout = lambda image: None
+
+
+def _capture_info(w, config, file_ID, current_path, z_level, region_id, fov, config_idx):
+    return CaptureInfo(
+        position=w.stage.get_pos(),
+        z_index=z_level,
+        capture_time=time.time(),
+        configuration=config,
+        save_directory=current_path,
+        file_id=file_ID,
+        region_id=region_id,
+        fov=fov,
+        configuration_idx=config_idx,
+        time_point=w.time_point,
+    )
+
+
+def _deliver_frames(w, shape, dtype=np.uint16):
+    """Every frame the harness records also goes through the worker's frame callback, as a camera delivers it."""
+    _arm_frame_callback(w)
+    record = w.acquire_camera_image
+
+    def acquire(config, file_ID, current_path, z_level, region_id, fov, config_idx):
+        record(config, file_ID, current_path, z_level, region_id, fov, config_idx)
+        w._current_capture_info = _capture_info(w, config, file_ID, current_path, z_level, region_id, fov, config_idx)
+        w._ready_for_next_trigger.clear()
+        frame = np.full(shape, len(w.frames), dtype=dtype)
+        w._image_callback(
+            CameraFrame(len(w.frames), time.time(), frame, CameraFrameFormat.RAW, CameraPixelFormat.MONO16)
+        )
+
+    w.acquire_camera_image = acquire
+
+
+def _record_frames_as_events(w, events):
+    record = w.acquire_camera_image
+
+    def acquire(config, file_ID, current_path, z_level, region_id, fov, config_idx):
+        events.append(("frame", config_idx, z_level))
+        record(config, file_ID, current_path, z_level, region_id, fov, config_idx)
+
+    w.acquire_camera_image = acquire
+
+
+@pytest.mark.parametrize("order, per_stack", [("CHANNEL FIRST", False), ("Z FIRST", False), ("Z FIRST", True)])
+def test_skipped_frames_dispatch_one_notice_per_lock_on_to_zarr_and_ome_tiff_runners(tmp_path, order, per_stack):
+    # anchor 1, range -2..0: both channels' plane 0 (-1 µm) is below the travel.
+    w = _worker(tmp_path, order=order, relative_range=(-2.0, 0.0), references=[1.0, 1.0])
+    w.laser_af_per_stack = per_stack
+    w.time_point = 3
+    w._frame_format = ((300, 500), "uint16")  # the run has had its first frame
+    events = []
+    runners = _runners(w, events)
+    _record_frames_as_events(w, events)
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    groups = [((0, 0),), ((1, 0),)] if per_stack else [((0, 0), (1, 0))]
+    for cls in (SaveZarrJob, SaveOMETiffJob):
+        notices = _notices(runners[cls])
+        assert [n.skipped_frames.frames for n in notices] == groups
+        for notice in notices:
+            assert (notice.region_id, notice.fov, notice.time_point) == ("A1", 0, 3)
+            assert (notice.skipped_frames.frame_shape, notice.skipped_frames.dtype) == ((300, 500), "uint16")
+            assert notice.save_directory == str(tmp_path)
+        for job in runners[cls].jobs:
+            assert job.capture_image.image_array is None
+            assert job.save_settings is w._save_settings
+    assert runners[SaveImageJob].jobs == []  # individual TIFFs write nothing for a skipped frame
+    # Each group's notice goes out before that group's first frame.
+    sequence = [
+        ("notice", e[1].capture_info.skipped_frames.frames) if e[0] == "SaveZarrJob" else e
+        for e in events
+        if e[0] != "SaveOMETiffJob"
+    ]
+    if per_stack:
+        assert sequence == [("notice", ((0, 0),)), ("frame", 0, 1), ("notice", ((1, 0),)), ("frame", 1, 1)]
+    else:
+        assert sequence == [("notice", ((0, 0), (1, 0))), ("frame", 0, 1), ("frame", 1, 1)]
+
+
+def test_skip_notice_carries_the_shape_of_a_nonsquare_frame(tmp_path):
+    # fov 0 (anchor 100) images every plane; fov 1's anchor 1 puts plane 0 (-1 µm) below the travel.
+    w = _worker(tmp_path, references=[100.0, 1.0])
+    runners = _runners(w, [])
+    _deliver_frames(w, shape=(300, 500))
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+    w.acquire_at_position("A1", str(tmp_path), 1)
+
+    for cls in (SaveZarrJob, SaveOMETiffJob):
+        (notice,) = _notices(runners[cls])  # fov 0 skipped nothing: no notice
+        assert notice.fov == 1
+        assert notice.skipped_frames.frames == ((0, 0), (1, 0))
+        assert notice.skipped_frames.frame_shape == (300, 500)  # (height, width), not (500, 300)
+        assert notice.skipped_frames.dtype == "uint16"
+
+
+def test_wholly_skipped_first_fov_is_deferred_until_the_first_real_frame(tmp_path):
+    pytest.importorskip("tensorstore")
+    # Range -10..-4 (4 planes): fov 0's anchor 1 puts every target (-9 .. -3 µm) below the travel; fov 1's
+    # anchor 100 none.
+    w = _worker(tmp_path, relative_range=(-10.0, -4.0), references=[1.0, 100.0])
+    zarr_info = ZarrWriterInfo(
+        base_path=str(tmp_path), t_size=1, c_size=2, z_size=w.NZ, region_fov_counts={"A1": 2}, channel_names=["A", "B"]
+    )
+    runner = _InlineRunner("SaveZarrJob", [], zarr_info)
+    w._job_runners = [(SaveZarrJob, runner)]
+    _deliver_frames(w, shape=(300, 500), dtype=np.uint16)
+    SaveZarrJob.clear_writers()
+    try:
+        w.acquire_at_position("A1", str(tmp_path), 0)
+        assert runner.jobs == []  # no frame yet: nothing to size fov 0's notice with
+        w.acquire_at_position("A1", str(tmp_path), 1)
+        assert SaveZarrJob.finalize_all_writers()
+    finally:
+        SaveZarrJob.clear_writers()
+
+    first_image, notice = runner.jobs[0].capture_info, runner.jobs[1].capture_info
+    assert (first_image.fov, first_image.skipped_frames) == (1, None)  # fov 1's first frame, then the notice
+    assert notice.fov == 0
+    assert notice.skipped_frames.frames == tuple((c, k) for c in range(2) for k in range(4))
+    assert (notice.skipped_frames.frame_shape, notice.skipped_frames.dtype) == ((300, 500), "uint16")
+    assert len(runner.jobs) == 2 + 7  # and fov 1's other frames
+    for fov in (0, 1):
+        with open(os.path.join(zarr_info.get_output_path("A1", fov), "zarr.json")) as f:
+            assert json.load(f)["shape"] == [1, 2, w.NZ, 300, 500]
+
+
+def test_a_run_with_no_frame_at_all_sends_its_notices_with_the_processed_frame_shape(tmp_path):
+    # Range -10..-4 from anchor 1: every frame of both FOVs is below the travel.
+    w = _worker(tmp_path, relative_range=(-10.0, -4.0), references=[1.0, 1.0])
+    _prepare_run(w)
+    events = []
+    runners = _runners(w, events)
+    w._frame_shape_without_a_frame = MagicMock(
+        side_effect=lambda: (events.append(("probe",)), ((300, 500), "uint16"))[1]
+    )
+    w._wait_for_outstanding_callback_images = MagicMock(side_effect=lambda: events.append(("wait",)))
+    w.camera.remove_frame_callback.side_effect = lambda *_: events.append(("remove callback",))
+    w._finish_jobs = MagicMock(side_effect=lambda: events.append(("finish jobs",)))
+    w.run_single_time_point = lambda: [w.acquire_at_position("A1", str(tmp_path), fov) for fov in (0, 1)]
+
+    w.run()
+
+    assert w.frames == []
+    w._frame_shape_without_a_frame.assert_called_once()
+    for cls in (SaveZarrJob, SaveOMETiffJob):
+        notices = _notices(runners[cls])
+        assert [n.fov for n in notices] == [0, 1]
+        for notice in notices:
+            assert notice.skipped_frames.frames == tuple((c, k) for c in range(2) for k in range(4))
+            assert (notice.skipped_frames.frame_shape, notice.skipped_frames.dtype) == ((300, 500), "uint16")
+    assert runners[SaveImageJob].jobs == []
+    # The notices go out after the last frames are waited for, while the runners are still open.
+    assert [e[0] for e in events] == [
+        "wait",
+        "wait",
+        "probe",
+        "SaveZarrJob",
+        "SaveOMETiffJob",
+        "SaveZarrJob",
+        "SaveOMETiffJob",
+        "remove callback",
+        "finish jobs",
+    ]
+    assert w.end_reason == "completed"
+
+
+@pytest.fixture(scope="module")
+def _sim_scope():
+    from control.microscope import Microscope
+
+    scope = Microscope.build_from_global_config(simulated=True)
+    scope.camera.start_streaming()
+    try:
+        yield scope
+    finally:
+        scope.camera.stop_streaming()
+        scope.close()
+
+
+@pytest.fixture
+def sim_camera(_sim_scope):
+    """The simulated scope's camera, streaming, back at its full-frame setup after each test."""
+    camera = _sim_scope.camera
+    roi = camera.get_region_of_interest()
+    binning = camera.get_binning()
+    yield camera
+    camera.set_binning(*binning)
+    camera.set_software_crop_ratio(1.0, 1.0)
+    camera.set_region_of_interest(*roi)
+    camera.enable_callbacks(True)
+
+
+def _probe_worker(camera):
+    w = MultiPointWorker.__new__(MultiPointWorker)
+    w.camera = camera
+    w._log = MagicMock()
+    return w
+
+
+@pytest.mark.parametrize("setup", ["binning 1x1", "binning 2x2", "software crop", "partial hardware ROI"])
+def test_frame_shape_without_a_frame_matches_the_frames_an_acquisition_delivers(sim_camera, setup):
+    camera = sim_camera
+    if setup == "binning 1x1":
+        camera.set_binning(1, 1)
+    elif setup == "binning 2x2":
+        camera.set_binning(2, 2)
+    elif setup == "software crop":
+        camera.set_software_crop_ratio(0.5, 0.25)
+    else:
+        camera.set_region_of_interest(16, 8, 1200, 800)
+
+    probed = _probe_worker(camera)._frame_shape_without_a_frame()
+
+    delivered = []
+    callback_id = camera.add_frame_callback(delivered.append)
+    try:
+        while not camera.get_ready_for_trigger():
+            time.sleep(0.001)
+        camera.send_trigger()
+    finally:
+        camera.remove_frame_callback(callback_id)
+    (frame,) = delivered
+    assert probed == (frame.frame.shape[:2], str(frame.frame.dtype))
+    if setup == "binning 2x2":
+        # The simulated camera keeps an unbinned ROI while delivering binned frames.
+        _, _, roi_width, roi_height = camera.get_region_of_interest()
+        assert probed[0] != (roi_height, roi_width)
+    if setup == "software crop":
+        assert probed[0][0] != probed[0][1]
+
+
+def test_the_shape_frame_never_reaches_the_save_callbacks(tmp_path, sim_camera):
+    w = _worker(tmp_path)
+    w.camera = sim_camera
+    runners = _runners(w, [])
+    _arm_frame_callback(w)
+    # A trigger outstanding: a frame reaching the acquisition callback now would be saved.
+    w._current_capture_info = _capture_info(w, w.selected_configurations[0], "f", str(tmp_path), 0, "A1", 0, 0)
+    w._ready_for_next_trigger.clear()
+    seen = []
+    callback_ids = [sim_camera.add_frame_callback(seen.append), sim_camera.add_frame_callback(w._image_callback)]
+    try:
+        probed = w._frame_shape_without_a_frame()
+    finally:
+        for callback_id in callback_ids:
+            sim_camera.remove_frame_callback(callback_id)
+
+    assert probed is not None
+    assert seen == []
+    assert all(runner.jobs == [] for runner in runners.values())
+    assert w.image_count == 0
+    assert sim_camera.get_callbacks_enabled()
+
+
+@pytest.mark.parametrize("failure", ["never ready", "trigger raises", "read returns None", "read raises"])
+def test_a_shape_frame_failure_is_a_run_error_and_cleanup_continues(tmp_path, failure):
+    # Range -10..-4 from anchor 1: every frame is below the travel, so the run ends with no frame.
+    w = _worker(tmp_path, relative_range=(-10.0, -4.0), references=[1.0])
+    _prepare_run(w)
+    runners = _runners(w, [])
+    camera = w.camera
+    camera.get_ready_for_trigger.return_value = failure != "never ready"
+    if failure == "trigger raises":
+        camera.send_trigger.side_effect = RuntimeError("trigger failed")
+    if failure == "read returns None":
+        camera.read_camera_frame.return_value = None
+    else:
+        frame = np.zeros((300, 500), dtype=np.uint16)
+        camera.read_camera_frame.return_value = CameraFrame(
+            1, 0.0, frame, CameraFrameFormat.RAW, CameraPixelFormat.MONO16
+        )
+    if failure == "read raises":
+        camera.read_camera_frame.side_effect = RuntimeError("read failed")
+    w._frame_wait_timeout_s = lambda: 0.05
+    durations = []
+    probe = w._frame_shape_without_a_frame
+
+    def timed_probe():
+        start = time.monotonic()
+        try:
+            return probe()
+        finally:
+            durations.append(time.monotonic() - start)
+
+    w._frame_shape_without_a_frame = timed_probe
+    w.run_single_time_point = lambda: w.acquire_at_position("A1", str(tmp_path), 0)
+
+    w.run()
+
+    assert len(durations) == 1 and durations[0] < 1.0  # the deadline is 0.05 s
+    assert [c for c in camera.mock_calls if c[0] == "enable_callbacks"] == [
+        call.enable_callbacks(False),
+        call.enable_callbacks(True),
+    ]
+    if failure == "never ready":
+        camera.send_trigger.assert_not_called()
+    w._finish_jobs.assert_called_once()
+    camera.remove_frame_callback.assert_called_once()
+    assert w._acquisition_error_count == 1
+    assert w.end_reason == "completed_with_errors"
+    assert any("skip notice" in str(c.args[0]) for c in w._log.error.call_args_list)
+    assert all(runner.jobs == [] for runner in runners.values())
+    assert list(w.coordinates_pd["out_of_travel"]) == ["A;B"] * 4
+    assert (w._relative_frames_skipped, w._relative_fovs_with_skips) == (8, 1)
+
+
+def test_skips_are_counted_for_the_timepoint_summary(tmp_path):
+    # Range -2..4 (planes at -2, 0, 2, 4 µm). Time point 0: anchor 1 skips plane 0 of both channels, anchor 100
+    # nothing, anchor 299 planes 2 and 3 of both channels (piezo travel 0..300). Time point 1 skips nothing.
+    w = _worker(tmp_path, references=[1.0, 100.0, 299.0, 100.0, 100.0, 100.0], nt=2)
+    _scan(w, [(1.0, 2.0), (1.5, 2.0), (2.0, 2.0)])
+    w._slack_notifier = MagicMock()
+    w._slack_notifier.estimate_remaining_time.return_value = 0.0
+    w.timestamp_acquisition_started = time.time()
+
+    for t in range(2):
+        w.time_point = t
+        w.run_single_time_point()
+
+    stats = [c.args[0] for c in w.callbacks.signal_slack_timepoint_notification.call_args_list]
+    assert [(s.relative_frames_skipped, s.relative_fovs_with_skips) for s in stats] == [(6, 2), (0, 0)]

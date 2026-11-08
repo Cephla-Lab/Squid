@@ -1,3 +1,4 @@
+import dataclasses
 import math
 import os
 import queue
@@ -43,6 +44,7 @@ from control.core.job_processing import (
     SaveOMETiffJob,
     SaveSettings,
     SaveZarrJob,
+    SkippedFrames,
     ZarrWriterInfo,
     AcquisitionInfo,
     Job,
@@ -215,6 +217,15 @@ class MultiPointWorker:
         self._relative_offsets_um: List[float] = []  # the current FOV's channel offsets, per selected channel
         self._out_of_travel_by_k: Dict[int, List[str]] = {}  # the current FOV's skipped channels per plane
         self._skipped_frames: List[Tuple[int, str, float]] = []  # the current FOV's (k, channel, target µm)
+        # Skip notices: each tells the Zarr / OME-TIFF writers one lock-on group's skipped frames, with the shape and
+        # dtype of the run's first frame. Until that frame arrives they wait here; the frame callback (camera
+        # thread) sends them, hence the lock. A run that takes no frame at all sends them at its end.
+        self._skip_notice_lock = threading.Lock()
+        self._pending_skip_notices: List[Tuple[CaptureInfo, Tuple[Tuple[int, int], ...]]] = []
+        self._frame_format: Optional[Tuple[Tuple[int, int], str]] = None  # ((height, width), dtype) of that frame
+        # Per time point, for the run summary (TimepointStats).
+        self._relative_frames_skipped = 0
+        self._relative_fovs_with_skips = 0
 
         self.crop = SEGMENTATION_CROP
 
@@ -592,6 +603,8 @@ class MultiPointWorker:
             # We do this above, but there are some paths that skip the proper end of the acquisition so make
             # sure to always wait for final images here before removing our callback.
             self._wait_for_outstanding_callback_images()
+            # Skip notices still waiting for the run's first frame (it took none) go out while the runners are open.
+            self._flush_pending_skip_notices()
             self._log.debug(self._timing.get_report())
             if this_image_callback_id:
                 self.camera.remove_frame_callback(this_image_callback_id)
@@ -780,6 +793,8 @@ class MultiPointWorker:
             self._laser_af_failures = 0
             self._laser_af_per_stack_successes = 0
             self._laser_af_per_stack_failures = 0
+            self._relative_frames_skipped = 0
+            self._relative_fovs_with_skips = 0
             self.microcontroller.enable_joystick(False)
 
             self._log.debug("multipoint acquisition - time point " + str(self.time_point + 1))
@@ -821,6 +836,8 @@ class MultiPointWorker:
                         laser_af_failure_reasons=[],
                         laser_af_per_stack_successes=self._laser_af_per_stack_successes,
                         laser_af_per_stack_failures=self._laser_af_per_stack_failures,
+                        relative_frames_skipped=self._relative_frames_skipped,
+                        relative_fovs_with_skips=self._relative_fovs_with_skips,
                     )
                     # Use callback to allow main thread to capture screenshot before sending
                     self.callbacks.signal_slack_timepoint_notification(stats)
@@ -1334,10 +1351,12 @@ class MultiPointWorker:
                 return
             targets = self._relative_targets(self.selected_configurations, af_succeeded)
             skipped = [(c, k) for c, row in enumerate(targets) for k, target in enumerate(row) if target is None]
-            self._report_skipped_frames(region_id, fov, skipped)
+            self._report_skipped_frames(region_id, current_path, fov, skipped)
             self._acquire_relative_channel_first(region_id, current_path, fov, targets)
             self._timepoint_fov_count += 1
         finally:
+            if self._skipped_frames:
+                self._relative_fovs_with_skips += 1
             self._warn_skipped_frames(region_id, fov)
             self._move_actuator_to_um(self._anchor_um)
 
@@ -1415,6 +1434,7 @@ class MultiPointWorker:
                     group = [config_idx] if self.laser_af_per_stack else range(n_configs)
                     self._report_skipped_frames(
                         region_id,
+                        current_path,
                         fov,
                         [(c, k) for c in group for k, target in enumerate(targets[c]) if target is None],
                     )
@@ -1560,14 +1580,14 @@ class MultiPointWorker:
             self.stage.move_z_to(um / 1000)
             self._sleep(squid.stage.utils.z_stabilization_time_s())
 
-    def _report_skipped_frames(self, region_id, fov, skipped: List[Tuple[int, int]]) -> None:
-        """Per lock-on group hook, called where the targets are computed: once per FOV without AF per stack, once
-        per re-locked channel with it.
+    def _report_skipped_frames(self, region_id, current_path, fov, skipped: List[Tuple[int, int]]) -> None:
+        """Per lock-on group hook, called where the targets are computed, before the group's first frame: once per
+        FOV without AF per stack, once per re-locked channel with it.
 
         skipped: (config_idx, k) pairs, from targets computed by _relative_targets for the current anchor.
         Accumulates the FOV's skipped channels per plane (the coordinates.csv rows) and the frames for the FOV's
-        single warning (_warn_skipped_frames). Anything per group (a notice to the writers, run-summary counts)
-        belongs here.
+        single warning (_warn_skipped_frames), counts the frames for the run summary, and sends the group's skip
+        notice to the writers.
         """
         names = [config.name for config in self.selected_configurations]
         z_min_um = self.laser_af_relative_range_um[0]
@@ -1576,6 +1596,149 @@ class MultiPointWorker:
             self._out_of_travel_by_k.setdefault(k, []).append(names[config_idx])
             target_um = self._anchor_um + z_min_um + k * dz_um + self._relative_offsets_um[config_idx]
             self._skipped_frames.append((k, names[config_idx], target_um))
+        if not skipped:
+            return
+        self._relative_frames_skipped += len(skipped)
+        self._send_skip_notice(region_id, current_path, fov, skipped)
+
+    # --- Skip notices: a FOV's skipped frames reach the Zarr and OME-TIFF writers -------------------------------
+
+    def _skip_notice_runners(self) -> List[Tuple[Type[Job], Optional[JobRunner]]]:
+        """The runners that take skip notices: Zarr and OME-TIFF. Individual TIFFs write nothing for a skip."""
+        return [(cls, runner) for cls, runner in self._job_runners if issubclass(cls, (SaveZarrJob, SaveOMETiffJob))]
+
+    def _send_skip_notice(self, region_id, current_path, fov, skipped: List[Tuple[int, int]]) -> None:
+        """Dispatch one lock-on group's skip notice, sized by the run's first frame, or hold it until that frame
+        arrives (a notice never guesses the frame shape)."""
+        if not self._skip_notice_runners():
+            return
+        config_idx, k = skipped[0]
+        info = CaptureInfo(
+            position=self.stage.get_pos(),
+            z_index=k,
+            capture_time=time.time(),
+            configuration=self.selected_configurations[config_idx],
+            save_directory=current_path,
+            file_id=f"{region_id}_{fov:0{FILE_ID_PADDING}}_{k:0{FILE_ID_PADDING}}",
+            region_id=region_id,
+            fov=fov,
+            configuration_idx=config_idx,
+            time_point=self.time_point,
+        )
+        frames = tuple((int(c), int(z)) for c, z in skipped)
+        with self._skip_notice_lock:
+            if self._frame_format is None:
+                self._pending_skip_notices.append((info, frames))
+                return
+            frame_format = self._frame_format
+        self._dispatch_skip_notice(info, frames, frame_format)
+
+    def _dispatch_skip_notice(
+        self, info: CaptureInfo, frames: Tuple[Tuple[int, int], ...], frame_format: Tuple[Tuple[int, int], str]
+    ) -> None:
+        """Send the notice through the Zarr and OME-TIFF runners, in order with their image jobs. A failure is logged
+        and counted as an acquisition error; it never stops the acquisition (the skips stay in coordinates.csv)."""
+        frame_shape, dtype = frame_format
+        notice = dataclasses.replace(info, skipped_frames=SkippedFrames(frames, frame_shape, dtype))
+        for job_class, job_runner in self._skip_notice_runners():
+            job = job_class(
+                capture_info=notice, capture_image=JobImage(image_array=None), save_settings=self._save_settings
+            )
+            try:
+                if job_runner is not None:
+                    sent = job_runner.dispatch(job)
+                else:
+                    job.run()
+                    sent = True
+            except Exception:
+                self._log.exception(f"{job_class.__name__} failed on the skip notice of {self._fov_name(info)}")
+                sent = False
+            if not sent:
+                self._log.error(f"The skip notice of {self._fov_name(info)} did not reach {job_class.__name__}")
+                self._acquisition_error_count += 1
+
+    @staticmethod
+    def _fov_name(info: CaptureInfo) -> str:
+        return f"region '{info.region_id}' fov {info.fov} (t={info.time_point})"
+
+    def _record_first_frame(self, image: np.ndarray) -> None:
+        """Frame callback (camera thread), on the run's first frame after its jobs are dispatched: record its
+        (height, width) and dtype for every skip notice, and send the notices that waited for it."""
+        with self._skip_notice_lock:
+            if self._frame_format is not None:
+                return
+            self._frame_format = ((int(image.shape[0]), int(image.shape[1])), str(image.dtype))
+            pending, self._pending_skip_notices = self._pending_skip_notices, []
+            # Sent under the lock, so a notice the worker reports meanwhile goes out after these.
+            for info, frames in pending:
+                self._dispatch_skip_notice(info, frames, self._frame_format)
+
+    def _flush_pending_skip_notices(self) -> None:
+        """At run end, with the last frames in: notices still waiting mean the run took no frame at all. One dark
+        frame (_frame_shape_without_a_frame) sizes them. If the camera delivers none, nothing can size the arrays:
+        the notices are dropped, logged and counted as an acquisition error (the skips stay in coordinates.csv, the
+        log and the run summary). Never raises, so the cleanup after it always runs."""
+        if not self._relative_mode:
+            return
+        try:
+            with self._skip_notice_lock:
+                pending, self._pending_skip_notices = self._pending_skip_notices, []
+                frame_format = self._frame_format
+            if not pending:
+                return
+            if frame_format is None:
+                frame_format = self._frame_shape_without_a_frame()
+            if frame_format is None:
+                fovs = ", ".join(self._fov_name(info) for info, _ in pending)
+                self._log.error(
+                    f"The camera delivered no frame to size the arrays: {len(pending)} skip notice(s) not sent "
+                    f"({fovs}). Their FOVs may have no Zarr array or OME-TIFF file; the skipped frames are listed "
+                    "in coordinates.csv."
+                )
+                self._acquisition_error_count += 1
+                return
+            for info, frames in pending:
+                self._dispatch_skip_notice(info, frames, frame_format)
+        except Exception:
+            self._log.exception("Sending the pending skip notices failed")
+            self._acquisition_error_count += 1
+
+    def _frame_shape_without_a_frame(self) -> Optional[Tuple[Tuple[int, int], str]]:
+        """((height, width), dtype) of one real, processed frame, so binning, hardware ROI, rotation and software
+        crop are whatever the camera delivers; nothing is derived from its ROI, resolution or crop settings.
+
+        Only for a run that took no frame at all, after its last FOV: the acquisition's illumination is released
+        and no illumination time is sent, so it is a dark frame. The frame callbacks are disabled around it (the
+        documented use for frames outside the acquisition), so it never reaches the save jobs. None, with an error
+        logged, if the camera is not ready within the frame timeout, the trigger fails, or no frame is read.
+        """
+        camera = self.camera
+        camera.enable_callbacks(False)
+        try:
+            timeout_s = self._frame_wait_timeout_s()
+            deadline = time.monotonic() + timeout_s
+            while not camera.get_ready_for_trigger():
+                if time.monotonic() >= deadline:
+                    self._log.error(f"Frame-shape frame: the camera was not ready for a trigger within {timeout_s:g} s")
+                    return None
+                self._sleep(0.001)
+            try:
+                camera.send_trigger()
+            except Exception as e:
+                self._log.error(f"Frame-shape frame: the trigger failed: {e!r}")
+                return None
+            try:
+                camera_frame = camera.read_camera_frame()
+            except Exception as e:
+                self._log.error(f"Frame-shape frame: reading the frame failed: {e!r}")
+                return None
+            image = camera_frame.frame if camera_frame is not None else None
+            if image is None:
+                self._log.error("Frame-shape frame: the camera returned no frame")
+                return None
+            return (int(image.shape[0]), int(image.shape[1])), str(image.dtype)
+        finally:
+            camera.enable_callbacks(True)
 
     def _warn_skipped_frames(self, region_id, fov) -> None:
         """One warning per FOV, at its end: every frame left out because its target is outside the travel."""
@@ -1993,6 +2156,10 @@ class MultiPointWorker:
                                 self._log.exception("Failed to execute job, abandoning acquisition!")
                                 self._abort_due_to_error()
                                 return
+
+                    # A relative run's first frame sizes its skip notices; the ones waiting for it go out now.
+                    if self._relative_mode and self._frame_format is None:
+                        self._record_first_frame(image)
 
                 height, width = image.shape[:2]
                 # with self._timing.get_timer("crop_image"):
