@@ -30,6 +30,15 @@ def piezo_only(monkeypatch):
     monkeypatch.setattr(control._def, "IS_PIEZO_ONLY", True)
 
 
+@pytest.fixture
+def closes(monkeypatch):
+    """The Microscopes closed from now on."""
+    closed = []
+    close = control.microscope.Microscope.close
+    monkeypatch.setattr(control.microscope.Microscope, "close", lambda self: closed.append(self) or close(self))
+    return closed
+
+
 def _spy_commands(micro):
     """The codes of the commands sent from now on, but the watchdog heartbeat's (its own thread, every 2.5 s)."""
     sent = []
@@ -341,9 +350,11 @@ def test_skip_init_reports_not_run():
     scope.close()
 
 
-def test_piezo_only_startup_with_no_one_to_ask_refuses(piezo_only):
+def test_piezo_only_startup_with_no_one_to_ask_refuses_and_closes_the_hardware(piezo_only, closes):
+    """Construction fails, so no caller could close what it opened: the Microscope does."""
     with pytest.raises(ObjectiveNotLoweredError, match="confirm_objective_lowered"):
         control.microscope.Microscope.build_from_global_config(True)
+    assert len(closes) == 1
 
 
 @pytest.mark.parametrize(
@@ -362,17 +373,35 @@ def test_startup_asks_only_when_a_piezo_only_system_homes_xy(monkeypatch, piezo_
     assert startup_needs_objective_prompt() is expected
 
 
-def test_piezo_only_decline_closes_the_hardware_and_raises(piezo_only, monkeypatch):
+def test_piezo_only_decline_closes_the_hardware_and_raises(piezo_only, monkeypatch, closes):
     """Declining quits Squid: the Microscope releases what it opened and is never handed out."""
     home = MagicMock()
     monkeypatch.setattr(control.microscope.Microscope, "home_xyz", home)
-    closed = []
-    close = control.microscope.Microscope.close
-    monkeypatch.setattr(control.microscope.Microscope, "close", lambda self: closed.append(self) or close(self))
     with pytest.raises(StartupHomingDeclined):
         control.microscope.Microscope.build_from_global_config(True, confirm_objective_lowered=lambda: False)
     home.assert_not_called()
-    assert len(closed) == 1
+    assert len(closes) == 1
+
+
+@pytest.mark.parametrize("lowered", [True, False])
+def test_piezo_only_stop_sign_comes_before_anything_moves(piezo_only, monkeypatch, lowered):
+    """Startup homes the piezo to OBJECTIVE_PIEZO_HOME_UM, toward the sample: only after the stop sign, as everything
+    else startup sends."""
+    monkeypatch.setattr(control._def, "HAS_OBJECTIVE_PIEZO", True)  # startup also sets the piezo DAC's gain
+    scope = _scope()
+    piezo = MagicMock()
+    scope.addons.piezo_stage = piezo
+    sent = _spy_commands(scope.low_level_drivers.microcontroller)
+    at_stop_sign = []
+    scope._confirm_objective_lowered = lambda: at_stop_sign.append((list(sent), piezo.home.call_count)) or lowered
+    if lowered:
+        scope._prepare_for_use(skip_init=False)
+    else:
+        with pytest.raises(StartupHomingDeclined):
+            scope._prepare_for_use(skip_init=False)
+    assert at_stop_sign == [([], 0)]  # nothing sent to the controller, the piezo not homed
+    assert piezo.home.call_count == (1 if lowered else 0)
+    scope.close()
 
 
 def test_piezo_only_decline_stops_before_the_objective_changer_moves(piezo_only):

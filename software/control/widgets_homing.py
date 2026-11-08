@@ -2,8 +2,9 @@
 
 Such a system has no Z motor: the objective sits on a piezo, so the software cannot move it clear of the sample holder
 before the stage drives to its limit switches. A person lowers the nosepiece with the focus knob and confirms at the stop
-sign first. At startup the Microscope asks, through the prompt main_hcs.py gives it, right before the XY home (only when
-one runs); declining quits Squid. Home stage and Stage Utils' Home X / Home Y ask too, where declining cancels.
+sign first. At startup the Microscope asks, through the prompt main_hcs.py gives it, before anything moves (only when
+startup will home X and Y); declining quits Squid. Home stage and Stage Utils' Home X / Home Y ask too, where declining
+cancels.
 """
 
 from qtpy.QtCore import QPointF, QRectF, Qt

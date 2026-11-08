@@ -124,7 +124,7 @@ if __name__ == "__main__":
         microscope = control.microscope.Microscope.build_from_global_config(
             args.simulation,
             skip_init=args.skip_init,
-            # Piezo-only: the stop sign, asked right before the startup XY home (only when one will run)
+            # Piezo-only: the stop sign, asked before startup moves anything (only when it will home X and Y)
             confirm_objective_lowered=lambda: confirm_nosepiece_lowered(None, decline_text="Quit Squid"),
         )
     except StartupHomingDeclined:
