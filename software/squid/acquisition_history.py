@@ -5,11 +5,17 @@ Writers (the acquisition recorder, the folder importer) append events; readers f
 log into `HistoryEntry` objects with `HistoryStore.load()`.
 
 Stdlib-only leaf module: must NOT import anything from `control`.
+
+Concurrency: `append` is serialised by a process-wide lock, so the threads of one Squid process
+(GUI, preview executor, import worker, TCP server) never interleave or lose events. Two Squid
+processes appending to the same history file at once are NOT locked against each other.
 """
 
 import hashlib
 import json
 import os
+import posixpath
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +32,12 @@ PREVIEWS_DIR_NAME = "previews"
 ENV_VAR = "SQUID_ACQUISITION_HISTORY_DIR"
 
 OUTCOMES = ("running", "complete", "aborted", "failed", "unknown")
+
+_APPEND_LOCK = threading.Lock()  # process-wide; see the module docstring
+
+# POSIX mount roots under which a missing folder most likely means an unplugged drive.
+_REMOVABLE_MEDIA_ROOTS = ("/", "/media", "/run/media", "/mnt")
+_REMOVABLE_MEDIA_USER_PARENTS = ("/media", "/run/media")  # /media/<user>, /run/media/<user>
 
 
 def history_dir() -> Path:
@@ -45,14 +57,73 @@ def entry_id_for(folder: str) -> str:
     return f"{os.path.basename(os.path.normpath(folder))}-{digest}"
 
 
-def folder_availability(folder: str, *, exists=os.path.exists) -> str:
-    """Return online, drive_offline (the drive/mount is gone) or folder_missing. Path tests only."""
+def folder_availability(folder: str, *, exists=os.path.exists, posix: Optional[bool] = None) -> str:
+    """Return online, drive_offline (the drive/mount is gone) or folder_missing. Path tests only.
+
+    Windows: the drive (anchor) is gone -> drive_offline. POSIX has no drive letters, so a heuristic:
+    when the nearest existing ancestor is a removable-media root (/, /media, /media/<user>,
+    /run/media, /run/media/<user>, /mnt) -> drive_offline.
+    """
     if exists(folder):
         return "online"
-    anchor = Path(folder).anchor
-    if anchor and not exists(anchor):
+    if posix is None:
+        posix = os.name != "nt"
+    if not posix:
+        anchor = Path(folder).anchor
+        if anchor and not exists(anchor):
+            return "drive_offline"
+        return "folder_missing"
+    current = posixpath.normpath(folder)
+    while True:
+        parent = posixpath.dirname(current)
+        if parent == current:  # walked past the root without finding anything
+            return "drive_offline"
+        current = parent
+        if exists(current):
+            break
+    if current in _REMOVABLE_MEDIA_ROOTS or posixpath.dirname(current) in _REMOVABLE_MEDIA_USER_PARENTS:
         return "drive_offline"
     return "folder_missing"
+
+
+def _as_float(value) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _as_int(value) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    as_float = _as_float(value)
+    if as_float is None or as_float != as_float or as_float in (float("inf"), float("-inf")):
+        return None
+    return int(as_float)
+
+
+def _as_str(value) -> Optional[str]:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return None
+
+
+def _as_dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value) -> list:
+    return list(value) if isinstance(value, list) else []
 
 
 @dataclass
@@ -103,7 +174,7 @@ class HistoryStore:
             event = {**event, "at": time.time()}
         line = json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n"
         self._dir.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "ab+") as f:
+        with _APPEND_LOCK, open(self.path, "ab+") as f:
             if f.tell() > 0:
                 f.seek(-1, os.SEEK_END)
                 needs_newline = f.read(1) != b"\n"
@@ -143,12 +214,14 @@ class HistoryStore:
         entries: Dict[str, HistoryEntry] = {}
         first_at: Dict[str, float] = {}
         removed = set()
+        skipped = 0
 
         for ev in self.events():
             id_ = ev.get("id")
             kind = ev.get("type")
-            at = ev.get("at")
+            at = _as_float(ev.get("at"))
             if not isinstance(id_, str):
+                skipped += 1
                 continue
             if at is not None:
                 first_at.setdefault(id_, at)
@@ -157,23 +230,23 @@ class HistoryStore:
                 removed.discard(id_)
                 entry = HistoryEntry(
                     id=id_,
-                    kind=ev.get("kind", "run") if kind != "protocol_started" else "protocol_run",
-                    name=ev.get("name", id_),
-                    folder=ev.get("folder", ""),
-                    metadata=ev.get("metadata") or {},
-                    parent=ev.get("parent"),
-                    protocol=ev.get("protocol"),
+                    kind=(_as_str(ev.get("kind")) or "run") if kind != "protocol_started" else "protocol_run",
+                    name=_as_str(ev.get("name")) or id_,
+                    folder=_as_str(ev.get("folder")) or "",
+                    metadata=_as_dict(ev.get("metadata")),
+                    parent=_as_str(ev.get("parent")),
+                    protocol=ev.get("protocol") if isinstance(ev.get("protocol"), dict) else None,
                 )
                 if kind == "imported":
                     entry.source = "imported"
-                    entry.started_at = ev.get("started_at")
-                    entry.outcome = ev.get("outcome", "unknown")
+                    entry.started_at = _as_float(ev.get("started_at"))
+                    entry.outcome = _as_str(ev.get("outcome")) or "unknown"
                 else:
                     entry.started_at = at
                     entry.outcome = "running"
-                    entry.pid = ev.get("pid")
-                    entry.pid_started_at = ev.get("pid_started_at")
-                    entry.machine = ev.get("machine")
+                    entry.pid = _as_int(ev.get("pid"))
+                    entry.pid_started_at = _as_float(ev.get("pid_started_at"))
+                    entry.machine = _as_str(ev.get("machine"))
                 if old is not None:
                     entry.preview = old.preview
                     entry.preview_channels = old.preview_channels
@@ -182,24 +255,27 @@ class HistoryStore:
             elif kind in ("finished", "protocol_finished"):
                 if old is None:
                     continue
-                old.outcome = ev.get("outcome", old.outcome)
-                old.reason = ev.get("reason")
-                old.ended_at = ev.get("ended_at")
+                old.outcome = _as_str(ev.get("outcome")) or old.outcome
+                old.reason = _as_str(ev.get("reason"))
+                old.ended_at = _as_float(ev.get("ended_at"))
                 if kind == "finished":
-                    old.fraction_done = ev.get("fraction_done")
-                    old.images = ev.get("images")
+                    old.fraction_done = _as_float(ev.get("fraction_done"))
+                    old.images = _as_int(ev.get("images"))
             elif kind == "preview":
                 if old is None:
                     continue
-                old.preview = ev.get("file")
-                old.preview_channels = list(ev.get("channels") or [])
-                old.bytes_on_disk = ev.get("bytes_on_disk")
+                old.preview = _as_str(ev.get("file"))
+                old.preview_channels = [c for c in (_as_str(c) for c in _as_list(ev.get("channels"))) if c]
+                old.bytes_on_disk = _as_int(ev.get("bytes_on_disk"))
             elif kind == "relocated":
                 if old is not None:
-                    old.folder = ev.get("folder", old.folder)
+                    old.folder = _as_str(ev.get("folder")) or old.folder
             elif kind == "removed":
                 entries.pop(id_, None)
                 removed.add(id_)
+
+        if skipped:
+            _log.warning(f"Skipped {skipped} history event(s) without a string id in {self.path}")
 
         def sort_time(e: HistoryEntry) -> float:
             if e.started_at is not None:

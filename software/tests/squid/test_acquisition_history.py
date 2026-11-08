@@ -282,3 +282,88 @@ def test_removing_a_parent_removes_its_rounds(tmp_path):
     store.append(_started("r1", 10.0, folder=os.path.join(run_dir, "r1"), parent=pid, protocol=proto))
     store.append({"type": "removed", "id": pid, "at": 20.0})
     assert store.load() == []
+
+
+def test_folder_availability_posix_removable_media_heuristic():
+    present = {"/", "/media", "/media/user", "/home", "/home/user", "/home/user/data", "/run", "/run/media"}
+    present |= {"/run/media/user", "/mnt"}
+    exists = lambda p: p in present  # noqa: E731
+    fa = ah.folder_availability
+    assert fa("/media/user/USB/run", exists=exists, posix=True) == "drive_offline"
+    assert fa("/run/media/user/USB/run", exists=exists, posix=True) == "drive_offline"
+    assert fa("/mnt/nas/run", exists=exists, posix=True) == "drive_offline"
+    assert fa("/home/user/data/gone", exists=exists, posix=True) == "folder_missing"
+    assert fa("/home/user/data", exists=exists, posix=True) == "online"
+
+
+def _imported(id, **extra):
+    event = {"type": "imported", "id": id, "kind": "run", "name": id, "folder": "x", "at": 1.0}
+    event.update(extra)
+    return event
+
+
+def test_a_string_started_at_still_loads(tmp_path):
+    store = ah.HistoryStore(tmp_path)
+    store.append(_imported("a", started_at="2026-01-01"))
+    store.append(_started("b", 5.0))
+    entries = store.load()
+    assert [e.id for e in entries] == ["b", "a"]
+    assert entries[1].started_at is None
+
+
+def test_wrongly_typed_fields_are_coerced(tmp_path):
+    store = ah.HistoryStore(tmp_path)
+    store.append(
+        _started("a", "3.5", metadata=[1, 2], parent=["x"], name=7, folder=None, pid="12", pid_started_at="bad")
+    )
+    store.append(
+        {
+            "type": "finished",
+            "id": "a",
+            "at": 4.0,
+            "outcome": "complete",
+            "ended_at": "4",
+            "fraction_done": "half",
+            "images": 2.7,
+        }
+    )
+    store.append({"type": "preview", "id": "a", "at": 5.0, "file": "a.png", "channels": "DAPI", "bytes_on_disk": "big"})
+    store.append(_imported("c", started_at=1.0, rounds="nope", channels=5, metadata="m"))
+    by_id = {e.id: e for e in store.load()}
+    a = by_id["a"]
+    assert a.started_at == 3.5 and a.metadata == {} and a.parent is None
+    assert a.name == "7" and a.folder == "" and a.pid == 12 and a.pid_started_at is None
+    assert a.ended_at == 4.0 and a.fraction_done is None and a.images == 2
+    assert a.preview == "a.png" and a.preview_channels == [] and a.bytes_on_disk is None
+    assert by_id["c"].metadata == {} and by_id["c"].rounds == []
+
+
+def test_an_event_without_a_string_id_is_skipped_and_counted(tmp_path, caplog):
+    store = ah.HistoryStore(tmp_path)
+    store.append(_started("a", 1.0))
+    store.append(_started(5, 2.0))
+    store.append({"type": "started", "at": 3.0})
+    with caplog.at_level("WARNING"):
+        entries = store.load()
+    assert [e.id for e in entries] == ["a"]
+    assert any("2" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+
+
+def test_concurrent_appends_lose_nothing(tmp_path):
+    import threading
+
+    store = ah.HistoryStore(tmp_path)
+
+    def worker(n):
+        s = ah.HistoryStore(tmp_path)
+        for i in range(50):
+            s.append(_started(f"t{n}-{i}", float(i), metadata={"pad": "x" * 200}))
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    lines = [l for l in store.path.read_bytes().split(b"\n") if l.strip()]
+    assert len(lines) == 400
+    assert len(store.events()) == 400
