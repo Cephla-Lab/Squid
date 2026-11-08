@@ -735,6 +735,121 @@ CLASSIC_STYLES = {
 }
 
 
+# Multipoint XY/Z/Time group frames. The literals are today's, moved verbatim from the multipoint widgets.
+_XY_ACTIVE_STYLE = """
+            QFrame {
+                border: 1px solid #FF8C00;
+                border-radius: 2px;
+            }
+        """
+
+_XY_CONTROLS_STYLE = """
+            QFrame {
+                background-color: rgba(255, 140, 0, 0.15);
+            }
+            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
+                background-color: white;
+                color: black;
+            }
+            QFrame QComboBox:disabled, QFrame QSpinBox:disabled, QFrame QDoubleSpinBox:disabled {
+                background-color: palette(button);
+                color: palette(disabled-text);
+            }
+            QFrame QComboBox QAbstractItemView {
+                background-color: white;
+                color: black;
+                selection-background-color: palette(highlight);
+                selection-color: palette(highlighted-text);
+            }
+            QFrame QPushButton {
+                background-color: #FFD9B3;
+            }
+            QFrame QLabel {
+                background-color: transparent;
+            }
+        """
+
+_Z_ACTIVE_STYLE = """
+            QFrame {
+                border: 1px solid palette(highlight);
+                border-radius: 2px;
+            }
+        """
+
+_Z_CONTROLS_STYLE = """
+            QFrame {
+                background-color: rgba(0, 120, 215, 0.15);
+            }
+            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
+                background-color: white;
+            }
+            QFrame QPushButton {
+                background-color: #C2D9FF;
+            }
+            QFrame QLabel {
+                background-color: transparent;
+            }
+        """
+
+_TIME_ACTIVE_STYLE = """
+            QFrame {
+                border: 1px solid #00A000;
+                border-radius: 2px;
+            }
+        """
+
+_TIME_CONTROLS_STYLE = """
+            QFrame {
+                background-color: rgba(0, 160, 0, 0.15);
+            }
+            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
+                background-color: white;
+            }
+            QFrame QPushButton {
+                background-color: #C2FFC2;
+            }
+            QFrame QLabel {
+                background-color: transparent;
+            }
+        """
+
+_INACTIVE_STYLE = """
+            QFrame {
+                border: 1px solid palette(mid);
+                border-radius: 2px;
+            }
+        """
+# (axis, part, active) -> literal. part "frame" is the axis frame, "body" its controls frame(s).
+CLASSIC_GROUP_STYLES = {
+    ("xy", "frame", True): _XY_ACTIVE_STYLE,
+    ("xy", "body", True): _XY_CONTROLS_STYLE,
+    ("z", "frame", True): _Z_ACTIVE_STYLE,
+    ("z", "body", True): _Z_CONTROLS_STYLE,
+    ("time", "frame", True): _TIME_ACTIVE_STYLE,
+    ("time", "body", True): _TIME_CONTROLS_STYLE,
+    ("xy", "frame", False): _INACTIVE_STYLE,
+    ("z", "frame", False): _INACTIVE_STYLE,
+    ("time", "frame", False): _INACTIVE_STYLE,
+    ("xy", "body", False): "",
+    ("z", "body", False): "",
+    ("time", "body", False): "",
+}
+
+
+def style_group(frame: QWidget, axis: str, part: str, active: bool) -> None:
+    """Style a multipoint XY/Z/Time frame (``part`` "frame") or its controls frame ("body")."""
+    literal = CLASSIC_GROUP_STYLES[(axis, part, bool(active))]
+    if manager().is_classic():
+        frame.setStyleSheet(literal)
+        return
+    frame.setStyleSheet("")
+    frame.setProperty("role", "group" if part == "frame" else "group-body")
+    frame.setProperty("active", bool(active))
+    frame.setProperty("axis", axis)
+    frame.style().unpolish(frame)
+    frame.style().polish(frame)
+
+
 def classic_style(role: str, **states: bool) -> str:
     """Today's literal stylesheet for ``role``; a true state with its own ``role:state`` entry wins."""
     if role not in CLASSIC_STYLES:

@@ -9275,110 +9275,22 @@ class WellplateMultiPointWidget(
     def update_tab_styles(self):
         """Update tab frame styles based on checkbox states"""
         # Active tab styles (checked) - custom colors for each tab
-        xy_active_style = """
-            QFrame {
-                border: 1px solid #FF8C00;
-                border-radius: 2px;
-            }
-        """
-
-        # Orange background with opaque widget backgrounds to prevent color bleed
-        xy_controls_style = """
-            QFrame {
-                background-color: rgba(255, 140, 0, 0.15);
-            }
-            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
-                background-color: white;
-                color: black;
-            }
-            QFrame QComboBox:disabled, QFrame QSpinBox:disabled, QFrame QDoubleSpinBox:disabled {
-                background-color: palette(button);
-                color: palette(disabled-text);
-            }
-            QFrame QComboBox QAbstractItemView {
-                background-color: white;
-                color: black;
-                selection-background-color: palette(highlight);
-                selection-color: palette(highlighted-text);
-            }
-            QFrame QPushButton {
-                background-color: #FFD9B3;
-            }
-            QFrame QLabel {
-                background-color: transparent;
-            }
-        """
-
-        z_active_style = """
-            QFrame {
-                border: 1px solid palette(highlight);
-                border-radius: 2px;
-            }
-        """
-
-        # Blue background for Z controls with opaque widget backgrounds
-        z_controls_style = """
-            QFrame {
-                background-color: rgba(0, 120, 215, 0.15);
-            }
-            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
-                background-color: white;
-            }
-            QFrame QPushButton {
-                background-color: #C2D9FF;
-            }
-            QFrame QLabel {
-                background-color: transparent;
-            }
-        """
-
-        time_active_style = """
-            QFrame {
-                border: 1px solid #00A000;
-                border-radius: 2px;
-            }
-        """
-
-        # Green background for Time controls with opaque widget backgrounds
-        time_controls_style = """
-            QFrame {
-                background-color: rgba(0, 160, 0, 0.15);
-            }
-            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
-                background-color: white;
-            }
-            QFrame QPushButton {
-                background-color: #C2FFC2;
-            }
-            QFrame QLabel {
-                background-color: transparent;
-            }
-        """
-
-        # Inactive tab style (unchecked) - uses default Qt inactive tab colors
-        inactive_style = """
-            QFrame {
-                border: 1px solid palette(mid);
-                border-radius: 2px;
-            }
-        """
-
         # Apply styles based on checkbox states
-        self.xy_frame.setStyleSheet(xy_active_style if self.checkbox_xy.isChecked() else inactive_style)
+        theme.style_group(self.xy_frame, "xy", "frame", self.checkbox_xy.isChecked())
         if hasattr(self, "xy_controls_frame"):
-            self.xy_controls_frame.setStyleSheet(xy_controls_style if self.checkbox_xy.isChecked() else "")
+            theme.style_group(self.xy_controls_frame, "xy", "body", self.checkbox_xy.isChecked())
         if hasattr(self, "load_coordinates_frame"):
-            self.load_coordinates_frame.setStyleSheet(xy_controls_style if self.checkbox_xy.isChecked() else "")
+            theme.style_group(self.load_coordinates_frame, "xy", "body", self.checkbox_xy.isChecked())
 
-        self.z_frame.setStyleSheet(z_active_style if self.checkbox_z.isChecked() else inactive_style)
+        theme.style_group(self.z_frame, "z", "frame", self.checkbox_z.isChecked())
         if hasattr(self, "z_controls_dz_frame"):
-            self.z_controls_dz_frame.setStyleSheet(z_controls_style if self.checkbox_z.isChecked() else "")
+            theme.style_group(self.z_controls_dz_frame, "z", "body", self.checkbox_z.isChecked())
         if hasattr(self, "z_controls_range_frame"):
-            self.z_controls_range_frame.setStyleSheet(z_controls_style if self.checkbox_z.isChecked() else "")
+            theme.style_group(self.z_controls_range_frame, "z", "body", self.checkbox_z.isChecked())
 
-        self.time_frame.setStyleSheet(time_active_style if self.checkbox_time.isChecked() else inactive_style)
+        theme.style_group(self.time_frame, "time", "frame", self.checkbox_time.isChecked())
         if hasattr(self, "time_controls_frame"):
-            self.time_controls_frame.setStyleSheet(time_controls_style if self.checkbox_time.isChecked() else "")
+            theme.style_group(self.time_controls_frame, "time", "body", self.checkbox_time.isChecked())
 
     def on_xy_toggled(self, checked):
         """Handle XY checkbox toggle"""

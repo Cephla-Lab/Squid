@@ -43,8 +43,8 @@ def _method_range(lines, start_pattern):
     return range(start + 1, end + 1)
 
 
-# Blocks still owned by later tasks. Task 9 deletes the first entry, Task 10 the second.
-DEFERRED = {"widgets.py": [r"    def update_tab_styles\(", r"class WarningErrorWidget\("]}
+# Blocks still owned by later tasks. Task 10 deletes it.
+DEFERRED = {"widgets.py": [r"class WarningErrorWidget\("]}
 
 
 def test_main_window_files_carry_no_role_literals():

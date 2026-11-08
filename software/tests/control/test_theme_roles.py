@@ -2,7 +2,7 @@
 import pytest
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QPalette
-from qtpy.QtWidgets import QLabel, QPushButton, QWidget
+from qtpy.QtWidgets import QFrame, QLabel, QPushButton, QWidget
 
 import control.theme as theme
 
@@ -167,5 +167,27 @@ def test_drop_target_feedback_light_sets_property(qapp):
         assert w.property("dropTarget") is True and w.styleSheet() == ""
         theme.set_drop_target_feedback(w, False)
         assert w.property("dropTarget") is False
+    finally:
+        m.apply("classic")
+
+
+def test_group_styles_keep_todays_literals():
+    g = theme.CLASSIC_GROUP_STYLES
+    assert "rgba(255, 140, 0, 0.15)" in g[("xy", "body", True)]
+    assert "#C2D9FF" in g[("z", "body", True)]
+    assert "border: 1px solid #00A000" in g[("time", "frame", True)]
+    assert "palette(mid)" in g[("xy", "frame", False)]
+    assert g[("xy", "body", False)] == ""
+
+
+def test_style_group_classic_and_light(qapp):
+    m = theme.install(qapp, "classic")
+    f = QFrame()
+    theme.style_group(f, "time", "frame", True)
+    assert f.styleSheet() == theme.CLASSIC_GROUP_STYLES[("time", "frame", True)]
+    m.apply("light")
+    try:
+        theme.style_group(f, "time", "frame", False)
+        assert f.styleSheet() == "" and f.property("role") == "group" and f.property("active") is False
     finally:
         m.apply("classic")
