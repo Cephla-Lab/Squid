@@ -26,7 +26,9 @@ Light/Dark and Segoe/Ubuntu buttons at the top are mockup controls, not product)
 1. Squid's chrome (window, docks, tabs, inputs, buttons, menus, status bar, dialogs) renders in the soft
    native look described below, in a Light theme and a Dark theme.
 2. Light is the default for everyone after the update.
-3. The theme is switchable at runtime from the Settings menu, with no restart, and the choice persists.
+3. Light and Dark switch at runtime from the Settings menu with no restart. Entering or leaving Classic
+   changes the application font and takes effect at the next start (see Switching semantics). The choice
+   persists either way.
 4. A Classic theme reproduces today's rendering exactly, as an escape hatch.
 5. No hard-coded colour anywhere in the GUI escapes the theme: Dark has no unreadable spots.
 6. The same skin renders on Windows 11 (including 150 % display scaling) and Ubuntu 22.04.
@@ -99,14 +101,27 @@ Light/Dark and Segoe/Ubuntu buttons at the top are mockup controls, not product)
   today's literal colours (lavender `#C2C2FF` primary, `#C2FFC2` toggled load-slide, peach band, `#666`
   italic notes, red warnings), so Classic stays pixel-faithful. Colour swatches that show data (channel
   colours, the colour picker buttons) keep their literal colours in every theme; they are content, not chrome.
+- **Colours set outside stylesheets count too.** Row brushes and palette colours are set directly in
+  code: the controller-port mapping rows (`control/widgets.py` ~15690, a 240,240,240 background), a
+  palette background (`control/widgets.py` ~3559), workflow rows (`control/widgets_workflow.py` ~485–487
+  and ~734, light-blue background and grey text), fluidics protocol rows
+  (`control/widgets_fluidics/protocol_tab.py` ~773–776, `_INVALID` and `_HIGHLIGHT` brushes) and the
+  Objectives editor's conflict rows (`control/widgets_objectives.py` ~302, `_CONFLICT`). In Dark, a
+  240,240,240 row under `#f0f0f0` text is invisible. These become theme tokens (`row-highlight`,
+  `row-invalid`, `row-conflict`, `row-disabled`, `text-muted`) read from the theme module at the moment the
+  rows are painted or refreshed, and the owning widgets re-apply them on the theme module's
+  `theme_changed` signal so a Light ↔ Dark switch repaints them. Classic returns today's literals for the
+  same tokens. A test checks every row-brush token in Light and Dark against that theme's text colour for
+  a contrast ratio of at least 4.5:1.
 - **pyqtgraph docks**: the purple `DockLabel` is drawn by pyqtgraph's `DockLabel.updateStyle` with built-in
   colours. Override it (subclass used through a small factory, or a targeted monkeypatch applied by the theme
   module) so the dock bars are quiet card headers in Light/Dark and untouched in Classic. The `DockArea`
   background follows the theme ground colour.
 - **Image canvases stay dark** in all three themes. The napari viewers keep their `dark` theme.
 - **Icons for stylesheet parts**: QSS needs images for combo-box arrows, spin-box arrows, check marks and
-  radio dots. Ship a few tiny SVGs under `software/icon/theme/` (one set per theme, or one set recoloured
-  at load time). Assets, not dependencies.
+  radio dots. Ship a few tiny SVGs under `software/icon/theme/`, recoloured at load time from the theme's
+  tokens: arrows in the muted colour, check marks and radio dots in the accent-text colour. Assets, not
+  dependencies.
 - **Density**: control height about 26 px, 4 px radius on controls, 6 px on the tab tray, 8 px on cards
   (all logical px, see Constraints). The card "padding" is the sections' existing layout margins; the
   stylesheet adds only the 1 px border, so cards add about 2 px per section to the Controls column, not
@@ -116,8 +131,10 @@ Light/Dark and Segoe/Ubuntu buttons at the top are mockup controls, not product)
   several sizes are frozen from `minimumSizeHint()` at construction (`centralWidget`, the Controls dock,
   the Well Selector dock, the laser-focus docks in `gui_hcs.py`), so that direction takes effect at the
   next start: the menu action saves the choice and offers the existing `restart_application` path, the
-  way other restart-requiring settings do. Acceptance 3 (Classic matches today) is checked from a cold
-  start.
+  way other restart-requiring settings do. If the person picks "Later", the menu shows the saved choice
+  checked (it is what the next start will use), and while the saved choice differs from the active theme
+  its label carries the suffix "(after restart)". Acceptance 3 (Classic matches today) is checked from a
+  cold start.
 - **Shadows**: QSS has no box-shadow. The faint card and pill shadows in the mockup are approximated with
   borders (a slightly darker 1 px bottom border on cards and the selected tab pill).
 - **Jupyter console** (`USE_JUPYTER_CONSOLE`): qtconsole sets its own light stylesheet; in Dark, apply its
@@ -141,7 +158,9 @@ Geometry and typography (both themes):
 - The scan-settings band (today peach) and the XY/Z/Time group frames (today orange when enabled) become
   one tinted band in the accent family: accent-soft fill with a 1 px border; an enabled group gets an accent
   border. State stays visible without a second colour language.
-- Checkboxes: 14 px, 4 px radius, accent fill with a white check when on.
+- Checkboxes: 14 px, 4 px radius, accent fill when on, with the check mark in the accent-text colour
+  (white in Light, `#0b1a24` in Dark: white on Dark's `#4cc2ff` accent would be 2:1 contrast, the dark
+  mark is 8.8:1). Radio dots the same.
 - Slider: thin track, accent fill to the handle, round handle with an accent ring.
 - Status bar: muted text; warnings in a rounded pill (amber tones) instead of coloured text.
 - Menu bar and menus follow the ground and surface colours.
@@ -219,14 +238,17 @@ Classic: no stylesheet, default Fusion palette, today's literal colours. Nothing
 1. `main_hcs.py --simulation` runs in each of Light, Dark, Classic on Windows and on Ubuntu with no clipped
    text, and the Controls dock in Light/Dark is within 3 % of its Classic width (on the reference machine
    Segoe UI 8 pt alone measured +17 device px on 748; the cards' borders may add a few more).
-2. Settings > Appearance switches between the three at runtime; everything restyles at once, including
-   open dialogs, the dock bars, the well selector table and the status bar; the choice survives a restart.
+2. Settings > Appearance switches Light ↔ Dark at runtime; everything restyles at once, including open
+   dialogs, the dock bars, the well selector table, row brushes in tables and lists, and the status bar.
+   Choosing Classic from Light or Dark, or Light or Dark from Classic, saves the choice, offers the restart
+   prompt, and applies at the next start. The choice survives a restart in every case.
 3. Classic screenshots match today's screenshots.
 4. In Dark, every dialog (Preferences, Stage Utils, channel editors, Slack settings, message boxes) is
    readable; no white-on-white or black-on-black.
 5. Existing tests pass. New tests cover: token → QSS generation for both themes, Classic applying no
-   stylesheet, the ini round trip for `ui_theme`, and the role → colour mapping in Classic equalling today's
-   literals.
+   stylesheet, the ini round trip for `ui_theme`, the role → colour mapping in Classic equalling today's
+   literals, the row-brush tokens' contrast against each theme's text colour, and that a Light ↔ Dark
+   switch repaints a table that uses row brushes.
 
 ## Left to the builder
 
