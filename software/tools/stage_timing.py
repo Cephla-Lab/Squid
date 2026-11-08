@@ -32,7 +32,7 @@ def main(args):
         squid.logging.set_stdout_log_level(logging.DEBUG)
 
     scope: Microscope = Microscope.build_from_global_config(
-        False, confirm_objective_lowered=(lambda: True) if args.objective_lowered else None
+        False, confirm_objective_lowered=(lambda stage_homes: True) if args.objective_lowered else None
     )
 
     if args.home:

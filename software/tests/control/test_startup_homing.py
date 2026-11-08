@@ -378,7 +378,9 @@ def test_piezo_only_decline_closes_the_hardware_and_raises(piezo_only, monkeypat
     home = MagicMock()
     monkeypatch.setattr(control.microscope.Microscope, "home_xyz", home)
     with pytest.raises(StartupHomingDeclined):
-        control.microscope.Microscope.build_from_global_config(True, confirm_objective_lowered=lambda: False)
+        control.microscope.Microscope.build_from_global_config(
+            True, confirm_objective_lowered=lambda stage_homes: False
+        )
     home.assert_not_called()
     assert len(closes) == 1
 
@@ -393,7 +395,9 @@ def test_piezo_only_stop_sign_comes_before_anything_moves(piezo_only, monkeypatc
     scope.addons.piezo_stage = piezo
     sent = _spy_commands(scope.low_level_drivers.microcontroller)
     at_stop_sign = []
-    scope._confirm_objective_lowered = lambda: at_stop_sign.append((list(sent), piezo.home.call_count)) or lowered
+    scope._confirm_objective_lowered = lambda stage_homes: (
+        at_stop_sign.append((list(sent), piezo.home.call_count)) or lowered
+    )
     if lowered:
         scope._prepare_for_use(skip_init=False)
     else:
@@ -410,7 +414,7 @@ def test_piezo_only_decline_stops_before_the_objective_changer_moves(piezo_only)
     scope = _scope()
     changer = MagicMock()
     scope.addons.objective_changer = changer
-    scope._confirm_objective_lowered = lambda: False
+    scope._confirm_objective_lowered = lambda stage_homes: False
     with pytest.raises(StartupHomingDeclined):
         scope._prepare_for_use(skip_init=False)
     changer.home.assert_not_called()
@@ -420,10 +424,58 @@ def test_piezo_only_decline_stops_before_the_objective_changer_moves(piezo_only)
 def test_piezo_only_confirm_asks_once_and_homes(piezo_only):
     asked = []
     scope = control.microscope.Microscope.build_from_global_config(
-        True, confirm_objective_lowered=lambda: asked.append(1) or True
+        True, confirm_objective_lowered=lambda stage_homes: asked.append(stage_homes) or True
     )
-    assert asked == [1] and scope.startup_homing is StartupHoming.HOMED
+    assert asked == [True] and scope.startup_homing is StartupHoming.HOMED  # the stop sign says the stage homes
     scope.close()
+
+
+def _record_objective_changer(scope, events):
+    """A stand-in objective changer on scope, recording its calls in events."""
+    changer = MagicMock()
+    changer.home.side_effect = lambda *args, **kwargs: events.append("changer.home")
+    changer.move_to_objective.side_effect = lambda *args, **kwargs: events.append("changer.move_to_objective")
+    scope.addons.objective_changer = changer
+
+
+@pytest.mark.parametrize("xeryon", [True, False])
+def test_a_piezo_only_restart_asks_before_the_objective_changer_moves(piezo_only, monkeypatch, xeryon):
+    """A restart (skip_init) homes no stage axis, but turns an objective changer to the default objective (a Xeryon
+    re-homes first) with no Z motor to clear the objective: the stop sign comes first, about the changer."""
+    scope = _scope()
+    monkeypatch.setattr(control._def, "USE_XERYON", xeryon)  # after the build: it would build a real Xeryon's twin
+    events = []
+    _record_objective_changer(scope, events)
+    scope._confirm_objective_lowered = lambda stage_homes: events.append(("asked", stage_homes)) or True
+    scope._prepare_for_use(skip_init=True)
+    assert events == [("asked", False)] + (["changer.home"] if xeryon else []) + ["changer.move_to_objective"]
+    scope.close()
+
+
+def test_declining_on_a_restart_quits_before_the_objective_changer_moves(piezo_only, monkeypatch, closes):
+    scope = _scope()
+    monkeypatch.setattr(control._def, "USE_XERYON", True)
+    events = []
+    _record_objective_changer(scope, events)
+    scope._confirm_objective_lowered = lambda stage_homes: False
+    with pytest.raises(StartupHomingDeclined):
+        scope._prepare_for_use(skip_init=True)
+    assert events == [] and len(closes) == 1
+
+
+def test_a_startup_that_homes_no_stage_axis_still_asks_before_the_objective_changer(piezo_only, monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", False)
+    scope = _scope()
+    events = []
+    _record_objective_changer(scope, events)
+    scope._confirm_objective_lowered = lambda stage_homes: events.append(("asked", stage_homes)) or True
+    scope._prepare_for_use(skip_init=False)
+    assert events[0] == ("asked", False) and "changer.move_to_objective" in events
+    scope.close()
+
+
+def test_a_piezo_only_restart_without_an_objective_changer_asks_nothing(piezo_only):
+    _scope(confirm_objective_lowered=lambda stage_homes: pytest.fail("asked")).close()
 
 
 # --- One exclusion for every claim (set_stage_homing_blocker) ---

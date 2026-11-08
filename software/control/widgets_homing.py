@@ -46,31 +46,38 @@ class StopSign(QWidget):
 
 class NosepieceLoweredDialog(QDialog):
     """The stop sign, what to do, and two buttons: decline_text (reject) and Home (accept). Enter and Esc decline
-    wherever the focus is, so a stray key never starts a home."""
+    wherever the focus is, so a stray key never starts a home. stage_homes False: only an objective changer moves (a
+    startup that does not home the stage), and the sign says so."""
 
-    def __init__(self, parent=None, decline_text: str = "Cancel"):
+    def __init__(self, parent=None, decline_text: str = "Cancel", stage_homes: bool = True):
         super().__init__(parent)
         self.setWindowTitle("Lower the nosepiece")
         self.setMinimumWidth(460)
 
-        heading = QLabel("Lower the nosepiece before the stage homes")
-        font = heading.font()
+        moving = "the stage homes" if stage_homes else "the objective changer moves"
+        self.heading = QLabel(f"Lower the nosepiece before {moving}")
+        font = self.heading.font()
         font.setBold(True)
         font.setPointSize(font.pointSize() + 2)
-        heading.setFont(font)
-        heading.setAlignment(Qt.AlignCenter)
+        self.heading.setFont(font)
+        self.heading.setAlignment(Qt.AlignCenter)
 
-        text = QLabel(
-            "This system has no Z motor, so Squid cannot move the objective out of the way. Turn the focus knob to "
-            "lower the nosepiece clear of the sample holder. The stage will then move to its limit switches."
+        then = (
+            "The stage will then move to its limit switches."
+            if stage_homes
+            else "The objective changer will then home and turn to the default objective."
         )
-        text.setWordWrap(True)
-        text.setAlignment(Qt.AlignCenter)
+        self.text = QLabel(
+            "This system has no Z motor, so Squid cannot move the objective out of the way. Turn the focus knob to "
+            f"lower the nosepiece clear of the sample holder. {then}"
+        )
+        self.text.setWordWrap(True)
+        self.text.setAlignment(Qt.AlignCenter)
 
         self.decline_button = QPushButton(decline_text)
         self.decline_button.setDefault(True)
         self.decline_button.clicked.connect(self.reject)
-        self.home_button = QPushButton("Nosepiece lowered – Home")
+        self.home_button = QPushButton(f"Nosepiece lowered – {'Home' if stage_homes else 'Continue'}")
         self.home_button.setAutoDefault(False)  # focused, it would otherwise take Enter from the default button
         self.home_button.clicked.connect(self.accept)
 
@@ -82,15 +89,15 @@ class NosepieceLoweredDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(StopSign(112), alignment=Qt.AlignHCenter)
-        layout.addWidget(heading)
-        layout.addWidget(text)
+        layout.addWidget(self.heading)
+        layout.addWidget(self.text)
         layout.addLayout(buttons)
         self.decline_button.setFocus()
 
 
-def confirm_nosepiece_lowered(parent, decline_text: str) -> bool:
-    """Ask at the stop sign. True only if the person clicked Home."""
-    dialog = NosepieceLoweredDialog(parent, decline_text=decline_text)
+def confirm_nosepiece_lowered(parent, decline_text: str, stage_homes: bool = True) -> bool:
+    """Ask at the stop sign. True only if the person clicked Home (Continue)."""
+    dialog = NosepieceLoweredDialog(parent, decline_text=decline_text, stage_homes=stage_homes)
     accepted = dialog.exec_() == QDialog.Accepted
     dialog.deleteLater()
     return accepted

@@ -124,8 +124,11 @@ if __name__ == "__main__":
         microscope = control.microscope.Microscope.build_from_global_config(
             args.simulation,
             skip_init=args.skip_init,
-            # Piezo-only: the stop sign, asked before startup moves anything (only when it will home X and Y)
-            confirm_objective_lowered=lambda: confirm_nosepiece_lowered(None, decline_text="Quit Squid"),
+            # Piezo-only: the stop sign, asked before startup moves anything (only when it will home X and Y, or move an
+            # objective changer)
+            confirm_objective_lowered=lambda stage_homes: confirm_nosepiece_lowered(
+                None, decline_text="Quit Squid", stage_homes=stage_homes
+            ),
         )
     except StartupHomingDeclined:
         # The microscope closed its hardware; nothing homed. os._exit, as at the end: threads may still be winding down.

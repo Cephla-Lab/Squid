@@ -122,7 +122,7 @@ def main(args):
     # NOTE(imo): This will be expanded as we expand upon `Microscope` functionality.  The expectation is that
     # you can use this to test on real hardware (in addition to the existing unit tests)
     scope: control.microscope.Microscope = control.microscope.Microscope.build_from_global_config(
-        args.simulate, confirm_objective_lowered=(lambda: True) if args.objective_lowered else None
+        args.simulate, confirm_objective_lowered=(lambda stage_homes: True) if args.objective_lowered else None
     )
 
     # NOTE(imo): We will probably put this into __init__.  For now, keep it separate just in case it'd break
