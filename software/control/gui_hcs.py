@@ -908,6 +908,12 @@ class HighContentScreeningGui(QMainWindow):
         channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
         advanced_menu.addAction(channel_config_action)
 
+        # Objectives (machine_configs/objectives.yaml; takes effect after a restart)
+        objectives_action = QAction("Objectives...", self)
+        objectives_action.setMenuRole(QAction.NoRole)
+        objectives_action.triggered.connect(self.openObjectivesEditor)
+        advanced_menu.addAction(objectives_action)
+
         # Filter Wheel Configuration (only shown if filter wheel is enabled)
         if USE_EMISSION_FILTER_WHEEL:
             filter_wheel_config_action = QAction("Filter Wheel Configuration", self)
@@ -939,6 +945,11 @@ class HighContentScreeningGui(QMainWindow):
             filter_wheel_tuning_action.setMenuRole(QAction.NoRole)
             filter_wheel_tuning_action.triggered.connect(self.openFilterWheelTuning)
             utils_menu.addAction(filter_wheel_tuning_action)
+
+        illumination_calibration_action = QAction("Illumination Power Calibration...", self)
+        illumination_calibration_action.setMenuRole(QAction.NoRole)
+        illumination_calibration_action.triggered.connect(self.openIntensityCalibration)
+        utils_menu.addAction(illumination_calibration_action)
 
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
@@ -2842,10 +2853,59 @@ class HighContentScreeningGui(QMainWindow):
         )
         dialog.exec_()
 
+    def openIntensityCalibration(self):
+        """Open Utils > Illumination Power Calibration...: measure DAC-driven illumination channels with a power meter
+        and make their intensity linear in power. See control/widgets_intensity_calibration.py."""
+        from control.lighting import IntensityControlMode
+        from control.widgets_intensity_calibration import IntensityCalibrationDialog
+        from squid.intensity_calibration_run import CalibrationSession, measured_in_label
+
+        def busy_reason():
+            if self.liveController is not None and self.liveController.is_live:
+                return "Live view is running. Stop it first: the calibration drives the light itself."
+            if self.liveController_focus_camera is not None and self.liveController_focus_camera.is_live:
+                return "The laser autofocus camera is live. Stop it first: it triggers through the same controller."
+            if self.multipointController is not None and self.multipointController.acquisition_in_progress():
+                return "An acquisition is running."
+            return None
+
+        def restore_live_channel():
+            # A run or the test beam leaves the controller on its last port at DAC 0; live start and snap only turn
+            # the light on. Re-send the live channel (through the new calibration, if one was saved).
+            if self.liveController.currentConfiguration is not None and self.liveController.control_illumination:
+                self.liveController.update_illumination()
+
+        illumination = self.microscope.illumination_controller
+        session = CalibrationSession(
+            self.microcontroller,
+            self.microscope.config_repo,
+            dac_driven=illumination.light_source_type is None
+            and illumination.intensity_control_mode == IntensityControlMode.SquidControllerDAC,
+        )
+        measured_in = measured_in_label(
+            self.microscope.config_repo.has_confocal(), self.liveController.is_confocal_mode()
+        )
+        dialog = IntensityCalibrationDialog(
+            session, measured_in, busy_reason=busy_reason, restore_illumination=restore_live_channel, parent=self
+        )
+        dialog.exec_()
+        if self.liveController.currentConfiguration is not None:
+            # suffix, tooltip and cap of the live intensity control follow a saved calibration
+            self.liveControlWidget.update_ui_for_mode(self.liveController.currentConfiguration)
+
     def openFilterWheelConfigEditor(self):
         """Open the filter wheel configuration dialog"""
         dialog = widgets.FilterWheelConfiguratorDialog(self.microscope.config_repo, self)
         dialog.signal_config_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openObjectivesEditor(self):
+        """Open the Objectives editor (Settings > Advanced > Objectives...)."""
+        from control.widgets_objectives import ObjectivesEditorDialog
+
+        dialog = ObjectivesEditorDialog.for_current_machine(
+            self.microscope.config_repo, on_restart=self.restart_application, parent=self
+        )
         dialog.exec_()
 
     def _refresh_channel_lists(self):
