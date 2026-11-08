@@ -44,7 +44,7 @@ def _config(motor_slot: int = 3, slots: int = 8) -> SquidFilterWheelConfig:
 
 def _wheel(wrap=True, slots=8):
     mc = MagicMock()
-    mc.firmware_version = (1, 4)
+    mc.firmware_version = (1, 6)
     cfg = _config(slots=slots)
     w = _as_homed(SquidFilterWheel(mc, cfg, skip_init=True))
     w.wrap = wrap
@@ -64,14 +64,6 @@ def test_shortest_slot_delta_prefers_the_short_way_and_forward_on_ties(delta, ex
 @pytest.mark.parametrize("delta, expected", [(1, 1), (3, 3), (4, -3), (-3, -3), (-4, 3), (6, -1), (7, 0)])
 def test_shortest_slot_delta_on_an_odd_wheel(delta, expected):
     assert SquidFilterWheel._shortest_slot_delta(delta, 7) == expected
-
-
-def test_wrap_is_off_on_firmware_before_1_4():
-    w, mc, _ = _wheel()
-    mc.firmware_version = (1, 3)
-    assert w._wrap_enabled() is False
-    mc.firmware_version = (1, 4)
-    assert w._wrap_enabled() is True
 
 
 def test_eight_to_one_is_one_slot_forward_across_the_flag():
@@ -190,7 +182,7 @@ def test_wrap_ini_key_off_keeps_every_move_on_the_flag_free_arc(monkeypatch):
     monkeypatch.setattr(control._def, "SQUID_FILTERWHEEL_WRAP", False)
 
     mc = MagicMock()
-    mc.firmware_version = (1, 4)
+    mc.firmware_version = (1, 6)
     cfg = _config()
     w = _as_homed(SquidFilterWheel(mc, cfg, skip_init=True))
 
@@ -206,17 +198,16 @@ def test_wrap_ini_key_off_keeps_every_move_on_the_flag_free_arc(monkeypatch):
     assert expected * TURN > 0, f"target {expected} must have the same sign as a forward turn ({TURN})"
 
 
-@pytest.mark.parametrize("fw, expect_wrap", [((1, 4), False), ((1, 5), False), ((1, 6), True), ((2, 0), True)])
-def test_the_default_is_auto_on_from_firmware_1_6_and_off_below(fw, expect_wrap):
-    """Crossing the flag was verified on firmware 1.6; below it the wheel keeps the flag-free arc unless the
-    machine's ini says True."""
+@pytest.mark.parametrize("fw, expect_wrap", [((1, 5), False), ((1, 6), True), ((2, 0), True)])
+def test_the_default_is_on_from_firmware_1_6_and_off_below(fw, expect_wrap):
+    """Crossing the flag was verified on firmware 1.6; below it the wheel keeps the flag-free arc."""
     import control._def
 
-    assert control._def.SQUID_FILTERWHEEL_WRAP == "auto"
+    assert control._def.SQUID_FILTERWHEEL_WRAP is True
     mc = MagicMock()
     mc.firmware_version = fw
     w = _as_homed(SquidFilterWheel(mc, _config(), skip_init=True))
-    assert w.wrap == "auto" and w._wrap_enabled() is expect_wrap
+    assert w.wrap is True and w._wrap_enabled() is expect_wrap
     w.set_filter_wheel_position({1: 8})
     long_way = SquidFilterWheel._target_pos_to_usteps(_config(), 8)
     expected = long_way - TURN if expect_wrap else long_way  # one slot back across the flag, or seven forward
@@ -224,27 +215,18 @@ def test_the_default_is_auto_on_from_firmware_1_6_and_off_below(fw, expect_wrap)
     assert w._turns[1] == (-1 if expect_wrap else 0)
 
 
-@pytest.mark.parametrize(
-    "setting, fw, enabled",
-    [
-        (True, (1, 3), False),  # a backward wrap lands on a negative target, which firmware before 1.4 rejects
-        (True, (1, 4), True),  # an explicit True is the operator's word that this machine was checked
-        (True, (1, 6), True),
-        (False, (1, 6), False),
-        ("auto", (1, 5), False),
-        ("Auto", (1, 6), True),  # the ini reader hands strings through as typed
-    ],
-)
-def test_wrap_setting_against_firmware(monkeypatch, setting, fw, enabled):
+@pytest.mark.parametrize("setting, enabled", [(1, True), (0, False)])
+def test_wrap_setting_accepts_the_integers_an_ini_yields(monkeypatch, setting, enabled):
+    """`squid_filterwheel_wrap = 1` reaches the wheel as the int 1, not as True."""
     import control._def
 
     monkeypatch.setattr(control._def, "SQUID_FILTERWHEEL_WRAP", setting)
     mc = MagicMock()
-    mc.firmware_version = fw
+    mc.firmware_version = (1, 6)
     assert SquidFilterWheel(mc, _config(), skip_init=True)._wrap_enabled() is enabled
 
 
-@pytest.mark.parametrize("bad", ["off", "yes", 2, 1.0, None])  # 1 and 0 are what an ini yields: accepted
+@pytest.mark.parametrize("bad", ["off", "yes", "auto", 2, 1.0, None])
 def test_a_mistyped_wrap_setting_is_an_error_not_a_silent_on(monkeypatch, bad):
     import control._def
 
@@ -257,7 +239,7 @@ def test_a_mistyped_wrap_setting_is_an_error_not_a_silent_on(monkeypatch, bad):
 
 @pytest.mark.parametrize(
     "setting, fw, wraps",
-    [("auto", (1, 6), True), ("auto", (1, 4), False), (True, (1, 4), True), (False, (1, 6), False)],
+    [(True, (1, 6), True), (True, (1, 5), False), (False, (1, 6), False)],
 )
 def test_next_at_the_last_slot_follows_the_setting_and_the_firmware(monkeypatch, setting, fw, wraps):
     """What the GUI's Next button gets at the last slot: one slot across the flag, or nothing."""
@@ -274,28 +256,15 @@ def test_next_at_the_last_slot_follows_the_setting_and_the_firmware(monkeypatch,
     assert w.get_filter_wheel_position()[1] == (1 if wraps else 8)
 
 
-def test_wrap_is_parsed_on_assignment_and_a_typo_is_refused_there():
-    w, mc, cfg = _wheel(wrap="auto")
-    assert w.wrap == "auto"
-    w.wrap = True
-    assert w.wrap is True
-    with pytest.raises(ValueError, match="squid_filterwheel_wrap"):
-        w.wrap = "off"
-    assert w.wrap is True  # unchanged by the refused assignment
-
-
-def test_an_explicit_true_below_firmware_1_4_is_warned_about(caplog):
-    import control._def
+def test_wrap_below_firmware_1_6_is_logged_once_at_construction(caplog):
     import logging
 
-    with pytest.MonkeyPatch.context() as m:
-        m.setattr(control._def, "SQUID_FILTERWHEEL_WRAP", True)
-        mc = MagicMock()
-        mc.firmware_version = (1, 3)
-        with caplog.at_level(logging.WARNING):
-            w = SquidFilterWheel(mc, _config(), skip_init=True)
+    mc = MagicMock()
+    mc.firmware_version = (1, 5)
+    with caplog.at_level(logging.INFO):
+        w = SquidFilterWheel(mc, _config(), skip_init=True)
     assert w._wrap_enabled() is False
-    assert any("squid_filterwheel_wrap = True needs firmware" in r.getMessage() for r in caplog.records)
+    assert len([r for r in caplog.records if "Shortest-path slot changes need firmware" in r.getMessage()]) == 1
 
 
 def test_controllers_without_a_rotary_wrap_keep_their_ends():

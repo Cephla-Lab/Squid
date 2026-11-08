@@ -1,9 +1,11 @@
 import ast
 import os
+import stat
 from pathlib import Path
 
 import pytest
 
+import control.atomic_file as atomic_file
 import control.objectives_config as oc
 from control.objectives_config import ChangerKind, ObjectivesConfigError
 
@@ -133,6 +135,53 @@ class TestParse:
         oc.save_objectives_config(config, path)
         loaded = oc.load_objectives_config(path)
         assert loaded.objectives[0].model == "20× water"
+
+    def test_unquoted_numeric_model_and_serial_load_as_strings(self, tmp_path):
+        """A hand edit can leave a serial number or model unquoted; that must not stop startup."""
+        path = tmp_path / "objectives.yaml"
+        path.write_text(
+            "version: 1\nchanger: {kind: nimotion_turret}\nobjectives:\n"
+            "  - {name: 20x, magnification: 20, na: 0.8, tube_lens_f_mm: 180, slot: 3, model: 20, serial: 12345}\n"
+        )
+        loaded = oc.load_objectives_config(path)
+        assert loaded.objectives[0].model == "20"
+        assert loaded.objectives[0].serial == "12345"
+
+    @pytest.mark.parametrize(
+        "model, serial",
+        [("0123", "0x1F"), ("1_000", "1:30"), ("007", "1e3"), ("20", "12345")],
+        ids=["octal-hex", "underscore-sexagesimal", "leading-zeros-exponent", "plain"],
+    )
+    def test_unquoted_model_and_serial_keep_their_own_spelling(self, tmp_path, model, serial):
+        """YAML 1.1 would read `0123` as 83 and `0x1F` as 31; the loader keeps the file's text."""
+        path = tmp_path / "objectives.yaml"
+        path.write_text(
+            "version: 1\nchanger: {kind: nimotion_turret}\nobjectives:\n"
+            f"  - {{name: 20x, magnification: 20, na: 0.8, tube_lens_f_mm: 180, slot: 3, model: {model}, serial: {serial}}}\n"
+        )
+        loaded = oc.load_objectives_config(path)
+        assert (loaded.objectives[0].model, loaded.objectives[0].serial) == (model, serial)
+
+    def test_unquoted_yes_is_still_refused_as_a_serial_in_a_file(self, tmp_path):
+        path = tmp_path / "objectives.yaml"
+        path.write_text(
+            "version: 1\nchanger: {kind: nimotion_turret}\nobjectives:\n"
+            "  - {name: 20x, magnification: 20, na: 0.8, tube_lens_f_mm: 180, slot: 3, serial: yes}\n"
+        )
+        with pytest.raises(ObjectivesConfigError) as err:
+            oc.load_objectives_config(path)
+        assert err.value.field == "objectives.0.serial"
+        assert "string" in err.value.reason
+
+    def test_only_numbers_are_accepted_as_model_and_serial_text(self):
+        data = _data()
+        data["objectives"][0]["serial"] = 1.5
+        assert _valid(data).objectives[0].serial == "1.5"
+        data["objectives"][0]["serial"] = True  # YAML `yes`: not a serial number
+        with pytest.raises(ObjectivesConfigError) as err:
+            oc.parse_objectives_config(data)
+        assert err.value.field == "objectives.0.serial"
+        assert "string" in err.value.reason
 
 
 class TestValidate:
@@ -373,6 +422,30 @@ class TestSaveKeepsALastGoodCopy:
         assert backup.read_bytes() == first_bytes
         assert oc.load_objectives_config(path) == second
         assert sorted(p.name for p in tmp_path.iterdir()) == ["objectives.yaml", "objectives.yaml.bak"]
+
+    @pytest.mark.skipif(os.name != "posix", reason="only POSIX fsyncs the directory")
+    def test_directory_sync_failure_is_raised_only_after_the_new_list_is_published(self, tmp_path, monkeypatch):
+        # NotDurableError from save_objectives_config always means objectives.yaml itself holds the
+        # new list; the backup's own directory sync failing must not stop that write.
+        path = tmp_path / "objectives.yaml"
+        first = _valid(_data())
+        second = _valid(
+            _data(objectives=[{"name": "99x", "magnification": 99, "na": 1.0, "tube_lens_f_mm": 180, "slot": 1}])
+        )
+        oc.save_objectives_config(first, path)
+        first_bytes = path.read_bytes()
+        real_fsync = os.fsync
+
+        def _fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError("I/O error")
+            real_fsync(fd)
+
+        monkeypatch.setattr(atomic_file.os, "fsync", _fsync)
+        with pytest.raises(atomic_file.NotDurableError):
+            oc.save_objectives_config(second, path)
+        assert oc.load_objectives_config(path) == second
+        assert oc.backup_path(path).read_bytes() == first_bytes
 
     def test_hand_edited_valid_file_is_backed_up_byte_for_byte(self, tmp_path):
         # A valid file edited by hand (comments and all) is the last good copy as it stands.

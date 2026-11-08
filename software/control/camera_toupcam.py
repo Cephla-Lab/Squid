@@ -24,14 +24,18 @@ from control.toupcam_exceptions import hresult_checker
 
 log = squid.logging.get_logger(__name__)
 
-# Mono format a sensor really delivers in the SDK's 16-bit mode, (unbinned, binned). Any mono format above
-# 8 bits selects that one mode, and the sensor decides the depth per resolution; the SDK cannot be asked (it
-# reports RAW16 throughout). Verified on the ITR3CMOS26000KMA (2026-09-15): unbinned frames are true
-# 16-bit, while 2x2 and 3x3 frames have their low four bits zero in every pixel (12-bit, left-aligned, so
-# a clipped pixel reads 65520). Add a model after checking the low bits of one of its binned frames;
-# unlisted models keep the requested label.
+# Mono format above 8 bits a sensor really delivers, (unbinned, binned).  Requesting any of them selects one
+# SDK mode and the sensor decides the depth per resolution; the SDK cannot be asked (it reports RAW16
+# throughout).  Verified on the ITR3CMOS26000KMA (2026-09-15): unbinned frames are true 16-bit, while 2x2 and
+# 3x3 frames have their low four bits zero in every pixel (12-bit, left-aligned, so a clipped pixel reads
+# 65520).  The ITR10CMOS26000KMA has no plain 12-bit mode (RAW8, RAW16 and RAW12PACK only): unbinned it uses
+# the packed 12-bit mode, which saves USB bandwidth, and binned, where the packed mode is not available, the
+# 16-bit mode carrying 12-bit data on the same scale as the packed frames (per the bench driver that ran on
+# it, 2026-10; not yet checked with the low-bits test).  Add a model after checking the low bits of one of its
+# binned frames; unlisted models keep the requested label.
 _DELIVERED_PIXEL_FORMAT = {
     ToupcamCameraModel.ITR3CMOS26000KMA: (CameraPixelFormat.MONO16, CameraPixelFormat.MONO12),
+    ToupcamCameraModel.ITR10CMOS26000KMA: (CameraPixelFormat.MONO12PACKED, CameraPixelFormat.MONO12),
 }
 
 
@@ -66,6 +70,9 @@ class ToupcamCamera(AbstractCamera):
     TOUPCAM_OPTION_RAW_RGB_VAL = 0
     PIXEL_SIZE_UM = 3.76
 
+    # (width, height, pixel_bits) combos we've already warned have no rolling shutter strobe timing.
+    _warned_unknown_strobe = set()
+
     @staticmethod
     def _event_callback(event_number, camera):
         if event_number == toupcam.TOUPCAM_EVENT_IMAGE:
@@ -76,11 +83,51 @@ class ToupcamCamera(AbstractCamera):
         return (w * 24 + 31) // 32 * 4
 
     @staticmethod
+    def _reset_precise_framerate(camera: toupcam.Toupcam) -> Optional[float]:
+        """
+        Set the precise framerate to its maximum and return that maximum in fps, or None if the camera
+        rejected the read.
+        """
+        log = squid.logging.get_logger("ToupcamCamera._reset_precise_framerate")
+        # MAX_PRECISE_FRAMERATE can be rejected by the camera in certain
+        # transient states (notably right after a TRIGGER option flip), and
+        # is not relevant for trigger modes anyway — PRECISE_FRAMERATE only
+        # paces continuous/video mode.
+        try:
+            max_framerate_tenths_fps = camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
+        except toupcam.HRESULTException as ex:
+            log.warning(f"get max_framerate fail (using fallback) --> {control.toupcam_exceptions.explain(ex)}")
+            return None
+
+        # need reset value, because the default value is only 90% of setting value
+        try:
+            camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, max_framerate_tenths_fps)
+        except toupcam.HRESULTException as ex:
+            log.warning(f"put max_framerate fail (skipping) --> {control.toupcam_exceptions.explain(ex)}")
+        return max_framerate_tenths_fps / 10.0
+
+    @staticmethod
     def _calculate_strobe_info(
-        camera: toupcam.Toupcam, pixel_size: int, exposure_time_ms: float, capabilities: ToupCamCapabilities
+        camera: toupcam.Toupcam,
+        pixel_size: int,
+        exposure_time_ms: float,
+        capabilities: ToupCamCapabilities,
+        global_reset: bool = False,
     ) -> StrobeInfo:
         log = squid.logging.get_logger("ToupcamCamera._calculate_strobe_delay")
+
+        if global_reset:
+            # Every row starts exposing at once, so there is no rolling-shutter delay to wait out.  The precise
+            # framerate only paces continuous mode, where global reset is off, so it needs no reset here either.
+            return StrobeInfo(strobe_time_us=0, trigger_delay_us=0)
+
         # use camera arguments such as resolutuon, ROI, exposure time, set max FPS, bandwidth to calculate the trigger delay time
+
+        max_framerate_fps = ToupcamCamera._reset_precise_framerate(camera)
+        if max_framerate_fps is None:
+            # Fall back to a high value so vheight floors at roi_height + 56 (the sensor minimum) when the read
+            # fails, instead of propagating out and breaking the mode switch.
+            max_framerate_fps = 600.0
 
         pixel_bits = pixel_size * 8
         line_length = 0
@@ -127,32 +174,20 @@ class ToupcamCamera(AbstractCamera):
             elif pixel_bits == 16:
                 line_length = 790
 
+        if not line_length:
+            # No row timing for this sensor / resolution (eg: the ITR10CMOS26000KMA's 6208x4168), so we can't
+            # calculate a rolling shutter strobe.  Report none rather than dividing by zero; hardware trigger mode
+            # needs global reset (ENABLE_TOUPCAM_GLOBAL_RESET) on such a camera.
+            if (resolution_width, resolution_height, pixel_bits) not in ToupcamCamera._warned_unknown_strobe:
+                ToupcamCamera._warned_unknown_strobe.add((resolution_width, resolution_height, pixel_bits))
+                log.warning(
+                    f"No rolling shutter timing for {resolution_width}x{resolution_height} at {pixel_bits} bits, "
+                    "using a strobe time of 0."
+                )
+            return StrobeInfo(strobe_time_us=0, trigger_delay_us=0)
+
         line_length = int(line_length / (bandwidth / 100.0))
         row_time = line_length / 72
-
-        # MAX_PRECISE_FRAMERATE can be rejected by the camera in certain
-        # transient states (notably right after a TRIGGER option flip), and
-        # is not relevant for trigger modes anyway — PRECISE_FRAMERATE only
-        # paces continuous/video mode. Fall back to a high value so vheight
-        # floors at roi_height + 56 (the sensor minimum) when the read fails,
-        # instead of propagating out and breaking the mode switch.
-        try:
-            max_framerate_tenths_fps = camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
-        except toupcam.HRESULTException as ex:
-            log.warning(f"get max_framerate fail (using fallback) --> {control.toupcam_exceptions.explain(ex)}")
-            max_framerate_tenths_fps = None
-
-        if max_framerate_tenths_fps is not None:
-            # need reset value, because the default value is only 90% of setting value
-            try:
-                camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, max_framerate_tenths_fps)
-            except toupcam.HRESULTException as ex:
-                log.warning(f"put max_framerate fail (skipping) --> {control.toupcam_exceptions.explain(ex)}")
-            max_framerate_fps = max_framerate_tenths_fps / 10.0
-        else:
-            # Sensor-floor fallback: high enough that vheight clamps to
-            # roi_height + 56 in the check below.
-            max_framerate_fps = 600.0
 
         vheight = 72000000 / (max_framerate_fps * line_length)
         if vheight < roi_height + 56:
@@ -261,6 +296,14 @@ class ToupcamCamera(AbstractCamera):
         (self._camera, self._capabilities) = ToupcamCamera._open(index=0)
         self._pixel_format = self._config.default_pixel_format
         self._binning = self._config.default_binning
+        # The black level as set, on the 8-bit scale.  The SDK takes it on the current mode's scale, so a mode switch
+        # re-sends it (see _change_pixel_format); like the exposure time it is stored here rather than read back.
+        self._black_level = self._config.default_black_level
+        # See _set_global_reset.  None until _configure_camera writes the option, so that first write is never
+        # skipped as a no-op; _global_reset_supported goes False when the camera rejects that first write, or a later
+        # one with E_NOTIMPL.
+        self._global_reset_enabled: Optional[bool] = None
+        self._global_reset_supported = True
 
         # Since we need to set the on-camera exposure time different depending on our trigger mode
         # (eg: sometimes we compensate for a strobe delay when hardware triggering), we can't back
@@ -305,6 +348,8 @@ class ToupcamCamera(AbstractCamera):
             ("CURVE", toupcam.TOUPCAM_OPTION_CURVE),
             ("MULTITHREAD", toupcam.TOUPCAM_OPTION_MULTITHREAD),
             ("LOW_NOISE", toupcam.TOUPCAM_OPTION_LOW_NOISE),
+            ("PIXEL_FORMAT", toupcam.TOUPCAM_OPTION_PIXEL_FORMAT),
+            ("GLOBAL_RESET_MODE", toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE),
         ]
         parts = []
         for name, opt in rate_options:
@@ -380,10 +425,18 @@ class ToupcamCamera(AbstractCamera):
             current_raw_image = raw_image.reshape(height, width)
 
             process_start_ns = time.perf_counter_ns()
+            frame = self._process_raw_frame(current_raw_image)
+            if this_pixel_format == CameraPixelFormat.MONO12PACKED:
+                # PullImageV2 unpacks the pixels to [0, 4095], but the 16-bit container formats are left-aligned
+                # (a clipped MONO12 pixel reads 65520, see CameraPixelFormat.max_value).  Shift up to match, so
+                # intensities don't jump when binning switches between MONO12PACKED and MONO12.  Done after
+                # processing, in place on its copy (the raw view over the read buffer is read-only), so the frame
+                # isn't allocated a second time.
+                frame = np.left_shift(frame, 4, out=frame if frame.flags.writeable else None)
             current_frame = CameraFrame(
                 frame_id=this_frame_id,
                 timestamp=this_timestamp,
-                frame=self._process_raw_frame(current_raw_image),
+                frame=frame,
                 frame_format=this_frame_format,
                 frame_pixel_format=this_pixel_format,
             )
@@ -432,8 +485,6 @@ class ToupcamCamera(AbstractCamera):
         It might be called in a performance sensitive context, so you should make sure any updates here
         are as fast as they can be.
         """
-        self._refresh_pixel_format()
-
         # resize the buffer
         _, _, width, height = self._camera.get_Roi()
 
@@ -463,6 +514,7 @@ class ToupcamCamera(AbstractCamera):
             pixel_size=self._get_pixel_size_in_bytes(),
             exposure_time_ms=camera_exposure_time_ms,
             capabilities=self._capabilities,
+            global_reset=self._global_reset_enabled,
         )
         if self._hw_set_strobe_delay_ms_fn and self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
             self._hw_set_strobe_delay_ms_fn(self.get_strobe_time())
@@ -515,19 +567,60 @@ class ToupcamCamera(AbstractCamera):
         else:
             self.set_temperature(self._config.default_temperature)
 
-        self._raw_set_frame_format(CameraFrameFormat.RAW)
-        self._raw_set_pixel_format(self._pixel_format)  # 'MONO8'
-        try:
-            self.set_black_level(self._config.default_black_level)
-        except NotImplementedError:
-            self._log.warning("Black level is not supported by this toupcam model, ignoring default black level value")
+        self._set_global_reset(self.get_acquisition_mode())
 
         # We can't trigger update_internal_settings yet, because the strobe calc will fail.  So set the res
-        # using the raw helper.
+        # using the raw helper.  This goes before the pixel format since MONO12PACKED is only valid at 1x1.
         (width, height) = self._capabilities.binning_to_resolution[self._binning]
         self._raw_set_resolution(width, height)
 
+        self._raw_set_frame_format(CameraFrameFormat.RAW)
+        self._change_pixel_format(self._delivered_format(self._pixel_format))
+        if not self._capabilities.has_black_level:
+            self._log.warning("Black level is not supported by this toupcam model, ignoring default black level value")
+
         # TODO: Do hardware cropping here (set ROI)
+
+    def _set_global_reset(self, acquisition_mode: CameraAcquisitionMode):
+        """
+        Global reset mode, if ENABLE_TOUPCAM_GLOBAL_RESET is set and the camera supports it, is on in hardware
+        trigger mode and off otherwise.
+
+        With global reset every row starts exposing at once, so the illumination needs no strobe delay.  But the rows
+        keep integrating until they're read out, so the image is only flat if the light is off before the readout
+        starts.  Only hardware trigger mode does that: the microcontroller pulses the illumination for exactly the
+        exposure.  In software trigger mode the illumination stays on until the frame has been read (and between
+        frames in live), and in continuous mode it is steady, so there global reset would shade the image top to
+        bottom and halve the frame rate (measured on an ITR10CMOS26000KMA).  The option is changed with the stream
+        stopped, so a change costs a stream restart.
+        """
+        enabled = acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER and ENABLE_TOUPCAM_GLOBAL_RESET
+        if enabled == self._global_reset_enabled or not self._global_reset_supported:
+            return
+        with self._pause_streaming():
+            try:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 1 if enabled else 0)
+            except toupcam.HRESULTException as ex:
+                if self._global_reset_enabled is not None:
+                    # Once a write has succeeded only "not supported" means the option is unsupported.  Any other
+                    # failure left the camera in its previous state, so keep ours matching it and raise.  The first
+                    # write is exempt: it is normally the flag-off write of 0 at startup, and not every model is known
+                    # to answer an unknown option with E_NOTIMPL, so it must not stop the camera from opening.
+                    hresult_checker(ex, "E_NOTIMPL")
+                self._log.info(
+                    f"Global reset mode not supported by this camera: {control.toupcam_exceptions.explain(ex)}"
+                )
+                self._global_reset_supported = False
+                self._global_reset_enabled = False
+                return
+        self._global_reset_enabled = enabled
+        self._log.info(f"Global reset mode {'enabled, strobe delay is 0' if enabled else 'disabled'}.")
+
+    def _change_pixel_format(self, pixel_format: CameraPixelFormat):
+        """Switch the SDK mode and re-send the black level, whose scale depends on the mode.  Call with the stream stopped."""
+        self._raw_set_pixel_format(pixel_format)
+        if self._capabilities.has_black_level:
+            self.set_black_level(self._black_level)
 
     def set_temperature_reading_callback(self, func):
         self.temperature_reading_callback = func
@@ -615,7 +708,11 @@ class ToupcamCamera(AbstractCamera):
 
     def _raw_set_pixel_format(self, pixel_format: CameraPixelFormat):
         if self.get_frame_format() == CameraFrameFormat.RAW:
-            if pixel_format == CameraPixelFormat.MONO8:
+            # Setting BITDEPTH below also takes the camera out of RAW12PACK (to RAW8 or RAW16).  Don't set
+            # PIXEL_FORMAT to RAW12 for that: the ITR10CMOS26000KMA only supports RAW8, RAW16 and RAW12PACK.
+            if pixel_format == CameraPixelFormat.MONO12PACKED:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_PIXEL_FORMAT, toupcam.TOUPCAM_PIXELFORMAT_RAW12PACK)
+            elif pixel_format == CameraPixelFormat.MONO8:
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
             elif pixel_format == CameraPixelFormat.MONO12:
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
@@ -658,8 +755,7 @@ class ToupcamCamera(AbstractCamera):
 
     def set_pixel_format(self, pixel_format: CameraPixelFormat):
         with self._pause_streaming():
-            self._raw_set_pixel_format(pixel_format)
-            self.set_black_level(self._config.default_black_level)
+            self._change_pixel_format(self._delivered_format(pixel_format))
         self._update_internal_settings()
 
     def get_pixel_format(self) -> CameraPixelFormat:
@@ -671,29 +767,42 @@ class ToupcamCamera(AbstractCamera):
         return self._pixel_format
 
     def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
-        """8-bit, plus what the sensor fills in the 16-bit mode at the current binning."""
-        if self._config.camera_model in _DELIVERED_PIXEL_FORMAT:
-            sixteen_bit_mode = [self._delivered_format(CameraPixelFormat.MONO16)]
+        """8-bit, plus what the sensor delivers above 8 bits at the current binning."""
+        delivered = self._model_delivers(self._binning)
+        if delivered is not None:
+            above_8_bit = [delivered]
         else:  # unverified sensor: any of these labels may be what it delivers, so keep them all selectable
-            sixteen_bit_mode = [CameraPixelFormat.MONO12, CameraPixelFormat.MONO14, CameraPixelFormat.MONO16]
-        formats = [CameraPixelFormat.MONO8, *sixteen_bit_mode]
+            above_8_bit = [CameraPixelFormat.MONO12, CameraPixelFormat.MONO14, CameraPixelFormat.MONO16]
+        formats = [CameraPixelFormat.MONO8, *above_8_bit]
         if self.get_frame_format() == CameraFrameFormat.RGB:
             formats += [CameraPixelFormat.RGB24, CameraPixelFormat.RGB32, CameraPixelFormat.RGB48]
         return formats
 
-    def _delivered_format(self, requested: CameraPixelFormat) -> CameraPixelFormat:
+    def _model_delivers(self, binning: Tuple[int, int]) -> Optional[CameraPixelFormat]:
+        """The one mono format above 8 bits this model delivers at ``binning``, or None for an unverified model
+        (see _DELIVERED_PIXEL_FORMAT)."""
         depths = _DELIVERED_PIXEL_FORMAT.get(self._config.camera_model)
-        if depths is None or requested.bit_depth == 8 or CameraPixelFormat.is_color_format(requested):
-            return requested
-        return depths[0] if self._binning == (1, 1) else depths[1]
+        if depths is None:
+            return None
+        return depths[0] if binning == (1, 1) else depths[1]
 
-    def _refresh_pixel_format(self):
-        delivered = self._delivered_format(self._pixel_format)
-        if delivered != self._pixel_format:
-            self._log.info(
-                f"Camera delivers {delivered.name} data at binning {self._binning} (was {self._pixel_format.name})"
-            )
-        self._pixel_format = delivered
+    def _delivered_format(
+        self, requested: CameraPixelFormat, binning: Optional[Tuple[int, int]] = None
+    ) -> CameraPixelFormat:
+        """The format to run the camera in for ``requested`` at ``binning`` (the current binning by default).
+
+        On a listed model every mono request above 8 bits becomes the one format the sensor delivers there, so
+        this picks the SDK mode as well as the label (eg: on the ITR10CMOS26000KMA 12-bit is the packed mode
+        unbinned and the 16-bit mode binned).
+        """
+        if binning is None:
+            binning = self._binning
+        delivered = self._model_delivers(binning)
+        if delivered is None or requested.bit_depth == 8 or CameraPixelFormat.is_color_format(requested):
+            return requested
+        if delivered != requested:
+            self._log.info(f"Camera delivers {delivered.name} data at binning {binning} (was {requested.name})")
+        return delivered
 
     def set_auto_exposure(self, enabled: bool):
         try:
@@ -732,7 +841,15 @@ class ToupcamCamera(AbstractCamera):
             if (binning_factor_x, binning_factor_y) not in self._capabilities.binning_to_resolution:
                 raise ValueError(f"Binning ({binning_factor_x},{binning_factor_y}) not supported by camera")
             width, height = self._capabilities.binning_to_resolution[(binning_factor_x, binning_factor_y)]
+            old_format = self._pixel_format
+            new_format = self._delivered_format(old_format, (binning_factor_x, binning_factor_y))
+            # MONO12PACKED only works at 1x1, so leave it before resizing and enter it after.
+            if old_format == CameraPixelFormat.MONO12PACKED and new_format != old_format:
+                self._change_pixel_format(new_format)
             self._raw_set_resolution(width, height)
+            if new_format == CameraPixelFormat.MONO12PACKED and new_format != old_format:
+                self._change_pixel_format(new_format)
+            self._pixel_format = new_format
             self._binning = (binning_factor_x, binning_factor_y)
             self._log.debug(f"Setting binning to {binning_factor_x},{binning_factor_y} -> {width},{height}")
 
@@ -913,9 +1030,12 @@ class ToupcamCamera(AbstractCamera):
 
     def _get_black_level_factor(self):
         """Black level is configured on the 8-bit scale; the SDK takes it on the ADC's scale in 16-bit mode
-        (measured on the ITR3CMOS26000KMA: applied in ADC units even when binned frames fill only 12 bits)."""
+        (measured on the ITR3CMOS26000KMA: applied in ADC units even when binned frames fill only 12 bits) and
+        on the 12-bit scale in the packed 12-bit mode."""
         if self._pixel_format.bit_depth == 8:
             return 1
+        if self._pixel_format == CameraPixelFormat.MONO12PACKED:
+            return 2 ** (self._pixel_format.bit_depth - 8)
         return 2 ** (self._capabilities.max_bit_depth - 8)
 
     _COLOR_CHANNELS = {CameraPixelFormat.RGB24: 3, CameraPixelFormat.RGB32: 4, CameraPixelFormat.RGB48: 3}
@@ -935,6 +1055,7 @@ class ToupcamCamera(AbstractCamera):
     def set_black_level(self, black_level: float):
         if not self._capabilities.has_black_level:
             raise NotImplementedError("This toupcam does not have black level setting.")
+        self._black_level = black_level
         raw_black_level = black_level * self._get_black_level_factor()
 
         try:
@@ -952,6 +1073,7 @@ class ToupcamCamera(AbstractCamera):
         else:
             raise ValueError(f"Do not know how to handle {acquisition_mode=}")
         self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, trigger_option_value)
+        self._set_global_reset(acquisition_mode)
 
         if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
             if HARDWARE_TRIGGER_MODE == HardwareTriggerMode.LEVEL:

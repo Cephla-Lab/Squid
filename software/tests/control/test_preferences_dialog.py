@@ -1,3 +1,6 @@
+import errno
+import glob
+import io
 import os
 import sys
 import tempfile
@@ -5,9 +8,18 @@ from configparser import ConfigParser
 from unittest.mock import patch, MagicMock
 
 import pytest
-from qtpy.QtWidgets import QMessageBox
+from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QDialog, QMessageBox
 
 import control.widgets
+import squid.exceptions
+
+
+def select_file_saving_option(dialog, option_name):
+    """Choose a File Saving Format by the FileSavingOption name the config stores, not by its label."""
+    index = dialog.file_saving_combo.findData(option_name)
+    assert index >= 0, f"no {option_name} item"
+    dialog.file_saving_combo.setCurrentIndex(index)
 
 
 @pytest.fixture
@@ -234,7 +246,7 @@ class TestIniValuesWithInlineComments:
         dialog = self._dialog(qtbot, sample_config, temp_config_file)
         assert dialog.binning_spinbox.value() == 2
         assert dialog.flexible_multipoint_checkbox.isChecked()
-        assert dialog.file_saving_combo.currentText() == "OME_TIFF"
+        assert dialog.file_saving_combo.currentData() == "OME_TIFF"
 
     def test_saving_does_not_reset_a_commented_value_to_the_default(self, qtbot, sample_config, temp_config_file):
         import control._def
@@ -334,7 +346,7 @@ class TestChangeDetection:
         assert len(changes) == 0
 
     def test_detect_string_change(self, preferences_dialog):
-        preferences_dialog.file_saving_combo.setCurrentText("MULTI_PAGE_TIFF")
+        select_file_saving_option(preferences_dialog, "MULTI_PAGE_TIFF")
         changes = preferences_dialog._get_changes()
         assert any(c[0] == "File Saving Format" for c in changes)
 
@@ -361,7 +373,7 @@ class TestChangeDetection:
         assert binning_change[3] is True  # requires_restart
 
     def test_live_setting_no_restart(self, preferences_dialog):
-        preferences_dialog.file_saving_combo.setCurrentText("MULTI_PAGE_TIFF")
+        select_file_saving_option(preferences_dialog, "MULTI_PAGE_TIFF")
         changes = preferences_dialog._get_changes()
         file_change = next(c for c in changes if c[0] == "File Saving Format")
         assert file_change[3] is False  # does not require restart
@@ -393,7 +405,7 @@ class TestApplySettings:
     """Test settings application."""
 
     def test_apply_settings_saves_to_file(self, preferences_dialog, temp_config_file):
-        preferences_dialog.file_saving_combo.setCurrentText("INDIVIDUAL_IMAGES")
+        select_file_saving_option(preferences_dialog, "INDIVIDUAL_IMAGES")
         preferences_dialog._apply_settings()
 
         # Read back the file
@@ -429,6 +441,28 @@ class TestApplySettings:
         finally:
             os.chmod(temp_config_file, 0o644)
 
+    def test_a_write_that_fails_part_way_leaves_the_file_as_it_was(
+        self, preferences_dialog, temp_config_file, monkeypatch
+    ):
+        with open(temp_config_file) as f:
+            before = f.read()
+        write = ConfigParser.write
+
+        def disk_full_part_way(config, fp, *args, **kwargs):
+            if isinstance(fp, io.StringIO):  # the dialog's copy of the config, kept in case the save fails
+                return write(config, fp, *args, **kwargs)
+            fp.write("[GENERAL]\n")
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(ConfigParser, "write", disk_full_part_way)
+        select_file_saving_option(preferences_dialog, "INDIVIDUAL_IMAGES")
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not preferences_dialog._apply_settings()
+        mock_warning.assert_called_once()
+        with open(temp_config_file) as f:
+            assert f.read() == before
+        assert not glob.glob(glob.escape(temp_config_file) + ".*.tmp")
+
     def test_apply_settings_emits_signal(self, qtbot, preferences_dialog):
         """Verify signal_config_changed is emitted when settings are saved."""
         with qtbot.waitSignal(preferences_dialog.signal_config_changed, timeout=1000):
@@ -446,7 +480,7 @@ class TestSaveAndCloseWorkflow:
 
     def test_save_and_close_single_change_no_restart(self, qtbot, preferences_dialog, temp_config_file):
         """Single change that doesn't require restart should save silently."""
-        preferences_dialog.file_saving_combo.setCurrentText("MULTI_PAGE_TIFF")
+        select_file_saving_option(preferences_dialog, "MULTI_PAGE_TIFF")
 
         # Mock accept to track if dialog closes
         preferences_dialog.accept = MagicMock()
@@ -456,6 +490,26 @@ class TestSaveAndCloseWorkflow:
         preferences_dialog.accept.assert_called_once()
 
         # Verify saved
+        saved_config = ConfigParser()
+        saved_config.read(temp_config_file)
+        assert saved_config.get("GENERAL", "file_saving_option") == "MULTI_PAGE_TIFF"
+
+    def test_a_failed_write_keeps_the_change_pending_for_the_next_save(
+        self, qtbot, preferences_dialog, temp_config_file, tmp_path
+    ):
+        """The config is left as it was, so the change is still pending and Save tries again."""
+        select_file_saving_option(preferences_dialog, "MULTI_PAGE_TIFF")
+        preferences_dialog.config_filepath = str(tmp_path)  # a directory: opening it for writing raises OSError
+        preferences_dialog.accept = MagicMock()
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            preferences_dialog._save_and_close()
+            preferences_dialog._save_and_close()  # Save again: tried again, not closed as if nothing changed
+        assert mock_warning.call_count == 2
+        preferences_dialog.accept.assert_not_called()
+        assert preferences_dialog.config.get("GENERAL", "file_saving_option") == "OME_TIFF"
+        preferences_dialog.config_filepath = temp_config_file
+        preferences_dialog._save_and_close()
+        preferences_dialog.accept.assert_called_once()
         saved_config = ConfigParser()
         saved_config.read(temp_config_file)
         assert saved_config.get("GENERAL", "file_saving_option") == "MULTI_PAGE_TIFF"
@@ -475,7 +529,7 @@ class TestSaveAndCloseWorkflow:
 
     def test_save_and_close_multiple_changes_accepted(self, qtbot, preferences_dialog, temp_config_file):
         """Multiple changes should show confirmation dialog."""
-        preferences_dialog.file_saving_combo.setCurrentText("MULTI_PAGE_TIFF")
+        select_file_saving_option(preferences_dialog, "MULTI_PAGE_TIFF")
         preferences_dialog.binning_spinbox.setValue(4)
 
         # Mock the confirmation dialog to return Accepted
@@ -494,7 +548,7 @@ class TestSaveAndCloseWorkflow:
 
     def test_save_and_close_multiple_changes_cancelled(self, qtbot, preferences_dialog, temp_config_file):
         """When user cancels confirmation dialog, settings should not be saved."""
-        preferences_dialog.file_saving_combo.setCurrentText("MULTI_PAGE_TIFF")
+        select_file_saving_option(preferences_dialog, "MULTI_PAGE_TIFF")
         preferences_dialog.binning_spinbox.setValue(4)
 
         # Mock the confirmation dialog to return Rejected (cancelled)
@@ -516,7 +570,7 @@ class TestUIInitialization:
     """Test UI is properly initialized from config."""
 
     def test_file_saving_combo_initialized(self, preferences_dialog):
-        assert preferences_dialog.file_saving_combo.currentText() == "OME_TIFF"
+        assert preferences_dialog.file_saving_combo.currentData() == "OME_TIFF"
 
     def test_saving_path_initialized(self, preferences_dialog):
         assert preferences_dialog.saving_path_edit.text() == "/test/path"
@@ -532,6 +586,78 @@ class TestUIInitialization:
 
     def test_af_threshold_initialized(self, preferences_dialog):
         assert preferences_dialog.af_stop_threshold.value() == 0.85
+
+
+class TestFileSavingLabels:
+    """Each format shows a readable label but is still stored by its FileSavingOption name
+    (ZARR_V3 shows as "OME-Zarr 0.5"), so existing config files keep working."""
+
+    def test_each_format_shows_a_label_and_keeps_its_stored_name(self, preferences_dialog):
+        combo = preferences_dialog.file_saving_combo
+
+        assert [(combo.itemText(i), combo.itemData(i)) for i in range(combo.count())] == [
+            ("Individual images", "INDIVIDUAL_IMAGES"),
+            ("Multi-page TIFF", "MULTI_PAGE_TIFF"),
+            ("OME-TIFF", "OME_TIFF"),
+            ("OME-Zarr 0.5", "ZARR_V3"),
+        ]
+
+    def test_zarr_v3_in_config_is_shown_as_ome_zarr(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "file_saving_option", "ZARR_V3")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        assert dialog.file_saving_combo.currentText() == "OME-Zarr 0.5"
+        assert not [c for c in dialog._get_changes() if c[0] == "File Saving Format"]
+
+    def test_choosing_ome_zarr_saves_and_applies_zarr_v3(self, qtbot, preferences_dialog, temp_config_file):
+        import control._def
+
+        original = control._def.FILE_SAVING_OPTION
+        try:
+            select_file_saving_option(preferences_dialog, "ZARR_V3")
+            preferences_dialog.accept = MagicMock()
+            preferences_dialog._save_and_close()
+
+            saved = ConfigParser()
+            saved.read(temp_config_file)
+            assert saved.get("GENERAL", "file_saving_option") == "ZARR_V3"
+            assert control._def.FILE_SAVING_OPTION is control._def.FileSavingOption.ZARR_V3
+        finally:
+            control._def.FILE_SAVING_OPTION = original
+
+    def test_ome_zarr_shows_the_zarr_compression_option(self, preferences_dialog):
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
+
+        assert preferences_dialog.zarr_compression_combo.isVisibleTo(preferences_dialog)
+
+    def test_ome_zarr_tooltip_names_the_spec_and_zarr_versions(self, preferences_dialog):
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
+
+        assert "OME-Zarr 0.5 (Zarr v3)" in preferences_dialog.file_saving_combo.toolTip()
+
+    def test_tooltip_clears_when_a_tiff_format_is_chosen(self, preferences_dialog):
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
+        select_file_saving_option(preferences_dialog, "OME_TIFF")
+
+        assert preferences_dialog.file_saving_combo.toolTip() == ""
+
+    def test_tooltip_says_6d_output_is_not_ome_zarr(self, preferences_dialog):
+        combo = preferences_dialog.file_saving_combo
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
+
+        preferences_dialog.zarr_6d_fov_checkbox.setChecked(True)
+        assert "not OME-Zarr" in combo.toolTip()
+        assert "not OME-Zarr" in combo.itemData(combo.findData("ZARR_V3"), Qt.ToolTipRole)
+
+        preferences_dialog.zarr_6d_fov_checkbox.setChecked(False)
+        assert "not OME-Zarr" not in combo.toolTip()
+
+    def test_change_list_shows_the_labels(self, preferences_dialog):
+        select_file_saving_option(preferences_dialog, "ZARR_V3")
+
+        change = next(c for c in preferences_dialog._get_changes() if c[0] == "File Saving Format")
+        assert change[1:3] == ("OME-TIFF", "OME-Zarr 0.5")
 
 
 class TestFileSavingOptionFallback:
@@ -558,7 +684,7 @@ class TestFileSavingOptionFallback:
             dialog = control.widgets.PreferencesDialog(config_without_file_saving_option, temp_config_file)
             qtbot.addWidget(dialog)
 
-            assert dialog.file_saving_combo.currentText() == "MULTI_PAGE_TIFF"
+            assert dialog.file_saving_combo.currentData() == "MULTI_PAGE_TIFF"
             assert not dialog._get_changes(), "Untouched dialog must not report a format change"
         finally:
             control._def.FILE_SAVING_OPTION = original
@@ -594,9 +720,20 @@ class TestFileSavingOptionFallback:
             dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
             qtbot.addWidget(dialog)
 
-            assert dialog.file_saving_combo.currentText() == "OME_TIFF"
+            assert dialog.file_saving_combo.currentData() == "OME_TIFF"
         finally:
             control._def.FILE_SAVING_OPTION = original
+
+    def test_config_value_in_another_case_is_shown_and_not_a_change(self, qtbot, sample_config, temp_config_file):
+        """Startup reads file_saving_option ignoring case, so "multi_page_tiff" is the format in effect."""
+        sample_config.set("GENERAL", "file_saving_option", "multi_page_tiff")
+
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        # With no change listed, the combo box shows this format (whatever label it gives it)
+        assert dialog._get_file_saving_option() == "MULTI_PAGE_TIFF"
+        assert not [c for c in dialog._get_changes() if c[0] == "File Saving Format"]
 
 
 class TestViewsTab:
@@ -899,13 +1036,14 @@ class TestTiffCompressionSetting:
         assert not [c for c in dialog._get_changes() if c[0] == "TIFF Compression Level"]
 
     def test_only_shown_for_the_formats_that_support_it(self, preferences_dialog):
-        for file_saving_option, visible in (
-            ("INDIVIDUAL_IMAGES", True),
-            ("MULTI_PAGE_TIFF", True),
-            ("OME_TIFF", False),  # written through a memmap, which can't be compressed
-            ("ZARR_V3", False),
+        for file_saving_label, visible in (
+            ("Individual images", True),
+            ("Multi-page TIFF", True),
+            ("OME-TIFF", False),  # written through a memmap, which can't be compressed
+            ("OME-Zarr 0.5", False),
         ):
-            preferences_dialog.file_saving_combo.setCurrentText(file_saving_option)
+            preferences_dialog.file_saving_combo.setCurrentText(file_saving_label)
+            assert preferences_dialog.file_saving_combo.currentText() == file_saving_label
             assert preferences_dialog.tiff_compression_spinbox.isVisibleTo(preferences_dialog) is visible
             assert preferences_dialog.tiff_compression_label.isVisibleTo(preferences_dialog) is visible
 
@@ -941,6 +1079,122 @@ class TestTiffCompressionSetting:
             assert control._def.TIFF_COMPRESSION_LEVEL == 4
         finally:
             control._def.TIFF_COMPRESSION_LEVEL = original
+
+
+class TestZarrSettings:
+    """Zarr Compression (General tab) and Chunk Mode (Advanced tab)."""
+
+    @pytest.fixture(autouse=True)
+    def running_zarr_settings(self, monkeypatch):
+        """Known running values, restored afterwards (saving pushes the new values to control._def)."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "ZARR_COMPRESSION", control._def.ZarrCompression.FAST)
+        monkeypatch.setattr(control._def, "ZARR_CHUNK_MODE", control._def.ZarrChunkMode.FULL_FRAME)
+
+    @staticmethod
+    def _save(dialog):
+        with patch("qtpy.QtWidgets.QDialog.exec_", return_value=True):
+            dialog.accept = MagicMock()
+            dialog._save_and_close()
+
+    def test_compression_saved_on_its_own(self, qtbot, preferences_dialog, temp_config_file):
+        """A setting missing from _get_changes() is silently dropped when it is the only change."""
+        import control._def
+
+        preferences_dialog.zarr_compression_combo.setCurrentText("best")
+        self._save(preferences_dialog)
+
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "zarr_compression") == "best"
+        assert control._def.ZARR_COMPRESSION is control._def.ZarrCompression.BEST
+
+    def test_chunk_mode_saved_on_its_own(self, qtbot, preferences_dialog, temp_config_file):
+        import control._def
+
+        preferences_dialog.zarr_chunk_mode_combo.setCurrentText("tiled_512")
+        self._save(preferences_dialog)
+
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "zarr_chunk_mode") == "tiled_512"
+        assert control._def.ZARR_CHUNK_MODE is control._def.ZarrChunkMode.TILED_512
+
+    def test_changes_are_detected_and_need_no_restart(self, preferences_dialog):
+        preferences_dialog.zarr_compression_combo.setCurrentText("balanced")
+        preferences_dialog.zarr_chunk_mode_combo.setCurrentText("tiled_256")
+
+        changes = {c[0]: c for c in preferences_dialog._get_changes()}
+        assert changes["Zarr Compression"][1:] == ("fast", "balanced", False)
+        assert changes["Zarr Chunk Mode"][1:] == ("full_frame", "tiled_256", False)
+
+    def test_fall_back_to_the_values_in_effect(self, qtbot, sample_config, temp_config_file):
+        """With no key in the config, show the running values rather than assuming the defaults."""
+        import control._def
+
+        control._def.ZARR_COMPRESSION = control._def.ZarrCompression.BALANCED
+        control._def.ZARR_CHUNK_MODE = control._def.ZarrChunkMode.TILED_256
+
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        assert dialog.zarr_compression_combo.currentText() == "balanced"
+        assert dialog.zarr_chunk_mode_combo.currentText() == "tiled_256"
+        assert not [c for c in dialog._get_changes() if c[0].startswith("Zarr")]
+
+    def test_config_values_in_another_case_are_shown_and_not_a_change(self, qtbot, sample_config, temp_config_file):
+        """Startup reads these ignoring case, so "BEST" is the compression in effect, not "none"."""
+        sample_config.set("GENERAL", "zarr_compression", "BEST")
+        sample_config.set("GENERAL", "zarr_chunk_mode", "Tiled_512")
+
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        assert dialog.zarr_compression_combo.currentText() == "best"
+        assert dialog.zarr_chunk_mode_combo.currentText() == "tiled_512"
+        assert not [c for c in dialog._get_changes() if c[0].startswith("Zarr")]
+
+    def test_invalid_config_values_show_the_values_in_effect(self, qtbot, sample_config, temp_config_file, monkeypatch):
+        """Startup rejects these, so they can only come from an edit while Squid runs; the dialog must still open."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.MULTI_PAGE_TIFF)
+        sample_config.set("GENERAL", "file_saving_option", "ZARR_V4")
+        sample_config.set("GENERAL", "zarr_compression", "fsat")
+
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        # With no change listed, the combo box shows this format (whatever label it gives it)
+        assert dialog._get_file_saving_option() == "MULTI_PAGE_TIFF"
+        assert not [c for c in dialog._get_changes() if c[0] == "File Saving Format"]
+        assert dialog.zarr_compression_combo.currentText() == "fast"
+
+    def test_saving_another_setting_writes_these_in_canonical_form(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "zarr_compression", "BEST")
+        sample_config.set("GENERAL", "zarr_chunk_mode", "tiled-512")  # rejected: the value in effect is written
+
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        dialog.saving_path_edit.setText("/some/other/path")
+        assert dialog._apply_settings()
+
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "zarr_compression") == "best"
+        assert saved.get("GENERAL", "zarr_chunk_mode") == "full_frame"
+
+    def test_6d_option_falls_back_to_the_value_in_effect(self, qtbot, sample_config, temp_config_file, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "ZARR_USE_6D_FOV_DIMENSION", True)
+
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        assert dialog.zarr_6d_fov_checkbox.isChecked()
+        assert not [c for c in dialog._get_changes() if c[0] == "Use 6D FOV Dimension"]
 
 
 class TestClickToMoveSettings:
@@ -990,66 +1244,6 @@ class TestClickToMoveSettings:
         assert control._def.LIVE_VIEW_Z_STEP_FAST_UM == pytest.approx(75.0)
 
 
-class TestFilterWheelShortestPath:
-    """Preferences > Advanced > Hardware Configuration: squid_filterwheel_wrap (auto / True / False)."""
-
-    def _dialog(self, qtbot, config, path):
-        dialog = control.widgets.PreferencesDialog(config, path)
-        qtbot.addWidget(dialog)
-        return dialog
-
-    def test_missing_key_shows_auto_and_is_not_a_change(self, preferences_dialog):
-        assert preferences_dialog.wheel_wrap_combo.currentData() == "auto"
-        assert not [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
-
-    @pytest.mark.parametrize(
-        "ini, data",
-        [
-            ("auto", "auto"),
-            ("True", "True"),
-            ("true", "True"),
-            ("False", "False"),
-            ("False  # why", "False"),
-            # whatever the wheel controller accepts, the dialog has to read the same way:
-            ("AUTO", "auto"),
-            # 1 and 0 are accepted by the wheel controller from #664 on; shown as Auto they were replaced on a save
-            ("1", "True"),
-            ("0", "False"),
-            ("0  # off on this machine", "False"),
-        ],
-    )
-    def test_the_ini_value_selects_the_item(self, qtbot, sample_config, temp_config_file, ini, data):
-        sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
-        dialog = self._dialog(qtbot, sample_config, temp_config_file)
-        assert dialog.wheel_wrap_combo.currentData() == data
-        assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
-
-    def test_a_change_needs_a_restart_and_is_shown_in_words(self, preferences_dialog):
-        preferences_dialog.wheel_wrap_combo.setCurrentIndex(2)
-        change = [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
-        assert change == [("Filter Wheel Shortest Path", "Auto (on from firmware 1.6)", "Off", True)]
-
-    def test_it_is_saved_as_the_value_the_wheel_controller_parses(self, preferences_dialog, temp_config_file):
-        import control._def
-        from squid.filter_wheel_controller.cephla import SquidFilterWheel
-
-        for index, expected in [(1, True), (2, False), (0, "auto")]:
-            preferences_dialog.wheel_wrap_combo.setCurrentIndex(index)
-            assert preferences_dialog._apply_settings()
-            saved = ConfigParser()
-            saved.read(temp_config_file)
-            text = saved.get("GENERAL", "squid_filterwheel_wrap")
-            # the same two steps the application takes at startup: the ini reader, then the wheel controller
-            assert SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(text)) == expected
-
-    def test_an_unrecognised_ini_value_is_shown_as_being_replaced(self, qtbot, sample_config, temp_config_file):
-        sample_config.set("GENERAL", "squid_filterwheel_wrap", "off")  # a typo the wheel controller refuses
-        dialog = self._dialog(qtbot, sample_config, temp_config_file)
-        assert dialog.wheel_wrap_combo.currentData() == "auto"
-        change = [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
-        assert change == [("Filter Wheel Shortest Path", "off", "Auto (on from firmware 1.6)", True)]
-
-
 class TestFilterWheelCompletionWindow:
     """Preferences > Advanced > Hardware Configuration: squid_filterwheel_completion_window_deg."""
 
@@ -1057,39 +1251,6 @@ class TestFilterWheelCompletionWindow:
         assert preferences_dialog.wheel_window_spinbox.value() == 0.0
         assert preferences_dialog.wheel_window_spinbox.text() == "Off (exact slot)"
         assert not [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
-
-    def test_the_dialog_and_the_wheel_controller_read_every_accepted_value_alike(
-        self, qtbot, sample_config, temp_config_file
-    ):
-        from squid.filter_wheel_controller.cephla import SquidFilterWheel
-
-        shown = {"auto": "auto", True: "True", False: "False"}
-        for ini in ("auto", "Auto", "True", "true", "False", "false", "True  # on", "1", "0", "1  # on"):
-            sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
-            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
-            qtbot.addWidget(dialog)
-            parsed = SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(ini))
-            assert dialog.wheel_wrap_combo.currentData() == shown[parsed], ini
-
-    def test_saving_something_else_does_not_change_what_a_numeric_wrap_setting_means(
-        self, qtbot, sample_config, temp_config_file
-    ):
-        # review of ad437815: `0` showed as Auto, and saving any other setting wrote "auto" - shortest path ON at
-        # firmware 1.6 on a machine that had it explicitly off (and `1` -> OFF at 1.4 / 1.5)
-        import control._def
-        from squid.filter_wheel_controller.cephla import SquidFilterWheel
-
-        for ini, meaning in (("0", False), ("1", True)):
-            sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
-            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
-            qtbot.addWidget(dialog)
-            dialog.wheel_window_spinbox.setValue(5.0)  # the operator changes a DIFFERENT setting
-            assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
-            assert dialog._apply_settings()
-            saved = ConfigParser()
-            saved.read(temp_config_file)
-            text = saved.get("GENERAL", "squid_filterwheel_wrap")
-            assert SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(text)) is meaning, (ini, text)
 
     def test_a_window_with_an_inline_comment_is_shown_not_cleared(self, qtbot, sample_config, temp_config_file):
         sample_config.set("GENERAL", "squid_filterwheel_completion_window_deg", "5  # degrees, 32 mm filters")
@@ -1122,3 +1283,335 @@ class TestFilterWheelCompletionWindow:
     def test_the_range_stops_at_ten_degrees(self, preferences_dialog):
         preferences_dialog.wheel_window_spinbox.setValue(45.0)  # a whole slot: never a sensible window
         assert preferences_dialog.wheel_window_spinbox.value() == 10.0
+
+
+class TestZMotorConfigNotInPreferences:
+    """z_motor_config names the Z hardware the machine has, so it is set in the config file, not in
+    Preferences. Saving Preferences must leave it exactly as written."""
+
+    def test_saving_leaves_the_z_motor_config_as_written(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "z_motor_config", "STEPPER + PIEZO  # piezo fitted")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        dialog.binning_spinbox.setValue(4)
+        assert dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "z_motor_config") == "STEPPER + PIEZO  # piezo fitted"
+
+    def test_saving_does_not_add_a_z_motor_config(self, preferences_dialog, temp_config_file):
+        preferences_dialog.binning_spinbox.setValue(4)
+        assert preferences_dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert not saved.has_option("GENERAL", "z_motor_config")
+
+
+class TestZStackOrderDropdownPreference:
+    """The opt-in Z-stack order dropdown (Channel First / Z First) is switched from Preferences, live."""
+
+    def test_checkbox_is_off_when_the_ini_has_no_key(self, preferences_dialog):
+        assert preferences_dialog.z_stack_order_dropdown_checkbox.isChecked() is False
+
+    def test_checkbox_reflects_the_ini(self, qtbot, sample_config, temp_config_file, sync_def_with_config):
+        sample_config.set("GENERAL", "enable_z_stack_order_selection", "True")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        assert dialog.z_stack_order_dropdown_checkbox.isChecked() is True
+
+    def test_turning_it_on_is_a_live_change(self, preferences_dialog):
+        preferences_dialog.z_stack_order_dropdown_checkbox.setChecked(True)
+        assert ("Z-stack Order Dropdown", "False", "True", False) in preferences_dialog._get_changes()
+
+    def test_apply_writes_the_ini_and_flips_the_runtime_flag(self, preferences_dialog, monkeypatch):
+        monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", False)
+        preferences_dialog.z_stack_order_dropdown_checkbox.setChecked(True)
+
+        assert preferences_dialog._apply_settings() is True
+
+        assert preferences_dialog.config.get("GENERAL", "enable_z_stack_order_selection") == "true"
+        assert control._def.ENABLE_Z_STACK_ORDER_SELECTION is True
+
+
+class _FakePriorStage:
+    """What the dialog uses of PriorStage: the SMS/SAS values, their physical units, and the setters. Like PriorStage,
+    a setter that raises leaves its value unknown (None), since the controller may have taken it all the same."""
+
+    def __init__(self, speed=100, acceleration=100, failing=(), taken_anyway=False):
+        self.speed = speed
+        self.acceleration = acceleration
+        # Settings the controller doesn't confirm, each a command ("SMS": every SMS, as from an unanswering stage) or a
+        # (command, value): the setter raises. With taken_anyway the controller has the value all the same (only the
+        # reply was lost).
+        self.failing = set(failing)
+        self.taken_anyway = taken_anyway
+        self.controller = {"SMS": speed, "SAS": acceleration}  # what the controller actually has
+        self.sent = []
+
+    def get_max_speed_mm_s(self):
+        return self.controller["SMS"] * 0.06  # H117(1MM): 60 um/s per step
+
+    def get_acceleration_mm_s2(self):
+        return self.controller["SAS"] * 0.2855  # H117(1MM): 285.5 um/s^2 per step
+
+    def _set(self, command, attr, value):
+        self.sent.append((command, value))
+        setattr(self, attr, None)
+        if command in self.failing or (command, value) in self.failing:
+            if self.taken_anyway:
+                self.controller[command] = value
+            raise squid.exceptions.SquidError(f"Prior stage did not take {command} {value}: no reply")
+        self.controller[command] = value
+        setattr(self, attr, value)
+
+    def set_max_speed(self, value):
+        self._set("SMS", "speed", value)
+
+    def set_acceleration(self, value):
+        self._set("SAS", "acceleration", value)
+
+
+class TestPriorStageSettings:
+    """Preferences > Advanced > Prior Stage: SMS/SAS 1-1000, saved to the ini and sent to the stage on Save."""
+
+    @pytest.fixture
+    def prior_rig(self, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_PRIOR_STAGE", True)
+        # Restored after the test: Save writes the new values into control._def.
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED", 100)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION", 100)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED_LIMIT", 1000)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION_LIMIT", 1000)
+        # Some tests also save an unrelated setting, which Save writes into control._def too.
+        monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FILE_SAVING_OPTION)
+
+    def _dialog(self, qtbot, config, path, stage=None):
+        dialog = control.widgets.PreferencesDialog(config, path, stage=stage)
+        qtbot.addWidget(dialog)
+        return dialog
+
+    def test_hidden_and_not_written_without_a_prior_stage(self, qtbot, sample_config, temp_config_file, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "USE_PRIOR_STAGE", False)
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.prior_speed_spinbox is None
+        assert dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert not saved.has_option("GENERAL", "prior_stage_max_speed")
+
+    def test_shows_the_ini_values_and_their_physical_units(self, qtbot, sample_config, temp_config_file, prior_rig):
+        sample_config.set("GENERAL", "prior_stage_max_speed", "500")
+        sample_config.set("GENERAL", "prior_stage_acceleration", "400")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=_FakePriorStage(500, 400))
+        assert dialog.prior_speed_spinbox.value() == 500
+        assert dialog.prior_accel_spinbox.value() == 400
+        assert dialog.prior_speed_physical_label.text() == "≈ 30.0 mm/s"
+        assert dialog.prior_accel_physical_label.text() == "≈ 114.2 mm/s²"
+        dialog.prior_speed_spinbox.setValue(1000)
+        assert dialog.prior_speed_physical_label.text() == "≈ 60.0 mm/s"
+        assert not [c for c in dialog._get_changes() if c[0] == "Prior Stage Acceleration"]
+
+    def test_range_is_1_to_1000(self, qtbot, sample_config, temp_config_file, prior_rig):
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        for spinbox in (dialog.prior_speed_spinbox, dialog.prior_accel_spinbox):
+            assert (spinbox.minimum(), spinbox.maximum()) == (1, 1000)
+
+    def test_the_rig_ceilings_cap_the_range(self, qtbot, sample_config, temp_config_file, prior_rig, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED_LIMIT", 200)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_ACCELERATION_LIMIT", 500)
+        # Values saved before the ceiling existed: shown at the ceiling, and not listed as a change.
+        sample_config.set("GENERAL", "prior_stage_max_speed", "300")
+        sample_config.set("GENERAL", "prior_stage_acceleration", "750")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.prior_speed_spinbox.maximum() == 200
+        assert dialog.prior_accel_spinbox.maximum() == 500
+        assert (dialog.prior_speed_spinbox.value(), dialog.prior_accel_spinbox.value()) == (200, 500)
+        assert not [c for c in dialog._get_changes() if c[0].startswith("Prior Stage")]
+        dialog.prior_speed_spinbox.setValue(250)
+        assert dialog.prior_speed_spinbox.value() == 200
+
+    def test_an_out_of_range_ini_value_is_not_reported_as_a_change(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        sample_config.set("GENERAL", "prior_stage_max_speed", "5000")  # the controller would clamp it to 1000
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.prior_speed_spinbox.value() == 1000
+        assert not [c for c in dialog._get_changes() if c[0].startswith("Prior Stage")]
+
+    def test_save_writes_the_ini_and_sends_only_what_changed_to_the_stage(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        import control._def
+
+        stage = _FakePriorStage()
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.prior_speed_spinbox.setValue(500)
+        assert [c for c in dialog._get_changes() if c[0].startswith("Prior Stage")] == [
+            ("Prior Stage Max Speed", "100", "500", False)
+        ]
+        assert dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "prior_stage_max_speed") == "500"
+        assert saved.get("GENERAL", "prior_stage_acceleration") == "100"
+        assert control._def.PRIOR_STAGE_MAX_SPEED == 500
+        assert stage.sent == [("SMS", 500)]
+
+    def test_save_without_a_stage_still_saves(self, qtbot, sample_config, temp_config_file, prior_rig):
+        import control._def
+
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.prior_speed_physical_label.text() == ""
+        dialog.prior_accel_spinbox.setValue(250)
+        assert dialog._apply_settings()
+        assert control._def.PRIOR_STAGE_ACCELERATION == 250
+
+    def test_a_stage_that_does_not_take_the_change_blocks_save_and_keeps_it_pending(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        import control._def
+
+        stage = _FakePriorStage(failing={("SMS", 400)})
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.prior_speed_spinbox.setValue(400)
+        select_file_saving_option(dialog, "INDIVIDUAL_IMAGES")  # an unrelated change saved in the same click
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not dialog._apply_settings()
+        mock_warning.assert_called_once()
+        assert "no reply" in mock_warning.call_args[0][2]
+        # Nothing written: the ini, the running values and the stage keep the old values ...
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert not saved.has_option("GENERAL", "prior_stage_max_speed")
+        assert saved.get("GENERAL", "file_saving_option") == "OME_TIFF"
+        assert control._def.PRIOR_STAGE_MAX_SPEED == 100
+        assert stage.speed == 100
+        # ... so the change is still pending, and a retry sends it again.
+        assert ("Prior Stage Max Speed", "100", "400", False) in dialog._get_changes()
+        stage.failing.clear()
+        assert dialog._apply_settings()
+        assert stage.speed == 400
+        assert control._def.PRIOR_STAGE_MAX_SPEED == 400
+
+    def test_save_and_close_keeps_the_dialog_open_when_the_stage_does_not_take_the_change(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=_FakePriorStage(failing={"SAS"}))
+        dialog.prior_accel_spinbox.setValue(250)
+        with patch.object(QMessageBox, "warning"):
+            dialog._save_and_close()
+        assert dialog.result() != QDialog.Accepted
+
+    def test_when_only_one_setting_is_taken_it_is_put_back(self, qtbot, sample_config, temp_config_file, prior_rig):
+        stage = _FakePriorStage(failing={("SAS", 250)})
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.prior_speed_spinbox.setValue(400)
+        dialog.prior_accel_spinbox.setValue(250)
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not dialog._apply_settings()
+        # The acceleration is unknown after its failure, so it's sent again too.
+        assert stage.sent == [("SMS", 400), ("SAS", 250), ("SMS", 100), ("SAS", 100)]
+        assert (stage.speed, stage.acceleration) == (100, 100)
+        assert "could not be put back" not in mock_warning.call_args[0][2]
+
+    def test_a_setting_taken_despite_a_lost_reply_is_put_back(self, qtbot, sample_config, temp_config_file, prior_rig):
+        # The controller took 400 but its read-back was lost, so the setter raised: 100 goes back all the same.
+        stage = _FakePriorStage(failing={("SMS", 400)}, taken_anyway=True)
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.prior_speed_spinbox.setValue(400)
+        with patch.object(QMessageBox, "warning"):
+            assert not dialog._apply_settings()
+        assert stage.sent == [("SMS", 400), ("SMS", 100)]
+        assert stage.controller == {"SMS": 100, "SAS": 100}
+        assert stage.speed == 100
+
+    def test_putting_back_keeps_a_running_value_above_the_ceiling_at_the_ceiling(
+        self, qtbot, sample_config, temp_config_file, prior_rig, monkeypatch
+    ):
+        import control._def
+
+        # Configured above this rig's ceiling, so the stage started at the ceiling, 200.
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED", 300)
+        monkeypatch.setattr(control._def, "PRIOR_STAGE_MAX_SPEED_LIMIT", 200)
+        stage = _FakePriorStage(speed=200, failing={("SAS", 250)})
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.prior_accel_spinbox.setValue(250)
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not dialog._apply_settings()
+        assert stage.sent == [("SAS", 250), ("SAS", 100)]
+        assert "could not be put back" not in mock_warning.call_args[0][2]
+
+    def test_the_user_is_told_when_the_stage_cannot_be_put_back(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        stage = _FakePriorStage(failing={"SMS"}, taken_anyway=True)
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.prior_speed_spinbox.setValue(400)
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not dialog._apply_settings()
+        assert stage.sent == [("SMS", 400), ("SMS", 100)]
+        assert "could not be put back" in mock_warning.call_args[0][2]
+
+    def test_a_failed_config_write_puts_the_stage_back(
+        self, qtbot, sample_config, temp_config_file, prior_rig, tmp_path
+    ):
+        import control._def
+
+        stage = _FakePriorStage()
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.config_filepath = str(tmp_path)  # a directory: opening it for writing raises OSError
+        dialog.prior_speed_spinbox.setValue(400)
+        with patch.object(QMessageBox, "warning") as mock_warning:
+            assert not dialog._apply_settings()
+        assert "Failed to save configuration" in mock_warning.call_args[0][2]
+        assert stage.sent == [("SMS", 400), ("SMS", 100)]
+        assert stage.controller == {"SMS": 100, "SAS": 100}
+        assert control._def.PRIOR_STAGE_MAX_SPEED == 100
+
+    def test_a_failed_config_write_keeps_the_change_pending(
+        self, qtbot, sample_config, temp_config_file, prior_rig, tmp_path
+    ):
+        import control._def
+
+        stage = _FakePriorStage()
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        dialog.config_filepath = str(tmp_path)  # a directory: opening it for writing raises OSError
+        dialog.prior_speed_spinbox.setValue(200)
+        with patch.object(QMessageBox, "warning"):
+            dialog._save_and_close()
+            dialog._save_and_close()  # Save again: sent and written again, not closed as if nothing changed
+        assert dialog.result() != QDialog.Accepted
+        assert stage.sent == [("SMS", 200), ("SMS", 100)] * 2
+        dialog.config_filepath = temp_config_file
+        dialog._save_and_close()
+        assert dialog.result() == QDialog.Accepted
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "prior_stage_max_speed") == "200"
+        assert (stage.controller["SMS"], control._def.PRIOR_STAGE_MAX_SPEED) == (200, 200)
+
+    def test_an_unanswering_stage_does_not_block_saving_other_settings(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        stage = _FakePriorStage(failing={"SMS", "SAS"})
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        select_file_saving_option(dialog, "INDIVIDUAL_IMAGES")
+        assert dialog._apply_settings()
+        assert stage.sent == []
+
+    def test_a_stage_left_unknown_is_not_touched_when_its_settings_do_not_change(
+        self, qtbot, sample_config, temp_config_file, prior_rig
+    ):
+        # After a failure that couldn't be put back, saving other settings doesn't retry the stage.
+        stage = _FakePriorStage(speed=None, failing={"SMS"})
+        dialog = self._dialog(qtbot, sample_config, temp_config_file, stage=stage)
+        select_file_saving_option(dialog, "INDIVIDUAL_IMAGES")
+        with patch.object(QMessageBox, "warning"):
+            assert dialog._apply_settings()
+        assert stage.sent == []

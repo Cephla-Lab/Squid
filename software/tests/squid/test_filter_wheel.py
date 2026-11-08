@@ -156,13 +156,14 @@ class TestSquidFilterWheelSkipInit:
         mock_microcontroller.configure_squidfilter.assert_called_once()
 
     @patch("squid.filter_wheel_controller.cephla.HAS_ENCODER_W", True)
-    def test_normal_init_configures_encoder_pid(self, mock_microcontroller, squid_config):
-        """skip_init=False with HAS_ENCODER_W=True should configure encoder PID."""
+    def test_normal_init_configures_the_encoder_but_never_closes_the_loop(self, mock_microcontroller, squid_config):
+        """skip_init=False with HAS_ENCODER_W=True sets the encoder's scale and direction, for reporting and the
+        tuner. Closed loop on the wheel is not supported (decided 2026-09-24): no PID arguments, no enable."""
         SquidFilterWheel(mock_microcontroller, squid_config, skip_init=False)
 
-        mock_microcontroller.set_pid_arguments.assert_called_once()
         mock_microcontroller.configure_stage_pid.assert_called_once()
-        mock_microcontroller.turn_on_stage_pid.assert_called_once()
+        mock_microcontroller.set_pid_arguments.assert_not_called()
+        mock_microcontroller.turn_on_stage_pid.assert_not_called()
 
 
 class TestSquidFilterWheelAbsoluteMove:

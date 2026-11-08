@@ -24,7 +24,7 @@ from pydantic import BaseModel, ValidationError
 import squid.logging
 import control.objectives_config as objectives_config
 import control.models.objective_calibration_config as objective_calibration_config
-from control.atomic_file import write_atomically
+from control.atomic_file import NotDurableError, write_atomically
 
 from control.models import (
     AcquisitionChannel,
@@ -54,6 +54,16 @@ from control.models.hardware_bindings import (
 logger = squid.logging.get_logger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class ChannelCopyError(Exception):
+    """A channel-settings copy failed; `__cause__` holds why. `leftover` maps each profile whose
+    earlier copy could not be removed again to the error, so the caller can name the files still
+    in place."""
+
+    def __init__(self, cause: Exception, leftover: Dict[str, OSError]):
+        super().__init__(str(cause) or type(cause).__name__)
+        self.leftover = leftover
 
 
 def _objective_channel_from_general(ch: AcquisitionChannel) -> AcquisitionChannel:
@@ -502,20 +512,54 @@ class ConfigRepository:
 
     def copy_objective_channel_configs(self, source: str, target: str) -> List[str]:
         """Copy channel_configs/<source>.yaml to <target>.yaml in every profile that has the
-        source and not the target. Never overwrites, moves or deletes. Returns the profiles written.
+        source and not the target. Never overwrites, moves or deletes the source. Returns the
+        profiles written.
+
+        All or nothing: when a profile fails, the copies this call already made are removed before
+        the error is raised. A profile left holding one would be kept by a retry ("never
+        overwrite"), so a retry from another source would leave the profiles on different sources.
+        Any failure is raised as ChannelCopyError, naming any copy that could not be removed.
 
         Publishes through write_atomically: a copy that dies partway through (or loses power)
-        never leaves a partial or empty file under the final name, so "never overwrite an
-        existing target" stays safe on retry."""
+        never leaves a partial or empty file under the final name. A copy whose directory sync
+        fails is already in place, so it counts as written."""
         written = []
-        for profile in self.get_available_profiles():
-            src = self.user_profiles_path / profile / "channel_configs" / f"{source}.yaml"
-            dst = src.with_name(f"{target}.yaml")
-            if src.exists() and not dst.exists():
-                write_atomically(dst, src.read_bytes())
-                written.append(profile)
-        self._profile_cache.pop(f"objective:{target}", None)
+        try:
+            for profile in self.get_available_profiles():
+                src = self.objective_channel_config_path(profile, source)
+                dst = self.objective_channel_config_path(profile, target)
+                if src.exists() and not dst.exists():
+                    try:
+                        write_atomically(dst, src.read_bytes())
+                    except NotDurableError as e:
+                        logger.warning(f"copied channel settings, but could not confirm the copy on disk: {e}")
+                    written.append(profile)
+        except Exception as original_exc:
+            leftover = self.remove_objective_channel_configs(target, written)
+            raise ChannelCopyError(original_exc, leftover) from original_exc
+        finally:
+            self._profile_cache.pop(f"objective:{target}", None)
         return written
+
+    def remove_objective_channel_configs(self, target: str, profiles: List[str]) -> Dict[str, OSError]:
+        """Remove channel_configs/<target>.yaml from `profiles`. Only for undoing copies that a
+        save attempt has just made and that did not exist before it; removing an objective from
+        the list deletes no file. Tries every profile; returns those it could not remove it from,
+        with the error ({} when all went)."""
+        failed = {}
+        for profile in profiles:
+            path = self.objective_channel_config_path(profile, target)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as e:
+                logger.error(f"Could not remove {path}: {e}")
+                failed[profile] = e
+        self._profile_cache.pop(f"objective:{target}", None)
+        return failed
+
+    def objective_channel_config_path(self, profile: str, objective: str) -> Path:
+        """channel_configs/<objective>.yaml in `profile`."""
+        return self.user_profiles_path / profile / "channel_configs" / f"{objective}.yaml"
 
     def get_objective_calibration(self) -> Optional["objective_calibration_config.ObjectiveCalibrationConfig"]:
         """Load machine_configs/objective_calibration.yaml (None if absent). Not cached: until B2 the
@@ -544,11 +588,20 @@ class ConfigRepository:
         return []
 
     def get_filter_wheel_names(self) -> List[str]:
-        """Get list of available filter wheel names from registry."""
-        registry = self.get_filter_wheel_registry()
-        if registry:
-            return registry.get_wheel_names()
-        return []
+        """Names of every filter wheel the machine declares, standalone and confocal, for UI dropdowns."""
+        return [wheel.name for wheel in self.get_filter_wheels() if wheel.name is not None]
+
+    def get_filter_wheels(self) -> List[FilterWheelDefinition]:
+        """Every filter wheel from every source, standalone (filter_wheels.yaml) before confocal
+        (confocal_config.yaml). Ids and names are only guaranteed unique within one source."""
+        return [wheel for wheels in self.get_all_filter_wheels().values() for wheel in wheels]
+
+    def get_filter_wheel_by_name(self, name: str) -> Optional[FilterWheelDefinition]:
+        """Find a wheel by its user-facing name across every source; the standalone one wins a tie."""
+        matches = [wheel for wheel in self.get_filter_wheels() if wheel.name == name]
+        if len(matches) > 1:
+            logger.warning(f"Filter wheel name '{name}' is declared in more than one source; using the standalone one")
+        return matches[0] if matches else None
 
     # ───────────────────────────────────────────────────────────────────────────
     # v1.1 Hardware Bindings and Filter Wheel Aggregation

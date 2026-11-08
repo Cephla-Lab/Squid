@@ -1,10 +1,12 @@
 import configparser
 import gc
+import io
 import os
 import json
 import yaml
 import logging
 import sys
+from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
@@ -20,14 +22,46 @@ from control.core.config import ConfigRepository
 from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.mosaic_utils import format_well_id
-from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
+from control.core.geometry_utils import calculate_well_coverage, default_scan_shape, get_effective_well_size
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.channel_sequence import enable_channel_sequence
 import control.utils as utils
+from control.core.coordinate_provenance import (
+    make_stamp,
+    read_scan_coordinates_csv,
+    staleness_warning,
+    write_scan_coordinates_csv,
+)
+from control.core.holder_alignment import (
+    clear_holder_rotation,
+    CORNER_FEATURES,
+    formats_with_rotation_overrides,
+    HolderAlignmentSession,
+    MIN_WELLS_TO_FIT,
+    plate_holder_record_exists,
+    REFERENCE_WELL_SLOTS,
+    saved_rotation_summary,
+    SessionError,
+)
+from control.core.plate_fit import circumcenter, PlateFitError
+from control.models.sample_format_config import (
+    listed_sample_formats,
+    load_disabled_sample_formats,
+    load_disabled_sample_formats_for_edit,
+    save_disabled_sample_formats,
+)
+from control.models.yaml_store import YamlStoreDamaged
+from control.core.plate_transform import has_well_grid, plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
-from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
+from squid.stage.prior import PriorStage
+from squid.stage.utils import (
+    move_to_loading_position,
+    move_to_scanning_position,
+    move_z_axis_to_safety_position,
+    objective_is_retracted,
+)
 from squid.config import CameraPixelFormat
 
 # set QT_API environment variable
@@ -54,6 +88,8 @@ import numpy as np
 from scipy.spatial import Delaunay
 import shutil
 from control._def import *
+from control.lighting import LightSourceType
+from control.widgets_homing import confirm_nosepiece_lowered
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -895,9 +931,8 @@ class ConfigEditor(QDialog):
 
     def save_to_filename(self, filename: str):
         try:
-            with open(filename, "w") as configfile:
-                self.config.write(configfile)
-                return True
+            utils.write_ini_atomically(self.config, filename)
+            return True
         except IOError:
             self._log.exception(f"Failed to write config file to '{filename}'")
             return False
@@ -937,8 +972,7 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
 
     def apply_and_exit(self):
         self.save_config()
-        with open(self.original_filepath, "w") as configfile:
-            self.config.write(configfile)
+        utils.write_ini_atomically(self.config, self.original_filepath)
         try:
             self.main_window.close()
         except (AttributeError, RuntimeError):
@@ -1065,7 +1099,13 @@ class AcquisitionYAMLDropMixin:
                 e,
             )
 
-        validation = validate_hardware(yaml_data, self.objectiveStore.current_objective, current_binning)
+        piezo = self.multipointController.piezo
+        validation = validate_hardware(
+            yaml_data,
+            self.objectiveStore.current_objective,
+            current_binning,
+            piezo_travel_um=piezo.range_um if piezo is not None else None,
+        )
 
         if not validation.is_valid:
             dialog = AcquisitionYAMLMismatchDialog(validation, self)
@@ -1080,6 +1120,95 @@ class AcquisitionYAMLDropMixin:
     def _apply_yaml_settings(self, yaml_data):
         """Apply parsed YAML settings to widget controls. Override in subclass."""
         raise NotImplementedError("Subclass must implement _apply_yaml_settings()")
+
+
+class _ZRangeMixin:
+    """Set Z-range entries in the motor the z-stack runs on.
+
+    With "Piezo Z-Stack" checked (always, on a piezo-only scope) the Z-min/Z-max entries are piezo
+    positions in µm and the stepper holds where it is; unchecked, they are stepper z in µm. Host widgets
+    have ``stage``, ``multipointController``, ``checkbox_usePiezo``, ``entry_minZ`` and ``entry_maxZ``.
+    """
+
+    def _stack_z_um(self) -> float:
+        if self.checkbox_usePiezo.isChecked():
+            return self.multipointController.piezo.position
+        return self.stage.get_pos().z_mm * 1000
+
+    def _move_stack_z_to_um(self, z_um: float):
+        if self.checkbox_usePiezo.isChecked():
+            self.multipointController.piezo.move_to(z_um)
+        else:
+            self.stage.move_z_to(z_um / 1000)
+
+    def _reset_z_range_entries(self):
+        """Limit both entries to the stack motor's travel and start them at its current position."""
+        if self.checkbox_usePiezo.isChecked():
+            low_um, high_um = 0.0, self.multipointController.piezo.range_um
+        else:
+            low_um, high_um = SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000, SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
+        z_um = self._stack_z_um()
+        for entry in (self.entry_minZ, self.entry_maxZ):
+            entry.setRange(low_um, high_um)
+            entry.setValue(z_um)
+
+    def _push_set_z_range(self):
+        """Hand the Set Z-range entries to the controller (a piezo range holds the stepper where it is)."""
+        if self.checkbox_usePiezo.isChecked():
+            z_mm = self.stage.get_pos().z_mm
+            self.multipointController.set_z_range(z_mm, z_mm)
+            self.multipointController.set_piezo_z_range_um((self.entry_minZ.value(), self.entry_maxZ.value()))
+        else:
+            self.multipointController.set_z_range(self.entry_minZ.value() / 1000, self.entry_maxZ.value() / 1000)
+            self.multipointController.set_piezo_z_range_um(None)
+
+
+class _LaserAfPerStackMixin:
+    """The Z First "AF per stack" checkbox: laser AF before each later channel's stack.
+
+    Host widgets have ``combobox_z_order``, ``checkbox_withReflectionAutofocus`` and ``multipointController``
+    with ``set_laser_af_per_stack(bool)``; a tab whose z row can be hidden overrides ``_z_row_shown``.
+    """
+
+    _LASER_AF_PER_STACK_TOOLTIP = (
+        "Z First only: run laser AF before each channel's stack. The first channel uses the per-FOV laser AF."
+    )
+
+    def _create_laser_af_per_stack_checkbox(self):
+        self.checkbox_laserAfPerStack = QCheckBox("AF per stack")
+        self.checkbox_laserAfPerStack.setChecked(False)
+        self.checkbox_laserAfPerStack.setToolTip(self._LASER_AF_PER_STACK_TOOLTIP)
+        self.checkbox_laserAfPerStack.toggled.connect(lambda _checked: self._update_laser_af_per_stack_state())
+
+    def _z_row_shown(self) -> bool:
+        return True
+
+    def _laser_af_per_stack_shown(self) -> bool:
+        # Like checkbox_applyChannelOffset: the checkbox sits in a layout only when laser AF is supported, and a
+        # shown parentless widget would become a top-level window, so visibility needs the same flag.
+        return bool(
+            control._def.ENABLE_Z_STACK_ORDER_SELECTION
+            and self.combobox_z_order.currentData() == "Z FIRST"
+            and SUPPORT_LASER_AUTOFOCUS
+            and self._z_row_shown()
+        )
+
+    def laser_af_per_stack_to_start(self) -> bool:
+        return _laser_af_per_stack_to_start(
+            control._def.ENABLE_Z_STACK_ORDER_SELECTION,
+            self.combobox_z_order.currentData(),
+            SUPPORT_LASER_AUTOFOCUS,
+            self.checkbox_withReflectionAutofocus.isChecked(),
+            self._z_row_shown(),
+            self.checkbox_laserAfPerStack.isChecked(),
+        )
+
+    def _update_laser_af_per_stack_state(self):
+        """Re-apply the rule to the checkbox (shown / enabled) and push the resulting value to the controller."""
+        shown = self._laser_af_per_stack_shown()
+        self.checkbox_laserAfPerStack.setVisible(shown)
+        self.checkbox_laserAfPerStack.setEnabled(shown and self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_laser_af_per_stack(self.laser_af_per_stack_to_start())
 
 
 class _ApplyChannelOffsetMixin:
@@ -1119,7 +1248,12 @@ class _ApplyChannelOffsetMixin:
         # Previously this force-unchecked on AF-off but never re-checked on AF-on, so a
         # laser-AF off->on cycle silently dropped the user's opt-in: the checkbox no longer
         # matched what actually happened during acquisition.
-        self.checkbox_applyChannelOffset.setVisible(laser_af_on)
+        #
+        # The host widgets add the checkbox to a layout only when laser AF is supported;
+        # without that it is parentless, and showing a parentless widget makes it a
+        # top-level window of its own - one that outlives the main window and keeps the
+        # app from quitting. So visibility needs the same flag as placement.
+        self.checkbox_applyChannelOffset.setVisible(laser_af_on and SUPPORT_LASER_AUTOFOCUS)
 
     def _on_apply_channel_offset_changed(self, checked: bool):
         self.multipointController.set_apply_channel_offset(checked)
@@ -1181,12 +1315,30 @@ class PreferencesDialog(QDialog):
 
     signal_config_changed = Signal()
 
-    def __init__(self, config, config_filepath, parent=None, on_restart=None):
+    # What the File Saving Format combo box shows; the config file keeps the FileSavingOption names.
+    FILE_SAVING_LABELS = {
+        FileSavingOption.INDIVIDUAL_IMAGES: "Individual images",
+        FileSavingOption.MULTI_PAGE_TIFF: "Multi-page TIFF",
+        FileSavingOption.OME_TIFF: "OME-TIFF",
+        FileSavingOption.ZARR_V3: "OME-Zarr 0.5",
+    }
+    OME_ZARR_TOOLTIP = (
+        "OME-Zarr 0.5 (Zarr v3).\n"
+        "Tools that only read OME-Zarr 0.4 / Zarr v2 cannot open it;\n"
+        "use a reader with Zarr v3 support, such as ngff-zarr, iohub or ome-zarr-py."
+    )
+    OME_ZARR_6D_NOTE = (
+        "\n\nUse 6D FOV Dimension is on (Advanced > OME-Zarr Options):\n"
+        "non-HCS acquisitions are saved as one 6D Zarr per region, which is not OME-Zarr."
+    )
+
+    def __init__(self, config, config_filepath, parent=None, on_restart=None, stage=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
         self.config_filepath = config_filepath
         self._on_restart = on_restart  # Optional callback for application restart
+        self._stage = stage  # Optional; settings the stage can take live (Prior speed/acceleration) are sent to it
         self.setWindowTitle("Preferences")
         self.setMinimumWidth(500)
         self.setMinimumHeight(600)
@@ -1207,6 +1359,11 @@ class PreferencesDialog(QDialog):
         self._create_advanced_tab()
         self._create_development_tab()
 
+        # The format tooltip depends on the 6D option in the Advanced tab, so it is set up once all tabs exist
+        self._update_file_saving_tooltip()
+        self.file_saving_combo.currentIndexChanged.connect(self._update_file_saving_tooltip)
+        self.zarr_6d_fov_checkbox.toggled.connect(self._update_file_saving_tooltip)
+
         # Buttons
         button_layout = QHBoxLayout()
         self.save_button = QPushButton("Save")
@@ -1224,11 +1381,14 @@ class PreferencesDialog(QDialog):
         layout = QFormLayout(tab)
         layout.setSpacing(10)
 
-        # File Saving Format
+        # File Saving Format. Each item's data is the FileSavingOption name stored in the config file,
+        # so an item can show a friendlier label without changing what existing configs contain.
         self.file_saving_combo = QComboBox()
-        self.file_saving_combo.addItems([e.name for e in FileSavingOption])
-        current_value = self._get_file_saving_option()
-        self.file_saving_combo.setCurrentText(current_value)
+        for option in FileSavingOption:
+            self.file_saving_combo.addItem(self.FILE_SAVING_LABELS[option], option.name)
+        current_index = self.file_saving_combo.findData(self._get_file_saving_option())
+        if current_index >= 0:
+            self.file_saving_combo.setCurrentIndex(current_index)
         layout.addRow("File Saving Format:", self.file_saving_combo)
 
         # TIFF Compression (only visible for the TIFF formats that support it)
@@ -1247,21 +1407,20 @@ class PreferencesDialog(QDialog):
 
         # Zarr Compression (only visible when ZARR_V3 is selected)
         self.zarr_compression_combo = QComboBox()
-        self.zarr_compression_combo.addItems(["none", "fast", "balanced", "best"])
+        self.zarr_compression_combo.addItems([e.value for e in ZarrCompression])
         self.zarr_compression_combo.setToolTip(
             "none: No compression, maximum speed (~2x faster than TIFF)\n"
             "fast: blosc-lz4, ~1000 MB/s, ~2x compression (default)\n"
             "balanced: blosc-zstd level 3, ~500 MB/s, ~3-4x compression\n"
             "best: blosc-zstd level 9, slower but best compression"
         )
-        zarr_compression_value = self._get_config_value("GENERAL", "zarr_compression", "fast")
-        self.zarr_compression_combo.setCurrentText(zarr_compression_value)
+        self.zarr_compression_combo.setCurrentText(self._get_zarr_compression())
         self.zarr_compression_label = QLabel("Zarr Compression:")
         layout.addRow(self.zarr_compression_label, self.zarr_compression_combo)
 
         # Show/hide the per-format options based on file saving format selection
         self._update_file_format_options_visibility()
-        self.file_saving_combo.currentTextChanged.connect(self._update_file_format_options_visibility)
+        self.file_saving_combo.currentIndexChanged.connect(self._update_file_format_options_visibility)
 
         # Default Saving Path
         path_widget = QWidget()
@@ -1318,6 +1477,17 @@ class PreferencesDialog(QDialog):
             self._get_config_bool("GENERAL", "enable_flexible_multipoint", True)
         )
         layout.addRow("Enable Flexible Multipoint:", self.flexible_multipoint_checkbox)
+
+        # Z-stack order dropdown (Channel First / Z First) next to Nz in the acquisition tabs. Applies live.
+        self.z_stack_order_dropdown_checkbox = QCheckBox()
+        self.z_stack_order_dropdown_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "enable_z_stack_order_selection", False)
+        )
+        self.z_stack_order_dropdown_checkbox.setToolTip(
+            "Show the Channel First / Z First choice next to Nz in the acquisition tabs.\n"
+            "Off, every acquisition started from the GUI runs Channel First."
+        )
+        layout.addRow("Z-stack Order Dropdown:", self.z_stack_order_dropdown_checkbox)
 
         self.tab_widget.addTab(tab, "Acquisition")
 
@@ -1455,31 +1625,81 @@ class PreferencesDialog(QDialog):
         stage_group.content.addLayout(stage_layout)
         layout.addWidget(stage_group)
 
-        # Zarr v3 Options section
-        zarr_group = CollapsibleGroupBox("Zarr v3 Options", collapsed=True)
+        # Prior Stage section (sent to the stage on Save, no restart)
+        self.prior_speed_spinbox = None
+        self.prior_accel_spinbox = None
+        if control._def.USE_PRIOR_STAGE:
+            prior_group = CollapsibleGroupBox("Prior Stage", collapsed=True)
+            prior_layout = QFormLayout()
+            speed_per_step, accel_per_step = self._prior_physical_units_per_step()
+            # The rig's ceilings (prior_stage_*_limit in the machine .ini): the most the stage takes without losing steps
+            self._prior_speed_limit = PriorStage.within_controller_range(control._def.PRIOR_STAGE_MAX_SPEED_LIMIT)
+            self._prior_accel_limit = PriorStage.within_controller_range(control._def.PRIOR_STAGE_ACCELERATION_LIMIT)
+
+            self.prior_speed_spinbox, self.prior_speed_physical_label, row = self._make_prior_motion_row(
+                self._get_prior_motion_setting(
+                    "prior_stage_max_speed", control._def.PRIOR_STAGE_MAX_SPEED, self._prior_speed_limit
+                ),
+                self._prior_speed_limit,
+                speed_per_step,
+                "mm/s",
+                "Prior controller max speed (SMS). The scale is linear; the controller allows up to 1000\n"
+                "(60 mm/s on an H117 with 1 mm screws). This rig's ceiling is prior_stage_max_speed_limit\n"
+                "in the machine .ini: the most the stage takes without losing steps.",
+            )
+            prior_layout.addRow(f"Max Speed (1-{self._prior_speed_limit}):", row)
+
+            self.prior_accel_spinbox, self.prior_accel_physical_label, row = self._make_prior_motion_row(
+                self._get_prior_motion_setting(
+                    "prior_stage_acceleration", control._def.PRIOR_STAGE_ACCELERATION, self._prior_accel_limit
+                ),
+                self._prior_accel_limit,
+                accel_per_step,
+                "mm/s²",
+                "Prior controller acceleration (SAS). The scale is linear; the controller allows up to 1000\n"
+                "(285.5 mm/s² on an H117 with 1 mm screws). This rig's ceiling is prior_stage_acceleration_limit\n"
+                "in the machine .ini: the most the stage takes without losing steps.",
+            )
+            prior_layout.addRow(f"Acceleration (1-{self._prior_accel_limit}):", row)
+
+            prior_note = QLabel(
+                "Applied to the stage when you click Save. Faster moves can lose steps or leave the stage still "
+                "settling when an exposure starts: after raising these, check that the stage returns to the same "
+                "spot and that images are sharp."
+            )
+            prior_note.setWordWrap(True)
+            prior_note.setStyleSheet("color: #666; font-style: italic;")
+            prior_layout.addRow(prior_note)
+
+            prior_group.content.addLayout(prior_layout)
+            layout.addWidget(prior_group)
+
+        # OME-Zarr Options section
+        zarr_group = CollapsibleGroupBox("OME-Zarr Options", collapsed=True)
         zarr_layout = QFormLayout()
 
         self.zarr_chunk_mode_combo = QComboBox()
-        self.zarr_chunk_mode_combo.addItems(["full_frame", "tiled_512", "tiled_256"])
+        self.zarr_chunk_mode_combo.addItems([e.value for e in ZarrChunkMode])
         self.zarr_chunk_mode_combo.setToolTip(
             "full_frame: Each chunk is a full image plane (simplest, default)\n"
             "tiled_512: 512x512 pixel chunks for tiled visualization\n"
             "tiled_256: 256x256 pixel chunks for fine-grained streaming"
         )
-        zarr_chunk_mode_value = self._get_config_value("GENERAL", "zarr_chunk_mode", "full_frame")
-        self.zarr_chunk_mode_combo.setCurrentText(zarr_chunk_mode_value)
+        self.zarr_chunk_mode_combo.setCurrentText(self._get_zarr_chunk_mode())
         zarr_layout.addRow("Chunk Mode:", self.zarr_chunk_mode_combo)
 
         self.zarr_6d_fov_checkbox = QCheckBox()
         self.zarr_6d_fov_checkbox.setToolTip(
             "When enabled, non-HCS acquisitions use a single 6D zarr per region\n"
-            "with shape (FOV, T, C, Z, Y, X). This is non-standard but groups\n"
-            "all FOVs together. When disabled (default), creates separate 5D\n"
-            "OME-NGFF compliant zarr files per FOV."
+            "with shape (FOV, T, C, Z, Y, X). This groups all FOVs together but\n"
+            "is not OME-Zarr: OME-Zarr readers cannot open it. When disabled\n"
+            "(default), creates a separate 5D OME-Zarr image per FOV."
         )
-        zarr_6d_fov_value = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        zarr_6d_fov_value = self._get_config_bool(
+            "GENERAL", "zarr_use_6d_fov_dimension", control._def.ZARR_USE_6D_FOV_DIMENSION
+        )
         self.zarr_6d_fov_checkbox.setChecked(zarr_6d_fov_value)
-        zarr_layout.addRow("Use 6D FOV Dimension:", self.zarr_6d_fov_checkbox)
+        zarr_layout.addRow("Use 6D FOV Dimension (not OME-Zarr):", self.zarr_6d_fov_checkbox)
 
         zarr_group.content.addLayout(zarr_layout)
         layout.addWidget(zarr_group)
@@ -1513,29 +1733,11 @@ class PreferencesDialog(QDialog):
         hw_group = CollapsibleGroupBox("Hardware Configuration", collapsed=True)
         hw_layout = QFormLayout()
 
-        self.z_motor_combo = QComboBox()
-        self.z_motor_combo.addItems(["STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"])
-        self.z_motor_combo.setCurrentText(self._get_config_value("GENERAL", "z_motor_config", "STEPPER"))
-        hw_layout.addRow("Z Motor Config *:", self.z_motor_combo)
-
+        # No Z motor choice here: z_motor_config names the Z hardware the machine has, so it is set in the
+        # config file, and saving Preferences leaves it as written.
         self.spinning_disk_checkbox = QCheckBox()
         self.spinning_disk_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False))
         hw_layout.addRow("Enable Spinning Disk *:", self.spinning_disk_checkbox)
-
-        # Squid filter wheel: shortest path between slots (squid_filterwheel_wrap). The ini values are the
-        # item data; the text is what an operator reads.
-        self.wheel_wrap_combo = QComboBox()
-        for text, value in self._WHEEL_WRAP_CHOICES:
-            self.wheel_wrap_combo.addItem(text, value)
-        self.wheel_wrap_combo.setCurrentIndex(self._wheel_wrap_index(self._get_wheel_wrap_setting()))
-        self.wheel_wrap_combo.setToolTip(
-            "Squid filter wheel only. With the shortest path on, a slot change takes the shorter way round\n"
-            "and may cross the wheel's index flag: 8 -> 1 is one slot instead of seven.\n"
-            "Auto turns it on when the controller runs firmware 1.6 or later, where crossing the flag was verified.\n"
-            "On forces it from firmware 1.4: use it only after checking that a 1 -> 8 change completes.\n"
-            "Off always takes the flag-free way round."
-        )
-        hw_layout.addRow("Filter Wheel Shortest Path *:", self.wheel_wrap_combo)
 
         self.wheel_window_spinbox = QDoubleSpinBox()
         self.wheel_window_spinbox.setRange(0.0, 10.0)
@@ -1981,27 +2183,6 @@ class PreferencesDialog(QDialog):
             return default
         return float(value)
 
-    # squid_filterwheel_wrap: (what the operator reads, what goes in the ini)
-    _WHEEL_WRAP_CHOICES = (("Auto (on from firmware 1.6)", "auto"), ("On", "True"), ("Off", "False"))
-
-    def _get_wheel_wrap_setting(self) -> str:
-        """The ini's squid_filterwheel_wrap as one of "auto", "True", "False". A missing key is the default,
-        "auto". Anything the wheel controller refuses is returned as typed, so the change list shows it being
-        replaced.
-
-        Read with the SAME two functions the running software uses (the ini loader's typing, then the wheel
-        controller's own parser), not with a second opinion about what the text means: the controller accepts
-        `1` and `0`, and a dialog that showed those as Auto would turn an explicit Off into On at firmware 1.6 -
-        or an explicit On into Off at 1.4 / 1.5 - the first time anything else was saved."""
-        from squid.filter_wheel_controller.cephla import SquidFilterWheel
-
-        raw = self._get_config_value("GENERAL", "squid_filterwheel_wrap", "auto")
-        try:
-            parsed = SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(raw))
-        except ValueError:
-            return raw.split("#")[0].strip()
-        return {"auto": "auto", True: "True", False: "False"}[parsed]
-
     def _get_wheel_window_setting(self) -> float:
         """The ini's squid_filterwheel_completion_window_deg as the running software reads it: through the ini
         loader, which strips an inline comment. float() alone would make `5  # degrees` read as 0 here while the
@@ -2012,20 +2193,41 @@ class PreferencesDialog(QDialog):
             return 0.0
         return float(value)
 
-    def _wheel_wrap_index(self, setting: str) -> int:
-        values = [value for _, value in self._WHEEL_WRAP_CHOICES]
-        return values.index(setting) if setting in values else 0
+    def _get_enum_setting(self, option, enum_cls, running):
+        """A [GENERAL] enum setting as set in the config file, falling back to the running value.
+
+        Startup reads these keys with convert_to_enum, which ignores case, so the dialog does too
+        ("zarr_v3" would otherwise match no item).  With no key, the running value (control._def,
+        which the dialog itself updates live) is the one in use, not a hardcoded default; otherwise
+        the combo box shows a value that isn't in use and _apply_settings() persists it.  A value
+        convert_to_enum rejects would have stopped startup, so it was written while Squid runs:
+        show the running value, so the dialog still opens and saving writes a valid one.
+        """
+        value = self._get_config_value("GENERAL", option, None)
+        if value is None:
+            return running
+        try:
+            return enum_cls.convert_to_enum(value)
+        except ValueError:
+            self._log.warning(f"Config file has {option} = {value!r}, which is not valid; showing {running} instead")
+            return running
 
     def _get_file_saving_option(self):
-        """The file saving format currently in effect, as a FileSavingOption name.
+        """The file saving format, as a FileSavingOption name (see _get_enum_setting)."""
+        return self._get_enum_setting("file_saving_option", FileSavingOption, control._def.FILE_SAVING_OPTION).name
 
-        The config file usually has no file_saving_option key, so the fallback has to be the value
-        the software is actually running with (control._def, which the dialog itself updates live)
-        rather than a hardcoded format.  Otherwise the combo box displays a format that isn't in
-        use, _get_changes() can't detect a change away from it, and _apply_settings() persists that
-        wrong format into the machine config file.
-        """
-        return self._get_config_value("GENERAL", "file_saving_option", control._def.FILE_SAVING_OPTION.name)
+    def _get_zarr_compression(self):
+        """The Zarr compression preset, as its combo box item ("fast", ...; see _get_enum_setting)."""
+        return self._get_enum_setting("zarr_compression", ZarrCompression, control._def.ZARR_COMPRESSION).value
+
+    def _get_zarr_chunk_mode(self):
+        """The Zarr chunk mode, as its combo box item ("full_frame", ...; see _get_enum_setting)."""
+        return self._get_enum_setting("zarr_chunk_mode", ZarrChunkMode, control._def.ZARR_CHUNK_MODE).value
+
+    def _file_saving_label(self, option_name):
+        """The label the format combo box shows for a FileSavingOption name (the name itself if unknown)."""
+        index = self.file_saving_combo.findData(option_name)
+        return self.file_saving_combo.itemText(index) if index >= 0 else option_name
 
     def _get_tiff_compression_level(self):
         """The TIFF compression level currently in effect, falling back to the running value.
@@ -2036,6 +2238,46 @@ class PreferencesDialog(QDialog):
         level = self._get_config_int("GENERAL", "tiff_compression_level", control._def.TIFF_COMPRESSION_LEVEL)
         spinbox = self.tiff_compression_spinbox
         return min(max(level, spinbox.minimum()), spinbox.maximum())
+
+    def _get_prior_motion_setting(self, option, running_value, limit):
+        """A Prior SMS/SAS setting from the config, falling back to the running value, limited to what the spin box
+        can show (1 to the rig's ceiling) so that an out of range value in the config file isn't reported as a
+        change."""
+        value = self._get_config_int("GENERAL", option, running_value)
+        return min(max(value, PriorStage.MOTION_SETTING_MIN), limit)
+
+    def _prior_physical_units_per_step(self):
+        """(mm/s, mm/s^2) per SMS/SAS step on the connected Prior stage, from what its controller reports; the scale
+        is linear. (None, None) without a Prior stage or when the controller doesn't say."""
+        stage = self._stage
+        try:
+            return stage.get_max_speed_mm_s() / stage.speed, stage.get_acceleration_mm_s2() / stage.acceleration
+        except Exception:  # no stage, not a Prior stage, or no usable reply
+            return None, None
+
+    @staticmethod
+    def _make_prior_motion_row(value, maximum, physical_per_step, unit, tooltip):
+        spinbox = QSpinBox()
+        spinbox.setRange(PriorStage.MOTION_SETTING_MIN, maximum)
+        spinbox.setSingleStep(50)
+        spinbox.setValue(value)
+        spinbox.setToolTip(tooltip)
+        physical_label = QLabel()
+        physical_label.setStyleSheet("color: #666;")
+
+        def show_physical(steps):
+            physical_label.setText(f"≈ {steps * physical_per_step:.1f} {unit}" if physical_per_step else "")
+
+        spinbox.valueChanged.connect(show_physical)
+        show_physical(value)
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(spinbox)
+        row_layout.addWidget(physical_label)
+        row_layout.addStretch()
+        return spinbox, physical_label, row
 
     def _floats_equal(self, a, b, epsilon=1e-4):
         """Compare two floats with epsilon tolerance to avoid precision issues."""
@@ -2060,7 +2302,7 @@ class PreferencesDialog(QDialog):
 
     def _update_file_format_options_visibility(self):
         """Show/hide format specific options based on file saving format."""
-        current_format = self.file_saving_combo.currentText()
+        current_format = self.file_saving_combo.currentData()
 
         is_zarr = current_format == "ZARR_V3"
         self.zarr_compression_label.setVisible(is_zarr)
@@ -2071,6 +2313,18 @@ class PreferencesDialog(QDialog):
         self.tiff_compression_label.setVisible(supports_tiff_compression)
         self.tiff_compression_spinbox.setVisible(supports_tiff_compression)
 
+    def _update_file_saving_tooltip(self):
+        """Describe OME-Zarr on its combo box item and, while it is selected, on the combo box itself.
+
+        With the 6D FOV option on, non-HCS acquisitions are not OME-Zarr, so the tooltip says so.
+        """
+        tooltip = self.OME_ZARR_TOOLTIP
+        if self.zarr_6d_fov_checkbox.isChecked():
+            tooltip += self.OME_ZARR_6D_NOTE
+        zarr_index = self.file_saving_combo.findData(FileSavingOption.ZARR_V3.name)
+        self.file_saving_combo.setItemData(zarr_index, tooltip, Qt.ToolTipRole)
+        self.file_saving_combo.setToolTip(tooltip if self.file_saving_combo.currentIndex() == zarr_index else "")
+
     def _ensure_section(self, section):
         """Ensure a config section exists, creating it if necessary."""
         if not self.config.has_section(section):
@@ -2078,12 +2332,21 @@ class PreferencesDialog(QDialog):
 
     def _apply_settings(self) -> bool:
         """Apply settings to config file. Returns True on success, False on failure."""
+        # The Prior stage first: when it doesn't take its new speed/acceleration, nothing is saved.
+        if not self._send_prior_motion_settings():
+            return False
+
+        # The config as it is now, put back if the ini can't be written: left holding the unsaved values, it would
+        # show no change, so Save would close without trying again.
+        config_before = io.StringIO()
+        self.config.write(config_before)
+
         # Ensure all required sections exist
         for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING", "VIEWS"]:
             self._ensure_section(section)
 
         # General settings
-        self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
+        self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentData())
         self.config.set("GENERAL", "tiff_compression_level", str(self.tiff_compression_spinbox.value()))
         self.config.set("GENERAL", "zarr_compression", self.zarr_compression_combo.currentText())
         self.config.set("GENERAL", "zarr_chunk_mode", self.zarr_chunk_mode_combo.currentText())
@@ -2109,6 +2372,11 @@ class PreferencesDialog(QDialog):
             "enable_flexible_multipoint",
             "true" if self.flexible_multipoint_checkbox.isChecked() else "false",
         )
+        self.config.set(
+            "GENERAL",
+            "enable_z_stack_order_selection",
+            "true" if self.z_stack_order_dropdown_checkbox.isChecked() else "false",
+        )
 
         # Camera settings
         self.config.set("CAMERA_CONFIG", "binning_factor_default", str(self.binning_spinbox.value()))
@@ -2130,19 +2398,22 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "scan_stabilization_time_ms_y", str(self.scan_stab_y.value()))
         self.config.set("GENERAL", "scan_stabilization_time_ms_z", str(self.scan_stab_z.value()))
 
+        # Advanced - Prior Stage
+        if self.prior_speed_spinbox is not None:
+            self.config.set("GENERAL", "prior_stage_max_speed", str(self.prior_speed_spinbox.value()))
+            self.config.set("GENERAL", "prior_stage_acceleration", str(self.prior_accel_spinbox.value()))
+
         # Advanced - Autofocus
         self.config.set("AF", "stop_threshold", str(self.af_stop_threshold.value()))
         self.config.set("AF", "crop_width", str(self.af_crop_width.value()))
         self.config.set("AF", "crop_height", str(self.af_crop_height.value()))
 
         # Advanced - Hardware
-        self.config.set("GENERAL", "z_motor_config", self.z_motor_combo.currentText())
         self.config.set(
             "GENERAL",
             "enable_spinning_disk_confocal",
             "true" if self.spinning_disk_checkbox.isChecked() else "false",
         )
-        self.config.set("GENERAL", "squid_filterwheel_wrap", self.wheel_wrap_combo.currentData())
         self.config.set("GENERAL", "squid_filterwheel_completion_window_deg", f"{self.wheel_window_spinbox.value():g}")
         self.config.set("GENERAL", "led_matrix_r_factor", str(self.led_r_factor.value()))
         self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
@@ -2232,11 +2503,13 @@ class PreferencesDialog(QDialog):
 
         # Save to file
         try:
-            with open(self.config_filepath, "w") as f:
-                self.config.write(f)
+            utils.write_ini_atomically(self.config, self.config_filepath)
             self._log.info(f"Configuration saved to {self.config_filepath}")
         except OSError as e:
             self._log.exception("Failed to save configuration")
+            self.config.clear()
+            self.config.read_string(config_before.getvalue())  # so the changes stay pending, ready to retry
+            put_back = self._put_back_prior_motion()  # it may have taken its new speed/acceleration already
             QMessageBox.warning(
                 self,
                 "Error",
@@ -2248,6 +2521,11 @@ class PreferencesDialog(QDialog):
                     "- The file is not open in another application.\n"
                     "- The disk is not full or write-protected.\n\n"
                     f"System error: {e}"
+                    + (
+                        ""
+                        if put_back
+                        else "\n\nThe Prior stage could not be put back to its earlier speed/acceleration."
+                    )
                 ),
             )
             return False
@@ -2265,7 +2543,7 @@ class PreferencesDialog(QDialog):
         """Apply settings that can take effect without restart."""
         # File saving option
         control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.convert_to_enum(
-            self.file_saving_combo.currentText()
+            self.file_saving_combo.currentData()
         )
 
         # TIFF compression level (only applicable when saving individual or multi page TIFFs)
@@ -2292,6 +2570,7 @@ class PreferencesDialog(QDialog):
 
         # Flexible multipoint
         control._def.ENABLE_FLEXIBLE_MULTIPOINT = self.flexible_multipoint_checkbox.isChecked()
+        control._def.ENABLE_Z_STACK_ORDER_SELECTION = self.z_stack_order_dropdown_checkbox.isChecked()
 
         # Click to Move
         control._def.ENABLE_CLICK_TO_MOVE = self.click_to_move_enable_checkbox.isChecked()
@@ -2345,6 +2624,66 @@ class PreferencesDialog(QDialog):
         control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
         control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
 
+        # Prior stage speed and acceleration (the stage already has them: _send_prior_motion_settings)
+        if self.prior_speed_spinbox is not None:
+            control._def.PRIOR_STAGE_MAX_SPEED = self.prior_speed_spinbox.value()
+            control._def.PRIOR_STAGE_ACCELERATION = self.prior_accel_spinbox.value()
+
+    def _prior_stage_settings(self):
+        """(setter, the stage's attribute for its value, spin box, running value, name) of the Prior max speed and
+        acceleration; empty without a Prior stage. The running value is control._def's, within 1 to the rig's ceiling
+        as the stage lowered it at startup."""
+        stage = self._stage
+        if self.prior_speed_spinbox is None or not hasattr(stage, "set_max_speed"):
+            return []
+        speed = min(max(control._def.PRIOR_STAGE_MAX_SPEED, PriorStage.MOTION_SETTING_MIN), self._prior_speed_limit)
+        accel = min(max(control._def.PRIOR_STAGE_ACCELERATION, PriorStage.MOTION_SETTING_MIN), self._prior_accel_limit)
+        return [
+            (stage.set_max_speed, "speed", self.prior_speed_spinbox, speed, "max speed"),
+            (stage.set_acceleration, "acceleration", self.prior_accel_spinbox, accel, "acceleration"),
+        ]
+
+    def _send_prior_motion_settings(self) -> bool:
+        """Send the Prior stage the speed and acceleration about to be saved, when either changes. Runs before anything
+        is saved, so when the stage doesn't take them the ini and the running values stay as they were and the change
+        stays pending, ready to retry. Returns False, after putting the stage back to the running values and telling
+        the user, in that case."""
+        settings = self._prior_stage_settings()
+        if all(spinbox.value() == running for _, _, spinbox, running, _ in settings):
+            return True  # neither changes: leave the stage alone, even one that doesn't answer
+        for setter, attr, spinbox, _, name in settings:
+            value = spinbox.value()
+            if getattr(self._stage, attr) == value:
+                continue  # it has it already
+            try:
+                setter(value)
+            except Exception as e:
+                self._log.exception(f"Prior stage did not take {name} {value}; nothing saved")
+                put_back = self._put_back_prior_motion()
+                QMessageBox.warning(
+                    self,
+                    "Prior Stage Not Updated",
+                    f"The Prior stage did not take {name} {value}, so no settings were saved.\n\n{e}\n\n"
+                    "Check the stage's connection, then Save again (or set the value back)."
+                    + ("" if put_back else "\n\nThe stage could not be put back to its earlier settings."),
+                )
+                return False
+        return True
+
+    def _put_back_prior_motion(self) -> bool:
+        """Send the Prior stage its running speed and acceleration wherever it may not have them: a setting it took for a
+        Save that then failed, or one it didn't confirm (its value is then None, unknown, since the controller may have
+        taken it all the same). Returns False when the stage doesn't take them."""
+        put_back = True
+        for setter, attr, _, running, name in self._prior_stage_settings():
+            if getattr(self._stage, attr) != running:
+                try:
+                    setter(running)
+                except Exception:
+                    self._log.exception(f"Could not put the Prior stage back to {name} {running}")
+                    put_back = False
+        return put_back
+
     def _get_changes(self):
         """Get list of settings that have changed from current config.
         Returns list of (name, old, new, requires_restart) tuples."""
@@ -2352,9 +2691,11 @@ class PreferencesDialog(QDialog):
 
         # General settings (live update)
         old_val = self._get_file_saving_option()
-        new_val = self.file_saving_combo.currentText()
+        new_val = self.file_saving_combo.currentData()
         if old_val != new_val:
-            changes.append(("File Saving Format", old_val, new_val, False))
+            changes.append(
+                ("File Saving Format", self._file_saving_label(old_val), self._file_saving_label(new_val), False)
+            )
 
         # A setting missing here is silently not saved: _save_and_close() returns before
         # _apply_settings() when it is the only thing the user changed.
@@ -2363,10 +2704,20 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("TIFF Compression Level", str(old_val), str(new_val), False))
 
-        old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
+        old_val = self._get_zarr_compression()
+        new_val = self.zarr_compression_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Zarr Compression", old_val, new_val, False))
+
+        old_val = self._get_zarr_chunk_mode()
+        new_val = self.zarr_chunk_mode_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Zarr Chunk Mode", old_val, new_val, False))
+
+        old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", control._def.ZARR_USE_6D_FOV_DIMENSION)
         new_val = self.zarr_6d_fov_checkbox.isChecked()
         if old_val != new_val:
-            changes.append(("Use 6D FOV Dimension", str(old_val), str(new_val), False))
+            changes.append(("Use 6D FOV Dimension (not OME-Zarr)", str(old_val), str(new_val), False))
 
         old_val = self._get_config_value("GENERAL", "default_saving_path", str(Path.home() / "Downloads"))
         new_val = self.saving_path_edit.text()
@@ -2404,6 +2755,11 @@ class PreferencesDialog(QDialog):
         new_val = self.flexible_multipoint_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable Flexible Multipoint", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_bool("GENERAL", "enable_z_stack_order_selection", False)
+        new_val = self.z_stack_order_dropdown_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Z-stack Order Dropdown", str(old_val), str(new_val), False))
 
         # Camera settings (require restart)
         old_val = self._get_config_int("CAMERA_CONFIG", "binning_factor_default", 2)
@@ -2477,6 +2833,22 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("Scan Stabilization Z", f"{old_val} ms", f"{new_val} ms", True))
 
+        # Advanced - Prior Stage (live update: sent to the stage on Save)
+        if self.prior_speed_spinbox is not None:
+            old_val = self._get_prior_motion_setting(
+                "prior_stage_max_speed", control._def.PRIOR_STAGE_MAX_SPEED, self._prior_speed_limit
+            )
+            new_val = self.prior_speed_spinbox.value()
+            if old_val != new_val:
+                changes.append(("Prior Stage Max Speed", str(old_val), str(new_val), False))
+
+            old_val = self._get_prior_motion_setting(
+                "prior_stage_acceleration", control._def.PRIOR_STAGE_ACCELERATION, self._prior_accel_limit
+            )
+            new_val = self.prior_accel_spinbox.value()
+            if old_val != new_val:
+                changes.append(("Prior Stage Acceleration", str(old_val), str(new_val), False))
+
         # Advanced - Autofocus (live update)
         old_val = self._get_config_float("AF", "stop_threshold", 0.85)
         new_val = self.af_stop_threshold.value()
@@ -2494,21 +2866,10 @@ class PreferencesDialog(QDialog):
             changes.append(("AF Crop Height", f"{old_val} px", f"{new_val} px", False))
 
         # Advanced - Hardware (require restart)
-        old_val = self._get_config_value("GENERAL", "z_motor_config", "STEPPER")
-        new_val = self.z_motor_combo.currentText()
-        if old_val != new_val:
-            changes.append(("Z Motor Config", old_val, new_val, True))
-
         old_val = self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False)
         new_val = self.spinning_disk_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable Spinning Disk", str(old_val), str(new_val), True))
-
-        old_val = self._get_wheel_wrap_setting()
-        new_val = self.wheel_wrap_combo.currentData()
-        if old_val != new_val:
-            names = {value: text for text, value in self._WHEEL_WRAP_CHOICES}
-            changes.append(("Filter Wheel Shortest Path", names.get(old_val, old_val), names[new_val], True))
 
         old_val = self._get_wheel_window_setting()
         new_val = self.wheel_window_spinbox.value()
@@ -2816,6 +3177,22 @@ class PreferencesDialog(QDialog):
             # If save failed, dialog stays open (error already shown)
 
 
+def _queued_slot(receiver: QObject, slot_name: str):
+    """A threaded_operation_helper callback that delivers (success, error_msg) to a slot of receiver, on the GUI
+    thread: the operation's own thread must not touch widgets, live view or dialogs."""
+
+    def on_finished(success, error_msg):
+        QMetaObject.invokeMethod(
+            receiver,
+            slot_name,
+            Qt.QueuedConnection,
+            Q_ARG(bool, success),
+            Q_ARG(str, error_msg or ""),
+        )
+
+    return on_finished
+
+
 class StageUtils(QDialog):
     """Dialog containing microscope utility functions like homing, zeroing, and slide positioning."""
 
@@ -2830,6 +3207,16 @@ class StageUtils(QDialog):
         self.live_controller = live_controller
         self.is_wellplate = is_wellplate
         self.slide_position = None
+        # On a Z lift system, the lift's LiftMotionGuard (control/widgets_z_lift.py): the loading toggle is refused,
+        # and its button disabled, while a lift move or an objective swap holds it. See set_lift_motion_guard().
+        self.lift_motion_guard = None
+        # True on a Z lift system, where the live controls are locked at the loading position: live stays off there
+        # and comes back (if it was on) only at the scanning position.
+        self.keep_live_off_at_loading = False
+        # True on a Z lift system: leaving the loading position asks whether the objective, retracted for loading,
+        # returns to its Z once the lift is back up, or stays retracted.
+        self.ask_objective_return = False
+        self._was_live = False
 
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
@@ -2922,16 +3309,20 @@ class StageUtils(QDialog):
         move_z_axis_to_safety_position(self.stage)
 
     def _show_confirmation_dialog(self, x: bool, y: bool, z: bool, theta: bool):
-        """Display a confirmation dialog and home the specified axis if confirmed."""
-        msg = QMessageBox()
-        msg.setIcon(QMessageBox.Information)
-        msg.setText("Confirm your action")
-        msg.setInformativeText("Click OK to run homing")
-        msg.setWindowTitle("Confirmation")
-        msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-        msg.setDefaultButton(QMessageBox.Cancel)
-        retval = msg.exec_()
-        if QMessageBox.Ok == retval:
+        """Display a confirmation dialog and home the specified axis if confirmed. An X or Y home on a piezo-only
+        system asks at the stop sign instead: the nosepiece has to be lowered by hand first."""
+        if control._def.IS_PIEZO_ONLY and (x or y):
+            confirmed = confirm_nosepiece_lowered(self, decline_text="Cancel")
+        else:
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Information)
+            msg.setText("Confirm your action")
+            msg.setInformativeText("Click OK to run homing")
+            msg.setWindowTitle("Confirmation")
+            msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+            msg.setDefaultButton(QMessageBox.Cancel)
+            confirmed = msg.exec_() == QMessageBox.Ok
+        if confirmed:
             self.stage.home(x=x, y=y, z=z, theta=theta)
 
     def zero_x(self):
@@ -2946,51 +3337,190 @@ class StageUtils(QDialog):
         """Zero Z axis position."""
         self.stage.zero(x=False, y=False, z=True, theta=False)
 
+    def set_lift_motion_guard(self, guard):
+        self.lift_motion_guard = guard
+        guard.signal_busy_changed.connect(self._on_lift_busy_changed)
+
+    def _on_lift_busy_changed(self, busy: bool):
+        # Busy also covers this dialog's own toggle (the guard tracks it from the signals below), so this enables the
+        # button exactly when the toggle could start.
+        self.btn_load_slide.setEnabled(not busy)
+
     def switch_position(self):
         """Switch between loading and scanning positions."""
-        self._was_live = self.live_controller.is_live
-        if self._was_live:
+        if self.lift_motion_guard is not None and self.lift_motion_guard.busy:
+            self.log.info("Loading / scanning position refused: the Z lift is moving or an objective swap is running")
+            return
+        restore_z = True
+        if self.slide_position == "loading" and self.ask_objective_return:
+            restore_z = self._ask_objective_return()
+            if restore_z is None:
+                return  # cancelled: nothing moves
+        if not (self.keep_live_off_at_loading and self.slide_position == "loading"):
+            # (leaving a loading position where live was kept off: _was_live still holds what it was before)
+            self._was_live = self.live_controller.is_live
+        if self.live_controller.is_live:
             self.live_controller.stop_live()
         self.signal_threaded_stage_move_started.emit()
         if self.slide_position != "loading":
             move_to_loading_position(
                 self.stage,
                 blocking=False,
-                callback=self._callback_loading_position_reached,
+                callback=_queued_slot(self, "_callback_loading_position_reached"),
                 is_wellplate=self.is_wellplate,
             )
         else:
             move_to_scanning_position(
                 self.stage,
                 blocking=False,
-                callback=self._callback_scanning_position_reached,
+                callback=_queued_slot(self, "_callback_scanning_position_reached"),
                 is_wellplate=self.is_wellplate,
+                restore_z=restore_z,
             )
         self.btn_load_slide.setEnabled(False)
 
-    def _callback_loading_position_reached(self, success: bool, error_message: Optional[str]):
-        """Handle slide loading position reached signal."""
+    def _ask_objective_return(self) -> Optional[bool]:
+        """Leaving the loading position: True to lower the objective back to its Z after the lift rises, False to
+        leave it retracted, None if cancelled. Not asked when the objective was not retracted for loading."""
+        z_mm = getattr(self.stage, "_scanning_position_z_mm", None)
+        if not isinstance(z_mm, (int, float)) or objective_is_retracted(z_mm):
+            return True
+        reply = _ask_objective_z_return(
+            self,
+            "Move to Scanning Position",
+            "The objective is retracted for loading. Once the stage is back and the Z lift has risen, should the "
+            f"objective return to {z_mm:.4f} mm, or stay retracted?",
+            z_mm,
+        )
+        if reply == QMessageBox.Cancel:
+            return None
+        return reply == QMessageBox.Ok
+
+    @Slot(bool, str)
+    def _callback_loading_position_reached(self, success: bool, error_message: str):
+        """The move to the loading position ended (on the GUI thread, from _queued_slot)."""
         self.slide_position = "loading"
         self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
-        if self._was_live:
-            self.live_controller.start_live()
+        if self._was_live and not self.keep_live_off_at_loading:
+            self._restart_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_loading_position_reached.emit()
 
-    def _callback_scanning_position_reached(self, success: bool, error_message: Optional[str]):
-        """Handle slide scanning position reached signal."""
+    @Slot(bool, str)
+    def _callback_scanning_position_reached(self, success: bool, error_message: str):
+        """The move back to the scanning position ended (on the GUI thread, from _queued_slot)."""
+        if not success:
+            # The stage may not have left the loading position: it is still treated as there (a lift system keeps
+            # everything locked), and the button offers the move back to scanning again.
+            self._callback_loading_position_reached(
+                False, f"Could not move back to the scanning position:\n{error_message}\n\nTry again."
+            )
+            return
         self.slide_position = "scanning"
         self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live:
-            self.live_controller.start_live()
+            self._restart_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_scanning_position_reached.emit()
+
+    def _restart_live(self):
+        """Live view back on after a move. A camera that will not restart must not stop the move ending: the reached
+        signals that follow release the Z lift guard and the GUI's stage lock."""
+        try:
+            self.live_controller.start_live()
+        except Exception:
+            self.log.exception("Could not restart live view after the loading position move")
+
+
+# Where a z stack sits relative to each FOV's z, as offered in the acquisition tabs: (label, controller name).
+# "FROM TOP" is deliberately not offered (Hongquan, 2026-10-31); the worker still runs it for a YAML / TCP request.
+_Z_STACKING_CHOICES = (("From Bottom", "FROM BOTTOM"), ("From Center", "FROM CENTER"))
+# The Wellplate tab's Z mode dropdown: the three stacking choices, or an explicit Z-min..Z-max range.
+WELLPLATE_Z_MODES = tuple(label for label, _ in _Z_STACKING_CHOICES) + ("Set Range",)
+_Z_STACKING_CONFIG_FOR_Z_MODE = dict(_Z_STACKING_CHOICES, **{"Set Range": "FROM BOTTOM"})
+_Z_MODE_FOR_Z_STACKING_CONFIG = {config: label for label, config in _Z_STACKING_CHOICES}
+
+
+def _z_stacking_config_for_z_mode(z_mode: str) -> str:
+    """The z-stacking config an acquisition started from the Wellplate tab uses for its Z mode.
+
+    Set Range runs from Z-min up, i.e. From Bottom.
+    """
+    return _Z_STACKING_CONFIG_FOR_Z_MODE[z_mode]
+
+
+def _z_stacking_config_offered(z_stacking_config: str) -> str:
+    """The config the tabs can show for a loaded acquisition's z-stacking config: itself when offered, else
+    From Bottom (e.g. "FROM TOP", which the GUI does not offer)."""
+    if z_stacking_config in _Z_MODE_FOR_Z_STACKING_CONFIG:
+        return z_stacking_config
+    squid.logging.get_logger(__name__).warning(
+        f"z-stack config '{z_stacking_config}' is not offered in the GUI; showing From Bottom instead"
+    )
+    return "FROM BOTTOM"
+
+
+def _z_mode_for_z_stacking_config(z_stacking_config: str) -> str:
+    """The Wellplate Z mode to show for a loaded acquisition's z-stacking config."""
+    return _Z_MODE_FOR_Z_STACKING_CONFIG[_z_stacking_config_offered(z_stacking_config)]
+
+
+def _laser_af_per_stack_to_start(
+    choice_enabled: bool,
+    z_stack_order: str,
+    laser_af_supported: bool,
+    laser_af_checked: bool,
+    z_row_shown: bool,
+    checkbox_checked: bool,
+) -> bool:
+    """Whether an acquisition started from a tab runs laser AF before each later channel's stack.
+
+    One rule for showing/enabling the "AF per stack" checkbox AND for the start path, so a hidden or disabled
+    checkbox never takes effect and the exported YAML never says true for a run whose GUI showed no checkbox.
+    """
+    return bool(
+        choice_enabled
+        and z_stack_order == "Z FIRST"
+        and laser_af_supported
+        and laser_af_checked
+        and z_row_shown
+        and checkbox_checked
+    )
+
+
+def _z_stack_order_to_start(combobox) -> str:
+    """The z-stack order an acquisition started from the GUI uses: the dropdown's, when the choice is enabled
+    (ENABLE_Z_STACK_ORDER_SELECTION, opt-in), otherwise Channel First."""
+    if control._def.ENABLE_Z_STACK_ORDER_SELECTION:
+        return combobox.currentData()
+    return "CHANNEL FIRST"
+
+
+def _ask_objective_z_return(parent, title: str, text: str, z_mm: float):
+    """Where the objective goes once the sample is back under it (a Z lift system leaving the loading position, or a
+    manual objective swap): back to z_mm, or staying retracted. Returns QMessageBox.Ok (back to z_mm),
+    QMessageBox.No (stays retracted) or QMessageBox.Cancel."""
+    msg = QMessageBox(parent)
+    msg.setWindowTitle(title)
+    msg.setText(text)
+    msg.setIcon(QMessageBox.Question)
+    back_btn = msg.addButton(f"Return Z to {z_mm:.4f} mm", QMessageBox.AcceptRole)
+    stay_btn = msg.addButton("Keep Z Retracted", QMessageBox.NoRole)
+    cancel_btn = msg.addButton(QMessageBox.Cancel)
+    msg.setDefaultButton(back_btn)
+    msg.setEscapeButton(cancel_btn)
+    msg.exec_()
+    if msg.clickedButton() == back_btn:
+        return QMessageBox.Ok
+    if msg.clickedButton() == stay_btn:
+        return QMessageBox.No
+    return QMessageBox.Cancel
 
 
 def _sync_live_button(widget, live_text, idle_text, companion):
@@ -3688,46 +4218,17 @@ class DragonflyConfocalWidget(QWidget):
 
     def __init__(self, dragonfly):
         super(DragonflyConfocalWidget, self).__init__()
+        self._log = squid.logging.get_logger(self.__class__.__name__)
 
         self.dragonfly = dragonfly
+        self.confocal_mode = False  # what we assume until the unit answers the modality query
 
         self.init_ui()
 
-        # Initialize current states from hardware
-        try:
-            current_modality = self.dragonfly.get_modality()
-            self.confocal_mode = current_modality == "CONFOCAL" if current_modality else False
-
-            current_dichroic = self.dragonfly.get_port_selection_dichroic()
-            if current_dichroic is not None:
-                self.dropdown_dichroic.setCurrentText(str(current_dichroic))
-
-            current_port1_filter = self.dragonfly.get_emission_filter(1)
-            if current_port1_filter is not None:
-                self.dropdown_port1_emission_filter.setCurrentText(str(current_port1_filter))
-
-            current_port2_filter = self.dragonfly.get_emission_filter(2)
-            if current_port2_filter is not None:
-                self.dropdown_port2_emission_filter.setCurrentText(str(current_port2_filter))
-
-            current_field_aperture = self.dragonfly.get_field_aperture_wheel_position()
-            if current_field_aperture is not None:
-                self.dropdown_field_aperture.setCurrentText(str(current_field_aperture))
-
-            motor_state = self.dragonfly.get_disk_motor_state()
-            if motor_state is not None:
-                self.btn_disk_motor.setChecked(motor_state)
-
-        except Exception as e:
-            print(f"Error initializing widget state: {e}")
-
-        # Set initial button text
-        if self.confocal_mode:
-            self.btn_toggle_confocal.setText("Switch to Widefield")
-        else:
-            self.btn_toggle_confocal.setText("Switch to Confocal")
+        self._show_unit_state()
 
         # Connect signals
+        self.btn_refresh.clicked.connect(self.refresh_state)
         self.btn_toggle_confocal.clicked.connect(self.toggle_confocal_mode)
         self.btn_disk_motor.clicked.connect(self.toggle_disk_motor)
         self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
@@ -3738,6 +4239,50 @@ class DragonflyConfocalWidget(QWidget):
         # Emit initial state
         self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
 
+    def _read(self, what, query, default):
+        """Query the unit; on failure log it and return default so the rest of the state still loads."""
+        try:
+            return query()
+        except Exception as e:
+            self._log.error(f"Could not read the Dragonfly {what}: {e}")
+            return default
+
+    def _show_unit_state(self):
+        """Read every setting from the unit into the controls without sending any command.
+
+        Each query stands alone: a wheel the unit does not have (e.g. no port 2 emission
+        filter) must not hide the rest of the state.
+        """
+        modality = self._read("modality", self.dragonfly.get_modality, None)
+        if modality is not None:  # an unanswered query is not a mode change
+            self.confocal_mode = modality == "CONFOCAL"
+        self.btn_toggle_confocal.setText("Switch to Widefield" if self.confocal_mode else "Switch to Confocal")
+        self.btn_disk_motor.setChecked(bool(self._read("disk motor state", self.dragonfly.get_disk_motor_state, False)))
+        for dropdown, what, query in (
+            (self.dropdown_dichroic, "dichroic", self.dragonfly.get_port_selection_dichroic),
+            (
+                self.dropdown_port1_emission_filter,
+                "port 1 emission filter",
+                partial(self.dragonfly.get_emission_filter, 1),
+            ),
+            (
+                self.dropdown_port2_emission_filter,
+                "port 2 emission filter",
+                partial(self.dragonfly.get_emission_filter, 2),
+            ),
+            (self.dropdown_field_aperture, "field aperture", self.dragonfly.get_field_aperture_wheel_position),
+        ):
+            position = self._read(what, query, 0)
+            with QSignalBlocker(dropdown):  # showing a position must not command a move
+                dropdown.setCurrentIndex(position - 1)  # unknown position: no entry selected
+
+    def refresh_state(self):
+        """Re-read the unit, e.g. after the live controller moved a filter for a channel."""
+        was_confocal = self.confocal_mode
+        self._show_unit_state()
+        if self.confocal_mode != was_confocal:  # the slot re-selects the channel, so only on a real change
+            self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
+
     def init_ui(self):
         main_layout = QVBoxLayout()
 
@@ -3746,6 +4291,8 @@ class DragonflyConfocalWidget(QWidget):
         self.btn_toggle_confocal = QPushButton("Switch to Confocal")
         self.btn_disk_motor = QPushButton("Disk Motor On")
         self.btn_disk_motor.setCheckable(True)
+        self.btn_refresh = QPushButton("Refresh")
+        self.btn_refresh.setToolTip("Re-read every setting from the Dragonfly")
 
         dichroic_label = QLabel("Port Selection")
         dichroic_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
@@ -3779,6 +4326,7 @@ class DragonflyConfocalWidget(QWidget):
 
         layout_wheels.addWidget(port2_emission_label, 1, 0)
         layout_wheels.addWidget(self.dropdown_port2_emission_filter, 1, 1)
+        layout_wheels.addWidget(self.btn_refresh, 1, 3)  # under the field aperture dropdown
 
         main_layout.addLayout(layout_confocal)
         main_layout.addLayout(layout_wheels)
@@ -3789,6 +4337,7 @@ class DragonflyConfocalWidget(QWidget):
         """Enable or disable all controls"""
         self.btn_toggle_confocal.setEnabled(enable)
         self.btn_disk_motor.setEnabled(enable)
+        self.btn_refresh.setEnabled(enable)
         self.dropdown_dichroic.setEnabled(enable)
         self.dropdown_port1_emission_filter.setEnabled(enable)
         self.dropdown_port2_emission_filter.setEnabled(enable)
@@ -3811,7 +4360,7 @@ class DragonflyConfocalWidget(QWidget):
 
             self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
         except Exception as e:
-            print(f"Error toggling confocal mode: {e}")
+            self._log.error(f"Error toggling confocal mode: {e}")
         finally:
             self.enable_all_buttons(True)
 
@@ -3824,7 +4373,7 @@ class DragonflyConfocalWidget(QWidget):
             else:
                 self.dragonfly.set_disk_motor_state(False)
         except Exception as e:
-            print(f"Error toggling disk motor: {e}")
+            self._log.error(f"Error toggling disk motor: {e}")
         finally:
             self.enable_all_buttons(True)
 
@@ -3835,7 +4384,7 @@ class DragonflyConfocalWidget(QWidget):
             selected_pos = self.dropdown_dichroic.currentIndex()
             self.dragonfly.set_port_selection_dichroic(selected_pos + 1)
         except Exception as e:
-            print(f"Error setting dichroic: {e}")
+            self._log.error(f"Error setting dichroic: {e}")
         finally:
             self.enable_all_buttons(True)
 
@@ -3846,7 +4395,7 @@ class DragonflyConfocalWidget(QWidget):
             selected_pos = self.dropdown_port1_emission_filter.currentIndex()
             self.dragonfly.set_emission_filter(1, selected_pos + 1)
         except Exception as e:
-            print(f"Error setting port 1 emission filter: {e}")
+            self._log.error(f"Error setting port 1 emission filter: {e}")
         finally:
             self.enable_all_buttons(True)
 
@@ -3857,7 +4406,7 @@ class DragonflyConfocalWidget(QWidget):
             selected_pos = self.dropdown_port2_emission_filter.currentIndex()
             self.dragonfly.set_emission_filter(2, selected_pos + 1)
         except Exception as e:
-            print(f"Error setting port 2 emission filter: {e}")
+            self._log.error(f"Error setting port 2 emission filter: {e}")
         finally:
             self.enable_all_buttons(True)
 
@@ -3868,7 +4417,7 @@ class DragonflyConfocalWidget(QWidget):
             selected_pos = self.dropdown_field_aperture.currentIndex()
             self.dragonfly.set_field_aperture_wheel_position(selected_pos + 1)
         except Exception as e:
-            print(f"Error setting port 1 field aperture: {e}")
+            self._log.error(f"Error setting field aperture: {e}")
         finally:
             self.enable_all_buttons(True)
 
@@ -3883,11 +4432,45 @@ class DragonflyConfocalWidget(QWidget):
 
 class ObjectivesWidget(QWidget):
     signal_objective_changed = Signal()
+    # True from the start of a manual (servo-off) swap until it fully ends, through both stage
+    # phases and the confirmation dialog: the GUI blocks every other stage / focus control meanwhile.
+    signal_swap_active = Signal(bool)
 
-    def __init__(self, objective_store, objective_changer=None):
+    def __init__(
+        self,
+        objective_store,
+        objective_changer=None,
+        focus_servo=None,
+        z_in_use=None,
+        z_lift=None,
+        lift_motion_guard=None,
+    ):
         super(ObjectivesWidget, self).__init__()
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.objectiveStore = objective_store
         self.objective_changer = objective_changer
+        # A Z stage with set_servo(bool) and freeze_profile() (the V-308's PIFocusStage): with no objective
+        # changer, a switch is a manual swap done with Z retracted and its servo released.
+        self.focus_servo = focus_servo
+        # Returns True while something else drives Z (autofocus, an acquisition); a manual swap is
+        # refused then, since it retracts Z and releases the servo under that work.
+        self.z_in_use = z_in_use
+        # A Z lift (squid.stage.lift.LiftStage): a manual swap lowers it by Z_LIFT_SWAP_LOWER_MM, whatever the
+        # magnification, and raises it back once the servo holds Z again, before Z returns. A changer switch (which
+        # restores Z itself) to a higher magnification lowers it fully and leaves it lowered (Utils > Z Lift...).
+        self.z_lift = z_lift
+        # The Z lift's LiftMotionGuard (control/widgets_z_lift.py): a swap that moves anything claims it for its whole
+        # run, and is refused while a loading / scanning move or a lift move holds it, so neither can move the lift
+        # under the other.
+        self.lift_motion_guard = lift_motion_guard
+        self._lift_claimed = False
+        self._swap_lowers_lift = False
+        self._swap_lift_lowered = False
+        self._swap_lift_height_mm = None  # the lift height a manual swap lowered from, raised back to after it
+        self._swap_lift_raised = False
+        self._swap_return_z = True  # False: the user chose to leave Z retracted after the swap
+        self._swap_z_cleared = False  # after servo-on, Z moved clear of where it drifted (see below)
+        self._changer_swap_guarded = False
         self.init_ui()
         # Show the store's current objective without driving the changer: nothing is
         # connected yet and the hardware already sits there.
@@ -3906,26 +4489,67 @@ class ObjectivesWidget(QWidget):
         layout.addWidget(self.dropdown)
         self.setLayout(layout)
 
+    def _lowers_lift(self, objective_name) -> bool:
+        if self.z_lift is None:
+            return False
+        objectives = self.objectiveStore.objectives_dict
+        current = objectives.get(self.objectiveStore.current_objective, {}).get("magnification")
+        new = objectives.get(objective_name, {}).get("magnification")
+        return current is not None and new is not None and float(new) > float(current)
+
+    def _lower_lift_then(self, move, **kwargs):
+        """For the changer path: lower the lift first when switching to a higher magnification."""
+        if self._swap_lowers_lift:
+            self.z_lift.lower()
+            self._swap_lift_lowered = True
+        return move(**kwargs)
+
+    def _claim_lift(self) -> bool:
+        """Claim the lift for this swap; on refusal warn, revert the dropdown and return False."""
+        if self.lift_motion_guard is None:
+            return True
+        if not self.lift_motion_guard.claim():
+            QMessageBox.warning(
+                self,
+                "Objective Change Unavailable",
+                "The Z lift is moving (the loading position or a lift move). Wait for it to finish, then change the "
+                "objective.",
+            )
+            self._revert_dropdown()
+            return False
+        self._lift_claimed = True
+        return True
+
+    def _release_lift(self):
+        if self._lift_claimed:
+            self._lift_claimed = False
+            self.lift_motion_guard.release()
+
     def on_objective_changed(self, objective_name):
+        self._swap_lowers_lift = self._lowers_lift(objective_name)
+        self._swap_lift_lowered = False
+        if self.objective_changer is None and self.focus_servo is not None:
+            self._swap_objective_with_servo_off(objective_name)
+            return
         if self.objective_changer is None:
             self.objectiveStore.set_current_objective(objective_name)
             self.signal_objective_changed.emit()
             return
+        if not self._claim_lift():
+            return
         # A switch blocks for seconds (Z retract, changer motion, Z restore): run it off
         # the GUI thread, with the dropdown disabled as the re-entry guard until it ends.
         self.dropdown.setEnabled(False)
-
-        def on_finished(success, error_msg):
-            QMetaObject.invokeMethod(
-                self,
-                "_on_objective_move_finished",
-                Qt.QueuedConnection,
-                Q_ARG(bool, success),
-                Q_ARG(str, error_msg or ""),
-            )
-
+        # With a Z lift, hold the GUI's swap guard (the same one a manual swap holds) until the switch has ended,
+        # so nothing raises the lift or drives the stage while the changer moves.
+        self._changer_swap_guarded = self.z_lift is not None
+        if self._changer_swap_guarded:
+            self.signal_swap_active.emit(True)
         utils.threaded_operation_helper(
-            self.objective_changer.move_to_objective, on_finished, objective_name=objective_name
+            self._lower_lift_then,
+            _queued_slot(self, "_on_objective_move_finished"),
+            move=self.objective_changer.move_to_objective,
+            objective_name=objective_name,
         )
 
     @Slot(bool, str)
@@ -3939,11 +4563,199 @@ class ObjectivesWidget(QWidget):
                 self, "Objective Change Failed", f"Failed to switch to '{objective_name}':\n{error_msg}"
             )
             # Revert the dropdown so it matches the store / actual changer state.
-            self.dropdown.blockSignals(True)
-            self.dropdown.setCurrentText(self.objectiveStore.current_objective)
-            self.dropdown.blockSignals(False)
+            self._revert_dropdown()
+        if self._swap_lift_lowered:
+            QMessageBox.information(
+                self,
+                "Z Lift Lowered",
+                "The Z lift was lowered for the objective change. Raise it from Utils > Z Lift...",
+            )
         # Re-enable only after the modal warning, which spins a nested event loop.
         self.dropdown.setEnabled(True)
+        if self._changer_swap_guarded:
+            self._changer_swap_guarded = False
+            self.signal_swap_active.emit(False)
+        self._release_lift()
+
+    def _swap_objective_with_servo_off(self, objective_name):
+        """Manual swap: retract Z, disengage the focus servo, wait for the user to confirm the new
+        objective is seated, then re-engage and restore Z. The servo is re-engaged and Z restored
+        whether the user confirms or cancels.
+
+        The voice coil is not self-locking, so with the servo off Z drifts (on a vertical mount it
+        can run to the end of travel within a minute); retracting first keeps that drift clear of
+        the sample, and restoring returns to the pre-swap focus height. The controller's motion profile
+        is frozen at that focus height first: re-engaging then moves nothing wherever Z drifted, and
+        the restore that lands back there switches it on again (see PIFocusStage.freeze_profile).
+
+        The stage calls run off the GUI thread in two phases around the dialog. Until the whole swap
+        ends, the dropdown stays disabled as the re-entry guard and signal_swap_active holds True so
+        the GUI keeps autofocus, acquisitions and manual stage moves blocked."""
+        if self.z_in_use is not None and self.z_in_use():
+            QMessageBox.warning(
+                self,
+                "Objective Change Unavailable",
+                "Z is in use by autofocus or an acquisition. Wait for it to finish, then change the objective.",
+            )
+            self._revert_dropdown()
+            return
+        if not self._claim_lift():
+            return
+        self.dropdown.setEnabled(False)
+        self.signal_swap_active.emit(True)
+        self._swap_target = objective_name
+        self._swap_z_before_mm = None
+        self._swap_retracted = False
+        utils.threaded_operation_helper(self._retract_z_and_release_servo, _queued_slot(self, "_on_servo_released"))
+
+    def _retract_z_and_release_servo(self):
+        self._swap_z_before_mm = self.focus_servo.get_pos().z_mm
+        self.focus_servo.freeze_profile()
+        # home(z) drives the V-308 to its configured objective-clear position.
+        self.focus_servo.home(x=False, y=False, z=True, theta=False, blocking=True)
+        self._swap_retracted = True
+        self._log.info(f"Z retracted from {self._swap_z_before_mm:.4f} mm for objective change")
+        if self.z_lift is not None:
+            # Whatever the magnification: the sample is clear of the objective while it is changed (and for the
+            # profile's return trip below, when Z stays retracted).
+            height = self.z_lift.get_position_mm()
+            lowered = self.z_lift.clamp(height - control._def.Z_LIFT_SWAP_LOWER_MM)
+            if lowered < height:
+                self.z_lift.move_to(lowered)
+                self._swap_lift_height_mm = height
+                self._swap_lift_lowered = True
+                self._log.info(f"Z lift lowered from {height:.3f} to {lowered:.3f} mm for objective change")
+        self.focus_servo.set_servo(False)
+
+    @Slot(bool, str)
+    def _on_servo_released(self, success, error_msg):
+        objective_name = self._swap_target
+        previous_objective = self.objectiveStore.current_objective
+        if not success:
+            left_retracted = "\n\nZ was left retracted." if self._swap_retracted else ""
+            QMessageBox.warning(
+                self,
+                "Objective Change Failed",
+                f"Could not prepare for the objective change, so the objective was not changed:\n"
+                f"{error_msg}{left_retracted}",
+            )
+            self._revert_dropdown()
+            self._end_swap()
+            return
+        self._log.info(f"Focus servo disengaged for objective change {previous_objective} -> {objective_name}")
+
+        lift_note = (
+            f"The Z lift is lowered; it goes back up to {self._swap_lift_height_mm:.3f} mm first.\n\n"
+            if self._swap_lift_lowered
+            else ""
+        )
+        reply = _ask_objective_z_return(
+            self,
+            "Change Objective",
+            f"Z is retracted and the focus servo is disengaged.\n\n"
+            f"{lift_note}"
+            f"Load the {objective_name} objective and make sure it is securely seated. Then choose where Z goes "
+            f"once the servo is re-engaged: back to {self._swap_z_before_mm:.4f} mm, or staying retracted.\n\n"
+            f"Cancel keeps {previous_objective} (put it back first if you removed it); Z then returns to "
+            f"{self._swap_z_before_mm:.4f} mm.",
+            self._swap_z_before_mm,
+        )
+        self._swap_confirmed = reply in (QMessageBox.Ok, QMessageBox.No)
+        self._swap_return_z = reply != QMessageBox.No
+        self._swap_servo_on = False
+        self._swap_lift_raised = False
+        self._swap_z_cleared = False
+        utils.threaded_operation_helper(self._reengage_servo_and_restore_z, _queued_slot(self, "_on_servo_reengaged"))
+
+    def _profile_frozen(self) -> bool:
+        is_frozen = getattr(self.focus_servo, "is_profile_frozen", None)
+        return bool(is_frozen()) if is_frozen is not None else False
+
+    def _reengage_servo_and_restore_z(self):
+        self.focus_servo.set_servo(True)
+        self._swap_servo_on = True
+        self._log.info("Focus servo re-engaged after objective change")
+        # With the servo off the V-308 drifted (a vertical mount sinks toward the sample, a millimetre or more), and
+        # servo-on holds it wherever it got to. Before the lift raises the sample, Z must be no closer to it than where
+        # Z ends up: retracted again when it stays retracted; when it returns to its Z, moved back to that Z first only
+        # if it drifted past it (otherwise it goes straight down there after the lift, not up and back down). A
+        # failed move stops here, with the lift still lowered.
+        if not self._swap_return_z:
+            if self._swap_lift_lowered and self._profile_frozen():
+                # The V-308's motion profile, frozen at the focus height for the swap, can only come back on at that
+                # height (PIFocusStage.freeze_profile): go there while the lowered lift keeps the sample clear, then
+                # retract with it on. Otherwise every later move would be a slow software ramp.
+                self.focus_servo.move_z_to(self._swap_z_before_mm, blocking=True)
+                self._log.info(f"Z ramped to {self._swap_z_before_mm:.4f} mm to switch the motion profile back on")
+            self.focus_servo.home(x=False, y=False, z=True, theta=False, blocking=True)
+            self._log.info("Z retracted again after re-engaging the focus servo")
+            if self._profile_frozen():
+                self._log.warning(
+                    "The V-308 motion profile stays frozen (no lowered lift to make the trip): Z moves ramp in software "
+                    f"until Z is back at {self._swap_z_before_mm:.4f} mm."
+                )
+        elif self._swap_lift_lowered and self.focus_servo.get_pos().z_mm > self._swap_z_before_mm:
+            self.focus_servo.move_z_to(self._swap_z_before_mm, blocking=True)
+            self._log.info(f"Z drifted past {self._swap_z_before_mm:.4f} mm; moved back there before raising the lift")
+        self._swap_z_cleared = True
+        if self._swap_lift_lowered:
+            # The lift goes back up while the objective is retracted, and only then does the objective come back
+            # down: a lift that fails to get there leaves Z retracted.
+            self.z_lift.move_to(self._swap_lift_height_mm)
+            self._swap_lift_raised = True
+            self._log.info(f"Z lift raised back to {self._swap_lift_height_mm:.3f} mm after objective change")
+        if not self._swap_return_z:
+            self._log.info(f"Z left retracted after objective change (it was at {self._swap_z_before_mm:.4f} mm)")
+            return
+        self.focus_servo.move_z_to(self._swap_z_before_mm, blocking=True)
+        self._log.info(f"Z restored to {self._swap_z_before_mm:.4f} mm after objective change")
+
+    @Slot(bool, str)
+    def _on_servo_reengaged(self, success, error_msg):
+        if not success and not self._swap_servo_on:
+            QMessageBox.critical(
+                self,
+                "Focus Servo Not Engaged",
+                f"Could not re-engage the focus servo; Z is not being held:\n{error_msg}",
+            )
+        elif not success and not self._swap_z_cleared:
+            lift_note = ", so the Z lift stays lowered" if self._swap_lift_lowered else ""
+            QMessageBox.warning(
+                self,
+                "Z Not Moved Clear",
+                f"Could not move Z clear after re-engaging the focus servo (with the servo off it may have drifted "
+                f"toward the sample){lift_note}:\n{error_msg}\n\nRetract Z (Home Z) before moving anything else.",
+            )
+        elif not success and self._swap_lift_lowered and not self._swap_lift_raised:
+            QMessageBox.warning(
+                self,
+                "Z Lift Not Raised",
+                f"Could not raise the Z lift back to {self._swap_lift_height_mm:.3f} mm after the objective change, so "
+                f"Z was left retracted:\n{error_msg}\n\nRaise the lift from Utils > Z Lift..., then focus again.",
+            )
+        elif not success:
+            QMessageBox.warning(
+                self,
+                "Z Not Restored",
+                f"Could not move Z back to {self._swap_z_before_mm:.4f} mm after the objective change:\n{error_msg}",
+            )
+        if self._swap_confirmed:
+            self.objectiveStore.set_current_objective(self._swap_target)
+            self.signal_objective_changed.emit()
+        else:
+            self._revert_dropdown()
+        # Re-enable only after any modal warning, which spins a nested event loop.
+        self._end_swap()
+
+    def _end_swap(self):
+        self.dropdown.setEnabled(True)
+        self.signal_swap_active.emit(False)
+        self._release_lift()
+
+    def _revert_dropdown(self):
+        self.dropdown.blockSignals(True)
+        self.dropdown.setCurrentText(self.objectiveStore.current_objective)
+        self.dropdown.blockSignals(False)
 
 
 def set_spinbox_range_from_exposure_limits(camera: AbstractCamera, spinbox: QDoubleSpinBox):
@@ -4684,17 +5496,13 @@ class LiveControlWidget(QFrame):
 
         # connections
         self.entry_triggerFPS.valueChanged.connect(self.liveController.set_trigger_fps)
-        self.dropdown_modeSelection.activated[str].connect(self.select_new_microscope_mode_by_name)
+        self.dropdown_modeSelection.textActivated.connect(self.select_new_microscope_mode_by_name)
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
         self.btn_snap.clicked.connect(self.snap)
         self.entry_exposureTime.valueChanged.connect(self.update_config_exposure_time)
         self.entry_analogGain.valueChanged.connect(self.update_config_analog_gain)
-        self.entry_illuminationIntensity.valueChanged.connect(self.update_config_illumination_intensity)
-        self.entry_illuminationIntensity.valueChanged.connect(
-            lambda x: self.slider_illuminationIntensity.setValue(int(x))
-        )
-        self.slider_illuminationIntensity.valueChanged.connect(self.entry_illuminationIntensity.setValue)
+        self._connect_illumination_intensity_controls()
         self.btn_autolevel.toggled.connect(self.signal_autoLevelSetting.emit)
 
         # layout
@@ -4808,6 +5616,14 @@ class LiveControlWidget(QFrame):
             # sample is already being exposed.
             _sync_live_button(self, "Stop", "Live", self.btn_snap)
 
+    def set_acquisition_running(self, running):
+        """An acquisition stops live on its own and owns the camera and the light while it runs: show the
+        real live state, and lock Live and Snap until it finishes."""
+        _sync_live_button(self, "Stop", "Live", self.btn_snap)
+        self.btn_live.setEnabled(not running)
+        if running:
+            self.btn_snap.setEnabled(False)
+
     def snap(self):
         """Acquire and display one frame with the current live configuration."""
         if self.liveController.is_live:
@@ -4920,6 +5736,37 @@ class LiveControlWidget(QFrame):
                 confocal_mode=self.liveController.is_confocal_mode(),
             )
             self.signal_newAnalogGain.emit(new_value)
+
+    def _connect_illumination_intensity_controls(self):
+        self.entry_illuminationIntensity.valueChanged.connect(self.update_config_illumination_intensity)
+        self.entry_illuminationIntensity.valueChanged.connect(
+            lambda x: self.slider_illuminationIntensity.setValue(int(x))
+        )
+        if self.liveController.microscope.illumination_controller.light_source_type != LightSourceType.VersaLase:
+            self.slider_illuminationIntensity.valueChanged.connect(self.entry_illuminationIntensity.setValue)
+            return
+
+        # A VersaLase head takes ~1.2 s per power change, so its slider applies the value when it is
+        # released (or stepped with the keyboard), not on every move. While it is dragged, the value is
+        # only shown in the entry.
+        self._illumination_intensity_previewed = False
+        self.slider_illuminationIntensity.setTracking(False)
+        self.slider_illuminationIntensity.sliderMoved.connect(self._preview_illumination_intensity)
+        self.slider_illuminationIntensity.valueChanged.connect(self._apply_illumination_slider_value)
+
+    def _preview_illumination_intensity(self, value):
+        self.entry_illuminationIntensity.blockSignals(True)
+        self.entry_illuminationIntensity.setValue(value)
+        self.entry_illuminationIntensity.blockSignals(False)
+        self._illumination_intensity_previewed = True
+
+    def _apply_illumination_slider_value(self, value):
+        previewed, self._illumination_intensity_previewed = self._illumination_intensity_previewed, False
+        if previewed and self.entry_illuminationIntensity.value() == value:
+            # The entry already shows the value, so setValue() would not emit; apply it directly.
+            self.update_config_illumination_intensity(value)
+        else:
+            self.entry_illuminationIntensity.setValue(value)
 
     def update_config_illumination_intensity(self, new_value):
         if self.is_switching_mode == False:
@@ -5803,7 +6650,11 @@ class FilterControllerWidget(QFrame):
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
     def _get_wheel_name(self, wheel_id: int) -> str:
-        """Get display name for a wheel from config or generate default."""
+        """Get display name for a wheel from config or generate default.
+
+        Deliberately reads only filter_wheels.yaml: this panel drives the standalone wheels,
+        and wheel ids are unique only within one source.
+        """
         if self.config_repo:
             try:
                 registry = self.config_repo.get_filter_wheel_registry()
@@ -6167,8 +7018,11 @@ class WellSelectionWidget(QTableWidget):
         if (row >= 0 + self.number_of_skip and row <= self.rows - 1 - self.number_of_skip) and (
             col >= 0 + self.number_of_skip and col <= self.columns - 1 - self.number_of_skip
         ):
-            x_mm = col * self.spacing_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
-            y_mm = row * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
+            # Resolved at CLICK time: the snapshot-from-cached-fields transform
+            # this replaces missed calibration deltas, measured rotation, and
+            # per-axis pitch - double-click navigation disagreed with planning.
+            transform = plate_transform_for(self.format)
+            x_mm, y_mm = transform.well_center_mm(row, col)
             self.signal_wellSelectedPos.emit(x_mm, y_mm)
             print("well location:", (x_mm, y_mm))
             self.signal_wellSelected.emit(True)
@@ -6232,7 +7086,7 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -6438,6 +7292,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
         self._create_apply_channel_offset_checkbox()
+        self._create_laser_af_per_stack_checkbox()
 
         self.checkbox_genAFMap = QCheckBox("Generate Focus Map")
         self.checkbox_genAFMap.setChecked(False)
@@ -6454,34 +7309,26 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_skipSaving = QCheckBox("Skip Saving")
         self.checkbox_skipSaving.setChecked(False)
 
-        self.checkbox_set_z_range = QCheckBox("Set Z-range")
-        self.checkbox_set_z_range.toggled.connect(self.toggle_z_range_controls)
-
-        # Add new components for Z-range
-        self.entry_minZ = QDoubleSpinBox()
-        self.entry_minZ.setKeyboardTracking(False)
-        self.entry_minZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_minZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
-        self.entry_minZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_minZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to current position
-        self.entry_minZ.setSuffix(" μm")
-        # self.entry_minZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.set_minZ_button = QPushButton("Set")
-        self.set_minZ_button.clicked.connect(self.set_z_min)
-
-        self.entry_maxZ = QDoubleSpinBox()
-        self.entry_maxZ.setKeyboardTracking(False)
-        self.entry_maxZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_maxZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
-        self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_maxZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to current position
-        self.entry_maxZ.setSuffix(" μm")
-        # self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.set_maxZ_button = QPushButton("Set")
-        self.set_maxZ_button.clicked.connect(self.set_z_max)
-
         self.combobox_z_stack = QComboBox()
-        self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
+        for label, z_stacking_config in _Z_STACKING_CHOICES:
+            self.combobox_z_stack.addItem(label, z_stacking_config)
+        self.combobox_z_stack.setCurrentIndex(
+            self.combobox_z_stack.findData(_z_stacking_config_offered(self.multipointController.z_stacking_config))
+        )
+        self.combobox_z_stack.setToolTip(
+            "Where the z stack sits relative to the current z: starting at it, or centred on it.\n"
+            "Not used with Set Z-range, which runs from Z-min up."
+        )
+
+        self.combobox_z_order = QComboBox()
+        for order in Z_STACK_ORDERS:
+            self.combobox_z_order.addItem(order.title(), order)
+        self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(Z_STACK_ORDER))
+        self.combobox_z_order.setToolTip(
+            "Channel First: acquire every channel at each z level, then step z.\n"
+            "Z First: acquire the whole z stack in one channel, then switch channel."
+        )
+        self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)  # opt-in
 
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
@@ -6532,7 +7379,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         # Create spacer items
         EDGE_SPACING = 4  # Adjust this value as needed
-        edge_spacer = QSpacerItem(EDGE_SPACING, 0, QSizePolicy.Fixed, QSizePolicy.Minimum)
 
         # Create first row layouts
         if self.use_overlap:
@@ -6542,10 +7388,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             xy_half.addStretch(1)
             xy_half.addWidget(QLabel("Ny"))
             xy_half.addWidget(self.entry_NY)
-            xy_half.addSpacerItem(edge_spacer)
+            xy_half.addSpacing(EDGE_SPACING)
 
             overlap_half = QHBoxLayout()
-            overlap_half.addSpacerItem(edge_spacer)
+            overlap_half.addSpacing(EDGE_SPACING)
             overlap_half.addWidget(QLabel("FOV Overlap"), alignment=Qt.AlignRight)
             overlap_half.addWidget(self.entry_overlap)
         else:
@@ -6556,10 +7402,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             x_half.addStretch(1)
             x_half.addWidget(QLabel("Nx"))
             x_half.addWidget(self.entry_NX)
-            x_half.addSpacerItem(edge_spacer)
+            x_half.addSpacing(EDGE_SPACING)
 
             y_half = QHBoxLayout()
-            y_half.addSpacerItem(edge_spacer)
+            y_half.addSpacing(EDGE_SPACING)
             y_half.addWidget(QLabel("dy"))
             y_half.addWidget(self.entry_deltaY)
             y_half.addStretch(1)
@@ -6573,10 +7419,12 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         dz_half.addStretch(1)
         dz_half.addWidget(QLabel("Nz"))
         dz_half.addWidget(self.entry_NZ)
-        dz_half.addSpacerItem(edge_spacer)
+        dz_half.addWidget(self.combobox_z_stack)
+        dz_half.addWidget(self.combobox_z_order)
+        dz_half.addSpacing(EDGE_SPACING)
 
         dt_half = QHBoxLayout()
-        dt_half.addSpacerItem(edge_spacer)
+        dt_half.addSpacing(EDGE_SPACING)
         dt_half.addWidget(QLabel("dt"))
         dt_half.addWidget(self.entry_dt)
         dt_half.addStretch(1)
@@ -6594,26 +7442,12 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.grid_acquisition.addLayout(dz_half, 4, 0, 1, 4)
         self.grid_acquisition.addLayout(dt_half, 4, 4, 1, 4)
 
-        self.z_min_layout = QHBoxLayout()
-        self.z_min_layout.addWidget(self.set_minZ_button)
-        self.z_min_layout.addWidget(QLabel("Z-min"), Qt.AlignRight)
-        self.z_min_layout.addWidget(self.entry_minZ)
-        self.z_min_layout.addSpacerItem(edge_spacer)
-
-        self.z_max_layout = QHBoxLayout()
-        self.z_max_layout.addSpacerItem(edge_spacer)
-        self.z_max_layout.addWidget(self.set_maxZ_button)
-        self.z_max_layout.addWidget(QLabel("Z-max"), Qt.AlignRight)
-        self.z_max_layout.addWidget(self.entry_maxZ)
-
-        self.grid_acquisition.addLayout(self.z_min_layout, 5, 0, 1, 4)  # hide this in toggle
-        self.grid_acquisition.addLayout(self.z_max_layout, 5, 4, 1, 4)  # hide this in toggle
-
         grid_af = QVBoxLayout()
         grid_af.addWidget(self.checkbox_withAutofocus)
         if SUPPORT_LASER_AUTOFOCUS:
             grid_af.addWidget(self.checkbox_withReflectionAutofocus)
             grid_af.addWidget(self.checkbox_applyChannelOffset)
+            grid_af.addWidget(self.checkbox_laserAfPerStack)
         # grid_af.addWidget(self.checkbox_genAFMap)  # we are not using auto-focus map for now
         grid_af.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
@@ -6621,19 +7455,18 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             if IS_PIEZO_ONLY:
                 self.checkbox_usePiezo.setChecked(True)
                 self.checkbox_usePiezo.setVisible(False)
-        grid_af.addWidget(self.checkbox_set_z_range)
         grid_af.addWidget(self.checkbox_skipSaving)
 
         grid_config = QHBoxLayout()
         grid_config.addWidget(self.list_configurations)
-        grid_config.addSpacerItem(edge_spacer)
+        grid_config.addSpacing(EDGE_SPACING)
 
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
 
         grid_acquisition = QHBoxLayout()
-        grid_acquisition.addSpacerItem(edge_spacer)
+        grid_acquisition.addSpacing(EDGE_SPACING)
         grid_acquisition.addLayout(grid_af)
         grid_acquisition.addLayout(button_layout)
 
@@ -6693,13 +7526,15 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
+        self.checkbox_withReflectionAutofocus.toggled.connect(lambda _c: self._update_laser_af_per_stack_state())
+        self.combobox_z_order.currentIndexChanged.connect(lambda _i: self._update_laser_af_per_stack_state())
+        self._update_laser_af_per_stack_state()
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
-        # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
@@ -6724,7 +7559,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.shortcut = QShortcut(QKeySequence(";"), self)
         self.shortcut.activated.connect(self.btn_add.click)
 
-        self.toggle_z_range_controls(False)
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
 
@@ -6738,94 +7572,11 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.grid.addLayout(self.row_progress_layout)
         self.setLayout(self.grid)
 
-    def toggle_z_range_controls(self, state):
-        is_visible = bool(state)
-
-        # Hide/show widgets in z_min_layout
-        for i in range(self.z_min_layout.count()):
-            widget = self.z_min_layout.itemAt(i).widget()
-            if widget is not None:
-                widget.setVisible(is_visible)
-            widget = self.z_max_layout.itemAt(i).widget()
-            if widget is not None:
-                widget.setVisible(is_visible)
-
-        # Disable reflection autofocus checkbox if Z-range is visible
-        self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
-        # Enable/disable NZ entry based on the inverse of is_visible
-        self.entry_NZ.setEnabled(not is_visible)
-        current_z = self.stage.get_pos().z_mm * 1000
-        self.entry_minZ.setValue(current_z)
-        if is_visible:
-            self._reset_reflection_af_reference()
-        self.entry_maxZ.setValue(current_z)
-
-        if not is_visible:
-            try:
-                self.entry_minZ.valueChanged.disconnect(self.update_z_max)
-                self.entry_maxZ.valueChanged.disconnect(self.update_z_min)
-                self.entry_minZ.valueChanged.disconnect(self.update_Nz)
-                self.entry_maxZ.valueChanged.disconnect(self.update_Nz)
-                self.entry_deltaZ.valueChanged.disconnect(self.update_Nz)
-            except:
-                pass
-            # When Z-range is not specified, set Z-min and Z-max to current Z position
-            current_z = self.stage.get_pos().z_mm * 1000
-            self.entry_minZ.setValue(current_z)
-            self.entry_maxZ.setValue(current_z)
-        else:
-            self.entry_minZ.valueChanged.connect(self.update_z_max)
-            self.entry_maxZ.valueChanged.connect(self.update_z_min)
-            self.entry_minZ.valueChanged.connect(self.update_Nz)
-            self.entry_maxZ.valueChanged.connect(self.update_Nz)
-            self.entry_deltaZ.valueChanged.connect(self.update_Nz)
-
-        # Update the layout
-        self.grid.update()
-        self.updateGeometry()
-        self.update()
-
-    def init_z(self, z_pos_mm=None):
-        if z_pos_mm is None:
-            z_pos_mm = self.stage.get_pos().z_mm
-
-        # block entry update signals
-        self.entry_minZ.blockSignals(True)
-        self.entry_maxZ.blockSignals(True)
-
-        # set entry range values bith to current z pos
-        self.entry_minZ.setValue(z_pos_mm * 1000)
-        self.entry_maxZ.setValue(z_pos_mm * 1000)
-        print("init z-level flexible:", self.entry_minZ.value())
-
-        # reallow updates from entry sinals (signal enforces min <= max when we update either entry)
-        self.entry_minZ.blockSignals(False)
-        self.entry_maxZ.blockSignals(False)
-
-    def set_z_min(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
-        self.entry_minZ.setValue(z_value)
-        self._reset_reflection_af_reference()
-
-    def set_z_max(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
-        self.entry_maxZ.setValue(z_value)
-
-    def update_z_min(self, z_pos_um):
-        if z_pos_um < self.entry_minZ.value():
-            self.entry_minZ.setValue(z_pos_um)
-            self._reset_reflection_af_reference()
-
-    def update_z_max(self, z_pos_um):
-        if z_pos_um > self.entry_maxZ.value():
-            self.entry_maxZ.setValue(z_pos_um)
-
-    def _reset_reflection_af_reference(self):
-        if (
-            self.checkbox_withReflectionAutofocus.isChecked()
-            and not self.multipointController.laserAutoFocusController.set_reference()
-        ):
-            error_dialog("Failed to set reference for reflection autofocus. Is the laser autofocus initialized?")
+    def update_z_order_dropdown_visibility(self):
+        """Re-apply the opt-in Z-stack order choice (ENABLE_Z_STACK_ORDER_SELECTION), e.g. after Preferences
+        changed it at runtime."""
+        self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+        self._update_laser_af_per_stack_state()
 
     def update_z(self):
         z_mm = self.stage.get_pos().z_mm
@@ -6838,13 +7589,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         ]
         location_str = f"x:{round(self.location_list[index,0],3)} mm  y:{round(self.location_list[index,1],3)} mm  z:{round(z_mm * 1000.0,3)} μm"
         self.dropdown_location_list.setItemText(index, location_str)
-
-    def update_Nz(self):
-        z_min = self.entry_minZ.value()
-        z_max = self.entry_maxZ.value()
-        dz = self.entry_deltaZ.value()
-        nz = math.ceil((z_max - z_min) / dz) + 1
-        self.entry_NZ.setValue(nz)
 
     def update_region_progress(self, current_fov, num_fovs):
         self._log.debug(f"Updating region progress for {current_fov=}, {num_fovs=}")
@@ -6989,16 +7733,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         No dialogs, no start_new_experiment, no run - the Start button and the fluidics protocol's
         "Apply current settings" share this. Returns None, or a reason nothing further should happen.
         """
-        if self.checkbox_set_z_range.isChecked():
-            # Set Z-range (convert from μm to mm)
-            minZ = self.entry_minZ.value() / 1000
-            maxZ = self.entry_maxZ.value() / 1000
-            self.multipointController.set_z_range(minZ, maxZ)
-        else:
-            z = self.stage.get_pos().z_mm
-            dz = self.entry_deltaZ.value()
-            Nz = self.entry_NZ.value()
-            self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
+        # No Set Z-range in this tab: locations keep their own z, the stack is dz & Nz from the current z
+        # (Hongquan, 2026-10-31). A piezo range left by the Wellplate tab must not leak into this run.
+        z = self.stage.get_pos().z_mm
+        dz = self.entry_deltaZ.value()
+        Nz = self.entry_NZ.value()
+        self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))  # dz is in um, z in mm
+        self.multipointController.set_piezo_z_range_um(None)
 
         if self.checkbox_useFocusMap.isChecked():
             self.focusMapWidget.fit_surface()
@@ -7009,11 +7750,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         # Set acquisition parameters
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_z_stacking_config(self.combobox_z_stack.currentData())
+        self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
         self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_laser_af_per_stack(self.laser_af_per_stack_to_start())
         self.multipointController.set_base_path(self.lineEdit_savingDir.text())
         self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
         self.multipointController.set_widget_type("flexible")
@@ -7195,11 +7939,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             self.dropdown_location_list.removeItem(index)
             self.table_location_list.removeRow(index)
 
-            # Remove scanCoordinates dictionaries and remove region overlay
-            self.scanCoordinates.region_centers.pop(region_id, None)
-            self.navigationViewer.deregister_fovs_from_image(
-                self.scanCoordinates.region_fov_coordinates.pop(region_id, [])
-            )
+            # Every per-region map, and the overlay via the planner's callback
+            self.scanCoordinates.remove_region(region_id)
 
             """
             # Reindex remaining regions and update UI
@@ -7337,13 +8078,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         else:  # ID changed
             new_id = val_edit
             self.location_ids[row] = new_id
-            # Update dictionary keys
-            if region_id in self.scanCoordinates.region_centers:
-                self.scanCoordinates.region_centers[new_id] = self.scanCoordinates.region_centers.pop(region_id)
-            if region_id in self.scanCoordinates.region_fov_coordinates:
-                self.scanCoordinates.region_fov_coordinates[new_id] = self.scanCoordinates.region_fov_coordinates.pop(
-                    region_id
-                )
+            self.scanCoordinates.rename_region(region_id, new_id)
 
         # Update UI
         location_str = f"x:{round(self.location_list[row,0],3)} mm  y:{round(self.location_list[row,1],3)} mm  z:{round(1000*self.location_list[row,2],3)} μm"
@@ -7483,6 +8218,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
+        self.multipointController.set_piezo_z_range_um(None)
 
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
@@ -7544,6 +8280,11 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.entry_NY.setEnabled(enabled)
         self.entry_deltaZ.setEnabled(enabled)
         self.entry_NZ.setEnabled(enabled)
+        self.combobox_z_order.setEnabled(enabled)
+        if enabled:
+            self._update_laser_af_per_stack_state()  # enabled only under its rule, not blanket
+        else:
+            self.checkbox_laserAfPerStack.setEnabled(False)
         self.entry_dt.setEnabled(enabled)
         self.entry_Nt.setEnabled(enabled)
         if not self.use_overlap:
@@ -7557,7 +8298,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withAutofocus.setEnabled(enabled)
         self.checkbox_withReflectionAutofocus.setEnabled(enabled)
         self.checkbox_stitchOutput.setEnabled(enabled)
-        self.checkbox_set_z_range.setEnabled(enabled)
 
         if exclude_btn_startAcquisition is not True:
             self.btn_startAcquisition.setEnabled(enabled)
@@ -7646,6 +8386,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Z-stack settings
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+            self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
+            self.combobox_z_stack.setCurrentIndex(
+                self.combobox_z_stack.findData(_z_stacking_config_offered(yaml_data.z_stacking_config))
+            )
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
@@ -7661,6 +8405,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Autofocus
             self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
             self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+            self.checkbox_laserAfPerStack.setChecked(yaml_data.laser_af_per_stack)
 
             # Load positions if present
             if yaml_data.flexible_positions:
@@ -7670,6 +8415,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Unblock all signals
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+            self._update_laser_af_per_stack_state()  # the loaded checkbox state, under the rule
 
             # Update FOV positions to reflect new NX, NY, delta values
             self.update_fov_positions()
@@ -7739,7 +8485,19 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 )
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+def _warn_if_coordinates_stale(widget, stamp):
+    """Shared by both load_coordinates widgets: stamped file + changed placement -> warn, still load."""
+    if stamp is None:
+        return
+    stale = staleness_warning(stamp, widget.scanCoordinates.format)
+    if stale:
+        widget._log.warning(stale)
+        QMessageBox.warning(widget, "Coordinates may be stale", stale)
+
+
+class WellplateMultiPointWidget(
+    AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, _ZRangeMixin, QFrame
+):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
@@ -7748,6 +8506,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
     signal_toggle_live_scan_grid = Signal(bool)  # enable/disable live scan grid
     # Signal to set acquisition running state from any thread (used by TCP server)
     signal_set_acquisition_running = Signal(bool, int, float)  # is_running, nz, delta_z_um
+
+    # Z parameters remembered while the Z controls are hidden; z_mode stays None until one was stored, so checking
+    # Z for the first time keeps the mode the dropdown was seeded with (INI default or cache).
+    INITIAL_STORED_Z_PARAMS = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": None}
 
     def __init__(
         self,
@@ -7799,9 +8561,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # Cache for loaded coordinates dataframe (restored when switching back to Load Coordinates mode)
         self.cached_loaded_coordinates_df = None
         self.cached_loaded_file_path = None
+        self.cached_loaded_stamp = None
 
         # Add state tracking for Z parameters
-        self.stored_z_params = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": "From Bottom"}
+        self.stored_z_params = dict(self.INITIAL_STORED_Z_PARAMS)
 
         # Add state tracking for Time parameters
         self.stored_time_params = {"dt": None, "nt": None}
@@ -7869,10 +8632,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # Add z-min and z-max entries
         self.entry_minZ = QDoubleSpinBox()
         self.entry_minZ.setKeyboardTracking(False)
-        self.entry_minZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_minZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_minZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_minZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to minimum
         self.entry_minZ.setSuffix(" μm")
         # self.entry_minZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -7885,10 +8645,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.entry_maxZ = QDoubleSpinBox()
         self.entry_maxZ.setKeyboardTracking(False)
-        self.entry_maxZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_maxZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_maxZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to maximum
         self.entry_maxZ.setSuffix(" μm")
         # self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -7932,9 +8689,15 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_Nt.setSingleStep(1)
         self.entry_Nt.setValue(1)
 
-        self.combobox_z_stack = QComboBox()
-        self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
-        self.combobox_z_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.combobox_z_order = QComboBox()
+        for order in Z_STACK_ORDERS:
+            self.combobox_z_order.addItem(order.title(), order)
+        self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(Z_STACK_ORDER))
+        self.combobox_z_order.setToolTip(
+            "Channel First: acquire every channel at each z level, then step z.\n"
+            "Z First: acquire the whole z stack in one channel, then switch channel."
+        )
+        self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)  # opt-in
 
         self.list_configurations = QListWidget()
         self.channel_sequence = enable_channel_sequence(
@@ -7972,9 +8735,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
         self._create_apply_channel_offset_checkbox()
+        self._create_laser_af_per_stack_checkbox()
 
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
         self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
+        self._reset_z_range_entries()  # the entries above follow the motor the stack runs on
 
         self.checkbox_stitchOutput = QCheckBox("Stitch Scans")
         self.checkbox_stitchOutput.setChecked(False)
@@ -8029,7 +8794,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_z.setChecked(False)
 
         self.combobox_z_mode = QComboBox()
-        self.combobox_z_mode.addItems(["From Bottom", "Set Range"])
+        self.combobox_z_mode.addItems(list(WELLPLATE_Z_MODES))
+        self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(self.multipointController.z_stacking_config))
+        self.combobox_z_mode.setToolTip(
+            "Where the z stack sits relative to each position's z: starting at it, or centred on it;\n"
+            "or Set Range for an explicit Z-min..Z-max (runs from Z-min up)."
+        )
         self.combobox_z_mode.setEnabled(False)  # Initially disabled since Z is unchecked
 
         z_layout = QHBoxLayout()
@@ -8120,6 +8890,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.dz_layout.addWidget(self.entry_deltaZ)
         self.dz_layout.addWidget(QLabel("Nz"))
         self.dz_layout.addWidget(self.entry_NZ)
+        self.dz_layout.addWidget(self.combobox_z_order)
 
         self.z_controls_dz_frame.setLayout(self.dz_layout)
         grid.addWidget(self.z_controls_dz_frame, 0, 0)
@@ -8204,6 +8975,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         if SUPPORT_LASER_AUTOFOCUS:
             options_layout.addWidget(self.checkbox_withReflectionAutofocus)
             options_layout.addWidget(self.checkbox_applyChannelOffset)
+            options_layout.addWidget(self.checkbox_laserAfPerStack)
         # options_layout.addWidget(self.checkbox_genAFMap)  # We are not using AF map now
         options_layout.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
@@ -8279,10 +9051,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
+        self.checkbox_withReflectionAutofocus.toggled.connect(lambda _c: self._update_laser_af_per_stack_state())
+        self.combobox_z_order.currentIndexChanged.connect(lambda _i: self._update_laser_af_per_stack_state())
+        self._update_laser_af_per_stack_state()
         self.checkbox_genAFMap.toggled.connect(self.multipointController.set_gen_focus_map_flag)
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_useFocusMap.toggled.connect(self.multipointController.set_manual_focus_map_flag)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
+        self.checkbox_usePiezo.toggled.connect(self._on_stack_motor_changed)
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
@@ -8322,10 +9098,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_Nt.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
         self.entry_deltaZ.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
         self.entry_NZ.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.combobox_z_order.currentIndexChanged.connect(self.save_multipoint_widget_config_to_cache)
         # Channel selection/order is persisted by self.channel_sequence (its own
         # cache), so it is intentionally NOT wired to this settings cache.
         self.checkbox_withAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
+        self.checkbox_laserAfPerStack.toggled.connect(self.save_multipoint_widget_config_to_cache)
         self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
 
     def enable_manual_ROI(self):
@@ -8371,8 +9149,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 "nt": self.entry_Nt.value(),
                 "dz": self.entry_deltaZ.value(),
                 "nz": self.entry_NZ.value(),
+                "z_order": self.combobox_z_order.currentData(),
                 "contrast_af": self.checkbox_withAutofocus.isChecked(),
                 "laser_af": self.checkbox_withReflectionAutofocus.isChecked(),
+                "laser_af_per_stack": self.checkbox_laserAfPerStack.isChecked(),
             }
 
             with open("cache/multipoint_widget_config.yaml", "w") as f:
@@ -8402,6 +9182,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_Nt.blockSignals(True)
             self.entry_deltaZ.blockSignals(True)
             self.entry_NZ.blockSignals(True)
+            self.combobox_z_order.blockSignals(True)
             self.list_configurations.blockSignals(True)
             self.checkbox_withAutofocus.blockSignals(True)
             self.checkbox_withReflectionAutofocus.blockSignals(True)
@@ -8429,7 +9210,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.checkbox_z.setChecked(settings.get("z_enabled", False))
 
             z_mode = settings.get("z_mode", "From Bottom")
-            if z_mode in ["From Bottom", "Set Range"]:
+            if z_mode in WELLPLATE_Z_MODES:
                 self.combobox_z_mode.setCurrentText(z_mode)
 
             self.checkbox_time.setChecked(settings.get("time_enabled", False))
@@ -8438,10 +9219,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_Nt.setValue(settings.get("nt", 1))
             self.entry_deltaZ.setValue(settings.get("dz", 1.0))
             self.entry_NZ.setValue(settings.get("nz", 1))
+            z_order_index = self.combobox_z_order.findData(settings.get("z_order", Z_STACK_ORDER))
+            if z_order_index >= 0:
+                self.combobox_z_order.setCurrentIndex(z_order_index)
 
             # Restore autofocus settings
             self.checkbox_withAutofocus.setChecked(settings.get("contrast_af", False))
             self.checkbox_withReflectionAutofocus.setChecked(settings.get("laser_af", False))
+            self.checkbox_laserAfPerStack.setChecked(settings.get("laser_af_per_stack", False))
 
             # Unblock signals
             self.checkbox_xy.blockSignals(False)
@@ -8454,9 +9239,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_Nt.blockSignals(False)
             self.entry_deltaZ.blockSignals(False)
             self.entry_NZ.blockSignals(False)
+            self.combobox_z_order.blockSignals(False)
             self.list_configurations.blockSignals(False)
             self.checkbox_withAutofocus.blockSignals(False)
             self.checkbox_withReflectionAutofocus.blockSignals(False)
+            # The restored Z / Z First / Laser AF state came in with signals blocked: re-apply the rule for the
+            # "AF per stack" checkbox (shown / enabled / pushed) from the loaded values.
+            self._update_laser_af_per_stack_state()
 
             # Update UI state based on loaded settings
             self.update_scan_control_ui()
@@ -8775,6 +9564,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         # Enable/disable the Z mode dropdown
         self.combobox_z_mode.setEnabled(checked)
+        self._update_laser_af_per_stack_state()  # the "AF per stack" checkbox goes with the z row
 
         if checked:
             # Z Stack enabled - restore stored parameters and show controls
@@ -8871,6 +9661,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.stored_z_params["z_max"] = self.entry_maxZ.value()
         self.stored_z_params["z_mode"] = self.combobox_z_mode.currentText()
 
+    def _on_stack_motor_changed(self):
+        """A range recorded on one motor means nothing on the other: restart it at the new motor's position."""
+        self.stored_z_params["z_min"] = self.stored_z_params["z_max"] = None
+        self._reset_z_range_entries()
+
     def restore_z_parameters(self):
         """Restore stored Z parameters when showing controls"""
         if self.stored_z_params["dz"] is not None:
@@ -8881,7 +9676,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_minZ.setValue(self.stored_z_params["z_min"])
         if self.stored_z_params["z_max"] is not None:
             self.entry_maxZ.setValue(self.stored_z_params["z_max"])
-        self.combobox_z_mode.setCurrentText(self.stored_z_params["z_mode"])
+        if self.stored_z_params["z_mode"] is not None:
+            self.combobox_z_mode.setCurrentText(self.stored_z_params["z_mode"])
 
     def hide_z_controls(self):
         """Hide Z-related controls and set single-slice parameters"""
@@ -8899,20 +9695,32 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                     widget.setVisible(False)
 
         # Set single-slice parameters
-        current_z = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        current_z = self._stack_z_um()
         self.entry_NZ.setValue(1)
         self.entry_minZ.setValue(current_z)
         self.entry_maxZ.setValue(current_z)
-        self.combobox_z_mode.blockSignals(True)
-        self.combobox_z_mode.setCurrentText("From Bottom")
-        self.combobox_z_mode.blockSignals(False)
+        # The Z mode is left alone: with Nz = 1 it does not matter, and resetting it here would drop the INI
+        # default or the user's choice every time Z is unchecked (and at start-up, when Z starts unchecked).
+
+    def _z_row_shown(self) -> bool:
+        return self.checkbox_z.isChecked()
+
+    def update_z_order_dropdown_visibility(self):
+        """Re-apply the opt-in Z-stack order choice (ENABLE_Z_STACK_ORDER_SELECTION), e.g. after Preferences
+        changed it at runtime: shown with the rest of the z row (Z checked) and only when the choice is on."""
+        self.combobox_z_order.setVisible(self.checkbox_z.isChecked() and control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+        self._update_laser_af_per_stack_state()
 
     def show_z_controls(self, visible):
         """Show Z-related controls"""
         # Show dz/Nz widgets
         for i in range(self.dz_layout.count()):
             widget = self.dz_layout.itemAt(i).widget()
-            if widget:
+            if widget is self.combobox_z_order:
+                # Opt-in choice (ENABLE_Z_STACK_ORDER_SELECTION): off, it stays hidden with the row shown, since
+                # the start path (_z_stack_order_to_start) ignores it and would silently run Channel First.
+                widget.setVisible(visible and control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+            elif widget:
                 widget.setVisible(visible)
 
         # Show/hide Z-min/Z-max based on dropdown selection AND visibility
@@ -9082,7 +9890,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
-        current_z = self.stage.get_pos().z_mm * 1000
+        current_z = self._stack_z_um()
         self.entry_minZ.setValue(current_z)
         if is_visible:
             self._reset_reflection_af_reference()
@@ -9146,28 +9954,20 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 # For glass slide, use default scan size
                 self.stored_xy_params["Select Wells"]["scan_size"] = 0.1
 
-            self.stored_xy_params["Select Wells"]["scan_shape"] = (
-                "Square" if self.scanCoordinates.format in ["384 well plate", "1536 well plate"] else "Circle"
-            )
+            self.stored_xy_params["Select Wells"]["scan_shape"] = default_scan_shape(self.scanCoordinates.well_shape)
 
         # change scan size to single FOV if XY is checked and mode is "Current Position"
         if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position":
             self.entry_scan_size.setValue(0.1)
 
     def set_default_shape(self):
-        if self.scanCoordinates.format in ["384 well plate", "1536 well plate"]:
-            self.combobox_shape.setCurrentText("Square")
-        # elif self.scanCoordinates.format in ["4 slide"]:
-        #     self.combobox_shape.setCurrentText("Rectangle")
-        elif self.scanCoordinates.format != 0:
-            self.combobox_shape.setCurrentText("Circle")
+        self.combobox_shape.setCurrentText(default_scan_shape(self.scanCoordinates.well_shape))
 
     def get_effective_well_size(self):
         well_size = self.scanCoordinates.well_size_mm
         shape = self.combobox_shape.currentText()
-        is_round_well = self.scanCoordinates.format not in ["384 well plate", "1536 well plate"]
         fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
-        return get_effective_well_size(well_size, fov_size_mm, shape, is_round_well)
+        return get_effective_well_size(well_size, fov_size_mm, shape, self.scanCoordinates.is_round_well)
 
     def reset_coordinates(self):
         # Called after acquisition - preserve scan_size, update coverage display
@@ -9210,10 +10010,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             overlap_percent = self.entry_overlap.value()
             fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
             shape = self.combobox_shape.currentText()
-            is_round_well = self.scanCoordinates.format not in ["384 well plate", "1536 well plate"]
 
             coverage = calculate_well_coverage(
-                scan_size, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well
+                scan_size, fov_size_mm, overlap_percent, shape, well_size_mm, self.scanCoordinates.is_round_well
             )
 
             self.entry_well_coverage.setValue(coverage)
@@ -9238,21 +10037,19 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_NZ.setValue(nz)
 
     def set_z_min(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        z_value = self._stack_z_um()
         self.entry_minZ.setValue(z_value)
         self._reset_reflection_af_reference()
 
     def set_z_max(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        z_value = self._stack_z_um()
         self.entry_maxZ.setValue(z_value)
 
     def goto_z_min(self):
-        z_value_mm = self.entry_minZ.value() / 1000  # Convert from μm to mm
-        self.stage.move_z_to(z_value_mm)
+        self._move_stack_z_to_um(self.entry_minZ.value())
 
     def goto_z_max(self):
-        z_value_mm = self.entry_maxZ.value() / 1000  # Convert from μm to mm
-        self.stage.move_z_to(z_value_mm)
+        self._move_stack_z_to_um(self.entry_maxZ.value())
 
     def update_z_min(self, z_pos_um):
         if z_pos_um < self.entry_minZ.value():
@@ -9273,18 +10070,17 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             if was_live:
                 self.liveController.start_live()
 
-    def init_z(self, z_pos_mm=None):
+    def init_z(self):
         # sets initial z range form the current z position used after startup of the GUI
-        if z_pos_mm is None:
-            z_pos_mm = self.stage.get_pos().z_mm
+        z_um = self._stack_z_um()
 
         # block entry update signals
         self.entry_minZ.blockSignals(True)
         self.entry_maxZ.blockSignals(True)
 
         # set entry range values bith to current z pos
-        self.entry_minZ.setValue(z_pos_mm * 1000)
-        self.entry_maxZ.setValue(z_pos_mm * 1000)
+        self.entry_minZ.setValue(z_um)
+        self.entry_maxZ.setValue(z_um)
         self._log.debug(f"Init z-level wellplate: {self.entry_minZ.value()}")
 
         # reallow updates from entry sinals (signal enforces min <= max when we update either entry)
@@ -9310,7 +10106,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         elif self.combobox_xy_mode.currentText() == "Current Position":
             pos = self.stage.get_pos()
             self.scanCoordinates.set_live_scan_coordinates(pos.x_mm, pos.y_mm, scan_size_mm, overlap_percent, shape)
-        elif self.combobox_xy_mode.currentText() == "Load Coordinates" and self.has_loaded_coordinates:
+        elif self._plan_is_loaded_file():
             # Loaded plans are owned by the load/restore/clear flow and have no scan
             # inputs to re-derive from. Falling through to the well-selector branch
             # below silently replaced a loaded plan with whatever wells were ticked
@@ -9401,17 +10197,16 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.scanCoordinates.sort_coordinates()
 
-        if self.combobox_z_mode.currentText() == "Set Range":
-            # Set Z-range (convert from μm to mm)
-            minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
-            maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
-            self.multipointController.set_z_range(minZ, maxZ)
-            self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
+        # Unchecking Z leaves the Z mode as it was (Nz = 1), so a "Set Range" there only counts with Z checked
+        if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() == "Set Range":
+            self._push_set_z_range()
+            self._log.debug(f"Set z-range: ({self.entry_minZ.value()}, {self.entry_maxZ.value()}) µm")
         else:
             z = self.stage.get_pos().z_mm
             dz = self.entry_deltaZ.value()
             Nz = self.entry_NZ.value()
-            self.multipointController.set_z_range(z, z + dz * (Nz - 1))
+            self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))  # dz is in um, z in mm
+            self.multipointController.set_piezo_z_range_um(None)
 
         if self.checkbox_useFocusMap.isChecked():
             # Try to fit the surface; on success set the surface fitter in the controller
@@ -9425,11 +10220,16 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_z_stacking_config(
+            _z_stacking_config_for_z_mode(self.combobox_z_mode.currentText())
+        )
+        self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
         self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_laser_af_per_stack(self.laser_af_per_stack_to_start())
         self.multipointController.set_base_path(self.lineEdit_savingDir.text())
         self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
         self.multipointController.set_widget_type("wellplate")
@@ -9570,6 +10370,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         # Restore scan controls visibility based on XY checkbox state
         if enabled:
+            # Every child was just enabled: the "AF per stack" box is enabled only under its rule (CodeRabbit).
+            self._update_laser_af_per_stack_state()
             self.update_scan_control_ui()
 
             # Restore mode dropdown states based on their respective checkboxes
@@ -9578,8 +10380,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             # Restore Z controls based on Z mode
             if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() == "Set Range":
-                # In Set Range mode, Nz should be disabled
+                # In Set Range mode, Nz comes from the range, and laser AF stays off (see toggle_z_range_controls)
                 self.entry_NZ.setEnabled(False)
+                self.checkbox_withReflectionAutofocus.setEnabled(False)
 
             # Restore coverage based on XY mode
             if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position":
@@ -9622,6 +10425,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
+        self.multipointController.set_piezo_z_range_um(None)
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
         self.multipointController.run_acquisition(acquire_current_fov=True)
@@ -9660,8 +10464,15 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.navigationViewer.clear_overlay()
         self.cached_loaded_coordinates_df = None
         self.cached_loaded_file_path = None
+        self.cached_loaded_stamp = None
         self.text_loaded_coordinates.clear()
         self._set_has_loaded_coordinates(False)
+
+    def _plan_is_loaded_file(self):
+        """Are the current regions the loaded file's rows (as opposed to wells
+        or a grid computed now)? The restore cache outlives a mode switch, so
+        the mode must be asked too."""
+        return self.combobox_xy_mode.currentText() == "Load Coordinates" and self.has_loaded_coordinates
 
     def _set_has_loaded_coordinates(self, loaded: bool):
         self.has_loaded_coordinates = loaded
@@ -9695,18 +10506,25 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
     def load_coordinates(self, file_path: str):
         """Load scan coordinates (optionally with per-FOV z) from a CSV file."""
         try:
-            df = pd.read_csv(file_path)
+            # Stamped or legacy-unstamped read; the shared loader owns column
+            # validation and the optional per-FOV z column.
+            df, stamp = read_scan_coordinates_csv(file_path)
             region_fov_coords, z_dropped = load_coordinate_regions_from_dataframe(self.scanCoordinates, df)
 
-            # Cache the dataframe and file path
+            # Cache the dataframe, file path and the file's own provenance
             self.cached_loaded_coordinates_df = df.copy()
             self.cached_loaded_file_path = file_path
+            self.cached_loaded_stamp = stamp
 
             _register_loaded_fovs(self, region_fov_coords, z_dropped)
 
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
             self.text_loaded_coordinates.setText(f"Loaded: {file_path}")
             self._set_has_loaded_coordinates(True)
+
+            # The file stores ABSOLUTE stage positions: warn (but still load) if
+            # the placement changed since it was saved.
+            _warn_if_coordinates_stale(self, stamp)
 
         except Exception as e:
             self._log.error(f"Failed to load coordinates: {str(e)}")
@@ -9729,6 +10547,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         folder_name = os.path.basename(folder_path)
         current_objective = self.objectiveStore.current_objective
         z_current_mm = self.stage.get_pos().z_mm
+        # Stamped, not a bare to_csv: these are ABSOLUTE stage positions, so the
+        # file records the placement they were computed under. Rows copied
+        # unchanged from a loaded file keep THAT file's label - re-stamping them
+        # with today's placement would silence the staleness warning they raised
+        # on load. One stamp for every objective's file: placement is per plan.
+        stamp = self.cached_loaded_stamp if self._plan_is_loaded_file() else make_stamp(self.scanCoordinates.format)
 
         def _save_for_objective(objective_name):
             self.objectiveStore.set_current_objective(objective_name)
@@ -9736,7 +10560,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             z_mm = parfocal_adjusted_z_mm(current_objective, objective_name, z_current_mm)
             df = coordinate_rows_for_save(self.scanCoordinates.region_fov_coordinates, z_mm)
             file_path = os.path.join(folder_path, f"{folder_name}_{objective_name}.csv")
-            df.to_csv(file_path, index=False)
+            write_scan_coordinates_csv(file_path, df, stamp)
             self._log.info(f"Saved scan coordinates to {file_path}")
 
         try:
@@ -9793,19 +10617,21 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         for widget in widgets_to_block:
             widget.blockSignals(True)
 
+        # Only a piezo range marks Set Range in the YAML: z_range_mm is written for every z mode.
+        piezo_z_range_um = yaml_data.piezo_z_range_um if yaml_data.use_piezo else None
+
         try:
             # Z-stack settings
             self.checkbox_z.setChecked(yaml_data.nz > 1)
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+            self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
 
-            # Z mode - map YAML config to combobox text
-            z_mode_map = {
-                "FROM BOTTOM": "From Bottom",
-                "SET RANGE": "Set Range",
-            }
-            z_mode = z_mode_map.get(yaml_data.z_stacking_config, "From Bottom")
-            self.combobox_z_mode.setCurrentText(z_mode)
+            # Z mode - Set Range for a saved piezo range, otherwise the YAML's z-stacking config as the dropdown shows it
+            if piezo_z_range_um is not None:
+                self.combobox_z_mode.setCurrentText("Set Range")
+            else:
+                self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(yaml_data.z_stacking_config))
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
@@ -9833,6 +10659,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Autofocus
             self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
             self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+            self.checkbox_laserAfPerStack.setChecked(yaml_data.laser_af_per_stack)
 
             # XY mode - set to Select Wells for wellplate YAML
             if yaml_data.xy_mode in ["Current Position", "Select Wells", "Manual", "Load Coordinates"]:
@@ -9849,6 +10676,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Unblock all signals
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+            self._update_laser_af_per_stack_state()  # the loaded checkbox state, under the rule
+
+            # The Piezo Z-Stack checkbox changed with its signals blocked: give the Z-min/Z-max entries
+            # the loaded motor's travel limits (its toggled handler does this on a click).
+            self._on_stack_motor_changed()
 
             # Enable/disable mode dropdowns based on checkbox states
             self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
@@ -9859,6 +10691,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.update_control_visibility()
             self.update_tab_styles()
             self.update_coordinates()
+
+            # After update_control_visibility, which starts both entries at the current position
+            if piezo_z_range_um is not None:
+                self.entry_minZ.setValue(piezo_z_range_um[0])
+                self.entry_maxZ.setValue(piezo_z_range_um[1])
 
     def _load_well_regions(self, regions):
         """Load well regions from YAML and select them in the well selector."""
@@ -10903,6 +11740,11 @@ class AlignmentWidget(QWidget):
 
 
 class NapariMultiChannelWidget(QWidget):
+    # Writing a frame into its layer is a cheap copy, but refreshing the viewer re-slices
+    # every layer and recomputes its thumbnail, so refreshes are coalesced to at most one
+    # per interval. Without this, a large z-stack queues frames faster than the GUI thread
+    # can draw them and the window stops responding.
+    MIN_REFRESH_INTERVAL_S = 0.1
 
     def __init__(self, objectiveStore, camera, contrastManager, grid_enabled=False, parent=None):
         super().__init__(parent)
@@ -10922,6 +11764,14 @@ class NapariMultiChannelWidget(QWidget):
         self.viewer_scale_initialized = False
         self.update_layer_count = 0
         self.grid_enabled = grid_enabled
+        # The viewer's 2D/3D mode before the acquisition switched it to 2D; None when idle.
+        self._ndisplay_before_acquisition = None
+        # Z index of the latest complete channel set, shown by the next coalesced refresh.
+        self._pending_z_index = None
+        self._next_refresh_time = 0.0
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.timeout.connect(self._refreshDisplay)
 
         # Initialize a napari Viewer without showing its standalone window.
         self.initNapariViewer()
@@ -10931,6 +11781,7 @@ class NapariMultiChannelWidget(QWidget):
         if self.grid_enabled:
             self.viewer.grid.enabled = True
         self.viewer.dims.axis_labels = ["Z-axis", "Y-axis", "X-axis"]
+        self.viewer.dims.events.ndisplay.connect(self._onNdisplayChanged)
         self.viewerWidget = self.viewer.window._qt_window
         self.layout = QVBoxLayout()
         self.layout.addWidget(self.viewerWidget)
@@ -11003,6 +11854,14 @@ class NapariMultiChannelWidget(QWidget):
         self.layers_initialized = True
         self.update_layer_count = 0
 
+        # In 3D, every refresh max-projects the whole (Nz, H, W) canvas of every layer, which
+        # takes seconds for a large z-stack. Show 2D while acquiring; finishAcquisition()
+        # restores the user's mode.
+        if self._ndisplay_before_acquisition is None:
+            ndisplay = self.viewer.dims.ndisplay
+            self.viewer.dims.ndisplay = 2  # before recording it, so _onNdisplayChanged ignores this switch
+            self._ndisplay_before_acquisition = ndisplay
+
     def updateLayers(self, image, x, y, k, channel_name):
         """Updates the appropriate slice of the canvas with the new image data."""
         rgb = len(image.shape) == 3
@@ -11055,13 +11914,48 @@ class NapariMultiChannelWidget(QWidget):
 
         layer = self.viewer.layers[channel_name]
         layer.data[k] = image
-        layer.contrast_limits = self.contrastManager.get_limits(channel_name)
+        limits = self.contrastManager.get_limits(channel_name)
+        # The setter recomputes the layer thumbnail even when the limits are unchanged.
+        if list(layer.contrast_limits) != list(limits):
+            layer.contrast_limits = limits
         self.update_layer_count += 1
         if self.update_layer_count % len(self.channels) == 0:
-            if self.Nz > 1:
-                self.viewer.dims.set_point(0, k * self.dz_um)
+            self._pending_z_index = k
+            if not self._refresh_timer.isActive():
+                delay_s = max(0.0, self._next_refresh_time - time.monotonic())
+                self._refresh_timer.start(int(delay_s * 1000))
+
+    def _refreshDisplay(self):
+        """Show the latest complete channel set; data written since the last refresh appears now."""
+        start = time.monotonic()
+        k, self._pending_z_index = self._pending_z_index, None
+        point_before = self.viewer.dims.point
+        if k is not None and self.Nz > 1:
+            self.viewer.dims.set_point(0, k * self.dz_um)
+        # Moving to a new plane re-slices every layer; otherwise the new data went into the
+        # plane already on screen, so the layers have to be refreshed explicitly.
+        if self.viewer.dims.point == point_before:
             for layer in self.viewer.layers:
                 layer.refresh()
+        # Give the event loop at least twice as long as the refresh took, so even a slow
+        # refresh (e.g. the user switched to 3D mid-acquisition) can't starve the GUI.
+        elapsed = time.monotonic() - start
+        self._next_refresh_time = time.monotonic() + max(self.MIN_REFRESH_INTERVAL_S, 2 * elapsed)
+
+    def finishAcquisition(self):
+        """Draw the final state now and restore the 2D/3D mode the acquisition replaced."""
+        self._refresh_timer.stop()
+        if self._ndisplay_before_acquisition is None:
+            return  # no frame of this acquisition reached the viewer
+        self._refreshDisplay()
+        self.viewer.dims.ndisplay = self._ndisplay_before_acquisition
+        self._ndisplay_before_acquisition = None
+
+    def _onNdisplayChanged(self, event=None):
+        # A 2D/3D switch the user makes mid-acquisition is the mode to end in, not the one from
+        # before the run.
+        if self._ndisplay_before_acquisition is not None:
+            self._ndisplay_before_acquisition = self.viewer.dims.ndisplay
 
     def signalContrastLimits(self, event):
         layer = event.source
@@ -11808,9 +12702,60 @@ class LaserAutofocusControlWidget(QFrame):
             self.liveController.start_live()
 
 
+class SampleFormatVisibilityDialog(QDialog):
+    """Checklist of every sample format; unchecked ones are hidden from the dropdowns."""
+
+    def __init__(self, current_format, disabled, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Manage Sample Formats")
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Show in dropdown:"))
+
+        # Disabled names this build has no definition for (a user format whose
+        # file is unreadable right now, a list copied from another machine)
+        # are not shown, but must survive the save.
+        self._unlisted_disabled = [f for f in disabled if f not in WELLPLATE_FORMAT_SETTINGS]
+
+        self.format_list = QListWidget(self)
+        for format_ in WELLPLATE_FORMAT_SETTINGS:
+            item = QListWidgetItem(format_)
+            item.setData(Qt.UserRole, format_)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked if format_ in disabled else Qt.Checked)
+            if format_ == current_format:
+                item.setText(f"{format_}  (in use)")
+                item.setToolTip("Stays in the dropdown while it is loaded, even if disabled.")
+            self.format_list.addItem(item)
+        layout.addWidget(self.format_list)
+
+        buttons = QHBoxLayout()
+        show_all_button = QPushButton("Show all")
+        show_all_button.clicked.connect(self.show_all)
+        buttons.addWidget(show_all_button)
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        buttons.addWidget(button_box)
+        layout.addLayout(buttons)
+
+    def show_all(self):
+        for i in range(self.format_list.count()):
+            self.format_list.item(i).setCheckState(Qt.Checked)
+
+    def disabled_formats(self):
+        unchecked = [
+            self.format_list.item(i).data(Qt.UserRole)
+            for i in range(self.format_list.count())
+            if self.format_list.item(i).checkState() != Qt.Checked
+        ]
+        return unchecked + self._unlisted_disabled
+
+
 class WellplateFormatWidget(QWidget):
 
-    signalWellplateSettings = Signal(str, float, float, int, int, float, float, int, int, int)
+    # One object instead of 10 positional args: slots with shorter signatures
+    # used to silently drop the trailing arguments in transit.
+    signalWellplateSettings = Signal(object)
 
     def __init__(self, stage: AbstractStage, navigationViewer, streamHandler, liveController):
         super().__init__()
@@ -11835,54 +12780,112 @@ class WellplateFormatWidget(QWidget):
         if index >= 0:
             self.comboBox.setCurrentIndex(index)
 
-    def populate_combo_box(self):
+    def populate_combo_box(self, current=None):
+        """`current`: the plate that will be selected, if not self.wellplate_format.
+
+        That plate is listed even when disabled, so the dropdown never names a
+        plate other than the loaded one; once it is unloaded it goes.
+        """
         self.comboBox.clear()
-        for format_, settings in WELLPLATE_FORMAT_SETTINGS.items():
+        current = self.wellplate_format if current is None else current
+        for format_ in listed_sample_formats(WELLPLATE_FORMAT_SETTINGS, always=(current,)):
             self.comboBox.addItem(format_, format_)
 
-        # Add custom item and set its font to italic
-        self.comboBox.addItem("calibrate format...", "custom")
-        index = self.comboBox.count() - 1  # Get the index of the last item
+        # Action items, in italics to set them apart from the formats
         font = QFont()
         font.setItalic(True)
-        self.comboBox.setItemData(index, font, Qt.FontRole)
+        for text, data in (("calibrate format...", "custom"), ("manage formats...", "manage")):
+            self.comboBox.addItem(text, data)
+            self.comboBox.setItemData(self.comboBox.count() - 1, font, Qt.FontRole)
 
     def wellplateChanged(self, index):
-        self.wellplate_format = self.comboBox.itemData(index)
-        if self.wellplate_format == "custom":
+        selected = self.comboBox.itemData(index)
+        if selected == "custom":
+            # "calibrate format..." is an action, not a format: wellplate_format
+            # keeps naming the plate that is loaded while the dialog is open.
+            # The dialog's holder-rotation mode measures on that plate, and the
+            # Rejected branch reverts the dropdown to it. Overwriting it with
+            # "custom" first stranded the dropdown on cancel (findData("custom")
+            # re-selected "calibrate format...") and handed the holder mode a
+            # format that does not exist.
             calibration_dialog = WellplateCalibration(
                 self, self.stage, self.navigationViewer, self.streamHandler, self.liveController
             )
             result = calibration_dialog.exec_()
             if result == QDialog.Rejected:
-                # If the dialog was closed without adding a new format, revert to the previous selection
+                # Revert to the previous selection. This is the ONLY revert path;
+                # WellplateCalibration.reject() deliberately does not try to
+                # second-guess it (it used to, with an int-vs-string findData
+                # mismatch that could not find anything).
                 prev_index = self.comboBox.findData(self.wellplate_format)
-                self.comboBox.setCurrentIndex(prev_index)
+                if prev_index >= 0:
+                    self.comboBox.setCurrentIndex(prev_index)
+        elif selected == "manage":
+            self.manage_formats()
         else:
+            self.wellplate_format = selected
+            self._relist_silently()  # e.g. drop the disabled plate just switched away from
             self.setWellplateSettings(self.wellplate_format)
+
+    def _rebuild_and_select(self, format_id):
+        """Rebuild the list for format_id as the plate in use and select it,
+        emitting nothing. Returns its index, -1 if it is not a known format."""
+        self.comboBox.blockSignals(True)
+        try:
+            self.populate_combo_box(current=format_id)
+            index = self.comboBox.findData(format_id)
+            if index >= 0:
+                self.comboBox.setCurrentIndex(index)
+        finally:
+            self.comboBox.blockSignals(False)
+        return index
+
+    def _relist_silently(self):
+        """Rebuild the format items and reselect the loaded plate, emitting nothing."""
+        self._rebuild_and_select(self.wellplate_format)
+
+    def manage_formats(self):
+        """Edit which formats the dropdowns list. The loaded plate does not change."""
+        try:
+            disabled = load_disabled_sample_formats_for_edit()
+        except YamlStoreDamaged as e:
+            # Editing from an empty list would save over whatever it still holds.
+            QMessageBox.critical(self, "Disabled Formats Unreadable", str(e))
+        else:
+            dialog = SampleFormatVisibilityDialog(self.wellplate_format, disabled, self)
+            if dialog.exec_() == QDialog.Accepted:
+                try:
+                    save_disabled_sample_formats(dialog.disabled_formats())
+                except Exception as e:
+                    QMessageBox.critical(self, "Save Failed", f"Could not save the disabled formats:\n{e}")
+        # Rebuild (or just step back off "manage formats...") without emitting:
+        # the loaded plate is unchanged, so nothing downstream needs telling.
+        self._relist_silently()
+
+    def select_format_silently(self, format_id):
+        """Rebuild the combo and select format_id with exactly ONE settings emission.
+
+        populate_combo_box() starts with comboBox.clear(), so doing this with
+        signals live fires currentIndexChanged three times (-1, 0, target) - the
+        index-0 emission momentarily reconfigures the whole app for whatever
+        format happens to be first in the dict.
+        """
+        # List for the plate being selected, not the one it replaces: format_id
+        # shows even if disabled, and a disabled outgoing plate is dropped.
+        index = self._rebuild_and_select(format_id)
+        if index >= 0:
+            self.wellplateChanged(index)
+        else:
+            self._relist_silently()  # unknown format: the loaded plate stays listed and selected
+        return index
 
     def setWellplateSettings(self, wellplate_format):
         if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
-            settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
+            self.signalWellplateSettings.emit(WellplateSettings.from_format(wellplate_format))
         elif wellplate_format == "glass slide":
-            self.signalWellplateSettings.emit("glass slide", 0, 0, 0, 0, 0, 0, 0, 1, 1)
-            return
+            self.signalWellplateSettings.emit(WellplateSettings.glass_slide())
         else:
             print(f"Wellplate format {wellplate_format} not recognized")
-            return
-
-        self.signalWellplateSettings.emit(
-            wellplate_format,
-            settings["a1_x_mm"],
-            settings["a1_y_mm"],
-            settings["a1_x_pixel"],
-            settings["a1_y_pixel"],
-            settings["well_size_mm"],
-            settings["well_spacing_mm"],
-            settings["number_of_skip"],
-            settings["rows"],
-            settings["cols"],
-        )
 
     def getWellplateSettings(self, wellplate_format):
         if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
@@ -11904,49 +12907,11 @@ class WellplateFormatWidget(QWidget):
             return None
         return settings
 
-    def add_custom_format(self, name, settings):
-        WELLPLATE_FORMAT_SETTINGS[name] = settings
-        self.populate_combo_box()
-        index = self.comboBox.findData(name)
-        if index >= 0:
-            self.comboBox.setCurrentIndex(index)
-        self.wellplateChanged(index)
-
     def save_formats_to_csv(self):
+        # Atomic, so an interrupted write cannot leave a cache that load_formats()
+        # chokes on at import time. Column order lives with the reader in _def.
         cache_path = os.path.join("cache", self.csv_path)
-        os.makedirs("cache", exist_ok=True)
-
-        fieldnames = [
-            "format",
-            "a1_x_mm",
-            "a1_y_mm",
-            "a1_x_pixel",
-            "a1_y_pixel",
-            "well_size_mm",
-            "well_spacing_mm",
-            "number_of_skip",
-            "rows",
-            "cols",
-        ]
-        with open(cache_path, "w", newline="") as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            for format_, settings in WELLPLATE_FORMAT_SETTINGS.items():
-                writer.writerow({**{"format": format_}, **settings})
-
-    @staticmethod
-    def parse_csv_row(row):
-        return {
-            "a1_x_mm": float(row["a1_x_mm"]),
-            "a1_y_mm": float(row["a1_y_mm"]),
-            "a1_x_pixel": int(row["a1_x_pixel"]),
-            "a1_y_pixel": int(row["a1_y_pixel"]),
-            "well_size_mm": float(row["well_size_mm"]),
-            "well_spacing_mm": float(row["well_spacing_mm"]),
-            "number_of_skip": int(row["number_of_skip"]),
-            "rows": int(row["rows"]),
-            "cols": int(row["cols"]),
-        }
+        control._def.write_sample_formats_csv(cache_path, WELLPLATE_FORMAT_SETTINGS)
 
 
 class WellplateCalibration(QDialog):
@@ -11964,6 +12929,11 @@ class WellplateCalibration(QDialog):
         self.center_point = None  # For center point calibration method
         self.show_virtual_joystick = True  # FLAG
         self.initUI()
+        # With a well plate loaded, open ready to recalibrate it: the existing
+        # format list already starts on that plate. A glass slide (not listed)
+        # keeps the Add New Format default.
+        if self.existing_format_combo.currentData() == self.wellplateFormatWidget.wellplate_format:
+            self.calibrate_format_radio.setChecked(True)
         # Initially allow click-to-move and hide the joystick controls
         self.clickToMoveCheckbox.setChecked(True)
         self.toggleVirtualJoystick(False)
@@ -11980,12 +12950,15 @@ class WellplateCalibration(QDialog):
         self.mode_group = QButtonGroup(self)
         self.new_format_radio = QRadioButton("Add New Format")
         self.calibrate_format_radio = QRadioButton("Calibrate Existing Format")
+        self.holder_rotation_radio = QRadioButton("Measure Holder Rotation")
         self.mode_group.addButton(self.new_format_radio)
         self.mode_group.addButton(self.calibrate_format_radio)
+        self.mode_group.addButton(self.holder_rotation_radio)
         self.new_format_radio.setChecked(True)
 
         left_layout.addWidget(self.new_format_radio)
         left_layout.addWidget(self.calibrate_format_radio)
+        left_layout.addWidget(self.holder_rotation_radio)
 
         # Existing format selection (initially hidden)
         self.existing_format_combo = QComboBox(self)
@@ -11997,6 +12970,7 @@ class WellplateCalibration(QDialog):
         # Connect radio buttons to toggle visibility
         self.new_format_radio.toggled.connect(self.toggle_input_mode)
         self.calibrate_format_radio.toggled.connect(self.toggle_input_mode)
+        self.holder_rotation_radio.toggled.connect(self.toggle_input_mode)
 
         # New format inputs container (hidden when calibrating existing format)
         self.new_format_widget = QWidget()
@@ -12149,6 +13123,13 @@ class WellplateCalibration(QDialog):
         self.center_point_widget.hide()  # Initially hidden
         left_layout.addWidget(self.center_point_widget)
 
+        # Holder rotation mode (initially hidden). All state lives in a pure
+        # HolderAlignmentSession; this widget is a thin view over it.
+        self.holder_session = None
+        self._build_holder_widget()
+        self.holder_widget.hide()
+        left_layout.addWidget(self.holder_widget)
+
         # Add 'Click to Move' checkbox
         self.clickToMoveCheckbox = QCheckBox("Click to Move")
         self.clickToMoveCheckbox.stateChanged.connect(self.toggleClickToMove)
@@ -12295,22 +13276,398 @@ class WellplateCalibration(QDialog):
 
     def populate_existing_formats(self):
         self.existing_format_combo.clear()
+        # Every format, disabled ones marked: this is where a hidden plate gets
+        # recalibrated or edited (which re-enables it).
+        disabled = load_disabled_sample_formats()
         for format_ in WELLPLATE_FORMAT_SETTINGS:
-            self.existing_format_combo.addItem(self._format_display_name(format_), format_)
+            # nothing to calibrate on a glass slide, and the user-format model
+            # could not save it anyway (spacing must be positive)
+            if has_well_grid(control._def.get_wellplate_settings(format_)):
+                label = self._format_display_name(format_)
+                if format_ in disabled:
+                    label += "  (disabled)"
+                self.existing_format_combo.addItem(label, format_)
+        # Start on the loaded plate: it is the one on the stage. (A glass slide
+        # is not listed, so the first plate stays selected.)
+        index = self.existing_format_combo.findData(self.wellplateFormatWidget.wellplate_format)
+        if index >= 0:
+            self.existing_format_combo.setCurrentIndex(index)
 
     def toggle_input_mode(self):
-        is_new_format = self.new_format_radio.isChecked()
+        # The mode radios share an exclusive QButtonGroup: exactly one is true.
+        is_new = self.new_format_radio.isChecked()
+        is_existing = self.calibrate_format_radio.isChecked()
+        is_holder = self.holder_rotation_radio.isChecked()
 
-        self.new_format_widget.setVisible(is_new_format)
-        self.center_well_size_label.setVisible(is_new_format)
-        self.center_well_size_input.setVisible(is_new_format)
+        self.new_format_widget.setVisible(is_new)
+        self.center_well_size_label.setVisible(is_new)
+        self.center_well_size_input.setVisible(is_new)
 
-        self.existing_format_combo.setVisible(not is_new_format)
-        self.existing_params_group.setVisible(not is_new_format)
-        self.update_params_button.setVisible(not is_new_format)
+        self.existing_format_combo.setVisible(is_existing)
+        self.existing_params_group.setVisible(is_existing)
+        self.update_params_button.setVisible(is_existing)
 
-        if not is_new_format:
+        # The per-A1 method/points UI and the Calibrate button belong to the
+        # two format modes; the holder mode has its own flow and Save.
+        self.calibration_method_group.setVisible(not is_holder)
+        self._sync_method_panel()
+        self.calibrateButton.setVisible(not is_holder)
+        self.holder_widget.setVisible(is_holder)
+
+        if is_holder:
+            self._enter_holder_mode()
+        elif is_existing:
             self.load_existing_format_values()
+
+    # ------------------------------------------------------------------------
+    # Holder rotation mode - a thin view over HolderAlignmentSession
+    # ------------------------------------------------------------------------
+
+    def _build_holder_widget(self):
+        self.holder_widget = QWidget()
+        layout = QVBoxLayout(self.holder_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        status_row = QHBoxLayout()
+        self.holder_status_label = QLabel("")
+        self.holder_status_label.setWordWrap(True)
+        self.holder_clear_button = QPushButton("Clear Rotation")
+        self.holder_clear_button.clicked.connect(self._holder_clear)
+        status_row.addWidget(self.holder_status_label, 1)
+        status_row.addWidget(self.holder_clear_button)
+        layout.addLayout(status_row)
+
+        self.holder_method_label = QLabel("")
+        self.holder_method_label.setWordWrap(True)
+        layout.addWidget(self.holder_method_label)
+
+        corner_row = QHBoxLayout()
+        self.holder_corner_label = QLabel("Corner (same on every well):")
+        self.holder_corner_combo = QComboBox()
+        for feature in CORNER_FEATURES:
+            self.holder_corner_combo.addItem(feature.replace("corner_", "").replace("_", " "), feature)
+        self.holder_corner_combo.currentIndexChanged.connect(self._holder_corner_changed)
+        corner_row.addWidget(self.holder_corner_label)
+        corner_row.addWidget(self.holder_corner_combo)
+        layout.addLayout(corner_row)
+
+        # One row per reference well, in the order the operator works it:
+        # which well -> drive there -> touch it -> what was recorded.
+        wells_grid = QGridLayout()
+        self.holder_well_edits = []
+        self.holder_goto_buttons = []
+        self.holder_record_buttons = []
+        self.holder_well_status = []
+        for i in range(REFERENCE_WELL_SLOTS):
+            edit = QLineEdit()
+            edit.setFixedWidth(60)
+            edit.editingFinished.connect(lambda index=i: self._holder_nominate(index))
+            goto = QPushButton("Go to")
+            goto.clicked.connect(lambda checked=False, index=i: self._holder_goto_reference(index))
+            record = QPushButton("Set Point")
+            record.clicked.connect(lambda checked=False, index=i: self._holder_record(index))
+            status = QLabel("")
+            wells_grid.addWidget(edit, i, 0)
+            wells_grid.addWidget(goto, i, 1)
+            wells_grid.addWidget(record, i, 2)
+            wells_grid.addWidget(status, i, 3)
+            self.holder_well_edits.append(edit)
+            self.holder_goto_buttons.append(goto)
+            self.holder_record_buttons.append(record)
+            self.holder_well_status.append(status)
+        wells_grid.setColumnStretch(3, 1)
+        layout.addLayout(wells_grid)
+
+        self.holder_fit_label = QLabel("")
+        self.holder_fit_label.setWordWrap(True)
+        layout.addWidget(self.holder_fit_label)
+
+        # Check row: a well the fit did NOT use, same shape as the rows above.
+        check_row = QHBoxLayout()
+        check_row.addWidget(QLabel("Check another well at the same point:"))
+        self.holder_check_edit = QLineEdit()
+        self.holder_check_edit.setFixedWidth(60)
+        self.holder_check_edit.setPlaceholderText("well")
+        self.holder_check_goto_button = QPushButton("Go to")
+        self.holder_check_goto_button.clicked.connect(self._holder_goto_check)
+        self.holder_check_button = QPushButton("Measure Error")
+        self.holder_check_button.clicked.connect(self._holder_record_check)
+        check_row.addWidget(self.holder_check_edit)
+        check_row.addWidget(self.holder_check_goto_button)
+        check_row.addWidget(self.holder_check_button)
+        check_row.addStretch(1)
+        layout.addLayout(check_row)
+
+        self.holder_check_label = QLabel("")
+        self.holder_check_label.setWordWrap(True)
+        layout.addWidget(self.holder_check_label)
+
+        self.holder_save_button = QPushButton("Save Holder Rotation")
+        self.holder_save_button.clicked.connect(self._holder_save)
+        layout.addWidget(self.holder_save_button)
+
+        # Everything that needs a fit - enabled and disabled as one.
+        self.holder_fit_widgets = (
+            self.holder_save_button,
+            self.holder_check_edit,
+            self.holder_check_goto_button,
+            self.holder_check_button,
+        )
+
+    def _enter_holder_mode(self):
+        """(Re)create the session for the CURRENTLY selected plate format."""
+        format_ = self.wellplateFormatWidget.wellplate_format
+        # The saved angle belongs to the machine: clearable whatever is loaded.
+        self.holder_clear_button.setEnabled(plate_holder_record_exists())
+        try:
+            self.holder_session = HolderAlignmentSession(format_)
+        except SessionError as e:
+            self.holder_session = None
+            self.holder_status_label.setText(str(e))
+            for widget in (
+                self.holder_corner_combo,
+                *self.holder_fit_widgets,
+                *self.holder_goto_buttons,
+                *self.holder_record_buttons,
+            ):
+                widget.setEnabled(False)
+            return
+
+        session = self.holder_session
+        # One row per slot; a plate with fewer reachable wells leaves the rest
+        # hidden (zip_longest pads the wells with None).
+        for well, edit, goto, record, status in itertools.zip_longest(
+            session.reference_wells,
+            self.holder_well_edits,
+            self.holder_goto_buttons,
+            self.holder_record_buttons,
+            self.holder_well_status,
+        ):
+            for widget in (edit, goto, record, status):
+                widget.setVisible(well is not None)
+                widget.setEnabled(well is not None)
+            edit.setText(well.well_id if well else "")
+            status.setText("")  # _holder_refresh fills the live rows
+        self.holder_check_edit.setText("")  # setText, not clear(): it also resets isModified
+        self.holder_check_label.clear()
+        is_square = session.touches_per_well == 1
+        self.holder_corner_label.setVisible(is_square)
+        self.holder_corner_combo.setVisible(is_square)
+        self.holder_corner_combo.setEnabled(True)
+        # Approaching every well from the same direction makes stage backlash a
+        # CONSTANT offset across the touches, and the fit cancels constant
+        # offsets exactly (translation is discarded in this mode regardless) -
+        # so an instruction buys what motion choreography would, with no
+        # invented backoff constants.
+        approach_hint = "Approach every well from the same direction - backlash then cancels out of the fit."
+        n_wells = len(session.reference_wells)
+        self.holder_method_label.setText(
+            f"{format_}: touch the SAME corner on each of the {n_wells} wells below.\n{approach_hint}"
+            if is_square
+            else f"{format_}: touch 3 points on the rim of each of the {n_wells} wells below.\n{approach_hint}"
+        )
+        self._holder_refresh()
+
+    def _holder_refresh(self):
+        session = self.holder_session
+        self.holder_status_label.setText(session.status_line())
+        for i, well in enumerate(session.reference_wells):
+            done = well.point_mm is not None
+            if done:
+                text = f"({well.point_mm[0]:.3f}, {well.point_mm[1]:.3f}) mm"
+                if well.fitted_radius_mm is not None:
+                    text += f", r = {well.fitted_radius_mm:.3f} mm"
+            else:
+                text = f"{len(well.touches)}/{session.touches_per_well} touches"
+            self.holder_well_status[i].setText(text)
+        # The corner is locked once any touch exists (it applies to every well).
+        if session.touches_per_well == 1:
+            self.holder_corner_combo.setEnabled(not any(w.touches for w in session.reference_wells))
+
+        if not session.can_fit:
+            self.holder_fit_label.setText(
+                f"{session.wells_measured}/{len(session.reference_wells)} wells measured "
+                f"({MIN_WELLS_TO_FIT} minimum to fit)."
+            )
+            for widget in self.holder_fit_widgets:
+                widget.setEnabled(False)
+            return
+        result = session.fit()
+        residuals = ", ".join(f"{r:.0f}" for r in result.residuals_um)
+        lines = [
+            f"Rotation {result.rotation_deg:.2f} deg  (scale QC {result.fitted_scale:.5f})",
+            f"Click noise sigma {result.sigma_hat_um:.0f} um; residuals [{residuals}] um",
+            f"Predicted {result.predicted_rms_um:.0f} um RMS / {result.predicted_p95_um:.0f} um p95 at {result.worst_well}",
+        ]
+        for gate in result.gates:
+            lines.append(("REJECTED: " if gate.level == "reject" else "Check: ") + gate.message)
+        self.holder_fit_label.setText("\n".join(lines))
+        for widget in self.holder_fit_widgets:
+            widget.setEnabled(not result.rejected)
+        # Suggest the worst-predicted well unless the operator typed their own:
+        # isModified is Qt's own record of that, and setText resets it.
+        if not self.holder_check_edit.isModified():
+            self.holder_check_edit.setText(result.worst_well)
+
+    def _holder_error(self, exc):
+        QMessageBox.warning(self, "Holder Alignment", str(exc))
+
+    def _holder_corner_changed(self):
+        if self.holder_session is None:
+            return
+        try:
+            self.holder_session.set_corner_feature(self.holder_corner_combo.currentData())
+        except SessionError as e:
+            self._holder_error(e)
+
+    def _holder_nominate(self, index):
+        # A focused edit emits editingFinished when _enter_holder_mode hides it,
+        # after a shorter session is already in - hence the length check here,
+        # and only here (a hidden button cannot be clicked).
+        if self.holder_session is None or index >= len(self.holder_session.reference_wells):
+            return
+        well = self.holder_session.reference_wells[index]
+        text = self.holder_well_edits[index].text().strip()
+        if text == well.well_id:
+            return
+        try:
+            self.holder_session.nominate(index, text)
+        except SessionError as e:
+            self.holder_well_edits[index].setText(well.well_id)
+            self._holder_error(e)
+            return
+        self._holder_refresh()
+
+    def _holder_record(self, index):
+        if self.holder_session is None:
+            return
+        pos = self.stage.get_pos()
+        try:
+            self.holder_session.record_touch(index, pos.x_mm, pos.y_mm)
+        except SessionError as e:
+            self._holder_error(e)
+            return
+        self._holder_refresh()
+
+    def _holder_move_to(self, x_mm, y_mm):
+        # The one move funnel owns the refusal: a well's calibrated center was
+        # checked when it was nominated, but a fitted corner, say, can sit
+        # outside travel while the center sits inside, and nothing below this
+        # clamps an XY move.
+        if not utils.within_travel(x_mm, y_mm):
+            self._holder_error(SessionError(f"That point is outside the stage travel limits ({x_mm:.3f}, {y_mm:.3f})."))
+            return
+        self.stage.move_x_to(x_mm)
+        self.stage.move_y_to(y_mm)
+
+    def _holder_goto_reference(self, index):
+        if self.holder_session is None:
+            return
+        self._holder_move_to(*self.holder_session.reference_center_mm(index))
+
+    def _holder_goto_check(self):
+        if self.holder_session is None or not self.holder_session.can_fit:
+            return
+        try:
+            target = self.holder_session.predicted_touch_mm(self.holder_check_edit.text().strip())
+        except SessionError as e:
+            self._holder_error(e)
+            return
+        self._holder_move_to(*target)
+
+    def _holder_record_check(self):
+        if self.holder_session is None or not self.holder_session.can_fit:
+            return
+        well_id = self.holder_check_edit.text().strip()
+        pos = self.stage.get_pos()
+        try:
+            error_um = self.holder_session.holdout_residual_um(well_id, (pos.x_mm, pos.y_mm))
+        except SessionError as e:
+            self._holder_error(e)
+            return
+        self.holder_check_label.setText(
+            f"Measured error at {well_id}: {error_um:.0f} um (this well was not in the fit)"
+        )
+
+    def _holder_ask_clear_overrides(self, title, question):
+        """Formats carrying their own measured rotation do not follow the holder
+        record; offer to clear them. `question` names {n} and {formats}."""
+        overrides = formats_with_rotation_overrides()
+        if not overrides:
+            return ()
+        answer = QMessageBox.question(
+            self,
+            title,
+            question.format(n=len(overrides), formats=", ".join(overrides)),
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        return overrides if answer == QMessageBox.Yes else ()
+
+    def _holder_save(self):
+        if self.holder_session is None:
+            return
+        session = self.holder_session
+        try:
+            result = session.fit()
+        except SessionError as e:
+            self._holder_error(e)
+            return
+
+        confirm = False
+        if result.needs_confirmation:
+            # Warn-gates require typing the value to confirm - a click-through
+            # dialog would defeat the point of the gate.
+            typed, ok = QInputDialog.getText(
+                self,
+                "Confirm measured rotation",
+                "\n".join(g.message for g in result.gates if g.level == "warn")
+                + f"\n\nType the angle ({result.rotation_deg:.2f}) to confirm:",
+            )
+            if not ok or typed.strip() != f"{result.rotation_deg:.2f}":
+                return
+            confirm = True
+
+        clear = self._holder_ask_clear_overrides(
+            "Stale rotation overrides",
+            "{n} format(s) carry a rotation measured under the previous mounting: {formats}. "
+            "Clear them to inherit the new angle?",
+        )
+        try:
+            holder = session.save(confirm_warnings=confirm, clear_overrides=clear)
+        except (SessionError, YamlStoreDamaged) as e:
+            self._holder_error(e)
+            return
+        self.holder_clear_button.setEnabled(True)
+        self._holder_refresh()
+        QMessageBox.information(
+            self,
+            "Holder rotation saved",
+            f"Rotation {holder.rotation_deg:.2f} deg saved to machine_configs/plate_holder.yaml. "
+            f"It now applies to every plate format without a measured override.",
+        )
+
+    def _holder_clear(self):
+        answer = QMessageBox.question(
+            self,
+            "Clear holder rotation",
+            f"Clear the saved holder rotation ({saved_rotation_summary()})? Plates are positioned with "
+            f"0.00 deg until a new rotation is measured. Points set in this dialog are kept.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        clear = self._holder_ask_clear_overrides(
+            "Format rotation overrides",
+            "{n} format(s) carry their own measured rotation and keep it: {formats}. Clear those too?",
+        )
+        try:
+            clear_holder_rotation(clear_overrides=clear)
+        except YamlStoreDamaged as e:  # the overrides live in the user-format file
+            self._holder_error(e)
+            return
+        self.holder_clear_button.setEnabled(False)
+        if self.holder_session is not None:
+            self._holder_refresh()
 
     def load_existing_format_values(self):
         """Load current values from selected existing format into the parameter inputs."""
@@ -12326,13 +13683,12 @@ class WellplateCalibration(QDialog):
         self.existing_well_size_input.setValue(well_size)
         self.center_well_size_input.setValue(well_size)
 
-        # Auto-select center point method for 384 and 1536 well plates because their
-        # small well diameters make it difficult to reliably set 3 distinct points
-        # on the well edge under a microscope
-        if selected_format in ("384 well plate", "1536 well plate"):
-            self.center_point_radio.setChecked(True)
-        else:
+        # 3 edge points fits a circle through the rim, which only a round well
+        # has; a rectangular well (384, 1536, a custom carrier) gets Center Point.
+        if control._def.get_wellplate_settings(selected_format)["well_shape"] == "circle":
             self.edge_points_radio.setChecked(True)
+        else:
+            self.center_point_radio.setChecked(True)
 
     def on_existing_format_changed(self):
         """Handle existing format combo box selection change."""
@@ -12356,14 +13712,17 @@ class WellplateCalibration(QDialog):
 
         self.update_calibrate_button_state()
 
+    def _sync_method_panel(self):
+        """The ONE owner of the method-panel visibility rule: which points
+        widget shows follows the method radios, and neither shows in holder
+        mode. Both mode and method toggles route through here."""
+        is_holder = self.holder_rotation_radio.isChecked()
+        self.points_widget.setVisible(not is_holder and self.edge_points_radio.isChecked())
+        self.center_point_widget.setVisible(not is_holder and self.center_point_radio.isChecked())
+
     def toggle_calibration_method(self):
         """Toggle between 3 edge points and center point calibration methods."""
-        if self.edge_points_radio.isChecked():
-            self.points_widget.show()
-            self.center_point_widget.hide()
-        else:
-            self.points_widget.hide()
-            self.center_point_widget.show()
+        self._sync_method_panel()
         self.update_calibrate_button_state()
 
     def setCenterPoint(self):
@@ -12393,6 +13752,9 @@ class WellplateCalibration(QDialog):
 
         Returns:
             tuple: (a1_x_mm, a1_y_mm, well_size_mm) or None if validation fails.
+            well_size_mm is None when the method measured no size (Center Point on
+            an existing format: the Format Parameters box has its own writer,
+            Update Parameters, and Calibrate must not be a second, implicit one).
             Displays appropriate warning message if validation fails.
         """
         if self.center_point_radio.isChecked():
@@ -12400,18 +13762,15 @@ class WellplateCalibration(QDialog):
                 QMessageBox.warning(self, "Incomplete Information", "Please set the center point before calibrating.")
                 return None
             a1_x_mm, a1_y_mm = self.center_point
-            # Use appropriate well size input based on mode
-            if self.calibrate_format_radio.isChecked():
-                well_size_mm = self.existing_well_size_input.value()
-            else:
-                well_size_mm = self.center_well_size_input.value()
+            # a new definition needs a size and has no other editor
+            well_size_mm = None if self.calibrate_format_radio.isChecked() else self.center_well_size_input.value()
         else:
             if not all(self.corners):
                 QMessageBox.warning(self, "Incomplete Information", "Please set 3 corner points before calibrating.")
                 return None
             center, radius = self.calculate_circle(self.corners)
-            well_size_mm = radius * 2
-            a1_x_mm, a1_y_mm = center
+            well_size_mm = float(radius * 2)
+            a1_x_mm, a1_y_mm = float(center[0]), float(center[1])
         return a1_x_mm, a1_y_mm, well_size_mm
 
     def update_existing_parameters(self):
@@ -12438,22 +13797,23 @@ class WellplateCalibration(QDialog):
             )
             print(f"NEW: spacing={new_spacing}, well_size={new_well_size}")
 
-            # Update the settings
-            WELLPLATE_FORMAT_SETTINGS[selected_format].update(
+            # One path for every format: the edited definition replaces the
+            # shipped example (or the previous user entry) wholesale.
+            self._save_format_definition(
+                selected_format,
                 {
                     "well_spacing_mm": new_spacing,
+                    "well_spacing_x_mm": new_spacing,
+                    "well_spacing_y_mm": new_spacing,
                     "well_size_mm": new_well_size,
-                }
+                    "well_size_x_mm": new_well_size,
+                    "well_size_y_mm": new_well_size,
+                },
             )
 
-            # Save and refresh
-            self.wellplateFormatWidget.save_formats_to_csv()
-            self.wellplateFormatWidget.populate_combo_box()
-
-            # Re-select the format (triggers wellplateChanged which calls setWellplateSettings)
-            index = self.wellplateFormatWidget.comboBox.findData(selected_format)
-            if index >= 0:
-                self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
+            # select_format_silently re-emits the settings exactly once (no
+            # spurious index-0 emission from the combo rebuild).
+            self.wellplateFormatWidget.select_format_silently(selected_format)
 
             QMessageBox.information(
                 self,
@@ -12472,18 +13832,20 @@ class WellplateCalibration(QDialog):
 
         Supports two modes:
         - New format: Creates a new custom wellplate format with all parameters
-        - Existing format: Updates position calibration (a1_x_mm, a1_y_mm) and well_size_mm
+        - Existing format: Updates position calibration (a1_x_mm, a1_y_mm), plus the well size
+          when the method measured one
 
         Supports two calibration methods:
         - 3 Edge Points: Calculates well center and diameter from 3 points on well edge
-        - Center Point: Uses directly-specified center position with manual well size
+        - Center Point: Uses directly-specified center position (with a manual well size for
+          a new format; an existing format keeps its stored size)
         """
         try:
             if self.new_format_radio.isChecked():
                 self._calibrate_new_format()
             else:
                 self._calibrate_existing_format()
-        except np.linalg.LinAlgError:
+        except PlateFitError:
             import traceback
 
             traceback.print_exc()
@@ -12502,16 +13864,35 @@ class WellplateCalibration(QDialog):
 
     def _calibrate_new_format(self):
         """Create and calibrate a new wellplate format."""
-        if not self.nameInput.text():
+        name = self.nameInput.text().strip()
+        if not name:
             QMessageBox.warning(self, "Incomplete Information", "Please enter a name for the format.")
             return
+        if name.isdigit():
+            name = f"{name} well plate"  # the key a bare plate size resolves to everywhere else (see _def)
+        if name in WELLPLATE_FORMAT_SETTINGS:
+            # A disabled format is in the main dropdown only while loaded, so
+            # the name can look free.
+            hidden = (
+                " It is disabled, so it is hidden from the Sample Format dropdown."
+                if name in load_disabled_sample_formats()
+                else ""
+            )
+            reply = QMessageBox.question(
+                self,
+                "Format Already Exists",
+                f"A format named '{name}' already exists.{hidden}\n\nReplace its definition with this new one?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
 
         calibration_data = self._get_calibration_data()
         if calibration_data is None:
             return
         a1_x_mm, a1_y_mm, well_size_mm = calibration_data
 
-        name = self.nameInput.text()
         plate_width_mm = self.plateWidthInput.value()
         plate_height_mm = self.plateHeightInput.value()
 
@@ -12528,8 +13909,14 @@ class WellplateCalibration(QDialog):
             "cols": self.colsInput.value(),
         }
 
-        self.wellplateFormatWidget.add_custom_format(name, new_format)
-        self.wellplateFormatWidget.save_formats_to_csv()
+        # Same writer as every other calibration: a complete definition, with
+        # the measured A1 stored absolutely and its provenance alongside. It
+        # writes the format table too; the combo is selected once, after the
+        # save, in _finish_calibration (selecting before the save applied a
+        # machine's wellplate_offset to the measured A1 for a moment).
+        self._save_format_definition(
+            name, new_format, measured=self._measurement_record(a1_x_mm, a1_y_mm), replace=True
+        )
         self.create_wellplate_image(name, new_format, plate_width_mm, plate_height_mm)
 
         self._finish_calibration(name, f"New format '{name}' has been successfully created and calibrated.")
@@ -12542,35 +13929,94 @@ class WellplateCalibration(QDialog):
         if calibration_data is None:
             return
         a1_x_mm, a1_y_mm, well_size_mm = calibration_data
-
-        existing_settings = WELLPLATE_FORMAT_SETTINGS[selected_format]
         display_name = self._format_display_name(selected_format)
 
-        print(f"Updating existing format {display_name}")
-        print(
-            f"OLD: 'a1_x_mm': {existing_settings['a1_x_mm']}, 'a1_y_mm': {existing_settings['a1_y_mm']}, "
-            f"'well_size_mm': {existing_settings['well_size_mm']}"
-        )
-        print(f"NEW: 'a1_x_mm': {a1_x_mm}, 'a1_y_mm': {a1_y_mm}, 'well_size_mm': {well_size_mm}")
-
-        WELLPLATE_FORMAT_SETTINGS[selected_format].update(
-            {
-                "a1_x_mm": a1_x_mm,
-                "a1_y_mm": a1_y_mm,
-                "well_size_mm": well_size_mm,
-            }
-        )
-
-        self.wellplateFormatWidget.save_formats_to_csv()
+        # Same writer as a new format - see _save_format_definition. A measured
+        # size (3 rim points: a circle, so one number for both axes) is written;
+        # Center Point measures none and leaves the stored size - including an
+        # anisotropic carrier's two axes - alone.
+        updates = {"a1_x_mm": a1_x_mm, "a1_y_mm": a1_y_mm}
+        if well_size_mm is not None:
+            updates.update(well_size_mm=well_size_mm, well_size_x_mm=well_size_mm, well_size_y_mm=well_size_mm)
+        print(f"Updating existing format {display_name}: {updates}")
+        self._save_format_definition(selected_format, updates, measured=self._measurement_record(a1_x_mm, a1_y_mm))
 
         self._finish_calibration(selected_format, f"Format '{display_name}' has been successfully recalibrated.")
 
+    _CARRIED_MEASUREMENTS = {"rotation_deg", "rotation_measured", "measured"}
+
+    def _measurement_record(self, a1_x_mm, a1_y_mm):
+        """Raw provenance for a stored A1: the points the user actually set."""
+        import datetime
+
+        from control.models.sample_format_config import FormatMeasurement, MeasuredPoint
+
+        if self.edge_points_radio.isChecked() and all(self.corners):
+            points = [MeasuredPoint(well="A1", x_mm=float(x), y_mm=float(y)) for x, y in self.corners]
+            method = "3 edge points"
+        else:
+            points = [MeasuredPoint(well="A1", x_mm=float(a1_x_mm), y_mm=float(a1_y_mm))]
+            method = "center point"
+        return FormatMeasurement(
+            points=points, method=method, timestamp=datetime.datetime.now().isoformat(timespec="seconds")
+        )
+
+    def _save_format_definition(self, format_key, updates, measured=None, replace=False):
+        """Write a COMPLETE definition for `format_key` to the user file.
+
+        Every calibration and every parameter edit goes through here, for
+        shipped and user formats alike: shipped rows are examples, and the
+        moment a lab measures or edits one, their definition replaces it
+        wholesale (owner decision, 2026-08-16). `updates` are the newly
+        measured/edited settings keys; everything else is carried over from
+        what the app currently knows about the format.
+
+        replace=True ("Add New Format", possibly under an existing name) starts
+        from nothing instead: `updates` is the whole definition, and no earlier
+        geometry (per-axis pitch, shape) or measurement (rotation) carries over.
+        """
+        from control.models.sample_format_config import (
+            load_user_sample_formats_for_edit,
+            SampleFormat,
+            save_user_sample_formats,
+        )
+
+        try:
+            settings = {} if replace else dict(control._def.get_wellplate_settings(format_key))
+        except ValueError:
+            settings = {}  # brand-new format: `updates` carries the whole definition
+        settings.update(updates)
+
+        user_formats = load_user_sample_formats_for_edit()  # raises on a damaged file; calibrate() shows it
+        previous = user_formats.formats.get(format_key)
+        # Everything measured survives an unrelated edit: a spacing tweak must
+        # never erase a calibration. Named once, so a future measurement kind
+        # is added in the model rather than remembered at every call site.
+        carried = (
+            previous.model_dump(include=self._CARRIED_MEASUREMENTS) if previous is not None and not replace else {}
+        )
+        if measured is not None:
+            carried["measured"] = measured
+        user_formats.formats[format_key] = SampleFormat.from_settings(settings, **carried)
+        save_user_sample_formats(user_formats)
+
+        # Keep the live table in step so the current session sees the edit
+        # without a reload.
+        WELLPLATE_FORMAT_SETTINGS[format_key] = user_formats.formats[format_key].to_settings()
+
+        # Calibrating or editing a plate is asking to use it, so a disabled one
+        # comes back into the dropdowns. Best effort: the definition is saved.
+        try:
+            disabled = load_disabled_sample_formats_for_edit()
+            if format_key in disabled:
+                disabled.discard(format_key)
+                save_disabled_sample_formats(disabled)
+        except Exception:
+            logger.exception(f"Could not re-enable sample format {format_key!r}; it stays hidden once unloaded")
+
     def _finish_calibration(self, format_id, success_message: str):
         """Complete calibration by updating UI and showing success message."""
-        self.wellplateFormatWidget.populate_combo_box()
-        index = self.wellplateFormatWidget.comboBox.findData(format_id)
-        if index >= 0:
-            self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
+        self.wellplateFormatWidget.select_format_silently(format_id)
 
         QMessageBox.information(self, "Calibration Successful", success_message)
         self.accept()
@@ -12591,6 +14037,18 @@ class WellplateCalibration(QDialog):
         well_spacing_mm = format_data["well_spacing_mm"]
         well_size_mm = format_data["well_size_mm"]
         a1_x_mm, a1_y_mm = format_data["a1_x_mm"], format_data["a1_y_mm"]
+
+        # Plate-frame display asset: deliberately NO WELLPLATE_OFFSET (and, later,
+        # no rotation). The PNG is registered against the offset-free
+        # a1_x_pixel = round(a1_x_mm * scale) convention computed at save time,
+        # and NavigationViewer derives its origin from that same pair - feeding
+        # the stage-frame offset in here would shear the map away from it.
+        nominal = PlateTransform(
+            a1_x_mm=a1_x_mm,
+            a1_y_mm=a1_y_mm,
+            pitch_x_mm=well_spacing_mm,
+            pitch_y_mm=well_spacing_mm,
+        )
 
         def draw_left_slanted_rectangle(draw, xy, slant, width=4, outline="black", fill=None):
             x1, y1, x2, y2 = xy
@@ -12629,8 +14087,9 @@ class WellplateCalibration(QDialog):
         # Draw the wells
         for row in range(rows):
             for col in range(cols):
-                x = mm_to_px(a1_x_mm + col * well_spacing_mm)
-                y = mm_to_px(a1_y_mm + row * well_spacing_mm)
+                cx_mm, cy_mm = nominal.well_center_mm(row, col)
+                x = mm_to_px(cx_mm)
+                y = mm_to_px(cy_mm)
                 draw_circle(x, y, mm_to_px(well_size_mm))
 
         # Load a default font
@@ -12640,7 +14099,7 @@ class WellplateCalibration(QDialog):
         # Add column labels
         for col in range(cols):
             label = str(col + 1)
-            x = mm_to_px(a1_x_mm + col * well_spacing_mm)
+            x = mm_to_px(nominal.well_center_mm(0, col)[0])
             y = mm_to_px((a1_y_mm - well_size_mm / 2) / 2)
             bbox = font.getbbox(label)
             text_width = bbox[2] - bbox[0]
@@ -12651,31 +14110,29 @@ class WellplateCalibration(QDialog):
         for row in range(rows):
             label = chr(65 + row) if row < 26 else chr(65 + row // 26 - 1) + chr(65 + row % 26)
             x = mm_to_px((a1_x_mm - well_size_mm / 2) / 2)
-            y = mm_to_px(a1_y_mm + row * well_spacing_mm)
+            y = mm_to_px(nominal.well_center_mm(row, 0)[1])
             bbox = font.getbbox(label)
             text_height = bbox[3] - bbox[1]
             text_width = bbox[2] - bbox[0]
             draw.text((x + 20 - text_width / 2, y - text_height + 1), label, fill="black", font=font)
 
-        image_path = os.path.join("images", f'{name.replace(" ", "_")}.png')
+        # Raw name, spaces preserved: NavigationViewer looks the image up as
+        # "images/<sample>.png" with the sample name unmodified, and the shipped
+        # assets already use spaces ("96 well plate_1509x1010.png"). The old
+        # spaces->underscores write meant any custom format named with a space -
+        # including the dialog's own placeholder "custom well plate" - generated
+        # an image the viewer could never find.
+        image_path = os.path.join("images", f"{name}.png")
         image.save(image_path)
         print(f"Wellplate image saved as {image_path}")
         return image_path
 
     @staticmethod
     def calculate_circle(points):
-        # Convert points to numpy array
-        points = np.array(points)
-
-        # Calculate the center and radius of the circle
-        A = np.array([points[1] - points[0], points[2] - points[0]])
-        b = np.sum(A * (points[1:3] + points[0]) / 2, axis=1)
-        center = np.linalg.solve(A, b)
-
-        # Calculate the radius
-        radius = np.mean(np.linalg.norm(points - center, axis=1))
-
-        return center, radius
+        # ONE circle solver for the whole dialog; collinear points raise
+        # PlateFitError, which calibrate() maps to the dialog's message.
+        cx, cy, radius = circumcenter(tuple(points[0]), tuple(points[1]), tuple(points[2]))
+        return (cx, cy), radius
 
     def closeEvent(self, event):
         # Stop live view if it wasn't initially on
@@ -12693,26 +14150,14 @@ class WellplateCalibration(QDialog):
         # This method is called when the dialog is closed without accepting
         if not self.was_live:
             self.liveController.stop_live()
-        sample = self.navigationViewer.sample
 
-        # Convert sample string to format int
-        if "glass slide" in sample:
-            sample_format = "glass slide"
-        else:
-            try:
-                sample_format = int(sample.split()[0])
-            except (ValueError, IndexError):
-                print(f"Unable to parse sample format from '{sample}'. Defaulting to 0.")
-                sample_format = "glass slide"
-
-        # Set dropdown to the current sample format
-        index = self.wellplateFormatWidget.comboBox.findData(sample_format)
-        if index >= 0:
-            self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
-
-        # Update wellplate settings
-        self.wellplateFormatWidget.setWellplateSettings(sample_format)
-
+        # Deliberately NO dropdown revert here: WellplateFormatWidget.wellplateChanged
+        # owns the Rejected-revert (wellplate_format still names the loaded plate
+        # while this dialog is open; the widget reverts the combo to it). The
+        # revert that used to live here parsed
+        # navigationViewer.sample to an int, which findData() could never match
+        # against the string item data - it silently did nothing, or worse fought
+        # the widget's own revert.
         super().reject()
 
 
@@ -12925,35 +14370,26 @@ class Well1536SelectionWidget(QWidget):
     signal_wellSelected = Signal(bool)
     signal_wellSelectedPos = Signal(float, float)
 
-    def __init__(self, wellplateFormatWidget):
+    def __init__(self, wellplateFormatWidget: "WellplateFormatWidget"):
         super().__init__()
         self.wellplateFormatWidget = wellplateFormatWidget
         self.format = "1536 well plate"
         self.selected_cells = {}  # Dictionary to keep track of selected cells and their colors
         self.current_cell = None  # To track the current (green) cell
 
-        # defaults
-        self.rows = 32
-        self.columns = 48
-        self.spacing_mm = 2.25
-        self.number_of_skip = 0
-        self.well_size_mm = 1.5
-        self.a1_x_mm = 11.0  # measured stage position - to update
-        self.a1_y_mm = 7.86  # measured stage position - to update
-        self.a1_x_pixel = 144  # coordinate on the png - to update
-        self.a1_y_pixel = 108  # coordinate on the png - to update
-
-        if self.wellplateFormatWidget is not None:
-            s = self.wellplateFormatWidget.getWellplateSettings(self.format)
-            self.rows = s["rows"]
-            self.columns = s["cols"]
-            self.spacing_mm = s["well_spacing_mm"]
-            self.number_of_skip = s["number_of_skip"]
-            self.a1_x_mm = s["a1_x_mm"]
-            self.a1_y_mm = s["a1_y_mm"]
-            self.a1_x_pixel = s["a1_x_pixel"]
-            self.a1_y_pixel = s["a1_y_pixel"]
-            self.well_size_mm = s["well_size_mm"]
+        # Geometry always comes from the format settings; hardcoded fallbacks here
+        # had already drifted from sample_formats.csv (well_size 1.5 vs 1.53,
+        # a1 11.0/7.86 vs 11.01/7.87) and were dead on every reachable path.
+        s = self.wellplateFormatWidget.getWellplateSettings(self.format)
+        self.rows = s["rows"]
+        self.columns = s["cols"]
+        self.spacing_mm = s["well_spacing_mm"]
+        self.number_of_skip = s["number_of_skip"]
+        self.a1_x_mm = s["a1_x_mm"]
+        self.a1_y_mm = s["a1_y_mm"]
+        self.a1_x_pixel = s["a1_x_pixel"]
+        self.a1_y_pixel = s["a1_y_pixel"]
+        self.well_size_mm = s["well_size_mm"]
 
         self.initUI()
 
@@ -13313,8 +14749,9 @@ class Well1536SelectionWidget(QWidget):
         # Update cell_input with the correct label (e.g., A1, B2, AA1, etc.)
         self.cell_input.setText(self._cell_name(row, col))
 
-        x_mm = col * self.spacing_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
-        y_mm = row * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
+        # Resolved at CLICK time - same rule as WellSelectionWidget.onDoubleClick.
+        transform = plate_transform_for(self.format)
+        x_mm, y_mm = transform.well_center_mm(row, col)
         self.signal_wellSelectedPos.emit(x_mm, y_mm)
 
     def redraw_wells(self):
@@ -14693,37 +16130,31 @@ def _populate_filter_positions_for_combo(
     """
     combo.clear()
 
-    registry = config_repo.get_filter_wheel_registry()
-    has_registry = registry and registry.filter_wheels
+    # Wheels from filter_wheels.yaml and from the confocal unit (confocal_config.yaml) alike
+    wheels = config_repo.get_filter_wheels()
 
     # No filter wheel system at all
-    if not has_registry and not _is_filter_wheel_enabled():
+    if not wheels and not _is_filter_wheel_enabled():
         combo.addItem("N/A", None)
         combo.setEnabled(False)
         return
 
-    # Resolve wheel: explicit name, or auto-select first wheel
+    # Resolve wheel: explicit name, or auto-select the first declared wheel (of any type;
+    # standalone wheels come before confocal ones)
     wheel = None
     if channel_wheel and channel_wheel not in ("(None)", "auto"):
         # Explicit wheel name specified
-        wheel = registry.get_wheel_by_name(channel_wheel) if registry else None
-        if not wheel and registry:
-            logger.warning(f"Filter wheel '{channel_wheel}' not found in registry")
-    elif has_registry:
-        # Auto-select first wheel (works for both single and multi-wheel systems)
-        wheel = registry.get_first_wheel()
+        wheel = config_repo.get_filter_wheel_by_name(channel_wheel)
+        if not wheel and wheels:
+            logger.warning(f"Filter wheel '{channel_wheel}' not found")
+    elif wheels:
+        wheel = wheels[0]
 
     if not wheel:
-        # No wheel resolved - check if we should show default positions or N/A
-        if has_registry or _is_filter_wheel_enabled():
-            # Filter wheel enabled but no registry - show default positions
-            combo.setEnabled(True)
-            for pos in range(1, 9):
-                combo.addItem(f"Position {pos}", pos)
-        else:
-            combo.addItem("N/A", None)
-            combo.setEnabled(False)
-            return
+        # No wheel resolved but a wheel is enabled in the .ini - show default positions
+        combo.setEnabled(True)
+        for pos in range(1, 9):
+            combo.addItem(f"Position {pos}", pos)
     else:
         # Populate from wheel's actual positions
         combo.setEnabled(True)

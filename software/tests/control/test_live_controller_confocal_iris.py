@@ -3,27 +3,10 @@
 import pytest
 
 import control.core.live_controller
-import control.microscope
-from control.core.config import ConfigRepository
 from control.core.live_controller import LiveController
-from control.models.acquisition_config import (
-    AcquisitionChannel,
-    CameraSettings,
-    ConfocalSettings,
-    IlluminationSettings,
-)
+from control.models.acquisition_config import ConfocalSettings
 from control.serial_peripherals import SerialDeviceError, XLight_Simulation
-
-ILLUMINATION_YAML = """\
-version: 1
-controller_port_mapping:
-  D1: 11
-channels:
-  - name: Fluorescence 405 nm Ex
-    type: epi_illumination
-    controller_port: D1
-    wavelength_nm: 405
-"""
+from tests.control.spinning_disk_test_utils import build_simulated_microscope, enable_spinning_disk, make_channel
 
 
 class StuckIlluminationIrisXLight(XLight_Simulation):
@@ -34,26 +17,15 @@ class StuckIlluminationIrisXLight(XLight_Simulation):
 
 
 def _channel(confocal_hardware_settings):
-    return AcquisitionChannel(
-        name="Fluorescence 405 nm Ex",
-        display_color="#FFFFFF",
-        camera=1,
-        illumination_settings=IlluminationSettings(illumination_channel="Fluorescence 405 nm Ex", intensity=10.0),
-        camera_settings=CameraSettings(exposure_time_ms=10.0, gain_mode=0.0),
-        confocal_hardware_settings=confocal_hardware_settings,
-    )
+    return make_channel(confocal_hardware_settings=confocal_hardware_settings)
 
 
 @pytest.fixture
 def scope(tmp_path, monkeypatch):
-    monkeypatch.setattr(control.core.live_controller, "ENABLE_SPINNING_DISK_CONFOCAL", True)
-    monkeypatch.setattr(control.core.live_controller, "USE_DRAGONFLY", False)
+    enable_spinning_disk(monkeypatch, dragonfly=False)
     monkeypatch.setattr(control.core.live_controller, "XLIGHT_ILLUMINATION_IRIS_DEFAULT", 80)
     monkeypatch.setattr(control.core.live_controller, "XLIGHT_EMISSION_IRIS_DEFAULT", 60)
-    (tmp_path / "machine_configs").mkdir()
-    (tmp_path / "machine_configs" / "illumination_channel_config.yaml").write_text(ILLUMINATION_YAML)
-    microscope = control.microscope.Microscope.build_from_global_config(True)
-    microscope.config_repo = ConfigRepository(base_path=tmp_path)
+    microscope = build_simulated_microscope(tmp_path)
     microscope.addons.xlight = XLight_Simulation()
     yield microscope
     microscope.close()

@@ -6,6 +6,7 @@ still initializing, and control/models/__init__.py (like most of control.*) impo
 """
 
 import ast
+import logging
 import math
 from dataclasses import dataclass
 from enum import Enum
@@ -13,10 +14,12 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import yaml
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-from control.atomic_file import write_atomically
+from control.atomic_file import NotDurableError, write_atomically
 from control.objective_changer_constants import NIMOTION_TURRET_SLOTS, XERYON_SLOTS
+
+_log = logging.getLogger(__name__)  # the stdlib logger: this leaf module cannot import squid.logging
 
 # Read at call time, so tests can point it elsewhere before control._def is imported.
 OBJECTIVES_YAML_PATH = Path(__file__).resolve().parent.parent / "machine_configs" / "objectives.yaml"
@@ -74,6 +77,16 @@ class ObjectiveEntry(BaseModel):
     slot: Optional[int] = None
     model: str = ""
     serial: str = ""
+
+    @field_validator("model", "serial", mode="before")
+    @classmethod
+    def _number_as_text(cls, value):
+        # Free text: a number here (a dict built in code, or a hand edit the file loader could
+        # not restore) becomes its text. The file loader puts back the file's own spelling first
+        # (`0123` stays "0123"); a bool (YAML `yes`) is still refused as a string.
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+        return value
 
 
 class ObjectivesConfig(BaseModel):
@@ -170,9 +183,41 @@ def load_objectives_config(path=None) -> Optional[ObjectivesConfig]:
     return _parse_objectives_text(text, path)
 
 
+class _TextLoader(yaml.SafeLoader):
+    """SafeLoader that leaves plain numeric scalars as text: `0123` loads as "0123", not 83."""
+
+
+_NUMERIC_TAGS = {"tag:yaml.org,2002:int", "tag:yaml.org,2002:float"}
+_TextLoader.yaml_implicit_resolvers = {
+    first: [(tag, regexp) for tag, regexp in resolvers if tag not in _NUMERIC_TAGS]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_FREE_TEXT_FIELDS = ("model", "serial")
+
+
+def _restore_free_text(data, as_text) -> None:
+    """A hand edit can leave `serial: 0123` or `model: 0x1F` unquoted, which YAML 1.1 reads as
+    83 and 31. For the two free-text fields, put the file's own spelling back from a second load
+    that never resolves numbers. Everything else stays as safe_load read it (a bool, YAML `yes`,
+    resolves the same way in both loads and is refused by the model)."""
+    if not isinstance(data, dict) or not isinstance(as_text, dict):
+        return
+    entries, texts = data.get("objectives"), as_text.get("objectives")
+    if not isinstance(entries, list) or not isinstance(texts, list):
+        return
+    for entry, entry_text in zip(entries, texts):
+        if not isinstance(entry, dict) or not isinstance(entry_text, dict):
+            continue
+        for field in _FREE_TEXT_FIELDS:
+            value, spelling = entry.get(field), entry_text.get(field)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and isinstance(spelling, str):
+                entry[field] = spelling
+
+
 def _parse_objectives_text(text: str, path: Path) -> ObjectivesConfig:
     try:
         data = yaml.safe_load(text)
+        _restore_free_text(data, yaml.load(text, Loader=_TextLoader))
     except yaml.YAMLError as e:
         raise ObjectivesConfigError(path, "(file)", f"is not valid YAML: {e}") from e
     if data is None:
@@ -208,6 +253,9 @@ def save_objectives_config(config: ObjectivesConfig, path=None) -> None:
     reader never sees a partial file, a power cut leaves the old or the new file (never an empty
     one), and a failed write leaves the previous file untouched.
 
+    Raises NotDurableError when objectives.yaml already holds the new list but its directory sync
+    failed; any other error means objectives.yaml was not changed.
+
     Before replacing a previous file that is itself valid, keeps it as objectives.yaml.bak, which
     startup names when it refuses a damaged file. A damaged previous file is not kept, so it never
     overwrites the last good copy."""
@@ -215,7 +263,12 @@ def save_objectives_config(config: ObjectivesConfig, path=None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     previous = _last_good_bytes(path)
     if previous is not None:
-        write_atomically(backup_path(path), previous)
+        try:
+            write_atomically(backup_path(path), previous)
+        except NotDurableError as e:
+            # The backup is in place; only its survival of a power cut is unconfirmed. Go on, so a
+            # NotDurableError from this function always concerns objectives.yaml itself.
+            _log.warning(f"kept the last good objective list, but could not confirm it on disk: {e}")
     text = _HEADER + yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False)
     write_atomically(path, text.encode("utf-8"))
 
