@@ -47,7 +47,8 @@ def test_import_adds_each_acquisition_once(store, saving_root):
 
 
 def test_import_skips_snaps_unless_asked(store, saving_root):
-    snap = write_acquisition(saving_root, "snapped images_2026-11-08_10-00-00.000000", start_time=START)
+    # start_new_experiment turns the widgets' "snapped images" + id into snapped_images<id>_<timestamp>
+    snap = write_acquisition(saving_root, "snapped_images_2026-11-08_10-00-00.000000", start_time=START)
     assert is_snap_folder(str(snap)) and not is_snap_folder(str(saving_root))
 
     skipped = import_folder(store, str(saving_root), include_snaps=False)
@@ -56,6 +57,21 @@ def test_import_skips_snaps_unless_asked(store, saving_root):
     included = import_folder(store, str(saving_root), include_snaps=True)
     assert included.skipped_snaps == 0 and len(included.added) == 1
     assert store.load()[0].kind == "snap"
+
+
+@pytest.mark.parametrize(
+    "name, snap",
+    [
+        ("snapped_images_2026-11-08_10-00-00.000000", True),
+        ("snapped_imagesplate1_2026-11-08_10-00-00.000000", True),
+        ("snapped images_2026-11-08_10-00-00.000000", True),
+        ("Snapped_Images_2026-11-08_10-00-00.000000", True),
+        ("snapped_2026-11-08_10-00-00.000000", False),
+        ("my_snapped_images_2026-11-08_10-00-00.000000", False),
+    ],
+)
+def test_snap_folders_are_recognised_in_both_spellings(saving_root, name, snap):
+    assert is_snap_folder(str(saving_root / name)) is snap
 
 
 def test_import_dates_old_folders_from_their_name(store, saving_root):

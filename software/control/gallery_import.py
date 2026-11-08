@@ -339,7 +339,8 @@ def scan_acquisitions(root: str) -> List[AcquisitionEntry]:
 # Metadata for the history
 # ---------------------------------------------------------------------------------------------------------
 
-SNAP_FOLDER_PREFIX = "snapped images"
+# The widgets start snaps as "snapped images" + id; start_new_experiment turns the spaces into underscores.
+SNAP_FOLDER_PREFIXES = ("snapped_images", "snapped images")
 
 # The metadata every history entry carries from its folder, in display order. The recorder appends machine,
 # software_version, file_format and expected_images after these.
@@ -374,7 +375,7 @@ _MANIFEST_FILE = "run_manifest.json"
 
 
 def is_snap_folder(path: str) -> bool:
-    return os.path.basename(os.path.normpath(path)).startswith(SNAP_FOLDER_PREFIX)
+    return os.path.basename(os.path.normpath(path)).lower().startswith(SNAP_FOLDER_PREFIXES)
 
 
 def _get(data, *keys):
