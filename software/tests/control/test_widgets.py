@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -1056,8 +1057,13 @@ class TestBackpressureMonitorWidgetTimer:
 
 
 @pytest.fixture
-def ndviewer_tab(qtbot):
-    """Create an NDViewerTab instance for testing."""
+def ndviewer_tab(qtbot, monkeypatch):
+    """Create an NDViewerTab instance for testing.
+
+    The tab's ndv version guard is neutralised: these tests mock the viewer module, so they must not
+    depend on the ndv installed locally (the guard has its own test below).
+    """
+    monkeypatch.setattr(control.widgets, "ndv_version_problem", lambda installed: None)
     widget = NDViewerTab()
     qtbot.addWidget(widget)
     return widget
@@ -1074,6 +1080,28 @@ class TestNDViewerTab:
         # Check placeholder exists with correct text (isVisible() is False before widget shown)
         assert widget._placeholder is not None
         assert widget._placeholder.text() == NDViewerTab._PLACEHOLDER_WAITING
+
+    def test_old_ndv_shows_the_upgrade_command_instead_of_a_viewer(self, ndviewer_tab, monkeypatch, tmp_path):
+        """An install that pulled the submodule without upgrading ndv gets the command, not a half-working tab."""
+        monkeypatch.setattr(control.widgets, "ndv_version_problem", lambda v: "NDViewer needs ndv 0.5; run X")
+        widget = ndviewer_tab
+        widget.set_dataset_path(str(tmp_path))
+        assert widget._viewer is None
+        assert widget._placeholder.text() == "NDViewer needs ndv 0.5; run X"
+        assert widget._ensure_viewer_ready() is False
+        assert widget._viewer is None
+
+    def test_missing_ndv_shows_the_install_command_not_the_viewer_hint(self, ndviewer_tab, monkeypatch, tmp_path):
+        """Without ndv the bundled viewer's placeholder says `pip install ndv[...]`, which pulls numpy 2 in."""
+        from control.core.open_in_viewer import NDV_INSTALL_COMMAND, ndv_version_problem
+
+        monkeypatch.setattr(control.widgets, "ndv_version_problem", ndv_version_problem)  # the fixture neutralised it
+        monkeypatch.setitem(sys.modules, "ndv", None)  # makes `import ndv` raise ImportError
+        widget = ndviewer_tab
+        widget.set_dataset_path(str(tmp_path))
+        assert widget._viewer is None
+        assert NDV_INSTALL_COMMAND in widget._placeholder.text() and "ndv[" not in widget._placeholder.text()
+        assert widget._ensure_viewer_ready() is False
 
     def test_set_dataset_path_none_shows_placeholder(self, ndviewer_tab):
         """Test that setting None path shows the waiting placeholder."""

@@ -64,7 +64,15 @@ python3 -m pip install --upgrade pip
 pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy<2" tifffile scipy pyreadline3
 pip3 install opencv-python-headless opencv-contrib-python-headless
 # mcp<2: mcp 2.0 dropped the decorator API that the MCP bridge (mcp_microscope_server.py) is written against
-pip3 install napari==0.5.4 scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa pyvisa-py pyusb hidapi filelock lxml_html_clean psutil "mcp<2" ndv
+pip3 install napari==0.5.4 scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa pyvisa-py pyusb hidapi filelock lxml_html_clean psutil "mcp<2"
+
+# ndv 0.5 for the bundled viewer (control/ndviewer_light), with numpy kept below 2: ndv depends on
+# ihist, whose metadata demands numpy>=2 although its wheels are built in a way that runs on numpy
+# 1.x (the viewer's full test suite passes on numpy 1.26 with it). FLIR's PySpin for Python 3.10 is
+# built for numpy 1 only, so numpy stays < 2 until the Ubuntu 24.04 / Python 3.12 move. Both
+# packages are installed without dependency resolution; ndv's other dependencies follow explicitly.
+pip3 install --no-deps "ihist>=0.1.3" "ndv>=0.5,<0.6"
+pip3 install "cmap>=0.3" "psygnal>=0.12" "pydantic>=2.10" "typing-extensions>=4.10" "superqt[iconify]>=0.8.1" "pyconify>=0.2.1" pyopengl
 
 # Optional: PI V-308 / C-414 focus stage (USE_PI_FOCUS_STAGE). Safe to skip if unused;
 # squid.stage.pi imports it lazily and only needs it to connect to real hardware, so

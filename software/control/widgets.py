@@ -22,7 +22,7 @@ from control.core.config import ConfigRepository
 from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.mosaic_utils import format_well_id
-from control.core.open_in_viewer import check_viewer, launch_viewer, software_dir
+from control.core.open_in_viewer import check_viewer, launch_viewer, ndv_version_problem, software_dir
 from control.core.geometry_utils import calculate_well_coverage, default_scan_shape, get_effective_well_size
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
@@ -377,6 +377,8 @@ class NDViewerTab(QWidget):
             self._show_placeholder(f"NDViewer: dataset folder not found:\n{dataset_path}")
             return
 
+        if not self._ndv_version_ok():
+            return
         try:
             # Lazy import so the main UI doesn't pay NDV import costs until needed
             from control import ndviewer_light
@@ -476,6 +478,21 @@ class NDViewerTab(QWidget):
     # Push-based API for live acquisition (no polling)
     # -------------------------------------------------------------------------
 
+    def _ndv_version_ok(self) -> bool:
+        """False (placeholder shown with the upgrade command) when the installed ndv is below the viewer's floor."""
+        try:
+            import ndv
+
+            installed = getattr(ndv, "__version__", "0")
+        except ImportError:
+            installed = None  # the viewer's own placeholder would print an unsafe `pip install ndv[...]`
+        problem = ndv_version_problem(installed)
+        if problem is None:
+            return True
+        self._log.error(problem.replace("\n", " "))
+        self._show_placeholder(problem)
+        return False
+
     def _ensure_viewer_ready(self, context: str = "acquisition") -> bool:
         """Ensure ndviewer_light is imported and viewer widget is created.
 
@@ -485,6 +502,8 @@ class NDViewerTab(QWidget):
         Returns:
             True if viewer is ready, False if import or creation failed.
         """
+        if not self._ndv_version_ok():
+            return False
         try:
             from control import ndviewer_light
         except ImportError as e:

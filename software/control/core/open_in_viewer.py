@@ -4,6 +4,7 @@ Qt-free on purpose: the GUI widgets call these helpers and show the dialogs; eve
 without the viewer, which Squid's CI never checks out (the ndviewer_light submodule stays uninitialised there).
 """
 
+import importlib.metadata
 import importlib.util
 import os
 import subprocess
@@ -17,11 +18,42 @@ _log = squid.logging.get_logger(__name__)
 
 # Top-level packages the viewer imports. Checked with find_spec on the top-level name only: a dotted
 # find_spec would import the parent packages, and the submodule's shim imports the viewer and Qt.
-VIEWER_PACKAGES: Tuple[str, ...] = ("ndv", "vispy", "tensorstore", "xarray", "dask", "superqt")
+VIEWER_PACKAGES: Tuple[str, ...] = ("ndv", "vispy", "tensorstore", "xarray", "dask", "superqt", "pyconify")
 VIEWER_MODULE = "control.ndviewer_light.ndviewer_light"
 SUBMODULE_HINT = "git submodule update --init software/control/ndviewer_light"
-# What the pip hint installs for a missing package: the bundled viewer requires ndv>=0.4,<0.5
-_PIP_SPECS = {"ndv": '"ndv>=0.4,<0.5"'}
+# The bundled viewer requires ndv>=0.5,<0.6: the floor the NDViewer tab checks before it builds the
+# viewer (an install that pulled the submodule without upgrading ndv would otherwise get a half-working
+# tab: names lost, navigation dead), and the command that installs it. ndv depends on ihist, whose
+# metadata demands numpy>=2 although its wheels run on numpy 1.x; Squid keeps numpy below 2 (FLIR's
+# PySpin for Python 3.10 is numpy 1 only), so both are installed without dependency resolution and
+# ndv's other dependencies follow explicitly. Mirrors setup_22.04.sh.
+NDV_MIN_VERSION = (0, 5)
+NDV_INSTALL_COMMAND = (
+    'pip install --no-deps "ihist>=0.1.3" "ndv>=0.5,<0.6" && '
+    'pip install "cmap>=0.3" "psygnal>=0.12" "pydantic>=2.10" "typing-extensions>=4.10" '
+    '"superqt[iconify]>=0.8.1" "pyconify>=0.2.1" pyopengl'
+)
+
+
+def ndv_version_problem(installed: Optional[str]) -> Optional[str]:
+    """None when the installed ndv meets the viewer's floor, else the message (with the install command).
+
+    ``installed`` None means ndv is absent; the message then says so instead of leaving the bundled
+    viewer to print its own ``pip install ndv[...]`` hint, which would resolve ihist and pull numpy 2 in.
+    """
+    floor = f"{NDV_MIN_VERSION[0]}.{NDV_MIN_VERSION[1]}"
+    if installed is None:
+        return f"NDViewer needs ndv {floor} or newer; none is installed.\nInstall with:  {NDV_INSTALL_COMMAND}"
+    parts = []
+    for piece in installed.split(".")[:2]:
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    if tuple(parts) >= NDV_MIN_VERSION:
+        return None
+    return (
+        f"NDViewer needs ndv {NDV_MIN_VERSION[0]}.{NDV_MIN_VERSION[1]} or newer; {installed} is installed.\n"
+        f"Upgrade with:  {NDV_INSTALL_COMMAND}"
+    )
 
 
 def software_dir() -> str:
@@ -43,17 +75,25 @@ class ViewerPreflight:
     missing_packages: Tuple[str, ...]
     entry_point: str
     entry_point_exists: bool
+    ndv_problem: Optional[str] = None  # an installed ndv below the viewer's floor (see ndv_version_problem)
 
     @property
     def ok(self) -> bool:
-        return not self.missing_packages and self.entry_point_exists
+        return not self.missing_packages and self.entry_point_exists and self.ndv_problem is None
 
     def problem(self) -> str:
         """The dialog text when not ok; empty when ok."""
         lines = []
         if self.missing_packages:
             lines.append(f"Missing Python packages: {', '.join(self.missing_packages)}")
-            lines.append(f"pip install {' '.join(_PIP_SPECS.get(name, name) for name in self.missing_packages)}")
+            # ndv and pyconify come through the ndv install command (numpy stays below 2); the rest plainly
+            others = [name for name in self.missing_packages if name not in ("ndv", "pyconify")]
+            if len(others) < len(self.missing_packages):
+                lines.append(NDV_INSTALL_COMMAND)
+            if others:
+                lines.append(f"pip install {' '.join(others)}")
+        if self.ndv_problem:
+            lines.append(self.ndv_problem)
         if not self.entry_point_exists:
             lines.append(f"The viewer submodule is not checked out ({self.entry_point}).")
             lines.append(f"Run: {SUBMODULE_HINT}")
@@ -64,11 +104,23 @@ def check_viewer(
     software_dir: str,
     find_spec: Callable[[str], object] = importlib.util.find_spec,
     isfile: Callable[[str], bool] = os.path.isfile,
+    version_of: Callable[[str], str] = importlib.metadata.version,
 ) -> ViewerPreflight:
-    """Find every problem a launch would hit, without importing the viewer or Qt."""
+    """Find every problem a launch would hit, without importing the viewer or Qt.
+
+    The ndv version is read from the installed distribution's metadata (no import): an ndv below the
+    viewer's floor launches a viewer that fails on its first dataset.
+    """
     missing = tuple(name for name in VIEWER_PACKAGES if find_spec(name) is None)
     entry_point = viewer_entry_point(software_dir)
-    return ViewerPreflight(missing, entry_point, bool(isfile(entry_point)))
+    ndv_problem = None
+    if "ndv" not in missing:
+        try:
+            installed = version_of("ndv")
+        except importlib.metadata.PackageNotFoundError:
+            installed = None
+        ndv_problem = ndv_version_problem(installed)
+    return ViewerPreflight(missing, entry_point, bool(isfile(entry_point)), ndv_problem)
 
 
 def viewer_launch_command(run_dir: str) -> List[str]:
