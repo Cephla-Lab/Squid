@@ -1166,18 +1166,21 @@ class _ZRangeMixin:
 
 
 class _OpenInViewerButtonMixin:
-    """The opt-in "Open in Viewer" button beside Start Acquisition (SHOW_OPEN_IN_VIEWER_BUTTON).
+    """The opt-in "Open in Viewer" button (SHOW_OPEN_IN_VIEWER_BUTTON), hosted by the Multichannel
+    Acquisition tab, where the run's images appear.
 
-    After a run finishes the GUI hands every multipoint tab the run's folder (set_finished_run_dir) and the
-    button opens it in ndviewer_light, in a separate process. Hidden while the setting is off; disabled until
-    a run has finished. The Qt-free rules and the launch live in control.core.open_in_viewer.
+    After a run finishes the GUI hands the host the run's folder (set_finished_run_dir) and the button
+    opens it in ndviewer_light, in a separate process. Hidden while the setting is off; disabled until a
+    run has finished. The Qt-free rules and the launch live in control.core.open_in_viewer. (It is not
+    in the multipoint tabs' button column: a third button there clipped Start Acquisition's two-line
+    label, and an extra row squeezed the channel list on short screens.)
     """
 
     NO_RUN_TOOLTIP = "No finished acquisition yet"
 
     def _create_open_in_viewer_button(self) -> QPushButton:
         self._finished_run_dir: Optional[str] = None
-        button = QPushButton("Open in Viewer")  # one line: a two-line label squeezes the button column
+        button = QPushButton("Open in Viewer")
         button.setEnabled(False)
         button.setToolTip(self.NO_RUN_TOOLTIP)
         button.clicked.connect(self._open_in_viewer)
@@ -7185,9 +7188,7 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(
-    AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, _OpenInViewerButtonMixin, QFrame
-):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _LaserAfPerStackMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -7435,7 +7436,6 @@ class FlexibleMultiPointWidget(
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
-        self.btn_openInViewer = self._create_open_in_viewer_button()
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         # Add snap images button
@@ -7566,7 +7566,6 @@ class FlexibleMultiPointWidget(
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
-        button_layout.addWidget(self.btn_openInViewer)
 
         grid_acquisition = QHBoxLayout()
         grid_acquisition.addSpacing(EDGE_SPACING)
@@ -8386,7 +8385,6 @@ class FlexibleMultiPointWidget(
         self.combobox_z_order.setEnabled(enabled)
         if enabled:
             self._update_laser_af_per_stack_state()  # enabled only under its rule, not blanket
-            self.set_finished_run_dir(self._finished_run_dir)  # likewise: only when a finished run is held
         else:
             self.checkbox_laserAfPerStack.setEnabled(False)
         self.entry_dt.setEnabled(enabled)
@@ -8604,7 +8602,6 @@ class WellplateMultiPointWidget(
     _ApplyChannelOffsetMixin,
     _LaserAfPerStackMixin,
     _ZRangeMixin,
-    _OpenInViewerButtonMixin,
     QFrame,
 ):
 
@@ -8860,7 +8857,6 @@ class WellplateMultiPointWidget(
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
-        self.btn_openInViewer = self._create_open_in_viewer_button()
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.progress_label = QLabel("Region -/-")
@@ -9098,7 +9094,6 @@ class WellplateMultiPointWidget(
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
-        button_layout.addWidget(self.btn_openInViewer)
 
         bottom_right = QHBoxLayout()
         bottom_right.addLayout(options_layout)
@@ -10483,8 +10478,6 @@ class WellplateMultiPointWidget(
         if enabled:
             # Every child was just enabled: the "AF per stack" box is enabled only under its rule (CodeRabbit).
             self._update_laser_af_per_stack_state()
-            # ... and the Open in Viewer button only when a finished run is held
-            self.set_finished_run_dir(self._finished_run_dir)
             self.update_scan_control_ui()
 
             # Restore mode dropdown states based on their respective checkboxes
@@ -11852,7 +11845,7 @@ class AlignmentWidget(QWidget):
         self._display.hide_alignment_reference()
 
 
-class NapariMultiChannelWidget(QWidget):
+class NapariMultiChannelWidget(_OpenInViewerButtonMixin, QWidget):
     # Writing a frame into its layer is a cheap copy, but refreshing the viewer re-slices
     # every layer and recomputes its thumbnail, so refreshes are coalesced to at most one
     # per interval. Without this, a large z-stack queues frames faster than the GUI thread
@@ -11897,6 +11890,13 @@ class NapariMultiChannelWidget(QWidget):
         self.viewer.dims.events.ndisplay.connect(self._onNdisplayChanged)
         self.viewerWidget = self.viewer.window._qt_window
         self.layout = QVBoxLayout()
+        # Opt-in "Open in Viewer" above the canvas, right-aligned; a hidden button leaves the row empty.
+        self.btn_openInViewer = self._create_open_in_viewer_button()
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.addStretch(1)
+        button_row.addWidget(self.btn_openInViewer)
+        self.layout.addLayout(button_row)
         self.layout.addWidget(self.viewerWidget)
         self.setLayout(self.layout)
         self.customizeViewer()

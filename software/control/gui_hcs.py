@@ -1932,15 +1932,8 @@ class HighContentScreeningGui(QMainWindow):
         if self.unifiedMosaicWidget is not None:
             self.unifiedMosaicWidget.set_acquisition_save_target(save_target)
 
-    def _multipoint_tabs(self):
-        return [
-            tab
-            for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget)
-            if tab is not None
-        ]
-
     def _set_open_in_viewer_target(self) -> None:
-        """After a run: point every multipoint tab's Open in Viewer button at the run's folder (or disable it).
+        """After a run: point the Multichannel Acquisition tab's Open in Viewer button at the run's folder.
 
         Reads the snapshot taken at start and the end reason only, never the controller's base_path /
         experiment_ID: the fluidics imaging port's acquisition_finished slot restores those and may run first.
@@ -1949,12 +1942,12 @@ class HighContentScreeningGui(QMainWindow):
         if controller.last_end_reason == "failed_to_start":
             return  # nothing ran (Start with nothing to acquire): the previously finished run stays openable
         run_dir = finished_run_dir(controller.open_in_viewer_snapshot, controller.last_end_reason)
-        for tab in self._multipoint_tabs():
-            tab.set_finished_run_dir(run_dir)
+        if self.napariMultiChannelWidget is not None:
+            self.napariMultiChannelWidget.set_finished_run_dir(run_dir)
 
     def _clear_open_in_viewer_target(self) -> None:
-        for tab in self._multipoint_tabs():
-            tab.set_finished_run_dir(None)
+        if self.napariMultiChannelWidget is not None:
+            self.napariMultiChannelWidget.set_finished_run_dir(None)
 
     def _on_timepoint_finished(self, time_point: int):
         if self.unifiedMosaicWidget is not None:
@@ -2083,7 +2076,8 @@ class HighContentScreeningGui(QMainWindow):
             for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget):
                 if tab is not None:
                     dialog.signal_config_changed.connect(tab.update_z_order_dropdown_visibility)
-                    dialog.signal_config_changed.connect(tab.update_open_in_viewer_visibility)
+            if self.napariMultiChannelWidget is not None:
+                dialog.signal_config_changed.connect(self.napariMultiChannelWidget.update_open_in_viewer_visibility)
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")

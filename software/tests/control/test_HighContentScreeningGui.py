@@ -525,45 +525,33 @@ def _gui(qtbot):
     return win
 
 
-def _tabs(win):
-    return [
-        t
-        for t in (win.wellplateMultiPointWidget, win.flexibleMultiPointWidget, win.templateMultiPointWidget)
-        if t is not None
-    ]
-
-
 def test_open_in_viewer_button_is_hidden_unless_opted_in(qtbot, monkeypatch, confirm_exit_yes):
     monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", False)
     win = _gui(qtbot)
-    assert all(t.btn_openInViewer.isHidden() for t in _tabs(win))
+    tab = win.napariMultiChannelWidget  # the button lives where the run's images appear
+    assert tab.btn_openInViewer.isHidden()
     monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
-    for t in _tabs(win):
-        t.update_open_in_viewer_visibility()
-    assert all(not t.btn_openInViewer.isHidden() and not t.btn_openInViewer.isEnabled() for t in _tabs(win))
+    tab.update_open_in_viewer_visibility()
+    assert not tab.btn_openInViewer.isHidden() and not tab.btn_openInViewer.isEnabled()
 
 
-def test_open_in_viewer_enables_on_every_tab_after_a_finished_run(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
+def test_open_in_viewer_enables_after_a_finished_run(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
     monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
     win = _gui(qtbot)
+    tab = win.napariMultiChannelWidget
     c = win.multipointController
     (tmp_path / "run").mkdir()
     c.open_in_viewer_snapshot = RunSnapshot(str(tmp_path / "run"), False)
     c.last_end_reason = "user_abort"
     c.acquisition_finished.emit()
-    assert all(
-        t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == str(tmp_path / "run") for t in _tabs(win)
-    )
+    assert tab.btn_openInViewer.isEnabled() and tab.btn_openInViewer.toolTip() == str(tmp_path / "run")
     launched = []
     monkeypatch.setattr(control.widgets, "check_viewer", lambda sd: ViewerPreflight((), "x", True))
     monkeypatch.setattr(control.widgets, "launch_viewer", lambda run_dir, sd: launched.append((run_dir, sd)))
-    win.wellplateMultiPointWidget.btn_openInViewer.click()
+    tab.btn_openInViewer.click()
     assert launched == [(str(tmp_path / "run"), software_dir())]
     c.signal_acquisition_start.emit()
-    assert all(
-        not t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == "No finished acquisition yet"
-        for t in _tabs(win)
-    )
+    assert not tab.btn_openInViewer.isEnabled() and tab.btn_openInViewer.toolTip() == "No finished acquisition yet"
 
 
 def test_open_in_viewer_uses_the_folder_captured_at_start_not_the_restored_base_path(
@@ -580,8 +568,9 @@ def test_open_in_viewer_uses_the_folder_captured_at_start_not_the_restored_base_
     c.set_base_path(str(tmp_path / "operator_dir"))  # what the port's restore leaves behind
     c.experiment_ID = "stale"
     c.acquisition_finished.emit()
-    assert win.wellplateMultiPointWidget.btn_openInViewer.isEnabled()
-    assert win.wellplateMultiPointWidget.btn_openInViewer.toolTip() == str(tmp_path / "protocol_run")
+    tab = win.napariMultiChannelWidget
+    assert tab.btn_openInViewer.isEnabled()
+    assert tab.btn_openInViewer.toolTip() == str(tmp_path / "protocol_run")
 
 
 def test_snapshot_is_taken_at_acquisition_start(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
@@ -608,43 +597,26 @@ def test_open_in_viewer_shows_the_preflight_problem_instead_of_launching(
 ):
     monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
     win = _gui(qtbot)
-    win.wellplateMultiPointWidget.set_finished_run_dir(str(tmp_path))
+    tab = win.napariMultiChannelWidget
+    tab.set_finished_run_dir(str(tmp_path))
     shown = []
     monkeypatch.setattr(control.widgets.QMessageBox, "warning", lambda *a: shown.append(a[2]))
     monkeypatch.setattr(control.widgets, "check_viewer", lambda sd: check_viewer(sd, isfile=lambda f: False))
     monkeypatch.setattr(control.widgets, "launch_viewer", lambda *a: pytest.fail("launched"))
-    win.wellplateMultiPointWidget.btn_openInViewer.click()
+    tab.btn_openInViewer.click()
     assert shown and "git submodule update --init" in shown[0]
 
 
 def test_toggling_the_preference_keeps_the_finished_run(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
     monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
     win = _gui(qtbot)
-    t = win.flexibleMultiPointWidget
-    t.set_finished_run_dir(str(tmp_path))
+    tab = win.napariMultiChannelWidget
+    tab.set_finished_run_dir(str(tmp_path))
     monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", False)
-    t.update_open_in_viewer_visibility()
+    tab.update_open_in_viewer_visibility()
     monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
-    t.update_open_in_viewer_visibility()
-    assert t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == str(tmp_path)
-
-
-def test_open_in_viewer_stays_disabled_when_the_tab_re_enables_its_children(
-    qtbot, monkeypatch, confirm_exit_yes, tmp_path
-):
-    # acquisition_is_finished calls setEnabled_all(True) on the tab that ran; the Wellplate tab enables every child
-    # widget blanket-style, so the button must re-apply its own rule rather than rely on the GUI's slot order.
-    monkeypatch.setattr(control._def, "SHOW_OPEN_IN_VIEWER_BUTTON", True)
-    win = _gui(qtbot)
-    for t in (win.wellplateMultiPointWidget, win.flexibleMultiPointWidget):
-        t.set_finished_run_dir(None)
-        t.setEnabled_all(True)
-        assert not t.btn_openInViewer.isEnabled()
-        assert t.btn_openInViewer.toolTip() == "No finished acquisition yet"
-        t.set_finished_run_dir(str(tmp_path))
-        t.setEnabled_all(False)
-        t.setEnabled_all(True)
-        assert t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == str(tmp_path)
+    tab.update_open_in_viewer_visibility()
+    assert tab.btn_openInViewer.isEnabled() and tab.btn_openInViewer.toolTip() == str(tmp_path)
 
 
 def test_a_run_that_fails_to_start_keeps_the_previous_finished_run(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
@@ -659,5 +631,5 @@ def test_a_run_that_fails_to_start_keeps_the_previous_finished_run(qtbot, monkey
     c.acquisition_finished.emit()
     c.last_end_reason = "failed_to_start"
     c.acquisition_finished.emit()
-    t = win.wellplateMultiPointWidget
+    t = win.napariMultiChannelWidget
     assert t.btn_openInViewer.isEnabled() and t.btn_openInViewer.toolTip() == str(tmp_path / "run")
