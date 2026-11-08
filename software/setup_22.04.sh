@@ -38,7 +38,10 @@ sudo apt update
 
 # install packages
 sudo apt install python3-pip -y
-sudo apt install python3-pyqtgraph python3-pyqt5 -y
+# PyQt5 from apt (Squid's binding); pyqtgraph comes from pip below. apt's python3-pyqtgraph drags in
+# Ubuntu 22.04's matplotlib 3.5 / scipy 1.8 / numpy 1.21, and its mpl_toolkits is a regular package that
+# shadows the one in pip's matplotlib (mplot3d then imports a name removed in matplotlib 3.8).
+sudo apt install python3-pyqt5 -y
 sudo apt install python3-pyqt5.qtsvg
 
 sudo apt-get install git -y
@@ -63,8 +66,8 @@ python3 -m pip install --upgrade pip
 # install libraries
 # numpy>=2: the bundled viewer (control/ndviewer_light) needs ndv>=0.5, whose ihist dependency requires
 # numpy 2; the numpy<2 pin from #501 (scipy 1.12 wheels built against numpy 1) is no longer needed.
-# apt's python3-pyqtgraph above drags in Ubuntu 22.04's matplotlib 3.5, scipy 1.8 and pyqtgraph 0.12, all
-# built for numpy 1; the floors make pip install numpy 2 builds that shadow them (user site comes first).
+# floors: an existing install still has Ubuntu's matplotlib 3.5 / scipy 1.8 / pyqtgraph 0.12 (numpy 1
+# builds) from the old apt line; pip then installs numpy 2 builds that shadow them (user site comes first).
 # colorama>=0.4.6: pyqtgraph >= 0.13 imports it; apt's 0.4.4 satisfies a bare `colorama` and is removed
 # again by the autoremove below, so the floor makes pip install its own copy.
 pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy>=2" tifffile "scipy>=1.13" "matplotlib>=3.9" "pyqtgraph>=0.13.4" "colorama>=0.4.6" pyreadline3
