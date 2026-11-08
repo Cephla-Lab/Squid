@@ -49,7 +49,7 @@ def test_targets_keep_the_travel_ends_inclusive():
 
 def test_targets_travel_ends_have_a_1e_minus_6_tolerance():
     top = 300.0 + 6e-14  # float accumulation just past the end
-    assert frame_targets(top, 0.0, 1, 2.0, [0.0], (0.0, 300.0)) == [[top]]
-    assert frame_targets(-1e-9, 0.0, 1, 2.0, [0.0], (0.0, 300.0)) == [[-1e-9]]
+    assert frame_targets(top, 0.0, 1, 2.0, [0.0], (0.0, 300.0)) == [[300.0]]
+    assert frame_targets(-1e-9, 0.0, 1, 2.0, [0.0], (0.0, 300.0)) == [[0.0]]
     assert frame_targets(300.001, 0.0, 1, 2.0, [0.0], (0.0, 300.0)) == [[None]]
     assert frame_targets(-0.001, 0.0, 1, 2.0, [0.0], (0.0, 300.0)) == [[None]]

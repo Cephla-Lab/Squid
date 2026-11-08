@@ -54,6 +54,8 @@ def frame_targets(
     """Absolute piezo target per [channel][k], or None when it falls outside travel (ends inclusive, within TRAVEL_EPS_UM).
 
     Target = anchor + z_min_rel + k * dz + channel offset; eligibility is decided after the offset.
+    A target outside travel by at most TRAVEL_EPS_UM is snapped to that travel end (absolute moves reject
+    anything outside travel); a target further out is None, never clamped.
     """
     low_um, high_um = travel_um
     targets: List[List[Optional[float]]] = []
@@ -61,6 +63,7 @@ def frame_targets(
         row: List[Optional[float]] = []
         for k in range(nz):
             z_um = anchor_um + z_min_rel_um + k * dz_um + offset_um
-            row.append(z_um if low_um - TRAVEL_EPS_UM <= z_um <= high_um + TRAVEL_EPS_UM else None)
+            in_travel = low_um - TRAVEL_EPS_UM <= z_um <= high_um + TRAVEL_EPS_UM
+            row.append(min(max(z_um, low_um), high_um) if in_travel else None)
         targets.append(row)
     return targets
