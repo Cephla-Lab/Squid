@@ -20,6 +20,15 @@ import traceback
 
 SOFTWARE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHOT_DELAY_MS = 4000
+EXPECTED_SHOTS = 8
+_run = {"saved": 0, "failed": False}  # outcome of the GUI run; decides the process exit code
+
+
+def _run_exit_code(code):
+    """Exit code for the GUI run: non-zero if a shot is missing or anything failed, even if main_hcs asked for 0."""
+    if code in (0, None) and (_run["failed"] or _run["saved"] != EXPECTED_SHOTS):
+        return 1
+    return code
 
 
 def _log(msg):
@@ -29,17 +38,21 @@ def _log(msg):
 def compare_images(path_a, path_b, out_dir):
     from PIL import Image, ImageChops
 
-    a = Image.open(path_a).convert("RGBA")
-    b = Image.open(path_b).convert("RGBA")
+    try:
+        a = Image.open(path_a).convert("RGB")
+        b = Image.open(path_b).convert("RGB")
+    except OSError as e:
+        print(f"cannot read image: {e}")
+        return 1
     if a.size != b.size:
         print(f"size mismatch: {a.size} vs {b.size}")
         return 1
     diff = ImageChops.difference(a, b)
     os.makedirs(out_dir, exist_ok=True)
     diff.save(os.path.join(out_dir, "diff.png"))
-    r, g, b, a = diff.split()
-    any_channel = ImageChops.lighter(ImageChops.lighter(r, g), ImageChops.lighter(b, a))
-    differing = a.width * a.height - any_channel.histogram()[0]
+    r, g, b = diff.split()
+    any_channel = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    differing = diff.width * diff.height - any_channel.histogram()[0]
     max_diff = max(hi for _, hi in diff.getextrema())
     print(f"max_abs_diff={max_diff} differing_pixels={differing}")
     return 0
@@ -53,7 +66,7 @@ def _install_process_hygiene():
         for p in multiprocessing.active_children():
             p.terminate()
             p.join(2)
-        real_exit(code)
+        real_exit(_run_exit_code(code))
 
     os._exit = exit_after_reaping_children
 
@@ -126,6 +139,10 @@ def _shoot(app, out_dir):
     def save(widget, name):
         ok = widget.grab().save(os.path.join(out_dir, name), "PNG")
         _log(f"{'saved' if ok else 'FAILED'} {name}")
+        if ok:
+            _run["saved"] += 1
+        else:
+            _run["failed"] = True
 
     try:
         import control.gui_hcs as gui
@@ -133,6 +150,7 @@ def _shoot(app, out_dir):
         wins = [w for w in QApplication.topLevelWidgets() if isinstance(w, gui.HighContentScreeningGui)]
         if not wins:
             _log("no main window found")
+            _run["failed"] = True
             return
         win = wins[0]
         _settle(app, 1500)
@@ -155,6 +173,7 @@ def _shoot(app, out_dir):
         save(win.cameraTabWidget, "11-camera-tabs-camera.png")
     except Exception:
         _log("shoot failed:\n" + traceback.format_exc())
+        _run["failed"] = True
     finally:
         app.quit()
 
@@ -195,6 +214,8 @@ def run_gui(out_dir, theme, font_spec):
         _log(f"SystemExit({e.code})")
     except Exception:
         _log("main_hcs failed:\n" + traceback.format_exc())
+        _run["failed"] = True
+    return _run_exit_code(0)
 
 
 def main():
@@ -206,8 +227,7 @@ def main():
     args = parser.parse_args()
     if args.compare:
         return compare_images(args.compare[0], args.compare[1], args.out)
-    run_gui(os.path.abspath(args.out), args.theme, args.font)
-    return 0
+    return run_gui(os.path.abspath(args.out), args.theme, args.font)
 
 
 if __name__ == "__main__":
