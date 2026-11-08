@@ -4,6 +4,7 @@ Utilities for parsing and validating acquisition YAML files.
 
 import csv
 import math
+import numbers
 import os
 import yaml
 
@@ -126,18 +127,32 @@ def parse_range(value) -> Optional[Tuple[float, float]]:
     return (float(value[0]), float(value[1])) if value and len(value) == 2 else None
 
 
+def _relative_range_pair(value) -> Optional[Tuple[float, float]]:
+    """A saved laser_af_relative_range_um: None when missing or null, else exactly two finite numbers.
+
+    Anything else raises ValueError rather than reading as no range, which would run the acquisition
+    without the window the file asked for.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        if all(isinstance(v, numbers.Real) and not isinstance(v, bool) and math.isfinite(v) for v in value):
+            return float(value[0]), float(value[1])
+    raise ValueError(f"z_stack.laser_af_relative_range_um must be [z_min, z_max] in µm, got {value!r}.")
+
+
 def parse_laser_af_relative_range(
     z_stack: dict, laser_af: bool, config: str, delta_z_um: float
 ) -> Optional[Tuple[float, float]]:
     """The saved z_stack.laser_af_relative_range_um as (min, max) µm from the laser AF reference, or None.
 
-    Raises ValueError for a combination the GUI never saves: an absolute piezo range with laser AF on,
-    both ranges together, a relative range with laser AF off, a config other than From Bottom, or a dz
-    that is not finite and positive.
+    Raises ValueError for a value that is not null or two finite numbers, and for a combination the GUI
+    never saves: an absolute piezo range with laser AF on, both ranges together, a relative range with
+    laser AF off, a config other than From Bottom, or a dz that is not finite and positive.
     """
     from control.core.relative_z_range import relative_range_problem
 
-    relative = parse_range(z_stack.get("laser_af_relative_range_um"))
+    relative = _relative_range_pair(z_stack.get("laser_af_relative_range_um"))
     absolute = parse_range(z_stack.get("piezo_z_range_um"))
     if relative is None:
         if absolute is not None and laser_af:

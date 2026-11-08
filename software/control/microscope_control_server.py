@@ -907,8 +907,11 @@ class MicroscopeControlServer:
         except Exception as e:
             self._log.error(f"Failed to update GUI from YAML: {e}")
 
-    def _set_gui_acquisition_state(self, yaml_data, is_running: bool) -> None:
+    def _set_gui_acquisition_state(self, yaml_data, is_running: bool, nz: int) -> None:
         """Update GUI widget state to reflect acquisition running/stopped.
+
+        nz is the Nz the run takes (the controller's effective_nz(): a laser-AF-relative range derives it
+        from the range and dz), which sizes the Napari canvas; not the YAML's nz.
 
         Uses QMetaObject.invokeMethod with Qt.BlockingQueuedConnection to ensure
         the GUI update completes on the main thread before this method returns.
@@ -939,7 +942,7 @@ class MicroscopeControlServer:
                 "set_acquisition_running_state",
                 Qt.BlockingQueuedConnection,
                 Q_ARG(bool, is_running),
-                Q_ARG(int, yaml_data.nz),
+                Q_ARG(int, nz),
                 Q_ARG(float, yaml_data.delta_z_um),
             )
             if not success:
@@ -1069,22 +1072,24 @@ class MicroscopeControlServer:
             self.multipoint_controller.set_base_path(base_path)
             self.multipoint_controller.start_new_experiment(experiment_id)
 
-            # Calculate total FOVs for status reporting
+            # Calculate total FOVs for status reporting. Nz is what the run takes: a laser-AF-relative range
+            # derives it from the range and dz, whatever the YAML's nz says.
+            nz = self.multipoint_controller.effective_nz()
             total_fovs = sum(len(coords) for coords in self.scan_coordinates.region_fov_coordinates.values())
-            total_images = total_fovs * len(yaml_data.channel_names) * yaml_data.nz * yaml_data.nt
+            total_images = total_fovs * len(yaml_data.channel_names) * nz * yaml_data.nt
 
             # Update GUI to reflect acquisition in progress BEFORE starting
             # (must happen before run_acquisition so the event loop can process it)
-            self._set_gui_acquisition_state(yaml_data, is_running=True)
+            self._set_gui_acquisition_state(yaml_data, is_running=True, nz=nz)
 
             # Run the acquisition (non-blocking - runs in worker thread)
             if not self.multipoint_controller.run_acquisition():
-                self._set_gui_acquisition_state(yaml_data, is_running=False)
+                self._set_gui_acquisition_state(yaml_data, is_running=False, nz=nz)
                 raise RuntimeError(_ACQUISITION_NOT_STARTED)
 
             self._log.info(
                 f"Acquisition started: {total_fovs} FOVs, {len(yaml_data.channel_names)} channels, "
-                f"nz={yaml_data.nz}, nt={yaml_data.nt}, total_images={total_images}"
+                f"nz={nz}, nt={yaml_data.nt}, total_images={total_images}"
             )
 
             return {
@@ -1093,7 +1098,7 @@ class MicroscopeControlServer:
                 "widget_type": yaml_data.widget_type,
                 "region_count": len(self.scan_coordinates.region_fov_coordinates),
                 "channels": yaml_data.channel_names,
-                "nz": yaml_data.nz,
+                "nz": nz,
                 "nt": yaml_data.nt,
                 "total_fovs": total_fovs,
                 "total_images": total_images,

@@ -36,6 +36,9 @@ def create_mock_server(objective: str = "20x", channels: list = None):
     mock_multipoint.experiment_ID = "test_experiment"
     # What set_selected_configurations would have resolved for these channels
     mock_multipoint.selected_configurations = mock_channels
+    # As the real controller with no relative range: the Nz set is the Nz the run takes
+    mock_multipoint.set_NZ.side_effect = lambda nz: setattr(mock_multipoint, "NZ", nz)
+    mock_multipoint.effective_nz.side_effect = lambda: mock_multipoint.NZ
 
     mock_scan_coords = MagicMock()
     mock_scan_coords.region_fov_coordinates = {"B6": [(0, 0)], "B7": [(0, 0)]}
@@ -125,6 +128,22 @@ class TestRunAcquisitionFromYAML:
         assert result["nz"] == 3
         assert result["nt"] == 2
         assert "experiment_id" in result
+
+    def test_reports_the_nz_the_controller_will_take_not_the_yaml_nz(self, mock_server, yaml_file):
+        # A laser-AF-relative range derives Nz from the range and dz (effective_nz): -5..+15 µm at dz 2 µm takes 11
+        # planes whatever the YAML's nz says. The status, the image count and the GUI's acquisition shape (which
+        # sizes the Napari canvas) all use the derived Nz.
+        mock_server.multipoint_controller.effective_nz.side_effect = lambda: 11
+        gui_states = []
+        mock_server._set_gui_acquisition_state = lambda yaml_data, is_running, nz=None: gui_states.append(
+            (is_running, nz)
+        )
+
+        result = mock_server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file)
+
+        assert result["nz"] == 11
+        assert result["total_images"] == 2 * 2 * 11 * 2  # FOVs x channels x Nz x Nt
+        assert gui_states == [(True, 11)]
 
     def test_acquisition_in_progress_error(self, mock_server, yaml_file):
         """Test error when acquisition is already running."""
