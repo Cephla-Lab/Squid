@@ -224,6 +224,42 @@ def test_a_run_whose_rounds_are_all_known_is_skipped_whole(store, saving_root):
     assert result.added == [] and result.skipped_existing == 1 and len(store.events()) == before
 
 
+def test_importing_a_located_folder_does_not_duplicate_its_entry(store, saving_root, tmp_path):
+    old = write_acquisition(saving_root, "a_2026-11-08_10-00-00.000000", start_time=START)
+    import_folder(store, str(saving_root), include_snaps=False)
+    moved_root = tmp_path / "moved"
+    moved_root.mkdir()
+    new = shutil.move(str(old), str(moved_root / old.name))
+    store.append({"type": "relocated", "id": entry_id_for(str(old)), "folder": new})  # what Locate writes
+    before = len(store.events())
+
+    result = import_folder(store, str(moved_root), include_snaps=False)
+
+    assert result.added == [] and result.skipped_existing == 1 and len(store.events()) == before
+    assert [e.id for e in store.load()] == [entry_id_for(str(old))]
+
+
+def test_importing_a_located_protocol_run_does_not_duplicate_it_or_its_rounds(store, saving_root, tmp_path):
+    run = write_protocol_run(saving_root, "run_7", rounds=2)
+    import_folder(store, str(saving_root), include_snaps=False)
+    moved_root = tmp_path / "moved"
+    moved_root.mkdir()
+    new_run = shutil.move(str(run), str(moved_root / run.name))
+    parent = store.entry(entry_id_for(str(run)))
+    store.append({"type": "relocated", "id": parent.id, "folder": new_run})
+    for r in parent.rounds:
+        store.append({"type": "relocated", "id": r.id, "folder": os.path.join(new_run, os.path.basename(r.folder))})
+    before = len(store.events())
+
+    result = import_folder(store, str(moved_root), include_snaps=False)
+    assert result.added == [] and result.skipped_existing == 1 and len(store.events()) == before
+
+    # Only the rounds were located (the run keeps its old folder): the run is still not imported again.
+    store.append({"type": "relocated", "id": parent.id, "folder": str(run)})
+    result = import_folder(store, str(moved_root), include_snaps=False)
+    assert result.added == [] and result.skipped_existing == 1 and len(store.events()) == before + 1
+
+
 def test_a_partly_known_run_imports_only_the_unknown_rounds_under_the_parent(store, saving_root):
     run = write_protocol_run(saving_root, "run_7", rounds=3, status=None)
     first = protocol_rounds(str(run))[0]

@@ -15,7 +15,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import yaml
 
 import squid.logging
-from squid.acquisition_history import HistoryStore, entry_id_for
+from squid.acquisition_history import HistoryStore, entry_id_for, normalize_folder
 
 _log = squid.logging.get_logger(__name__)
 
@@ -540,12 +540,26 @@ def _imported_event(path: str, *, kind: str, parent: Optional[str] = None) -> di
     }
 
 
-def _known_ids(store: HistoryStore) -> set:
-    ids = set()
+@dataclass
+class _Known:
+    """What the history holds already: entry ids, and the normalised folders of its entries and rounds (a located
+    entry keeps its id but not its folder, so a folder is known by either)."""
+
+    ids: set
+    folders: set
+
+    def has(self, entry_id: str, folder: str) -> bool:
+        return entry_id in self.ids or normalize_folder(folder) in self.folders
+
+
+def _known(store: HistoryStore) -> _Known:
+    ids, folders = set(), set()
     for entry in store.load():
-        ids.add(entry.id)
-        ids.update(r.id for r in entry.rounds)
-    return ids
+        for e in [entry, *entry.rounds]:
+            ids.add(e.id)
+            if e.folder:
+                folders.add(normalize_folder(e.folder))
+    return _Known(ids, folders)
 
 
 def _run_preview(make_preview, folder: str, entry_id: str, result: ImportResult) -> None:
@@ -560,17 +574,16 @@ def _run_preview(make_preview, folder: str, entry_id: str, result: ImportResult)
 
 
 def _import_protocol_run(
-    store: HistoryStore, run_dir: str, rounds: List[str], known: set, result: ImportResult, make_preview
+    store: HistoryStore, run_dir: str, rounds: List[str], known: _Known, result: ImportResult, make_preview
 ) -> None:
     from control.acquisition_history_recorder import map_protocol_outcome  # imported late: it needs psutil
 
     run_id = entry_id_for(run_dir)
-    if run_id in known:
+    if known.has(run_id, run_dir):
         result.skipped_existing += 1
         return
     manifest = _read_manifest(run_dir)
-    events = [_imported_event(r, kind="run", parent=run_id) for r in rounds]
-    events = [e for e in events if e["id"] not in known]
+    events = [_imported_event(r, kind="run", parent=run_id) for r in rounds if not known.has(entry_id_for(r), r)]
     if not events:
         result.skipped_existing += 1  # every round is in the history already: nothing to group
         return
@@ -634,7 +647,7 @@ def import_folder(
     result = ImportResult()
     root = os.path.normpath(root)
     try:
-        known = _known_ids(store)
+        known = _known(store)
         if is_acquisition_folder(root) or protocol_rounds(root):
             candidates = [root]
         else:
@@ -659,7 +672,7 @@ def import_folder(
                 result.skipped_snaps += 1
                 continue
             entry_id = entry_id_for(path)
-            if entry_id in known:
+            if known.has(entry_id, path):
                 result.skipped_existing += 1
                 continue
             store.append(_imported_event(path, kind="snap" if snap else "run"))
