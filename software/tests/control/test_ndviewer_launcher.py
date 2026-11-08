@@ -5,7 +5,14 @@ import sys
 import pytest
 
 import control._def
-from control.ndviewer_launcher import LauncherResolution, launch_ndviewer_light, resolve_ndviewer_light
+from control.ndviewer_launcher import (
+    LOG_FILE_NAME,
+    LauncherResolution,
+    default_log_path,
+    launch_ndviewer_light,
+    read_log_tail,
+    resolve_ndviewer_light,
+)
 
 PY = "python-for-tests"
 
@@ -73,21 +80,23 @@ def test_missing_preference_falls_through_and_is_mentioned(tmp_path):
     assert "Preferences" in res.reason and "not found" in res.reason
 
 
-def test_launch_appends_the_folder_and_detaches():
+def test_launch_appends_the_folder_and_detaches(tmp_path):
     calls = []
 
     def fake_popen(args, **kwargs):
         calls.append((args, kwargs))
         return "proc"
 
+    log_path = str(tmp_path / "logs" / LOG_FILE_NAME)
     res = LauncherResolution(["viewer", "-x"], "path", "ok", env={"A": "1"}, cwd="/soft")
-    assert launch_ndviewer_light(res, "/data/acq", popen=fake_popen) == "proc"
+    assert launch_ndviewer_light(res, "/data/acq", popen=fake_popen, log_path=log_path) == "proc"
     args, kw = calls[0]
     assert args == ["viewer", "-x", "/data/acq"]
     assert kw["cwd"] == "/soft"
     assert kw["env"]["A"] == "1" and "PATH" in {k.upper() for k in kw["env"]}
     assert kw["close_fds"] is True
-    assert kw["stdin"] == kw["stdout"] == kw["stderr"] == subprocess.DEVNULL
+    assert kw["stdin"] == subprocess.DEVNULL
+    assert kw["stdout"].name == log_path and kw["stderr"] == subprocess.STDOUT
     if sys.platform == "win32":
         assert kw["creationflags"] & subprocess.DETACHED_PROCESS
         assert kw["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
@@ -95,8 +104,27 @@ def test_launch_appends_the_folder_and_detaches():
         assert kw["start_new_session"] is True
 
     calls.clear()
-    launch_ndviewer_light(LauncherResolution(["v"], "path", "ok"), "/d", popen=fake_popen)
+    launch_ndviewer_light(LauncherResolution(["v"], "path", "ok"), "/d", popen=fake_popen, log_path=log_path)
     assert calls[0][1]["env"] is None
+
+
+def test_launch_log_is_truncated_per_launch_and_its_tail_readable(tmp_path):
+    log_path = tmp_path / LOG_FILE_NAME
+    log_path.write_text("old run\n" * 50)
+
+    def fake_popen(args, **kwargs):
+        kwargs["stdout"].write(b"".join(b"line %d\n" % i for i in range(20)))
+        return "proc"
+
+    launch_ndviewer_light(LauncherResolution(["v"], "path", "ok"), "/d", popen=fake_popen, log_path=str(log_path))
+    assert "old run" not in log_path.read_text()
+    assert read_log_tail(str(log_path)).splitlines() == [f"line {i}" for i in range(10, 20)]
+    assert read_log_tail(str(tmp_path / "absent.log")) == ""
+
+
+def test_default_log_path_is_in_the_history_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("SQUID_ACQUISITION_HISTORY_DIR", str(tmp_path))
+    assert default_log_path() == os.path.join(str(tmp_path), LOG_FILE_NAME)
 
 
 def test_launch_without_a_command_raises_the_reason():

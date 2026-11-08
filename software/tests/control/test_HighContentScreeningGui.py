@@ -434,9 +434,17 @@ def test_gallery_is_wired_to_the_history_viewer_and_launcher(qtbot, confirm_exit
     resolutions = [LauncherResolution(["ndviewer-light"], "path", "ndviewer-light on the PATH")]
     monkeypatch.setattr(control.gui_hcs, "resolve_ndviewer_light", lambda preference="": resolutions[-1])
     launched = []
-    monkeypatch.setattr(
-        control.gui_hcs, "launch_ndviewer_light", lambda resolution, folder: launched.append((resolution, folder))
-    )
+    exit_codes = [None]  # what the launched process's poll() reports when the launch check runs
+
+    class FakeProcess:
+        def poll(self):
+            return exit_codes[-1]
+
+    def fake_launch(resolution, folder, log_path=None):
+        launched.append((resolution, folder, log_path))
+        return FakeProcess()
+
+    monkeypatch.setattr(control.gui_hcs, "launch_ndviewer_light", fake_launch)
 
     done = write_acquisition(tmp_path, "done_2026-11-07_10-00-00.000000")
     (tmp_path / "live").mkdir()
@@ -485,18 +493,33 @@ def test_gallery_is_wired_to_the_history_viewer_and_launcher(qtbot, confirm_exit
     assert viewer.opened == [str(tmp_path)]
     assert win.imageDisplayTabs.currentWidget() is viewer
 
-    # Open in window: ndviewer_light is launched with the resolved command; a failed launch is reported.
-    gallery.signal_open_in_window.emit(str(done))
-    assert launched == [(resolutions[0], str(done))]
+    # Open in window: ndviewer_light is launched with the resolved command, its output going to the history
+    # folder's log; a viewer still running after the check is fine, one that exited is reported with its log.
     warnings = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: warnings.append((args[1], args[2])))
+    win.NDVIEWER_LAUNCH_CHECK_MS = 50
+    log_path = str(tmp_path / "history" / "ndviewer_light.log")
+    gallery.signal_open_in_window.emit(str(done))
+    assert launched == [(resolutions[0], str(done), log_path)]
+    qtbot.wait(300)
+    assert warnings == []
 
-    def failing_launch(resolution, folder):
-        raise OSError("no such program")
+    exit_codes.append(1)
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write("".join(f"noise {i}\n" for i in range(20)) + "ModuleNotFoundError: No module named 'PyQt6'\n")
+    gallery.signal_open_in_window.emit(str(done))
+    qtbot.waitUntil(lambda: len(warnings) == 1, timeout=5000)
+    title, text = warnings[0]
+    assert title == "ndviewer_light exited" and "No module named 'PyQt6'" in text and "noise 5" not in text
+    assert "ndviewer_light exited (code 1)" in gallery.status_label.text()
+    warnings.clear()
+
+    def failing_launch(resolution, folder, log_path=None):
+        raise ValueError("bad command line")
 
     monkeypatch.setattr(control.gui_hcs, "launch_ndviewer_light", failing_launch)
     gallery.signal_open_in_window.emit(str(done))
-    assert warnings == [("Cannot open ndviewer_light", "no such program")]
+    assert warnings == [("Cannot open ndviewer_light", "bad command line")]
     warnings.clear()
 
     # Launcher unavailable: re-resolved when the tab is shown, the button says why.
@@ -507,9 +530,14 @@ def test_gallery_is_wired_to_the_history_viewer_and_launcher(qtbot, confirm_exit
 
     # During an acquisition the NDViewer tab is busy with the running one.
     mpc = win.multipointController
+    assert gallery.btn_import.isEnabled() and not win.historyRecorder._busy
     mpc.signal_acquisition_start.emit()
     assert not gallery.btn_open_in_squid.isEnabled()
     assert gallery.btn_open_in_squid.toolTip() == "Wait for the running acquisition to finish"
+    # ... and no import or preview work runs during it.
+    assert not gallery.btn_import.isEnabled()
+    assert gallery.btn_import.toolTip() == "Wait for the running acquisition to finish"
+    assert win.historyRecorder._busy
     qtbot.waitUntil(lambda: not gallery._loading, timeout=10000)  # the reload the start asked for
 
     # Progress: region 1 of 2, FOV 2 of 4, one timepoint -> 2 of 8 FOVs.
@@ -520,6 +548,7 @@ def test_gallery_is_wired_to_the_history_viewer_and_launcher(qtbot, confirm_exit
     mpc.acquisition_finished.emit()
     assert gallery.btn_open_in_squid.isEnabled()
     assert not gallery.btn_open_in_squid.isHidden()
+    assert gallery.btn_import.isEnabled() and not win.historyRecorder._busy
 
     # Performance mode turns the Gallery tab off like the other display tabs.
     win.performanceModeToggle.setChecked(True)
@@ -709,3 +738,27 @@ def test_the_preview_uses_the_history_id_captured_at_start(qtbot, confirm_exit_y
     mpc.acquisition_finished.emit()
 
     assert calls == [("e9", folder, False)]
+
+
+def test_previews_wait_for_the_running_acquisition_and_flush_when_it_ends(
+    qtbot, confirm_exit_yes, monkeypatch, tmp_path
+):
+    """No preview work during a run: the recorder queues requests from acquisition start, and the end of the run
+    submits them, the finished run's own one included."""
+    monkeypatch.setenv("SQUID_ACQUISITION_HISTORY_DIR", str(tmp_path / "history"))
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    submitted = []
+    monkeypatch.setattr(win.historyRecorder, "_submit", lambda entry_id, folder: submitted.append((entry_id, folder)))
+    monkeypatch.setattr(win.unifiedMosaicWidget, "layers_initialized", False)  # no overview save to wait for
+    mpc = win.multipointController
+    folder_a, folder_b = str(tmp_path / "run_a"), str(tmp_path / "run_b")
+
+    mpc.signal_history_run_started.emit("a", folder_a)
+    mpc.signal_acquisition_start.emit()
+    win.historyRecorder.make_preview("b", folder_b)  # e.g. an earlier run's late overview save landing now
+    assert submitted == []
+    mpc.acquisition_finished.emit()
+
+    assert sorted(submitted) == [("a", folder_a), ("b", folder_b)]

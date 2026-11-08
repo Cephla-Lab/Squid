@@ -116,7 +116,7 @@ from control.widgets_slack import SlackSettingsDialog, load_slack_settings_from_
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from control.acquisition_history_recorder import AcquisitionHistoryRecorder
-from control.ndviewer_launcher import launch_ndviewer_light, resolve_ndviewer_light
+from control.ndviewer_launcher import default_log_path, launch_ndviewer_light, read_log_tail, resolve_ndviewer_light
 from squid.acquisition_history import HistoryStore, history_dir, normalize_folder
 from squid.version import software_version
 
@@ -629,6 +629,7 @@ class HighContentScreeningGui(QMainWindow):
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
     FLUIDICS_TAB_NAME = "Fluidics"
     GALLERY_PREVIEW_WAIT_MS = 60_000  # how long a finished run's preview waits for its last mosaic overview save
+    NDVIEWER_LAUNCH_CHECK_MS = 3000  # an ndviewer_light window that has exited by then could not start
     signal_performance_mode_changed = Signal(bool)
 
     def __init__(
@@ -1664,6 +1665,8 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController.ndviewer_end_zarr_acquisition.connect(self.ndviewerTab.end_zarr_acquisition)
 
         # Acquisition history: the finished run's preview waits for its last mosaic overview save (live-only too).
+        # No preview work while a run is under way: the recorder queues preview requests until it is over.
+        self.multipointController.signal_acquisition_start.connect(self._on_history_acquisition_start)
         self.multipointController.signal_history_run_started.connect(self._on_history_run_started)
         self.multipointController.timepoint_finished.connect(self._on_history_timepoint_finished)
         self.multipointController.acquisition_finished.connect(self._on_history_acquisition_finished)
@@ -3170,7 +3173,24 @@ class HighContentScreeningGui(QMainWindow):
             and run.last_timepoint is not None
         )
 
+    def _on_history_acquisition_start(self) -> None:
+        self.historyRecorder.set_busy(True)
+
     def _on_history_acquisition_finished(self) -> None:
+        """Ask for the finished run's preview, then let the recorder make the previews queued while it ran (this
+        one included, unless it waits for the run's last overview save)."""
+        try:
+            self._request_finished_run_preview()
+        finally:
+            try:
+                futures = self.historyRecorder.set_busy(False)
+            except Exception:
+                self.log.exception("Could not make the gallery previews queued during the acquisition")
+                futures = []
+            for future in futures or []:
+                self._watch_history_preview(future)
+
+    def _request_finished_run_preview(self) -> None:
         run = self._history_run
         if run is None or run.finished:
             return
@@ -3230,7 +3250,12 @@ class HighContentScreeningGui(QMainWindow):
         except Exception:
             self.log.exception(f"Could not schedule the gallery preview of {run.folder}")
             return
-        if future is None or self.acquisitionGalleryWidget is None:
+        if future is not None:
+            self._watch_history_preview(future)
+
+    def _watch_history_preview(self, future) -> None:
+        """Reload the gallery once the preview job is done."""
+        if self.acquisitionGalleryWidget is None:
             return
         self._history_preview_futures.append(future)
         if self._history_preview_poll is None:
@@ -3267,10 +3292,12 @@ class HighContentScreeningGui(QMainWindow):
         self._gallery_region_progress = None
         self.acquisitionGalleryWidget.set_running_progress(None)
         self._set_gallery_open_in_squid(acquiring=True)
+        self.acquisitionGalleryWidget.set_acquiring(True)  # no import (and its previews) during the run
         self.acquisitionGalleryWidget.reload()  # the running entry appears
 
     def _on_gallery_acquisition_finished(self) -> None:
         self._set_gallery_open_in_squid(acquiring=False)
+        self.acquisitionGalleryWidget.set_acquiring(False)
         self.acquisitionGalleryWidget.set_running_progress(None)
 
     def _on_gallery_acquisition_progress(self, current_region: int, num_regions: int, current_time_point: int):
@@ -3314,14 +3341,43 @@ class HighContentScreeningGui(QMainWindow):
         if self._ndviewer_launcher is None:
             self._refresh_ndviewer_launcher()
         resolution = self._ndviewer_launcher
+        log_path = default_log_path()
         try:
             if resolution is None:
                 raise RuntimeError("ndviewer_light could not be looked for")
-            launch_ndviewer_light(resolution, folder)
-        except (RuntimeError, OSError) as e:
-            QMessageBox.warning(self, "Cannot open ndviewer_light", str(e))
+            process = launch_ndviewer_light(resolution, folder, log_path=log_path)
+        except Exception as e:
+            self.log.exception(f"Could not start ndviewer_light on {folder}")
+            QMessageBox.warning(self, "Cannot open ndviewer_light", str(e) or type(e).__name__)
             return
-        self.log.info(f"Opened {folder} in ndviewer_light ({resolution.source}: {resolution.reason})")
+        # A viewer that cannot start (an import error, a wrong Qt binding, a mistyped command) exits at once: look
+        # again shortly and show why from its log. The timer keeps the Popen.
+        check = QTimer(self)
+        check.setSingleShot(True)
+        check.timeout.connect(
+            lambda: self._check_ndviewer_launch(
+                check, process, folder, log_path, f"{resolution.source}: {resolution.reason}"
+            )
+        )
+        check.start(self.NDVIEWER_LAUNCH_CHECK_MS)
+
+    def _check_ndviewer_launch(self, timer: QTimer, process, folder: str, log_path: str, how: str) -> None:
+        timer.deleteLater()
+        try:
+            code = process.poll()
+        except Exception:
+            self.log.exception("Could not check the ndviewer_light process")
+            return
+        if code is None:
+            self.log.info(f"Opened {folder} in ndviewer_light ({how})")
+            return
+        tail = read_log_tail(log_path)
+        self.log.warning(f"ndviewer_light exited with code {code} on {folder} ({how}); see {log_path}:\n{tail}")
+        if self.acquisitionGalleryWidget is not None:
+            self.acquisitionGalleryWidget.status_label.setText(f"ndviewer_light exited (code {code}); see {log_path}")
+        text = f"ndviewer_light exited (code {code}) before showing {folder}."
+        text += f"\n\nLast lines of {log_path}:\n{tail}" if tail else f"\n\nIt wrote nothing to {log_path}."
+        QMessageBox.warning(self, "ndviewer_light exited", text)
 
     # Fluidics protocol runs
 

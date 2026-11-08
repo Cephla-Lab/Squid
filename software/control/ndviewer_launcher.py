@@ -1,4 +1,8 @@
-"""Find and start a standalone ndviewer_light process for a saved acquisition."""
+"""Find and start a standalone ndviewer_light process for a saved acquisition.
+
+The child's output goes to ndviewer_light.log in the history folder (truncated per launch), so a viewer that exits
+early can be explained to the user with the tail of that log (read_log_tail).
+"""
 
 import importlib.util
 import os
@@ -9,10 +13,27 @@ import sys
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
+from squid.acquisition_history import history_dir
+
 _SOFTWARE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEFAULT_SUBMODULE_MAIN = os.path.join(_SOFTWARE_DIR, "control", "ndviewer_light", "__main__.py")
 
 NOT_INSTALLED_REASON = "ndviewer_light is not installed: pip install it, or set its location in Preferences > Views"
+LOG_FILE_NAME = "ndviewer_light.log"
+
+
+def default_log_path() -> str:
+    return os.path.join(str(history_dir()), LOG_FILE_NAME)
+
+
+def read_log_tail(path: str, lines: int = 10) -> str:
+    """The last lines of the launch log ("" when it cannot be read)."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return ""
+    return "\n".join(text.rstrip().splitlines()[-lines:])
 
 
 @dataclass
@@ -94,23 +115,32 @@ def resolve_ndviewer_light(
 
 
 def launch_ndviewer_light(
-    resolution: LauncherResolution, folder: str, *, popen: Callable = subprocess.Popen
+    resolution: LauncherResolution,
+    folder: str,
+    *,
+    popen: Callable = subprocess.Popen,
+    log_path: Optional[str] = None,
 ) -> subprocess.Popen:
+    """Start the viewer on folder, detached; its stdout and stderr go to log_path (default: the history folder's
+    ndviewer_light.log), truncated first. Returns the Popen so the caller can check for an early exit."""
     if not resolution.command:
         raise RuntimeError(resolution.reason)
+    log_path = log_path or default_log_path()
+    os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
     kwargs = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
     env = {**os.environ, **resolution.env} if resolution.env else None
-    return popen(
-        list(resolution.command) + [folder],
-        cwd=resolution.cwd,
-        env=env,
-        close_fds=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        **kwargs,
-    )
+    with open(log_path, "wb") as log:  # the child keeps its own handle; ours closes once it is started
+        return popen(
+            list(resolution.command) + [folder],
+            cwd=resolution.cwd,
+            env=env,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            **kwargs,
+        )
