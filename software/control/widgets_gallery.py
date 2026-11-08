@@ -23,6 +23,8 @@ from qtpy.QtCore import QObject, QSize, Qt, QTimer, QUrl, Signal
 from qtpy.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPixmap
 from qtpy.QtWidgets import (
     QAbstractItemView,
+    QApplication,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -43,6 +45,15 @@ from qtpy.QtWidgets import (
 import control._def
 import squid.logging
 from control.gallery_previews import array_to_pixmap, load_thumbnail_array
+from control.widgets_gallery_details import (
+    NO_SELECTION,
+    PREVIEW_SIDE,
+    YAML_FILE,
+    ActionState,
+    GalleryDetailsPane,
+    action_states,
+    open_target,
+)
 from squid.acquisition_history import PREVIEWS_DIR_NAME, HistoryEntry, HistoryStore, folder_availability
 
 # ---------------------------------------------------------------------------------------------------------
@@ -321,6 +332,13 @@ class AcquisitionGalleryWidget(QWidget):
         self._thumbnail_cache: Dict[str, Tuple[str, Optional[float], QPixmap]] = {}
         self._closed = False
         self._lock = threading.Lock()
+        # Which viewers can open a dataset: (available, reason); the in-Squid one can also be hidden altogether.
+        self._squid: Tuple[bool, str] = (True, "")
+        self._squid_hidden = False
+        self._window: Tuple[bool, str] = (True, "")
+        self._action_states: Dict[str, ActionState] = NO_SELECTION
+        self._preview_placeholders: Dict[str, QPixmap] = {}
+        self._status_after_load: Optional[str] = None  # an action's message, kept over the reload's own
 
         self._events = _GalleryEvents()
         self._events.loaded.connect(self._on_loaded)
@@ -396,28 +414,22 @@ class AcquisitionGalleryWidget(QWidget):
         self._stack.addWidget(self.list_widget)
         self._stack.addWidget(self.table_widget)
 
-        # A minimal details pane and actions; the full pane replaces it.
-        self.details_label = QLabel("Select an acquisition.")
-        self.details_label.setWordWrap(True)
-        self.details_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.details_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self.btn_open = QPushButton("Open in Squid")
-        self.btn_show_folder = QPushButton("Show in file browser")
-        self.btn_load_settings = QPushButton("Load settings into acquisition tab")
-        for button in (self.btn_open, self.btn_show_folder, self.btn_load_settings):
-            button.setEnabled(False)
-        details = QWidget()
-        details_layout = QVBoxLayout(details)
-        details_layout.setContentsMargins(6, 0, 0, 0)
-        details_layout.addWidget(self.details_label, 1)
-        details_layout.addWidget(self.btn_open)
-        details_layout.addWidget(self.btn_show_folder)
-        details_layout.addWidget(self.btn_load_settings)
-        details.setMinimumWidth(240)
+        self.details = GalleryDetailsPane(self._submit_detail_load, self._emit)
+        self.details.setMinimumWidth(PREVIEW_SIDE + 40)
+        pane = self.details
+        self.preview_label = pane.preview_label
+        self.metadata_label = pane.metadata_label
+        self.rounds_table = pane.rounds_table
+        self.details_toggle = pane.details_toggle
+        self.raw_yaml_text = pane.raw_yaml_text
+        self.btn_open_in_squid = pane.btn_open_in_squid
+        self.btn_open_in_window = pane.btn_open_in_window
+        self.btn_show_folder = pane.btn_show_folder
+        self.btn_load_settings = pane.btn_load_settings
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self._stack)
-        splitter.addWidget(details)
+        splitter.addWidget(self.details)
         splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 1)
         splitter.setCollapsible(0, False)
@@ -437,19 +449,22 @@ class AcquisitionGalleryWidget(QWidget):
         )
         self.btn_refresh.clicked.connect(self.reload)
         self.list_widget.itemSelectionChanged.connect(self._on_grid_selection_changed)
-        self.list_widget.itemDoubleClicked.connect(lambda _item: self.open_selected())
+        # activated comes for a double-click and for Enter (also connecting doubleClicked would open twice).
         self.list_widget.itemActivated.connect(lambda _item: self.open_selected())
         self.list_widget.customContextMenuRequested.connect(
             lambda pos: self._show_context_menu(self.list_widget, self.list_widget.itemAt(pos), pos)
         )
         self.table_widget.itemSelectionChanged.connect(self._on_table_selection_changed)
-        self.table_widget.itemDoubleClicked.connect(lambda _item: self.open_selected())
+        self.table_widget.itemActivated.connect(lambda _item: self.open_selected())
         self.table_widget.customContextMenuRequested.connect(
             lambda pos: self._show_context_menu(self.table_widget, self.table_widget.itemAt(pos), pos)
         )
-        self.btn_open.clicked.connect(self.open_selected)
+        self.btn_open_in_squid.clicked.connect(self.open_selected_in_squid)
+        self.btn_open_in_window.clicked.connect(self.open_selected_in_window)
         self.btn_show_folder.clicked.connect(self.show_selected_in_file_browser)
         self.btn_load_settings.clicked.connect(self.load_selected_settings)
+        self.details.round_open_in_squid.connect(lambda folder: self._open_folder(self.signal_open_in_squid, folder))
+        self.details.round_open_in_window.connect(lambda folder: self._open_folder(self.signal_open_in_window, folder))
 
     # ----- public state -----
 
@@ -486,6 +501,24 @@ class AcquisitionGalleryWidget(QWidget):
             if row.entry.is_running:
                 row.status_label = status_label_for(row.entry, row.availability, fraction)
                 self._show_row_status(row)
+                if row.entry.id == self._selected_id:
+                    self._show_details()
+
+    @property
+    def channel_chips(self) -> List[QPushButton]:
+        """The details pane's channel toggles, one per channel of the preview shown."""
+        return self.details.channel_chips
+
+    def set_open_in_squid(self, available: bool, reason: str = "", *, hidden: bool = False) -> None:
+        """Whether Squid's viewer tab can open acquisitions (reason says why not); hidden removes the action."""
+        self._squid = (bool(available), reason)
+        self._squid_hidden = bool(hidden)
+        self._show_details()
+
+    def set_open_in_window(self, available: bool, reason: str = "") -> None:
+        """Whether a standalone viewer window can open acquisitions (reason says why not)."""
+        self._window = (bool(available), reason)
+        self._show_details()
 
     def select_entry(self, entry_id: str) -> bool:
         if not any(row.entry.id == entry_id for row in self._shown):
@@ -560,7 +593,8 @@ class AcquisitionGalleryWidget(QWidget):
         self._populate(reset_sort=not self._sort_initialised)  # later reloads keep the user's table sort
         self._sort_initialised = True
         n = len(rows)
-        self.status_label.setText(f"{n} acquisition{'s' if n != 1 else ''} in the history")
+        message, self._status_after_load = self._status_after_load, None
+        self.status_label.setText(message or f"{n} acquisition{'s' if n != 1 else ''} in the history")
         for row in rows:
             self._request_thumbnail(generation, row)
 
@@ -695,61 +729,193 @@ class AcquisitionGalleryWidget(QWidget):
     def _show_details(self) -> None:
         row = self._shown_row(self._selected_id)
         if row is None:
-            self.details_label.setText("Select an acquisition.")
-            for button in (self.btn_open, self.btn_show_folder, self.btn_load_settings):
-                button.setEnabled(False)
+            self._action_states = NO_SELECTION
+            self.details.clear()
             return
         entry = row.entry
-        # A zero-width space after each separator lets the label wrap a long path at folder boundaries.
-        wrappable_path = _escape(entry.folder).replace(os.sep, os.sep + "​")
-        lines = [f"<b>{_escape(entry.name)}</b>", f"<small>{wrappable_path}</small>", _escape(row.status_label), ""]
-        lines += [_escape(line) for line in summary_lines(entry)]
-        self.details_label.setText("<br>".join(lines))
-        online = row.availability == "online"
-        self.btn_open.setEnabled(online)
-        self.btn_show_folder.setEnabled(online)
-        self.btn_load_settings.setEnabled(online and self._has_settings(entry))
+        target = open_target(entry)
+        target_availability = row.availability if target is entry else folder_availability(target.folder)
+        target_online = target_availability == "online"
+        self._action_states = action_states(
+            entry,
+            row.availability,
+            target_availability=target_availability,
+            has_settings=target_online and self._has_settings(target),
+            squid=self._squid,
+            window=self._window,
+        )
+        self.details.show_entry(
+            entry,
+            row.status_label,
+            placeholder=self._preview_placeholder(entry),
+            preview_png=self._preview_path(entry),
+            data_folder=target.folder if target_online and target.folder else None,
+            planes_allowed=not target.is_running,
+        )
+        self.details.set_actions(self._action_states, squid_hidden=self._squid_hidden)
+        rounds = None
+        if entry.kind == "protocol_run":
+            rounds = []
+            for r in entry.rounds:
+                availability = folder_availability(r.folder)
+                states = action_states(r, availability, squid=self._squid, window=self._window)
+                label = status_label_for(r, availability, self._running_fraction if r.is_running else None)
+                rounds.append((r, label, states["open_in_squid"], states["open_in_window"]))
+        self.details.set_rounds(rounds, squid_hidden=self._squid_hidden)
+
+    def _submit_detail_load(self, fn, *args) -> None:
+        if self._closed:
+            return
+        try:
+            self._thumbnail_executor.submit(fn, *args)
+        except RuntimeError:  # the executor was shut down under us
+            pass
+
+    def _preview_placeholder(self, entry: HistoryEntry) -> QPixmap:
+        text = "Running…" if entry.is_running else (entry.metadata.get("image_format") or "No preview")
+        if text not in self._preview_placeholders:
+            self._preview_placeholders[text] = make_placeholder_pixmap(text, PREVIEW_SIDE)
+        return self._preview_placeholders[text]
 
     # ----- actions -----
 
     @staticmethod
     def _has_settings(entry: HistoryEntry) -> bool:
-        return bool(entry.folder) and os.path.isfile(os.path.join(entry.folder, "acquisition.yaml"))
+        return bool(entry.folder) and os.path.isfile(os.path.join(entry.folder, YAML_FILE))
 
-    def open_selected(self) -> None:
+    def _allowed(self, action: str) -> Optional[HistoryEntry]:
+        """The selected entry when the action is allowed on it; otherwise None, with the reason in the status line."""
         entry = self.selected_entry()
         if entry is None:
+            return None
+        state = self._action_states.get(action, NO_SELECTION[action])
+        if not state.enabled:
+            self.status_label.setText(state.reason)
+            return None
+        return entry
+
+    def _open_folder(self, signal, folder: str) -> None:
+        where = "Squid" if signal is self.signal_open_in_squid else "a viewer window"
+        self.status_label.setText(f"Opening {os.path.basename(os.path.normpath(folder))} in {where}")
+        signal.emit(folder)
+
+    def open_selected_in_squid(self) -> None:
+        if self._squid_hidden:
             return
-        self.status_label.setText(f"Opening {entry.name}")
-        self.signal_open_in_squid.emit(entry.folder)
+        entry = self._allowed("open_in_squid")
+        if entry is not None:
+            self._open_folder(self.signal_open_in_squid, open_target(entry).folder)
+
+    def open_selected_in_window(self) -> None:
+        entry = self._allowed("open_in_window")
+        if entry is not None:
+            self._open_folder(self.signal_open_in_window, open_target(entry).folder)
+
+    def open_selected(self) -> None:
+        """Open in Squid when it can, else in a viewer window, else show the folder (double-click and Enter)."""
+        if self.selected_entry() is None:
+            return
+        states = self._action_states
+        if not self._squid_hidden and states["open_in_squid"].enabled:
+            self.open_selected_in_squid()
+        elif states["open_in_window"].enabled:
+            self.open_selected_in_window()
+        else:
+            self.show_selected_in_file_browser()
 
     def show_selected_in_file_browser(self) -> None:
-        entry = self.selected_entry()
+        entry = self._allowed("show_folder")
         if entry is not None and not QDesktopServices.openUrl(QUrl.fromLocalFile(entry.folder)):
             self._log.warning(f"Could not open {entry.folder} in the file browser")
             self.status_label.setText(f"Could not open {entry.folder} in the file browser")
 
     def load_selected_settings(self) -> None:
-        entry = self.selected_entry()
-        if entry is not None and self._has_settings(entry):
-            self.signal_load_settings.emit(entry.folder)
+        entry = self._allowed("load_settings")
+        if entry is not None:
+            self.signal_load_settings.emit(open_target(entry).folder)
+
+    def copy_selected_path(self) -> None:
+        entry = self._allowed("copy_path")
+        if entry is not None:
+            QApplication.clipboard().setText(entry.folder)
+            self.status_label.setText(f"Copied {entry.folder}")
+
+    def remove_selected(self) -> None:
+        """Drop the entry from the history (an append-only `removed` event); nothing on disk is touched."""
+        entry = self._allowed("remove")
+        if entry is None:
+            return
+        self._store.append({"type": "removed", "id": entry.id})
+        message = f"Removed {entry.name} from the history (data untouched)"
+        self.status_label.setText(message)
+        self._status_after_load = message
+        self.reload()
+
+    def locate_selected(self) -> None:
+        """Point the entry at the folder it was moved to (same folder name); a protocol run's rounds follow."""
+        entry = self._allowed("locate")
+        if entry is None:
+            return
+        old = os.path.normpath(entry.folder) if entry.folder else ""
+        start = os.path.dirname(old) if old and os.path.isdir(os.path.dirname(old)) else os.path.expanduser("~")
+        chosen = QFileDialog.getExistingDirectory(self, f"Locate {entry.name}", start)
+        if not chosen:
+            return
+        new = os.path.normpath(os.path.abspath(chosen))
+        expected, got = os.path.basename(old), os.path.basename(new)
+        if os.path.normcase(expected) != os.path.normcase(got):
+            self.status_label.setText(f"Not relocated: the folder must be named {expected}, not {got}")
+            return
+        self._store.append({"type": "relocated", "id": entry.id, "folder": new})
+        missing = []
+        for r in entry.rounds:
+            name = os.path.basename(os.path.normpath(r.folder)) if r.folder else ""
+            candidate = os.path.join(new, name)
+            if name and os.path.isdir(candidate):
+                self._store.append({"type": "relocated", "id": r.id, "folder": candidate})
+            else:
+                missing.append(name or r.name)
+        message = f"Located {entry.name} at {new}"
+        if missing:
+            message += "; not found there: " + ", ".join(missing)
+        self.status_label.setText(message)
+        self._status_after_load = message
+        self.reload()
+
+    def _build_context_menu(self) -> QMenu:
+        """The selected entry's actions, in the order of the buttons, then the history ones."""
+        menu = QMenu(self)
+        entries = [
+            ("Open in Squid", self.open_selected_in_squid, "open_in_squid"),
+            ("Open in window", self.open_selected_in_window, "open_in_window"),
+            ("Show folder", self.show_selected_in_file_browser, "show_folder"),
+            ("Load settings", self.load_selected_settings, "load_settings"),
+            None,
+            ("Copy path", self.copy_selected_path, "copy_path"),
+            ("Locate…", self.locate_selected, "locate"),
+            ("Remove from history", self.remove_selected, "remove"),
+        ]
+        for spec in entries:
+            if spec is None:
+                menu.addSeparator()
+                continue
+            text, slot, action = spec
+            if action == "open_in_squid" and self._squid_hidden:
+                continue
+            state = self._action_states.get(action, NO_SELECTION[action])
+            menu_action = menu.addAction(text, slot)
+            menu_action.setEnabled(state.enabled)
+            menu_action.setToolTip(state.reason)
+        menu.setToolTipsVisible(True)
+        return menu
 
     def _show_context_menu(self, view: QWidget, item, pos) -> None:
         if item is None:
             return
         self._set_selected(item.data(self._ROLE_ID))
-        entry = self.selected_entry()
-        if entry is None:
+        if self.selected_entry() is None:
             return
-        menu = QMenu(self)
-        menu.addAction(self.btn_open.text(), self.open_selected).setEnabled(self.btn_open.isEnabled())
-        menu.addAction("Show in file browser", self.show_selected_in_file_browser).setEnabled(
-            self.btn_show_folder.isEnabled()
-        )
-        menu.addAction("Load settings into acquisition tab", self.load_selected_settings).setEnabled(
-            self.btn_load_settings.isEnabled()
-        )
-        menu.exec_(view.viewport().mapToGlobal(pos))
+        self._build_context_menu().exec_(view.viewport().mapToGlobal(pos))
 
     # ----- thumbnails -----
 

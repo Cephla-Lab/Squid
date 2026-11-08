@@ -1,6 +1,7 @@
 """The Gallery tab lists the acquisition history, newest first, in a grid or a list, narrowed by status and text."""
 
 import os
+import shutil
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -10,9 +11,11 @@ import numpy as np
 import pytest
 import yaml
 from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QApplication
 
 import control._def
 import control.widgets_gallery
+from control.gallery_import import import_folder
 from control.widgets_gallery import (
     STATUS_FILTERS,
     AcquisitionGalleryWidget,
@@ -23,7 +26,9 @@ from control.widgets_gallery import (
     matches,
     status_label_for,
 )
+from control.widgets_gallery_details import format_size, format_value, metadata_rows
 from squid.acquisition_history import HistoryEntry, HistoryStore
+from tests.control.gallery_fixtures import saving_root, write_acquisition, write_protocol_run  # noqa: F401
 
 T0 = 1762596000.0
 
@@ -458,3 +463,402 @@ def test_shutdown_drops_late_results(gallery):
     generation = gallery._generation
     gallery.reload()  # a no-op after shutdown
     assert gallery._generation == generation
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Details pane, actions and context menu
+# ---------------------------------------------------------------------------------------------------------
+
+
+def _signals(widget):
+    """Record every folder the widget emits, per signal."""
+    seen = {"squid": [], "window": [], "settings": []}
+    widget.signal_open_in_squid.connect(seen["squid"].append)
+    widget.signal_open_in_window.connect(seen["window"].append)
+    widget.signal_load_settings.connect(seen["settings"].append)
+    return seen
+
+
+@pytest.fixture
+def opened_urls(monkeypatch):
+    urls = []
+    monkeypatch.setattr(
+        control.widgets_gallery.QDesktopServices, "openUrl", lambda url: urls.append(url.toLocalFile()) or True
+    )
+    return urls
+
+
+def _menu_entries(widget):
+    menu = widget._build_context_menu()
+    return [("-" if a.isSeparator() else a.text(), a.isEnabled()) for a in menu.actions()]
+
+
+def _double_click_selected(widget, qtbot):
+    item = widget._items[widget.selected_entry().id]
+    widget.list_widget.scrollToItem(item)
+    center = widget.list_widget.visualItemRect(item).center()
+    # A real double-click: QTest's mouseDClick alone skips the first press/release the item view expects.
+    qtbot.mouseClick(widget.list_widget.viewport(), Qt.LeftButton, pos=center)
+    qtbot.mouseDClick(widget.list_widget.viewport(), Qt.LeftButton, pos=center)
+
+
+def _round_button(widget, row, name):
+    return widget.rounds_table.cellWidget(row, 5).findChild(control.widgets_gallery.QPushButton, name)
+
+
+def test_format_size_and_metadata_rows_are_pure():
+    assert format_size(2_345_000_000) == "2.3 GB"
+    assert format_size(12_300_000) == "12.3 MB"
+    assert format_size(None) is None
+    assert format_value(["a", "b"]) == "a, b" and format_value(None) == "–"
+    assert format_value(True) == "yes" and format_value(False) == "no"
+    entry = HistoryEntry(
+        id="e",
+        kind="run",
+        name="e",
+        folder="x",
+        reason="user abort",
+        bytes_on_disk=3_000_000_000,
+        metadata={"machine": "scope-2", "nz": 3, "objective": "20x", "channels": ["BF", "488"], "use_piezo": False},
+    )
+    rows = metadata_rows(entry, "Aborted")
+    keys = [k for k, _ in rows]
+    # RECORDED_METADATA_KEYS order (objective, channels, nz, use_piezo), then the extra keys, then size and status.
+    assert keys == ["Objective", "Channels", "Nz", "Use piezo", "Machine", "Size", "Status"]
+    assert dict(rows)["Channels"] == "BF, 488" and dict(rows)["Use piezo"] == "no"
+    assert dict(rows)["Size"] == "3.0 GB"
+    assert dict(rows)["Status"] == "Aborted — user abort"
+
+
+def test_selecting_an_entry_fills_the_details_pane(gallery, qtbot):
+    assert gallery.select_entry("complete")
+
+    html = gallery.metadata_label.text()
+    for text in (
+        "Objective",
+        "20x",
+        "Sample",
+        "96 well plate",
+        "Channels",
+        "BF LED matrix full, Fluorescence 488 nm Ex",
+    ):
+        assert text in html
+    assert "Nz" in html and "Status" in html and "Complete" in html
+    assert html.index("Objective") < html.index("Channels") < html.index("Format")  # RECORDED_METADATA_KEYS order
+    assert [chip.text() for chip in gallery.channel_chips] == ["BF"]  # the preview's channels
+    assert all(chip.isCheckable() for chip in gallery.channel_chips)
+    qtbot.waitUntil(lambda: gallery.details.preview_source == "png", timeout=10000)
+    pixmap = gallery.preview_label.pixmap()
+    assert max(pixmap.width(), pixmap.height()) == 360
+    assert not any(chip.isEnabled() for chip in gallery.channel_chips)  # only the PNG: nothing to recomposite
+    assert gallery.raw_yaml_text.isReadOnly() and gallery.raw_yaml_text.isHidden()
+    gallery.details_toggle.click()
+    assert not gallery.raw_yaml_text.isHidden()
+    gallery.details_toggle.click()
+    assert gallery.raw_yaml_text.isHidden()
+
+    gallery.select_entry("aborted")  # no preview: the format placeholder
+    assert gallery.details.preview_source == "placeholder"
+    assert gallery.channel_chips == []
+    assert "OME-Zarr" in gallery.metadata_label.text()
+
+
+def test_double_click_prefers_squid_then_window_then_folder(gallery, qtbot, opened_urls, store_with_entries):
+    seen = _signals(gallery)
+    folder = str(store_with_entries.folders["complete"])
+    gallery.select_entry("complete")
+
+    _double_click_selected(gallery, qtbot)
+    assert (seen["squid"], seen["window"], opened_urls) == ([folder], [], [])  # exactly once, not twice
+
+    gallery.set_open_in_squid(False, "No NDViewer")
+    _double_click_selected(gallery, qtbot)
+    assert (seen["squid"], seen["window"], opened_urls) == ([folder], [folder], [])
+
+    gallery.set_open_in_window(False, "No ndviewer_light")
+    _double_click_selected(gallery, qtbot)
+    assert (seen["squid"], seen["window"]) == ([folder], [folder])
+    assert [os.path.normcase(os.path.normpath(u)) for u in opened_urls] == [os.path.normcase(folder)]
+
+
+def test_enter_on_a_table_row_opens_it(gallery, qtbot):
+    seen = _signals(gallery)
+    gallery.set_view(GalleryView.LIST)
+    gallery.select_entry("complete")
+    gallery.table_widget.setFocus()
+    qtbot.keyClick(gallery.table_widget, Qt.Key_Return)
+    assert len(seen["squid"]) == 1
+
+
+def test_running_entry_only_shows_the_folder(gallery, qtbot, opened_urls, store_with_entries):
+    seen = _signals(gallery)
+    gallery.select_entry("running")
+
+    for button in (gallery.btn_open_in_squid, gallery.btn_open_in_window):
+        assert not button.isEnabled()
+        assert button.toolTip() == "Wait for the acquisition to finish"
+    assert gallery.btn_show_folder.isEnabled() and not gallery.btn_load_settings.isEnabled()
+    gallery.open_selected()
+
+    assert seen["squid"] == seen["window"] == []
+    assert len(opened_urls) == 1 and os.path.samefile(opened_urls[0], store_with_entries.folders["running"])
+    gallery.open_selected_in_squid()
+    assert seen["squid"] == [] and "Wait for the acquisition to finish" in gallery.status_label.text()
+    entries = dict(_menu_entries(gallery))
+    assert entries["Open in Squid"] is False and entries["Open in window"] is False
+    assert entries["Show folder"] is True
+
+
+def test_offline_entry_allows_only_copy_locate_and_remove(gallery):
+    gallery.select_entry("offline")
+    buttons = (
+        gallery.btn_open_in_squid,
+        gallery.btn_open_in_window,
+        gallery.btn_show_folder,
+        gallery.btn_load_settings,
+    )
+    assert not any(b.isEnabled() for b in buttons)
+    assert _menu_entries(gallery) == [
+        ("Open in Squid", False),
+        ("Open in window", False),
+        ("Show folder", False),
+        ("Load settings", False),
+        ("-", True),
+        ("Copy path", True),
+        ("Locate…", True),
+        ("Remove from history", True),
+    ]
+
+
+def test_load_settings_requires_an_online_yaml(gallery, qtbot, store_with_entries):
+    seen = _signals(gallery)
+    gallery.select_entry("complete")
+    assert not gallery.btn_load_settings.isEnabled()  # no acquisition.yaml in the folder
+    qtbot.waitUntil(lambda: gallery.details.yaml_loaded, timeout=10000)
+    assert gallery.raw_yaml_text.toPlainText() == ""
+    assert "acquisition.yaml" in gallery.raw_yaml_text.placeholderText()
+    gallery.load_selected_settings()
+    assert seen["settings"] == []
+
+    folder = store_with_entries.folders["complete"]
+    (folder / "acquisition.yaml").write_text("acquisition:\n  experiment_id: complete\n", encoding="utf-8")
+    gallery.select_entry("aborted")
+    gallery.select_entry("complete")
+
+    assert gallery.btn_load_settings.isEnabled()
+    qtbot.waitUntil(lambda: "experiment_id: complete" in gallery.raw_yaml_text.toPlainText(), timeout=10000)
+    gallery.btn_load_settings.click()
+    assert seen["settings"] == [str(folder)]
+
+    gallery.select_entry("offline")
+    assert not gallery.btn_load_settings.isEnabled()
+
+
+def test_remove_appends_a_removed_event_and_drops_the_row(gallery, qtbot, store_with_entries):
+    gallery.select_entry("aborted")
+
+    gallery.remove_selected()
+    qtbot.waitUntil(lambda: len(gallery.rows()) == 4, timeout=10000)
+
+    last = gallery._store.events()[-1]
+    assert last["type"] == "removed" and last["id"] == "aborted" and "at" in last
+    assert "aborted" not in _ids(gallery)
+    assert gallery.status_label.text() == "Removed aborted from the history (data untouched)"
+    assert store_with_entries.folders["aborted"].is_dir()  # nothing on disk is touched
+
+
+def test_locate_rejects_a_different_folder_name_and_accepts_the_same(gallery, qtbot, monkeypatch, tmp_path):
+    gallery.select_entry("offline")
+    offline_name = os.path.basename(gallery.selected_entry().folder)
+    wrong = tmp_path / "elsewhere" / "other_name"
+    right = tmp_path / "elsewhere" / offline_name
+    wrong.mkdir(parents=True)
+    right.mkdir(parents=True)
+    picked = [str(wrong)]
+    starts = []
+
+    def get_dir(parent, caption, directory):
+        starts.append(directory)
+        return picked[0]
+
+    monkeypatch.setattr(control.widgets_gallery.QFileDialog, "getExistingDirectory", get_dir)
+    n_events = len(gallery._store.events())
+
+    gallery.locate_selected()
+
+    assert len(gallery._store.events()) == n_events  # refused
+    assert offline_name in gallery.status_label.text() and "other_name" in gallery.status_label.text()
+
+    picked[0] = str(right)
+    gallery.locate_selected()
+    qtbot.waitUntil(lambda: _row(gallery, "offline").availability == "online", timeout=10000)
+
+    last = gallery._store.events()[-1]
+    assert (last["type"], last["id"], last["folder"]) == ("relocated", "offline", str(right))
+    assert gallery.selected_entry().folder == str(right)
+    assert gallery._store.entry("offline").folder == str(right)
+    assert len(starts) == 2
+    picked[0] = ""  # a cancelled dialog changes nothing
+    gallery.locate_selected()
+    assert len(gallery._store.events()) == n_events + 1
+
+
+def _import_protocol_run(gallery, qtbot, root, run_name, rounds):
+    run = write_protocol_run(root, run_name, rounds)
+    result = import_folder(gallery._store, str(run), include_snaps=False)
+    assert not result.errors
+    _reload_and_wait(gallery, qtbot)
+    entry = next(row.entry for row in gallery.rows() if row.entry.kind == "protocol_run" and row.entry.name == run_name)
+    return run, entry
+
+
+def test_locating_a_moved_protocol_run_moves_its_rounds_too(gallery, qtbot, monkeypatch, tmp_path):
+    old_root, new_root = tmp_path / "old_root", tmp_path / "new_root"
+    old_root.mkdir()
+    new_root.mkdir()
+    run, entry = _import_protocol_run(gallery, qtbot, old_root, "run_7", 2)
+    shutil.copytree(run, new_root / "run_7", ignore=shutil.ignore_patterns("round_2_image"))
+    shutil.rmtree(run)
+    _reload_and_wait(gallery, qtbot)
+    monkeypatch.setattr(control.widgets_gallery.QFileDialog, "getExistingDirectory", lambda *a: str(new_root / "run_7"))
+    gallery.select_entry(entry.id)
+
+    gallery.locate_selected()
+    qtbot.waitUntil(lambda: gallery.selected_entry().folder == str(new_root / "run_7"), timeout=10000)
+
+    parent = gallery.selected_entry()
+    assert parent.rounds[0].folder == str(new_root / "run_7" / "round_1_image")
+    assert parent.rounds[1].folder == str(run / "round_2_image")  # not found there: unchanged
+    assert "round_2_image" in gallery.status_label.text()
+    seen = _signals(gallery)
+    window_button = _round_button(gallery, 0, "in_window")
+    assert window_button.isEnabled()
+    assert not _round_button(gallery, 1, "in_window").isEnabled()  # still at the old place, which is gone
+    window_button.click()
+    assert seen["window"] == [str(new_root / "run_7" / "round_1_image")]
+
+
+def test_copy_path_puts_the_folder_on_the_clipboard(gallery, store_with_entries):
+    gallery.select_entry("complete")
+    gallery.copy_selected_path()
+    assert QApplication.clipboard().text() == str(store_with_entries.folders["complete"])
+    assert "Copied" in gallery.status_label.text()
+
+
+def test_channel_chips_toggle_the_composite(gallery, qtbot, saving_root):
+    folder = write_acquisition(saving_root, "plate", with_overview=True)
+    gallery._store.append(
+        {
+            "type": "imported",
+            "id": "plate",
+            "kind": "run",
+            "name": "plate",
+            "folder": str(folder),
+            "started_at": T0 + 9000,
+            "outcome": "complete",
+            "metadata": {"channels": ["BF LED matrix full", "Fluorescence 488 nm Ex"]},
+        }
+    )
+    _reload_and_wait(gallery, qtbot)
+    gallery.select_entry("plate")
+    qtbot.waitUntil(lambda: gallery.details.preview_source == "planes", timeout=10000)
+
+    chips = {chip.text(): chip for chip in gallery.channel_chips}
+    assert list(chips) == ["BF LED matrix full", "Fluorescence 488 nm Ex"]
+    assert all(chip.isEnabled() and chip.isChecked() for chip in chips.values())
+    before = gallery.details.preview_array.copy()
+    key_before = gallery.preview_label.pixmap().cacheKey()
+    assert before[0, 0].any() and before[-1, -1].any()  # top lit by BF, bottom by 488
+    assert max(gallery.preview_label.pixmap().width(), gallery.preview_label.pixmap().height()) == 360
+
+    chips["BF LED matrix full"].click()
+
+    after = gallery.details.preview_array
+    assert not after[0, 0].any()  # BF off: the top half goes dark
+    assert np.array_equal(after[-1, -1], before[-1, -1])
+    assert gallery.preview_label.pixmap().cacheKey() != key_before
+
+
+def test_a_newer_selection_wins_over_a_late_preview(gallery, qtbot):
+    gallery.select_entry("complete")
+    token = gallery.details._token
+    gallery.select_entry("aborted")
+    gallery.details._on_loaded(token, "planes", {"BF": np.ones((4, 4), dtype=np.uint16)})
+    assert gallery.details.preview_source == "placeholder"
+
+
+def test_protocol_run_lists_its_rounds_with_their_own_open_buttons(gallery, qtbot, tmp_path):
+    root = tmp_path / "runs"
+    root.mkdir()
+    run, entry = _import_protocol_run(gallery, qtbot, root, "run_3", [(1, 1), (2, 1), (2, 2)])
+    seen = _signals(gallery)
+
+    gallery.select_entry(entry.id)
+
+    html = gallery.metadata_label.text()
+    assert "stain" in html and "run_3" in html and str(run) in html and "Complete" in html
+    table = gallery.rounds_table
+    assert not table.isHidden()
+    headers = [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
+    assert headers == ["Round", "Step", "Attempt", "Started", "Outcome", "Open"]
+    assert table.rowCount() == 3
+    assert [table.item(r, 0).text() for r in range(3)] == ["1", "2", "2"]
+    assert [table.item(r, 2).text() for r in range(3)] == ["1", "1", "2"]
+    assert table.item(0, 1).text() == "image" and table.item(0, 4).text() == "Complete"
+    for r in range(3):
+        assert _round_button(gallery, r, "in_squid").isEnabled()
+        assert _round_button(gallery, r, "in_window").isEnabled()
+    assert gallery.btn_open_in_squid.isEnabled() and gallery.btn_open_in_window.isEnabled()
+
+    _round_button(gallery, 0, "in_squid").click()
+    gallery.btn_open_in_squid.click()  # the entry-level buttons open the latest round
+    gallery.btn_open_in_window.click()
+    latest = str(run / "round_2_image_attempt2")
+    assert seen["squid"] == [str(run / "round_1_image"), latest]
+    assert seen["window"] == [latest]
+
+    gallery.set_open_in_squid(False, "No NDViewer")
+    assert not _round_button(gallery, 0, "in_squid").isEnabled()
+    assert _round_button(gallery, 0, "in_squid").toolTip() == "No NDViewer"
+    gallery.select_entry("complete")
+    assert gallery.rounds_table.isHidden()
+
+
+def test_unavailable_viewer_disables_the_button_with_the_reason(gallery):
+    gallery.select_entry("complete")
+    assert gallery.btn_open_in_squid.isEnabled()
+
+    gallery.set_open_in_squid(False, "The NDViewer tab failed to load")
+    gallery.set_open_in_window(False, "ndviewer_light was not found")
+
+    assert not gallery.btn_open_in_squid.isEnabled()
+    assert gallery.btn_open_in_squid.toolTip() == "The NDViewer tab failed to load"
+    assert not gallery.btn_open_in_window.isEnabled()
+    assert gallery.btn_open_in_window.toolTip() == "ndviewer_light was not found"
+    gallery.open_selected_in_window()
+    assert gallery.status_label.text() == "ndviewer_light was not found"
+    entries = dict(_menu_entries(gallery))
+    assert entries["Open in Squid"] is False and entries["Open in window"] is False
+
+    gallery.set_open_in_squid(True)
+    assert gallery.btn_open_in_squid.isEnabled() and gallery.btn_open_in_squid.toolTip() == ""
+
+
+def test_hidden_viewer_removes_the_button_and_menu_entry(gallery, qtbot):
+    seen = _signals(gallery)
+    gallery.select_entry("complete")
+
+    gallery.set_open_in_squid(False, hidden=True)
+
+    assert gallery.btn_open_in_squid.isHidden()
+    assert [text for text, _ in _menu_entries(gallery)] == [
+        "Open in window",
+        "Show folder",
+        "Load settings",
+        "-",
+        "Copy path",
+        "Locate…",
+        "Remove from history",
+    ]
+    _double_click_selected(gallery, qtbot)
+    assert seen["squid"] == [] and len(seen["window"]) == 1
