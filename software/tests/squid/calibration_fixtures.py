@@ -5,7 +5,8 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 
-from squid.intensity_calibration import IntensityCalibration
+from control._def import source_code_to_port_index
+from squid.intensity_calibration import EngineLineIdentity, IntensityCalibration
 from squid.power_meter import simulated_laser_mw
 
 DAC = np.linspace(0.0, 100.0, 201)
@@ -62,6 +63,29 @@ def make_calibration(
     )
 
 
+def make_engine_calibration(
+    model=simulated_laser_mw,
+    wavelength_nm=488,
+    port="D2",
+    line=2,
+    ceiling=2.045,
+    unit="A",
+    serial="SN-1",
+    variant="DF",
+    channel="Fluorescence 488 nm Ex",
+    source_power_mw=None,
+) -> IntensityCalibration:
+    """A laser engine line's calibration: x is the fraction of the line's ceiling (factor 1), Max Output 1."""
+    calibration = make_calibration(
+        model=model, factor=1.0, max_output=1.0, wavelength_nm=wavelength_nm, port=port, channel=channel
+    )
+    return replace(
+        calibration,
+        engine=EngineLineIdentity(serial, variant, line, ceiling, unit),
+        source_power_mw=source_power_mw,
+    )
+
+
 def write_legacy_csv(path, dac, power):
     """A file as tools/generate_intensity_calibrations.py wrote it before 2026-10."""
     pd.DataFrame({"DAC Percent": dac, "Optical Power (mW)": power}).to_csv(path, index=False)
@@ -90,12 +114,14 @@ class FakeMicrocontroller:
         self.calls = []
         self._clock = clock
         self.on_since = None  # clock() when the light last came on; None while off
+        self.selected_source = None  # the port set_illumination last selected
 
     def supports_multi_port(self):
         return True
 
     def set_illumination(self, source, percent):
         self.calls.append(("set", source, percent))
+        self.selected_source = source
 
     def turn_on_illumination(self):
         self.calls.append(("on",))
@@ -125,6 +151,14 @@ class FakeMicrocontroller:
     def start_heartbeat(self, interval_s=None):
         self.calls.append(("start_heartbeat", interval_s))
         self.heartbeat_interval_s = interval_s
+
+    def simulated_port_is_on(self, port_index):
+        """The TTL of illumination port `port_index` (0 = D1): on while the light is on and that port is selected."""
+        return (
+            self.on_since is not None
+            and self.selected_source is not None
+            and source_code_to_port_index(self.selected_source) == port_index
+        )
 
     def commanded(self):
         return [call[2] for call in self.calls if call[0] == "set"]

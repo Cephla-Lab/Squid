@@ -135,4 +135,12 @@ def test_cli_refuses_a_laser_engine_instrument_before_opening_hardware(tmp_path,
     status = _tool().main(["--simulation"] if simulation else [], config_repo=ConfigRepository(base_path=tmp_path))
 
     assert status == 2 and opened == []
-    assert "sets illumination power in the light source itself" in capsys.readouterr().out
+    assert "calibrate its lines from the GUI" in capsys.readouterr().out
+
+
+def test_laser_engine_v2_is_the_light_source_in_simulation_too(monkeypatch):
+    import control._def
+    from control.lighting import LightSourceType, external_light_source
+
+    monkeypatch.setattr(control._def, "LASER_ENGINE", "v2")
+    assert external_light_source(True) == external_light_source(False) == LightSourceType.CephlaLaserEngineV2

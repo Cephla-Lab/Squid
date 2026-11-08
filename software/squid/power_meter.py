@@ -273,6 +273,13 @@ def simulated_led_mw(x):
     return np.where(x <= 0.492, rising, falling)
 
 
+def simulated_aom_mw(x):
+    """The DF 560 nm line through its AOM: sin^2 transmission peaking at x = 0.9 (4.5 V of 5 V), 100 mW at the peak,
+    falling to 97 mW at x = 1."""
+    x = np.asarray(x, dtype=float)
+    return 100.0 * np.sin(np.pi / 2.0 * np.clip(x, 0.0, 1.0) / 0.9) ** 2
+
+
 def simulated_source_mw(wavelength_nm: float, x):
     """Wavelengths from 700 nm up are modelled as the rolling-over LED, shorter ones as the laser."""
     return simulated_led_mw(x) if wavelength_nm >= 700 else simulated_laser_mw(x)
@@ -283,7 +290,8 @@ SIMULATED_RANGES_MW = (0.1193, 11.93, 1197.0)
 
 
 class SimulatedPowerMeter:
-    """Answers with the power the commanded light would give, from simulated_source_mw."""
+    """Answers with the power the light would give, from `model(wavelength_nm, x)` (simulated_source_mw unless
+    given)."""
 
     def __init__(
         self,
@@ -291,6 +299,7 @@ class SimulatedPowerMeter:
         noise_fraction: float = 0.003,
         ambient_mw: float = 0.002,
         seed: Optional[int] = None,
+        model: Callable[[float, float], float] = simulated_source_mw,
     ):
         self.info = PowerMeterInfo(
             meter="Simulated power meter",
@@ -301,6 +310,7 @@ class SimulatedPowerMeter:
             validated=True,
         )
         self._source_state = source_state
+        self._model = model
         self._wavelength_nm = 500.0
         self._noise_fraction = noise_fraction
         self._ambient_mw = ambient_mw
@@ -319,7 +329,7 @@ class SimulatedPowerMeter:
 
     def read_mw(self) -> float:
         on, x = self._source_state()
-        power = float(simulated_source_mw(self._wavelength_nm, x)) if on else 0.0
+        power = float(self._model(self._wavelength_nm, x)) if on else 0.0
         noise = self._noise_fraction * self._rng.standard_normal()
         ambient = self._ambient_mw * (1.0 + 0.1 * self._rng.standard_normal())
         reading = power * (1.0 + noise) + ambient

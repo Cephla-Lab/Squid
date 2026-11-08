@@ -1,9 +1,10 @@
 # Illumination Power Calibration
 
-**Utils > Illumination Power Calibration...** measures each DAC-driven illumination channel with a Thorlabs power
-meter at the sample plane and saves a calibration, so that a channel's intensity setting means % of its maximum power
-instead of % of DAC output. The headless equivalent is `tools/generate_intensity_calibrations.py` (run it with the
-Squid GUI closed; `--help` lists its options). Files are described in `machine_configs/README.md`.
+**Utils > Illumination Power Calibration...** measures each DAC-driven illumination channel, or each line of a Cephla
+laser engine v2, with a Thorlabs power meter at the sample plane and saves a calibration, so that a channel's
+intensity setting means % of its maximum power instead of % of DAC output (or of the engine line's drive). The
+headless equivalent for DAC channels is `tools/generate_intensity_calibrations.py` (run it with the Squid GUI closed;
+`--help` lists its options). Files are described in `machine_configs/README.md`.
 
 ## Power meter setup
 
@@ -73,6 +74,31 @@ resource with Thorlabs' vendor ID; `--resource` picks another in the headless to
    `machine_configs/intensity_calibrations/backup/`.
 
 Live view, laser-AF live view and acquisitions must be stopped first.
+
+## Laser engine v2
+
+On an instrument whose light source is a Cephla laser engine v2 (`laser_engine = v2`), the dialog lists the
+epi-illumination channels on engine lines (ports D1-D5) instead of DAC channels. The **Ceiling** column is the line's
+firmware ceiling (amps, or volts for the DF 560 nm AOM): the sweep goes up to it, and Max Output is not used.
+
+- Each line is woken and must be ready (TEC at temperature; on DF line 3, the 560 nm source at its power and the
+  shutter open) before it runs. The dialog says what it is waiting for. Exposure is the controller's TTL, as in
+  imaging.
+- A reading counts only while the line is ready and holds the set-point Squid sent; otherwise the channel stops with
+  the engine's reason and the light off.
+- The verification sets each requested % through the engine's own intensity call, the one live view and
+  acquisitions use.
+- DF 560 nm: calibrated at the laser power set in the Laser Engine tab. 100 % is the peak transmission, which may be
+  below 5 V. The AOM's output depends on its recent use. On the first unit measured, output at a fixed drive was flat
+  for about 2 s, then rose over the next 20-60 s of continuous drive (about 10 % at low drive, 50-75 % from about 30 %
+  of full drive) and fell back within about a minute of rest. Measured in one held state, the whole curve was about
+  1.7 times brighter warmed up than idle, with the same shape to about 4 %. The sweep warms the AOM as it goes and its
+  checks run partly cooled, so this line can fail verification and the saved curve can be off at mid-range. Whether
+  the % holds at other laser powers is untested beyond one point. The test beam also warms the AOM.
+- A calibration records the engine's serial number, variant, line and ceiling, and applies only while they match: with
+  another engine (or after a firmware change of the ceiling) the line runs linear in its drive and its status says
+  "recalibrate". Recalibrate after replacing or realigning a diode; the engine cannot tell.
+- `tools/generate_intensity_calibrations.py` does not drive the engine: calibrate engine lines from the GUI.
 
 ## When the meter is not found
 
