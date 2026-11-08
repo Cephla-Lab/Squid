@@ -78,7 +78,8 @@ def test_viewer_launch_command():
     ]
 
 
-def test_launch_viewer_uses_popen_with_cwd(tmp_path):
+def test_launch_viewer_uses_popen_with_cwd_in_its_own_session(tmp_path):
+    # start_new_session: the viewer must outlive Squid's terminal (SIGHUP goes to Squid's session)
     calls = []
 
     def popen(args, **kw):
@@ -86,7 +87,7 @@ def test_launch_viewer_uses_popen_with_cwd(tmp_path):
         return "proc"
 
     assert launch_viewer("/data/run", str(tmp_path), popen=popen) == "proc"
-    assert calls == [(viewer_launch_command("/data/run"), {"cwd": str(tmp_path)})]
+    assert calls == [(viewer_launch_command("/data/run"), {"cwd": str(tmp_path), "start_new_session": True})]
 
 
 def test_launch_viewer_does_not_wait(tmp_path):
