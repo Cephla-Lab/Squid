@@ -76,9 +76,13 @@ def viewer_launch_command(run_dir: str) -> List[str]:
 
 
 def launch_viewer(run_dir: str, software_dir: str, popen=subprocess.Popen):
-    """Start the standalone viewer on run_dir and return at once; the process is never waited on."""
+    """Start the standalone viewer on run_dir and return at once; the process is never waited on.
+
+    Started in its own session: otherwise it shares Squid's terminal session and dies with Squid
+    when that terminal closes (SIGHUP); the viewer window is meant to outlive Squid.
+    """
     _log.info(f"Opening {run_dir} in ndviewer_light")
-    return popen(viewer_launch_command(run_dir), cwd=software_dir)
+    return popen(viewer_launch_command(run_dir), cwd=software_dir, start_new_session=True)
 
 
 @dataclass(frozen=True)
