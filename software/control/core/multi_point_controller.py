@@ -37,7 +37,6 @@ import squid.acquisition_state
 import squid.logging
 from control.acquisition_history_recorder import NullAcquisitionHistoryRecorder
 
-
 NoOpCallbacks = MultiPointControllerFunctions(
     signal_acquisition_start=lambda *a, **kw: None,
     signal_acquisition_finished=lambda *a, **kw: None,
