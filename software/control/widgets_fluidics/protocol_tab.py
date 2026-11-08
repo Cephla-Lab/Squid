@@ -32,6 +32,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+import control.theme as theme
 import squid.logging
 from control.models.fluidics_protocol import (
     IMAGING_TYPE,
@@ -713,11 +714,11 @@ class ProtocolTab(QWidget):
             suffix = f" (+{len(details) - 1} more)" if len(details) > 1 else ""
             self.validation_label.setText(f"✗ {first}{suffix}")
             self.validation_label.setToolTip("\n".join(details))  # the full list on hover
-            self.validation_label.setStyleSheet("color: #b00020;")
+            theme.set_role(self.validation_label, "alert")
         else:
             self.validation_label.setText(f"✓ valid · {self._protocol.summary_line()}")
             self.validation_label.setToolTip("")
-            self.validation_label.setStyleSheet("color: #2e7d32;")
+            theme.set_role(self.validation_label, "success")
 
     def _render(self) -> None:
         self._validate()
@@ -843,7 +844,7 @@ class ProtocolTab(QWidget):
         edit.editingFinished.connect(lambda e=edit, r=tuple(rows): self._apply_round_to_group(r, e.text()))
         self.field_form.addRow("round", edit)
         note = QLabel(f"Sets the round for the {len(rows)} step(s) in this group.")
-        note.setStyleSheet("color: gray;")
+        theme.set_role(note, "note-gray")
         note.setWordWrap(True)
         self.field_form.addRow("", note)
 

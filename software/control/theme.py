@@ -276,9 +276,14 @@ QPushButton[role="action-bold"] {{ font-weight: bold; }}
 
 /* Label roles: muted notes and hints, danger and success text, banners and callouts */
 QLabel[role="note"], QLabel[role="note-gray"], QLabel[role="status-idle"] {{ color: {muted}; }}
+QLabel[role="mono-note"] {{ color: {muted}; font-family: monospace; }}
+QLabel[role="status-neutral"] {{ color: {text}; }}
+QLabel[role="status-info"] {{ color: {accent}; }}
+QLabel[role="status-warn"] {{ color: {warning_text}; }}
+QLabel[role="alert-badge"] {{ background: {warning_bg}; color: {warning_text}; border: {hair} solid {warning_border}; padding: 2px 6px; font-weight: bold; }}
 QLabel[role="hint"], QLabel[role="hint-gray"] {{ color: {muted}; font-style: italic; }}
 QLabel[role="danger"], QLabel[role="danger-soft"], QLabel[role="danger-text-bold"], QLabel[role="alert-bold"], QLabel[role="alert-bold-first"] {{ color: {danger_text}; font-weight: bold; }}
-QLabel[role="danger-text"], QLabel[role="alert"], QLabel[role="status-bad"] {{ color: {danger_text}; }}
+QLabel[role="danger-text"], QLabel[role="alert"], QPlainTextEdit[role="alert"], QLabel[role="status-bad"] {{ color: {danger_text}; }}
 QGroupBox[role="alert-group"] {{ color: {danger_text}; }}
 QLabel[role="success"], QLabel[role="status-ok"] {{ color: {success_text}; }}
 QLabel[role="banner-danger"], QLabel[role="banner-engine"] {{ background: {banner_bg}; color: #ffffff; border-radius: {control_radius}; padding: {tip_pad}; }}
@@ -714,6 +719,11 @@ CLASSIC_STYLES = {
     "status-ok": "color: green;",
     "status-bad": "color: red;",
     "status-idle": "color: gray;",
+    "status-neutral": "color: black;",
+    "status-info": "color: blue;",
+    "status-warn": "color: orange;",
+    "mono-note": "font-family: monospace; color: gray;",
+    "alert-badge": "background-color: #FFB0B0; border: 1px solid #A00; padding: 2px 6px; font-weight: bold;",
     "banner-danger": "background-color: #FF6B6B; color: white; font-weight: bold; padding: 8px;",
     "banner-engine": "background-color: #c0392b; color: white; padding: 4px;",
     "callout-warning": "background-color: #fff3cd; padding: 10px; border-radius: 4px;",

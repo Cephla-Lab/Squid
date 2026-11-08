@@ -27,6 +27,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+import control.theme as theme
 import squid.logging
 from control import laser_engine_v2_settings
 from control.laser_engine_v2_status import SOURCE_560_LINE, EngineV2Status, LineInfo, LineState, SourceStatus
@@ -217,7 +218,7 @@ class LaserEngineV2Widget(QWidget):
         self.startup_label = QLabel("")
         self.event_label = QLabel("")
         for label in (self.startup_label, self.event_label):
-            label.setStyleSheet(f"color: {GREY};")
+            theme.set_role(label, "note-gray")
             layout.addWidget(label)
         self._set_line(self.startup_label, self._startup_text(engine.bringup_state))  # the bring-up may be running
         self._set_line(self.event_label, "")
@@ -238,7 +239,7 @@ class LaserEngineV2Widget(QWidget):
             row = _LineRow(*(QLabel("—") for _ in self.COLUMNS))
             row.line.setText(f"L{n}")
             row.reason.setWordWrap(True)
-            row.reason.setStyleSheet(f"color: {GREY};")
+            theme.set_role(row.reason, "note-gray")
             self.rows[f"L{n}"] = row
             for col, widget in enumerate(row.widgets()):
                 grid.addWidget(widget, n, col)
@@ -300,8 +301,8 @@ class LaserEngineV2Widget(QWidget):
         self.shutter_btn.clicked.connect(lambda _=False: self.toggle_shutter())
         self.shutter_note = QLabel(SHUTTER_MODE_HINTS[engine.shutter_mode])
         self.shutter_note.setWordWrap(True)
-        self.shutter_note.setStyleSheet(f"color: {GREY};")
-        self.source_limits_label.setStyleSheet(f"color: {GREY};")
+        theme.set_role(self.shutter_note, "note-gray")
+        theme.set_role(self.source_limits_label, "note-gray")
 
         rows = QVBoxLayout(self.source_box)
         rows.setContentsMargins(8, 4, 8, 4)

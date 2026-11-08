@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+import control.theme as theme
 from control.workflow_runner import SequenceItem, SequenceType, Workflow
 
 import squid.logging
@@ -121,7 +122,7 @@ class AddSequenceDialog(QDialog):
             "<small><i>Leave both empty to use Squid's Python (recommended).<br>"
             "If Conda Env is set, Python Path is ignored.</i></small>"
         )
-        help_text.setStyleSheet("color: gray;")
+        theme.set_role(help_text, "note-gray")
         layout.addRow(help_text)
 
         # Buttons
@@ -234,7 +235,7 @@ class AddAcquisitionDialog(QDialog):
             "If a YAML file is provided, acquisition settings will be<br>"
             "loaded from the file before running.</i></small>"
         )
-        help_text.setStyleSheet("color: gray;")
+        theme.set_role(help_text, "note-gray")
         layout.addRow(help_text)
 
         # Buttons
@@ -364,7 +365,7 @@ class WorkflowRunnerDialog(QDialog):
         btn_layout.addStretch()
 
         self.btn_run = QPushButton("Run")
-        self.btn_run.setStyleSheet("background-color: #C2C2FF; font-weight: bold;")
+        theme.set_role(self.btn_run, "action-bold")
         self.btn_run.clicked.connect(self._run_workflow)
         btn_layout.addWidget(self.btn_run)
 
@@ -627,10 +628,10 @@ class WorkflowRunnerDialog(QDialog):
 
         try:
             self._workflow.save_to_file(file_path)
-            self._set_status(f"Saved to {os.path.basename(file_path)}", "green")
+            self._set_status(f"Saved to {os.path.basename(file_path)}", "status-ok")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save workflow: {e}")
-            self._set_status(f"Save failed: {e}", "red")
+            self._set_status(f"Save failed: {e}", "status-bad")
 
     def _load_workflow(self):
         """Load workflow from YAML file."""
@@ -642,10 +643,10 @@ class WorkflowRunnerDialog(QDialog):
             self._workflow = Workflow.load_from_file(file_path)
             self.spinbox_cycles.setValue(self._workflow.num_cycles)
             self._load_workflow_to_table()
-            self._set_status(f"Loaded {os.path.basename(file_path)}", "green")
+            self._set_status(f"Loaded {os.path.basename(file_path)}", "status-ok")
         except Exception as e:
             QMessageBox.critical(self, "Load Error", f"Failed to load workflow: {e}")
-            self._set_status(f"Load failed: {e}", "red")
+            self._set_status(f"Load failed: {e}", "status-bad")
 
     def _run_workflow(self):
         """Validate and emit signal to run workflow."""
@@ -746,10 +747,10 @@ class WorkflowRunnerDialog(QDialog):
         """Clear all row highlights."""
         self.highlight_sequence(-1)
 
-    def _set_status(self, text: str, color: str = "black"):
+    def _set_status(self, text: str, role: str = "status-neutral"):
         """Set status label text and color."""
         self.label_status.setText(text)
-        self.label_status.setStyleSheet(f"color: {color};")
+        theme.set_role(self.label_status, role)
 
     def set_running_state(self, running: bool):
         """Update UI based on running state."""
@@ -775,7 +776,7 @@ class WorkflowRunnerDialog(QDialog):
         self.btn_pause.setText("Pause")
 
         if running:
-            self._set_status("Workflow running...", "blue")
+            self._set_status("Workflow running...", "status-info")
             self.text_output.clear()
         else:
             self.clear_highlight()
@@ -786,30 +787,30 @@ class WorkflowRunnerDialog(QDialog):
         """Handle workflow paused."""
         self._is_paused = True
         self.btn_pause.setText("Resume")
-        self._set_status("Workflow paused - click Resume to continue", "orange")
+        self._set_status("Workflow paused - click Resume to continue", "status-warn")
 
     def on_workflow_resumed(self):
         """Handle workflow resumed."""
         self._is_paused = False
         self.btn_pause.setText("Pause")
-        self._set_status("Workflow running...", "blue")
+        self._set_status("Workflow running...", "status-info")
 
     def on_workflow_finished(self, success: bool):
         """Handle workflow completion."""
         self.set_running_state(False)
         if success:
-            self._set_status("Workflow completed successfully", "green")
+            self._set_status("Workflow completed successfully", "status-ok")
         else:
-            self._set_status("Workflow stopped", "red")
+            self._set_status("Workflow stopped", "status-bad")
 
     def on_sequence_started(self, index: int, name: str):
         """Handle sequence start."""
         self.highlight_sequence(index)
-        self._set_status(f"Running: {name}", "blue")
+        self._set_status(f"Running: {name}", "status-info")
 
     def on_error(self, error_msg: str):
         """Handle error from workflow runner."""
-        self._set_status(f"Error: {error_msg}", "red")
+        self._set_status(f"Error: {error_msg}", "status-bad")
 
     def on_script_output(self, line: str):
         """Append script output line."""
@@ -830,10 +831,10 @@ class WorkflowRunnerDialog(QDialog):
         try:
             with open(file_path, "w") as f:
                 f.write(self.text_output.toPlainText())
-            self._set_status(f"Log saved to {os.path.basename(file_path)}", "green")
+            self._set_status(f"Log saved to {os.path.basename(file_path)}", "status-ok")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save log: {e}")
-            self._set_status(f"Save failed: {e}", "red")
+            self._set_status(f"Save failed: {e}", "status-bad")
 
     def closeEvent(self, event):
         """Handle dialog close - warn if workflow is running."""
