@@ -580,7 +580,7 @@ This file captures the exact settings used, including:
    - Test changes before deploying
 
 2. **Keep intensity calibrations updated**
-   - Re-run Utils > Illumination Power Calibration after changing a light source, Max Output or the Illumination Intensity Factor
+   - Re-run Utils > Illumination Power Calibration after changing a light source, Max Output or the Illumination Intensity Factor (set in the machine's config file; Preferences only shows it)
    - The channel editor's Calibration Status column says when a calibration no longer fits
 
 3. **Confocal config presence matters**
