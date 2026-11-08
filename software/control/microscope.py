@@ -751,7 +751,30 @@ class Microscope:
         self._config_repo = repo
         self.illumination_controller.config_repo = repo
 
+    def _confirm_startup_homing(self) -> bool:
+        """Piezo-only: the stop sign before startup homes. True when the nosepiece was confirmed lowered, False when
+        startup needs no confirmation. Declined, or no one to ask: closes the hardware (construction fails, so no caller
+        can) and raises, before anything of startup runs."""
+        if not startup_needs_objective_prompt():
+            return False
+        if self._confirm_objective_lowered is None:
+            self._log.error("Piezo-only: no one to confirm the nosepiece is lowered; closing the hardware")
+            self.close()
+            raise ObjectiveNotLoweredError(
+                "Startup homing refused: piezo-only system and no one to confirm the objective is lowered; pass "
+                "confirm_objective_lowered"
+            )
+        if not self._confirm_objective_lowered():
+            self._log.info("Piezo-only: startup homing declined at the stop sign; closing the hardware")
+            self.close()
+            raise StartupHomingDeclined("Startup homing declined: the nosepiece was not lowered")
+        return True
+
     def _prepare_for_use(self, skip_init: bool = False):
+        mcu = self.low_level_drivers.microcontroller
+        warm = mcu is not None and mcu.startup_was_warm  # a warm start homes no stage axis: no stop sign
+        # Before anything moves: the piezo homes next (toward the sample), then X and Y go to their limit switches.
+        objective_lowered = False if skip_init or warm else self._confirm_startup_homing()
         self.low_level_drivers.prepare_for_use(skip_init=skip_init)
         self.addons.prepare_for_use(skip_init=skip_init)
 
@@ -810,27 +833,13 @@ class Microscope:
                 if self.z_lift is not None:
                     self._log.info(f"Setting Z lift limits: [{self.z_lift.min_mm},{self.z_lift.max_mm}]")
                     self.z_lift.apply_limits()
-                mcu = self.low_level_drivers.microcontroller
-                if mcu is not None and mcu.startup_was_warm:
+                if warm:
                     # The controller vouched that the stage is still homed under this configuration (the
-                    # Microcontroller's startup query): no prompt, no home_xyz and no lift raise. The stage stays
-                    # where the last session left it.
+                    # Microcontroller's startup query): no home_xyz and no lift raise. The stage stays where the last
+                    # session left it.
                     self.startup_homing = StartupHoming.ALREADY_HOMED
                 else:
-                    confirmed = False
-                    if startup_needs_objective_prompt():
-                        if self._confirm_objective_lowered is None:
-                            raise ObjectiveNotLoweredError(
-                                "Startup homing refused: piezo-only system and no one to confirm the objective is "
-                                "lowered; pass confirm_objective_lowered"
-                            )
-                        confirmed = bool(self._confirm_objective_lowered())
-                        if not confirmed:
-                            # Nothing else of startup runs either (an objective changer would home and rotate next).
-                            self._log.info("Piezo-only: startup homing declined at the stop sign; closing the hardware")
-                            self.close()
-                            raise StartupHomingDeclined("Startup homing declined: the nosepiece was not lowered")
-                    self.home_xyz(objective_lowered=confirmed)
+                    self.home_xyz(objective_lowered=objective_lowered)
                     self._raise_z_lift_to_sample_height()
                     self.startup_homing = StartupHoming.HOMED
             except TimeoutError:
