@@ -5,6 +5,8 @@ from typing import List, Optional, Sequence, Tuple
 
 RelativeRange = Tuple[float, float]
 
+TRAVEL_EPS_UM = 1e-6  # travel ends are inclusive with this tolerance
+
 
 def nz_for_range(z_min_um: float, z_max_um: float, dz_um: float) -> int:
     """Number of planes for a range: ceil((max - min) / dz) + 1, as the widget's update_Nz.
@@ -22,10 +24,7 @@ def relative_range_problem(
 ) -> Optional[str]:
     """Why a relative Z-range cannot run, or None. Checks config, dz, range order, then stack length vs travel."""
     if z_stacking_config != "FROM BOTTOM":
-        return (
-            "A relative Z-range runs from Z-min up (From Bottom), not From Top or From Center: "
-            "choose From Bottom, or clear the range."
-        )
+        return "A relative Z-range runs from Z-min up (From Bottom): change the z-stack config, or clear the range."
     if not (math.isfinite(dz_um) and dz_um > 0):
         return f"The z step must be a positive number of µm, got {dz_um}: set dz."
     z_min_um, z_max_um = rng
@@ -38,7 +37,7 @@ def relative_range_problem(
     span_um = (nz - 1) * dz_um
     if span_um > travel_span_um:
         return (
-            f"The z-stack spans {span_um:.1f} µm, longer than the piezo's travel ({travel_span_um:.0f} µm): "
+            f"The z-stack spans {span_um:.1f} µm, longer than the travel ({travel_span_um:.0f} µm): "
             "reduce the range or raise dz."
         )
     return None
@@ -52,7 +51,7 @@ def frame_targets(
     channel_offsets_um: Sequence[float],
     travel_um: Tuple[float, float],
 ) -> List[List[Optional[float]]]:
-    """Absolute piezo target per [channel][k], or None when it falls outside travel (ends inclusive).
+    """Absolute piezo target per [channel][k], or None when it falls outside travel (ends inclusive, within TRAVEL_EPS_UM).
 
     Target = anchor + z_min_rel + k * dz + channel offset; eligibility is decided after the offset.
     """
@@ -62,6 +61,6 @@ def frame_targets(
         row: List[Optional[float]] = []
         for k in range(nz):
             z_um = anchor_um + z_min_rel_um + k * dz_um + offset_um
-            row.append(z_um if low_um <= z_um <= high_um else None)
+            row.append(z_um if low_um - TRAVEL_EPS_UM <= z_um <= high_um + TRAVEL_EPS_UM else None)
         targets.append(row)
     return targets

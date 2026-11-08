@@ -28,6 +28,13 @@ def test_problem_refuses_reversed_non_finite_and_too_long():
     assert relative_range_problem((-5, 15), 2.0, 300.0, "FROM BOTTOM") is None
 
 
+def test_problem_messages_are_actuator_neutral():
+    assert relative_range_problem((-5, 15), 2.0, 300.0, "FROM TOP") == (
+        "A relative Z-range runs from Z-min up (From Bottom): change the z-stack config, or clear the range."
+    )
+    assert "piezo" not in relative_range_problem((0, 301), 1.0, 300.0, "FROM BOTTOM")
+
+
 def test_targets_decide_eligibility_after_the_channel_offset():
     t = frame_targets(
         anchor_um=0.0, z_min_rel_um=-2.0, nz=3, dz_um=2.0, channel_offsets_um=[0.0, 5.0], travel_um=(0.0, 300.0)
@@ -38,3 +45,11 @@ def test_targets_decide_eligibility_after_the_channel_offset():
 
 def test_targets_keep_the_travel_ends_inclusive():
     assert frame_targets(296.0, 0.0, 3, 2.0, [0.0], (0.0, 300.0)) == [[296.0, 298.0, 300.0]]
+
+
+def test_targets_travel_ends_have_a_1e_minus_6_tolerance():
+    top = 300.0 + 6e-14  # float accumulation just past the end
+    assert frame_targets(top, 0.0, 1, 2.0, [0.0], (0.0, 300.0)) == [[top]]
+    assert frame_targets(-1e-9, 0.0, 1, 2.0, [0.0], (0.0, 300.0)) == [[-1e-9]]
+    assert frame_targets(300.001, 0.0, 1, 2.0, [0.0], (0.0, 300.0)) == [[None]]
+    assert frame_targets(-0.001, 0.0, 1, 2.0, [0.0], (0.0, 300.0)) == [[None]]
