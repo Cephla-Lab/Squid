@@ -397,3 +397,61 @@ def test_wellplate_yaml_moving_the_stack_to_the_stepper_gives_the_entries_the_st
     w._apply_yaml_settings(AcquisitionYAMLData(widget_type="wellplate", nz=4, delta_z_um=2.0, use_piezo=False))
 
     assert w.entry_minZ.maximum() == control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
+
+
+def test_gallery_tab_routes_open_and_load_settings_to_the_right_tabs(qtbot, confirm_exit_yes, monkeypatch, tmp_path):
+    """The Gallery tab follows the multipoint saving folder; opening an acquisition goes to the NDViewer tab,
+    loading its settings to the multipoint tab it was run from (chosen from acquisition.yaml, not the current tab)."""
+    import os
+
+    from qtpy.QtWidgets import QWidget
+
+    from tests.control.test_widgets_gallery import write_acquisition
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    gallery = win.acquisitionGalleryWidget
+    gallery_index = win.imageDisplayTabs.indexOf(gallery)
+    assert gallery_index >= 0 and win.imageDisplayTabs.tabText(gallery_index) == "Gallery"
+    assert win._acquisition_saving_root() == win.multipointController.base_path
+
+    class FakeViewerTab(QWidget):
+        def __init__(self):
+            super().__init__()
+            self.opened = []
+
+        def set_dataset_path(self, path):
+            self.opened.append(path)
+
+    viewer = FakeViewerTab()
+    win.imageDisplayTabs.addTab(viewer, "NDViewer")
+    win.ndviewerTab = viewer
+    gallery.signal_open_acquisition.emit(str(tmp_path))
+    assert viewer.opened == [str(tmp_path)]
+    assert win.imageDisplayTabs.currentWidget() is viewer
+
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: warnings.append(args[1]))
+    loaded = {}
+    for name, widget in (("wellplate", win.wellplateMultiPointWidget), ("flexible", win.flexibleMultiPointWidget)):
+
+        def record_load(path, name=name):
+            loaded[name] = path
+            return True
+
+        monkeypatch.setattr(widget, "_load_acquisition_yaml", record_load)
+    flexible = write_acquisition(tmp_path, "flex_2026-11-07_10-00-00.000000", widget_type="flexible")
+    win.recordTabWidget.setCurrentWidget(win.wellplateMultiPointWidget)
+
+    gallery.signal_load_settings.emit(str(flexible))
+
+    assert loaded == {"flexible": os.path.join(str(flexible), "acquisition.yaml")}
+    assert win.recordTabWidget.currentWidget() is win.flexibleMultiPointWidget
+    assert warnings == []
+
+    monkeypatch.setattr(win.multipointController, "acquisition_in_progress", lambda: True)
+    assert win._load_acquisition_settings_from_folder(str(flexible)) is False
+    assert warnings == ["Acquisition Running"]
+    assert len(loaded) == 1

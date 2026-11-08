@@ -739,6 +739,7 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplayWindow: Optional[core.ImageDisplayWindow] = None
         self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
         self.napariMultiChannelWidget: Optional[widgets.NapariMultiChannelWidget] = None
+        self.acquisitionGalleryWidget = None  # widgets_gallery.AcquisitionGalleryWidget unless live-only mode
         self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
         self.ramMonitorWidget: Optional[widgets.RAMMonitorWidget] = None
         self.backpressureMonitorWidget: Optional[widgets.BackpressureMonitorWidget] = None
@@ -1268,6 +1269,17 @@ class HighContentScreeningGui(QMainWindow):
             elif self.ndviewerTab is None:
                 self.log.debug("NDViewer tab not available, FOV click navigation disabled")
 
+            # Gallery of the acquisitions saved under the saving folder: one opens in the NDViewer tab, shows
+            # in the file browser, or hands its settings back to the multipoint tab it was run from.
+            from control.widgets_gallery import AcquisitionGalleryWidget
+
+            self.acquisitionGalleryWidget = AcquisitionGalleryWidget(self._acquisition_saving_root)
+            self.acquisitionGalleryWidget.set_viewer_available(
+                self.ndviewerTab is not None,
+                hint="The NDViewer tab is off (Settings > Preferences > Views); opening shows the folder instead.",
+            )
+            self.imageDisplayTabs.addTab(self.acquisitionGalleryWidget, "Gallery")
+
             # z plot
             self.zPlotWidget = widgets.SurfacePlotWidget()
             dock_surface_plot = dock.Dock("Z Plot", autoOrientation=False)
@@ -1621,6 +1633,11 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.multipointController.ndviewer_notify_zarr_frame.connect(self.ndviewerTab.notify_zarr_frame)
             self.multipointController.ndviewer_end_zarr_acquisition.connect(self.ndviewerTab.end_zarr_acquisition)
+
+        if self.acquisitionGalleryWidget is not None:
+            self.acquisitionGalleryWidget.signal_open_acquisition.connect(self._open_acquisition_in_ndviewer)
+            self.acquisitionGalleryWidget.signal_load_settings.connect(self._load_acquisition_settings_from_folder)
+            self.multipointController.acquisition_finished.connect(self._refresh_gallery_after_acquisition)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
@@ -2998,6 +3015,62 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self.log.warning("NDViewer tab exists but not found in tab widget")
 
+    # ----- Gallery tab -----
+
+    def _acquisition_saving_root(self) -> Optional[str]:
+        """The folder new acquisitions are saved under: the multipoint tabs' saving directory."""
+        if self.multipointController is not None and self.multipointController.base_path:
+            return self.multipointController.base_path
+        return widgets.get_last_used_saving_path()
+
+    def _open_acquisition_in_ndviewer(self, folder: str) -> None:
+        """Show a saved acquisition folder in the NDViewer tab and switch to it."""
+        if self.ndviewerTab is None:
+            self.log.warning(f"Cannot open {folder}: the NDViewer tab is not available")
+            return
+        self.log.info(f"Opening saved acquisition in NDViewer: {folder}")
+        self.ndviewerTab.set_dataset_path(folder)
+        ndviewer_tab_idx = self.imageDisplayTabs.indexOf(self.ndviewerTab)
+        if ndviewer_tab_idx >= 0:
+            self.imageDisplayTabs.setCurrentIndex(ndviewer_tab_idx)
+
+    def _load_acquisition_settings_from_folder(self, folder: str) -> bool:
+        """Load a saved acquisition's acquisition.yaml into the multipoint tab it was run from.
+
+        The tab is chosen from the file's widget_type, so the user never sees the type-mismatch dialog a drop on
+        the wrong tab shows. Returns True when the settings were applied.
+        """
+        from control.acquisition_yaml_loader import parse_acquisition_yaml
+
+        if self.multipointController is not None and self.multipointController.acquisition_in_progress():
+            QMessageBox.warning(self, "Acquisition Running", "Wait for the running acquisition to finish first.")
+            return False
+        yaml_path = os.path.join(folder, "acquisition.yaml")
+        try:
+            widget_type = parse_acquisition_yaml(yaml_path).widget_type
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", f"Could not read the saved acquisition settings:\n{e}")
+            return False
+        widget = self.wellplateMultiPointWidget if widget_type == "wellplate" else self.flexibleMultiPointWidget
+        if widget is None or self.recordTabWidget.indexOf(widget) < 0:
+            QMessageBox.warning(
+                self,
+                "Tab Not Available",
+                f"These settings are for the {widget_type} multipoint tab, which is not enabled.",
+            )
+            return False
+        self.recordTabWidget.setCurrentWidget(widget)
+        loaded = widget._load_acquisition_yaml(yaml_path)
+        if loaded:
+            self.log.info(f"Loaded acquisition settings from {yaml_path} into {type(widget).__name__}")
+        return loaded
+
+    def _refresh_gallery_after_acquisition(self) -> None:
+        """A finished acquisition appears in the gallery once its last mosaic overview has been written."""
+        if self.acquisitionGalleryWidget is None:
+            return
+        QTimer.singleShot(2000, self.acquisitionGalleryWidget.refresh)
+
     def restart_application(self):
         """Restart the application with --skip-init flag.
 
@@ -3097,6 +3170,13 @@ class HighContentScreeningGui(QMainWindow):
                 self.ndviewerTab.close()
             except Exception:
                 self.log.exception(f"Error closing NDViewer tab during {context}")
+
+        # Stop the gallery's scan and thumbnail threads
+        if self.acquisitionGalleryWidget is not None:
+            try:
+                self.acquisitionGalleryWidget.shutdown()
+            except Exception:
+                self.log.exception(f"Error shutting down the gallery tab during {context}")
 
         # Close napari viewers — they run background threads that prevent clean exit.
         for widget_name in [

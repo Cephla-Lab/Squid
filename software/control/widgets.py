@@ -522,6 +522,7 @@ class NDViewerTab(QWidget):
 
         try:
             self._viewer.start_acquisition(channels, num_z, height, width, fov_labels)
+            self._dataset_path = None  # the viewer now shows the live run, not a folder it was pointed at
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
             self._log.info(
@@ -635,6 +636,7 @@ class NDViewerTab(QWidget):
                 return False
 
             self._viewer.start_zarr_acquisition(fov_paths, channels, num_z, fov_labels, height, width)
+            self._dataset_path = None  # the viewer now shows the live run, not a folder it was pointed at
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
             self._log.info(
@@ -691,6 +693,7 @@ class NDViewerTab(QWidget):
             self._viewer.start_zarr_acquisition_6d(
                 region_paths, channels, num_z, fovs_per_region, height, width, region_labels
             )
+            self._dataset_path = None  # the viewer now shows the live run, not a folder it was pointed at
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
 
