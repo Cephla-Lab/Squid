@@ -11890,14 +11890,10 @@ class NapariMultiChannelWidget(_OpenInViewerButtonMixin, QWidget):
         self.viewer.dims.events.ndisplay.connect(self._onNdisplayChanged)
         self.viewerWidget = self.viewer.window._qt_window
         self.layout = QVBoxLayout()
-        # Opt-in "Open in Viewer" above the canvas, right-aligned; a hidden button leaves the row empty.
-        self.btn_openInViewer = self._create_open_in_viewer_button()
-        button_row = QHBoxLayout()
-        button_row.setContentsMargins(0, 0, 0, 0)
-        button_row.addStretch(1)
-        button_row.addWidget(self.btn_openInViewer)
-        self.layout.addLayout(button_row)
         self.layout.addWidget(self.viewerWidget)
+        # Opt-in "Open in Viewer" under the canvas, the full width of the tab; hidden by default.
+        self.btn_openInViewer = self._create_open_in_viewer_button()
+        self.layout.addWidget(self.btn_openInViewer)
         self.setLayout(self.layout)
         self.customizeViewer()
 
