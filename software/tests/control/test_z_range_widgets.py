@@ -224,6 +224,8 @@ def test_wellplate_keeps_laser_af_off_in_set_range_when_controls_come_back(qtbot
     host.scanCoordinates = SimpleNamespace(format="96 well plate")
     host.update_scan_control_ui = MagicMock()
     host._update_laser_af_per_stack_state = MagicMock()  # the Z First "AF per stack" rule, tested in test_widgets.py
+    host._finished_run_dir = None
+    host.set_finished_run_dir = MagicMock()  # the Open in Viewer button rule, tested in test_HighContentScreeningGui.py
     host.checkbox_z.setChecked(True)
     host.combobox_z_mode.setCurrentText(z_mode)
 
