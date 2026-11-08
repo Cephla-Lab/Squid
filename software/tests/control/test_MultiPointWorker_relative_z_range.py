@@ -345,7 +345,7 @@ def test_returns_to_the_anchor_after_each_fov(tmp_path, piezo_scope):
             assert w.z_piezo_um == pytest.approx(anchor)
 
 
-@pytest.mark.parametrize("order", ["CHANNEL FIRST"])
+@pytest.mark.parametrize("order", ["CHANNEL FIRST", "Z FIRST"])
 def test_single_plane_relative_range_runs_the_full_path(tmp_path, order):
     w = _worker(tmp_path, relative_range=(3.0, 3.0), offsets={"A": 0.0, "B": 2.0}, order=order)
     assert w.NZ == 1
@@ -548,3 +548,119 @@ def test_a_fov_with_no_eligible_frame_does_not_settle(tmp_path, monkeypatch):
     assert w.frames == []
     assert ("sleep", _Z_SETTLE_S) not in events
     assert w.piezo.position == pytest.approx(1.0)
+
+
+# --- Z First -----------------------------------------------------------------------------------------------
+
+
+def test_z_first_images_each_channels_eligible_planes_in_order(tmp_path):
+    w = _worker(tmp_path, order="Z FIRST", offsets={"B": 1.0}, references=[100.0])
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    expected = [(k, "A", 98.0 + 2 * k) for k in range(4)] + [(k, "B", 99.0 + 2 * k) for k in range(4)]
+    assert _planes(w) == _frames(expected)
+    assert len(w.laser_auto_focus_controller.positions_at_call) == 1  # no AF per stack
+    assert list(w.coordinates_pd["z_level"]) == [0, 1, 2, 3]
+    assert w.piezo.position == pytest.approx(100.0)
+    assert w._timepoint_fov_count == 1
+
+
+@pytest.mark.parametrize("relative_range, last_plane_um", [((-30.0, 0.0), 100.0), ((-10.0, 4.0), 104.0)])
+def test_af_per_stack_relocks_from_the_anchor_not_the_first_plane(tmp_path, relative_range, last_plane_um):
+    w = _worker(tmp_path, order="Z FIRST", relative_range=relative_range, references=[100.0, 103.0])
+    w.laser_af_per_stack = True
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    af = w.laser_auto_focus_controller
+    assert af.positions_at_call == pytest.approx([100.0, 100.0])  # not the first plane, not the last (104)
+    z_min = relative_range[0]
+    n = len(_planes(w)) // 2
+    assert [z for _, name, z in _planes(w) if name == "A"] == pytest.approx([100.0 + z_min + 2 * k for k in range(n)])
+    assert [z for _, name, z in _planes(w) if name == "B"] == pytest.approx([103.0 + z_min + 2 * k for k in range(n)])
+    assert (w._laser_af_successes, w._laser_af_per_stack_successes) == (1, 1)
+    assert w.piezo.position == pytest.approx(103.0)  # the anchor of the last lock-on
+
+
+def test_failed_per_stack_relock_keeps_the_anchor_with_z_restored(tmp_path):
+    w = _worker(tmp_path, order="Z FIRST", references=[100.0, 103.0], fail_calls=(2,))
+    w.laser_af_per_stack = True
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    assert w.laser_auto_focus_controller.positions_at_call == pytest.approx([100.0, 100.0])
+    # Channel B stacks from the standing anchor 100.
+    assert _planes(w) == _frames([(k, c, 98.0 + 2 * k) for c in ("A", "B") for k in range(4)])
+    assert (w._laser_af_per_stack_successes, w._laser_af_per_stack_failures) == (0, 1)
+    assert (w._laser_af_successes, w._laser_af_failures) == (1, 0)  # per-stack lock-ons are counted apart
+    assert w._anchor_um == pytest.approx(100.0)
+    assert w.piezo.position == pytest.approx(100.0)
+    assert not w.abort_requested_fn()
+
+
+def test_per_stack_relock_recomputes_eligibility_for_that_channel(tmp_path):
+    # The second anchor (299, piezo travel 0..300) puts B's last plane (301) past the travel.
+    w = _worker(tmp_path, order="Z FIRST", relative_range=(-2.0, 2.0), references=[100.0, 299.0])
+    w.laser_af_per_stack = True
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    expected = [(k, "A", 98.0 + 2 * k) for k in range(3)] + [(0, "B", 297.0), (1, "B", 299.0)]
+    assert _planes(w) == _frames(expected)
+    assert max(w.piezo.moves) <= 300.0  # never commanded past the travel
+    warnings = [str(c.args[0]) for c in w._log.warning.call_args_list]
+    assert len(warnings) == 1
+    assert "plane 2" in warnings[0] and "'B'" in warnings[0] and "past" in warnings[0]
+    assert list(w.coordinates_pd["out_of_travel"]) == ["", "", "B"]
+    assert w.piezo.position == pytest.approx(299.0)
+
+
+def test_rows_cover_every_plane_when_the_first_channel_skips_one(tmp_path):
+    # anchor 1, range -2..2: A at -1 (skipped), 1, 3; B (offset +2) at 1, 3, 5.
+    w = _worker(tmp_path, order="Z FIRST", relative_range=(-2.0, 2.0), offsets={"A": 0.0, "B": 2.0}, references=[1.0])
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    assert _planes(w) == _frames([(1, "A", 1.0), (2, "A", 3.0), (0, "B", 1.0), (1, "B", 3.0), (2, "B", 5.0)])
+    rows = w.coordinates_pd
+    assert list(rows["z_level"]) == [0, 1, 2]
+    assert list(rows["z_rel (um)"]) == pytest.approx([-2.0, 0.0, 2.0])
+    assert list(rows["out_of_travel"]) == ["A", "", ""]
+    assert list(rows["z_piezo (um)"]) == pytest.approx([-1.0, 1.0, 3.0])
+
+
+def test_abort_mid_relative_z_first_writes_rows_reached_and_returns_to_anchor(tmp_path):
+    w = _worker(tmp_path, order="Z FIRST", references=[100.0])
+    real = w.acquire_camera_image
+
+    def acquire_then_abort(*args, **kwargs):
+        real(*args, **kwargs)
+        if len(w.frames) == 2:  # channel A, plane 1
+            w._aborted.append(True)
+
+    w.acquire_camera_image = acquire_then_abort
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    assert _planes(w) == _frames([(0, "A", 98.0), (1, "A", 100.0)])
+    assert list(w.coordinates_pd["z_level"]) == [0, 1]  # planes 2 and 3 were never reached
+    assert w.piezo.position == pytest.approx(100.0)
+    assert w._timepoint_fov_count == 1
+
+
+def test_z_first_settles_only_after_each_lock_on(tmp_path, monkeypatch):
+    w = _worker(tmp_path, order="Z FIRST", references=[100.0, 103.0])
+    w.laser_af_per_stack = True
+    w.liveController.trigger_mode = TriggerMode.HARDWARE
+    events = _record_events(w, monkeypatch)
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    # Hardware trigger adds no per-step delay: the only sleeps are the two post-lock-on settles.
+    assert [e for e in events if e[0] == "sleep"] == [("sleep", _Z_SETTLE_S)] * 2
+    afs = [i for i, e in enumerate(events) if e == ("af",)]
+    frames = [i for i, e in enumerate(events) if e == ("frame",)]
+    sleeps = [i for i, e in enumerate(events) if e[0] == "sleep"]
+    assert afs[0] < sleeps[0] < frames[0]
+    assert frames[3] < afs[1] < sleeps[1] < frames[4]

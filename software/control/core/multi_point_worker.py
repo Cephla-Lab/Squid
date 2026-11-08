@@ -1308,8 +1308,6 @@ class MultiPointWorker:
         stops the run. Then every frame is an absolute move to anchor + z_min + k * dz + channel offset; a frame
         outside the actuator's travel is skipped and reported, never clamped. Z ends at the anchor.
         """
-        if self.z_stack_order == "Z FIRST":
-            raise NotImplementedError("A relative Z-range does not run in Z First order yet.")
         af_succeeded = self._relative_lock_on(region_id, fov)
         try:
             if not af_succeeded and self._require_first_lock_on:
@@ -1327,6 +1325,10 @@ class MultiPointWorker:
                 self._last_time_point_z_pos[(region_id, fov)] = (
                     self.stage.get_pos().z_mm if self._actuator_is_piezo() else self._anchor_um / 1000
                 )
+            if self.z_stack_order == "Z FIRST":
+                self._acquire_relative_z_first(region_id, current_path, fov, af_succeeded)
+                self._timepoint_fov_count += 1
+                return
             targets = self._relative_targets(self.selected_configurations, af_succeeded)
             skipped = [(c, k) for c, row in enumerate(targets) for k, target in enumerate(row) if target is None]
             self._report_skipped_frames(region_id, fov, skipped)
@@ -1379,6 +1381,76 @@ class MultiPointWorker:
             if self.abort_requested_fn():
                 break
             self.af_fov_count = self.af_fov_count + 1
+
+    def _acquire_relative_z_first(self, region_id, current_path, fov, af_succeeded) -> None:
+        """Z First: each channel images all of its eligible planes before the next channel.
+
+        With laser AF per stack every later channel returns to the anchor and re-locks from there (never from
+        the previous stack's last plane); its targets, skips and reports come from its own anchor. The first
+        eligible move after each lock-on settles. The channel loop's first pass begins each plane (the
+        coordinates row's data); the rows are written in a finally for every plane reached, with the channels
+        skipped per plane accumulated across channels.
+        """
+        z_min_um = self.laser_af_relative_range_um[0]
+        dz_um = abs(self.deltaZ) * 1000
+        nz = self._relative_nz()
+        n_configs = len(self.selected_configurations)
+        reached = []  # (k, acquire_pos, z_piezo_um, z_rel_um) of every plane the first channel began
+        skipped_by_k: Dict[int, List[str]] = {}
+        try:
+            for config_idx, config in enumerate(self.selected_configurations):
+                if self.abort_requested_fn():
+                    break
+                if config_idx > 0 and self.laser_af_per_stack:
+                    self._move_actuator_to_um(self._anchor_um)
+                    af_succeeded = self._relative_lock_on(region_id, fov, channel_name=config.name) or af_succeeded
+                    settle = True
+                else:
+                    settle = config_idx == 0
+                row = self._relative_targets(self.selected_configurations, af_succeeded)[config_idx]
+                self._report_skipped_frames(
+                    region_id, fov, [(config_idx, k) for k, target in enumerate(row) if target is None]
+                )
+                for k, names in self._out_of_travel_by_k.items():
+                    skipped_by_k.setdefault(k, []).extend(names)
+                for k in range(nz):
+                    if self.abort_requested_fn():
+                        break
+                    file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{k:0{FILE_ID_PADDING}}"
+                    if config_idx == 0:
+                        # Record the plane's nominal, un-offset position (even where it lies outside the travel).
+                        z_rel_um = z_min_um + k * dz_um
+                        nominal_um = self._anchor_um + z_rel_um
+                        acquire_pos = self.stage.get_pos()
+                        z_piezo_um = None
+                        if self._actuator_is_piezo():
+                            z_piezo_um = nominal_um
+                        else:
+                            acquire_pos = acquire_pos.model_copy(update={"z_mm": nominal_um / 1000})
+                        self._begin_z_level(region_id, current_path, fov, k, file_ID, acquire_pos)
+                        reached.append((k, acquire_pos, z_piezo_um, z_rel_um))
+                    if row[k] is not None:
+                        self._move_actuator_to_um(row[k], after_lock_on=settle)
+                        settle = False
+                        current_image = fov * nz * n_configs + config_idx * nz + k + 1
+                        self._acquire_channel_image(
+                            config, config_idx, file_ID, current_path, k, region_id, fov, current_image
+                        )
+                    if config_idx == 0 and not self.abort_requested_fn():
+                        self.af_fov_count = self.af_fov_count + 1
+        finally:
+            # The caller's finally returns Z to the anchor.
+            self._out_of_travel_by_k = skipped_by_k
+            for k, acquire_pos, z_piezo_um, z_rel_um in reached:
+                self._finish_z_level(
+                    region_id,
+                    fov,
+                    k,
+                    acquire_pos,
+                    z_piezo_um,
+                    z_rel_um=z_rel_um,
+                    skipped_channels=skipped_by_k.get(k, []),
+                )
 
     def _relative_lock_on(self, region_id, fov, channel_name=None) -> bool:
         """Lock on to the laser AF reference plane. True on success.
