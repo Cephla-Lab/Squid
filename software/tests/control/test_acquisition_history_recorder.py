@@ -187,6 +187,35 @@ def test_make_preview_is_idempotent_per_entry_unless_replacing(store, recorder, 
     assert store.load()[0].preview == f"{entry_id}.png"
 
 
+def test_make_preview_does_not_repeat_a_job_that_finished_while_the_call_was_checking(store, recorder, params, folder):
+    """The store pre-filter runs outside the lock: a job that completes between it and the lock must not run again."""
+    entry_id = recorder.started(params, str(folder), snap=False, skip_saving=False, protocol=None)
+    release = threading.Event()
+    real_writer = recorder_module.write_preview_png
+
+    def blocking_writer(folder, out_path):
+        assert release.wait(10)
+        return real_writer(folder, out_path)
+
+    with patch.object(recorder_module, "write_preview_png", side_effect=blocking_writer):
+        first = recorder.make_preview(entry_id, str(folder))
+        assert first is not None
+
+        def stale_pre_filter(_entry_id):
+            # The interleaving: the scan read "no preview", then the pending job finished before the lock was taken.
+            release.set()
+            first.result(timeout=10)
+            return False
+
+        with patch.object(recorder, "_has_preview", side_effect=stale_pre_filter):
+            assert recorder.make_preview(entry_id, str(folder)) is None
+        assert len(events_of(store, "preview", entry_id)) == 1
+
+        # replace=True still regenerates.
+        recorder.make_preview(entry_id, str(folder), replace=True).result(timeout=10)
+    assert len(events_of(store, "preview", entry_id)) == 2
+
+
 def test_a_replacement_requested_during_a_pending_job_runs_after_it(store, recorder, params, saving_root):
     folder_a = write_acquisition(saving_root, "a")
     folder_b = write_acquisition(saving_root, "b")

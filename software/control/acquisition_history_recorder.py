@@ -381,6 +381,10 @@ class AcquisitionHistoryRecorder:
                 if replace:
                     self._replace_after[entry_id] = folder
                 return None
+            if not replace and entry_id in self._previewed:
+                # A job finished between the pre-filter above and taking the lock. Safe because a job adds the id to
+                # _previewed before its finally clears _pending.
+                return None
             self._pending.add(entry_id)
         return self._submit(entry_id, folder)
 
