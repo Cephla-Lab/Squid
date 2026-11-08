@@ -279,8 +279,10 @@ class JupyterWidget(QWidget):
         self.kernel_ready.emit()
 
     def _restyle_console(self, *_):
-        """Dark console colours in the Dark theme, the light-background ones otherwise."""
-        self.jupyter_widget.set_default_style(colors="linux" if theme.manager().current == "dark" else "lightbg")
+        """Dark console colours in Dark, light-background ones in Light; Classic keeps qtconsole's default."""
+        current = theme.manager().current
+        if current in ("light", "dark"):
+            self.jupyter_widget.set_default_style(colors="linux" if current == "dark" else "lightbg")
 
     def execute_command(self, command):
         """Execute a command in the Jupyter kernel"""

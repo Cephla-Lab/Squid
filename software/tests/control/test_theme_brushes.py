@@ -17,6 +17,11 @@ def test_status_widget_tokens_are_readable(t):
         (t.warn_fg, t.warn_bg),
         ("#ffffff", t.pill_bg),
         (t.dismiss_fg, t.dismiss_bg),
+        ("#ffffff", t.pill_hover),
+        ("#ffffff", t.pill_pressed),
+        ("#ffffff", t.clear_bg),
+        ("#ffffff", t.clear_hover),
+        (t.dismiss_hover_fg, t.dismiss_hover_bg),
     ]
     for fg, bg in pairs:
         assert theme.contrast_ratio(fg, bg) >= 4.5, (fg, bg)
@@ -77,5 +82,25 @@ def test_warning_widget_restyles_on_switch(qapp, qtbot):
         assert theme.DARK.pill_bg in w.btn_expand.styleSheet()
         m.apply("classic")
         assert "#666" in w.btn_expand.styleSheet()
+    finally:
+        m.apply("classic")
+
+
+def test_laser_autofocus_background_follows_switch(qapp, qtbot):
+    from unittest.mock import MagicMock
+    import control.widgets as widgets
+
+    m = theme.install(qapp, "light")
+    try:
+        controller = MagicMock()
+        controller.laser_af_properties.pixel_to_um = 1.0
+        controller.laser_af_properties.calibration_timestamp = "never"
+        w = widgets.LaserAutofocusSettingWidget(MagicMock(), MagicMock(), controller)
+        qtbot.add_widget(w)
+        assert w.palette().color(w.backgroundRole()) == QColor(theme.LIGHT.row_disabled)
+        m.apply("dark")
+        assert w.palette().color(w.backgroundRole()) == QColor(theme.DARK.row_disabled)
+        m.apply("classic")
+        assert w.palette().color(w.backgroundRole()) == QColor(theme.CLASSIC.row_disabled)
     finally:
         m.apply("classic")

@@ -3536,6 +3536,11 @@ class LaserAutofocusSettingWidget(QWidget):
     signal_apply_settings = Signal()
     signal_laser_spot_location = Signal(np.ndarray, float, float)
 
+    def _recolour_background(self, *_):
+        palette = self.palette()
+        palette.setColor(self.backgroundRole(), theme.manager().color("row_disabled"))
+        self.setPalette(palette)
+
     def __init__(self, streamHandler, liveController: LiveController, laserAutofocusController, stretch=True):
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -3550,9 +3555,8 @@ class LaserAutofocusSettingWidget(QWidget):
         self.setAutoFillBackground(True)
 
         # Create and set background color
-        palette = self.palette()
-        palette.setColor(self.backgroundRole(), theme.manager().color("row_disabled"))
-        self.setPalette(palette)
+        self._recolour_background()
+        theme.manager().theme_changed.connect(self._recolour_background)
 
         self.spinboxes = {}
         self.init_ui()
