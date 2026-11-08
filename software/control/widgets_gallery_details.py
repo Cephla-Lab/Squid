@@ -397,11 +397,13 @@ class GalleryDetailsPane(QWidget):
         preview_png: Optional[str],
         data_folder: Optional[str],
         planes_allowed: bool,
+        preview_mtime: Optional[float] = None,
     ) -> None:
         """Show the entry: its metadata now; the preview PNG, the YAML and (when planes_allowed) the per-channel
-        planes of data_folder's overview from a worker. data_folder is None when the folder cannot be read."""
+        planes of data_folder's overview from a worker. data_folder is None when the folder cannot be read.
+        preview_mtime (read by the loading worker) makes a preview replaced under the same name show again."""
         self.metadata_label.setText(metadata_html(entry, status_label))
-        key = (entry.id, entry.folder, data_folder, entry.preview, planes_allowed)
+        key = (entry.id, entry.folder, data_folder, entry.preview, planes_allowed, preview_mtime)
         if key == self._key:
             return  # same images and files: keep what is shown (and the chips the user set)
         self._key = key

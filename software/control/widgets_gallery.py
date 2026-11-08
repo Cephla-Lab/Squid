@@ -79,6 +79,7 @@ class GalleryRow:
     has_settings: bool = False  # the entry's folder holds an acquisition.yaml
     # A protocol run's rounds: round id -> (availability, has_settings); empty for other entries.
     round_states: Dict[str, Tuple[str, bool]] = field(default_factory=dict)
+    preview_mtime: Optional[float] = None  # of the entry's preview PNG; None when it has none or it is missing
 
 
 def _percent(fraction: float) -> int:
@@ -142,9 +143,20 @@ def _folder_state(entry: HistoryEntry) -> Tuple[str, bool]:
     return availability, has_settings
 
 
-def build_rows(entries: List[HistoryEntry], running_fraction: Optional[float] = None) -> List[GalleryRow]:
+def _preview_mtime(entry: HistoryEntry, previews_dir) -> Optional[float]:
+    if not entry.preview or previews_dir is None:
+        return None
+    try:
+        return os.stat(os.path.join(previews_dir, entry.preview)).st_mtime
+    except OSError:
+        return None
+
+
+def build_rows(
+    entries: List[HistoryEntry], running_fraction: Optional[float] = None, previews_dir=None
+) -> List[GalleryRow]:
     """One row per top-level history entry, in the given order (the store's newest first). Tests the folders (of a
-    protocol run's rounds too), so it runs on a worker thread."""
+    protocol run's rounds too) and, given previews_dir, the preview files, so it runs on a worker thread."""
     rows = []
     for entry in entries:
         availability, has_settings = _folder_state(entry)
@@ -156,6 +168,7 @@ def build_rows(entries: List[HistoryEntry], running_fraction: Optional[float] = 
                 search_text=_search_text(entry),
                 has_settings=has_settings,
                 round_states={r.id: _folder_state(r) for r in entry.rounds} if entry.kind == "protocol_run" else {},
+                preview_mtime=_preview_mtime(entry, previews_dir),
             )
         )
     return rows
@@ -891,7 +904,7 @@ class AcquisitionGalleryWidget(QWidget):
             return
         stamp = self._history_stamp()  # taken first, so a write during the read triggers another reload
         try:
-            rows = build_rows(self._store.load(), running_fraction)
+            rows = build_rows(self._store.load(), running_fraction, self._store.path.parent / PREVIEWS_DIR_NAME)
         except Exception:
             self._log.exception(f"Loading the acquisition history {self._store.path} failed")
             rows = []
@@ -1091,6 +1104,7 @@ class AcquisitionGalleryWidget(QWidget):
             preview_png=self._preview_path(entry),
             data_folder=target.folder if target_online and target.folder else None,
             planes_allowed=not target.is_running,
+            preview_mtime=row.preview_mtime,
         )
         self.details.set_actions(self._action_states, squid_hidden=self._squid_hidden)
         rounds = None

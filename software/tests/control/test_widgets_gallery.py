@@ -1031,6 +1031,40 @@ def test_channel_chips_toggle_the_composite(gallery, qtbot, saving_root):
     assert gallery.preview_label.pixmap().cacheKey() != key_before
 
 
+def test_a_replaced_preview_refreshes_the_selected_details(gallery, qtbot, store_with_entries):
+    store = store_with_entries.store
+    gallery.select_entry("complete")
+    qtbot.waitUntil(lambda: gallery.details.preview_source == "png", timeout=10000)
+    token = gallery.details._token
+    key_before = gallery.preview_label.pixmap().cacheKey()
+
+    # A late overview replaces the provisional PNG under the same name.
+    path = store.previews_dir / "complete.png"
+    image = np.zeros((48, 64, 3), dtype=np.uint8)
+    image[:, :, 2] = 250
+    assert cv2.imwrite(str(path), image)
+    mtime = os.stat(path).st_mtime + 5
+    os.utime(path, (mtime, mtime))
+    store.append(
+        {"type": "preview", "id": "complete", "file": "complete.png", "channels": ["BF", "Fluorescence 488 nm Ex"]}
+    )
+    _reload_and_wait(gallery, qtbot)
+
+    assert _row(gallery, "complete").preview_mtime == pytest.approx(mtime)
+    assert gallery.details._token > token
+    assert [chip.text() for chip in gallery.channel_chips] == ["BF", "Fluorescence 488 nm Ex"]
+    qtbot.waitUntil(lambda: gallery.details.preview_source == "png", timeout=10000)
+    assert gallery.preview_label.pixmap().cacheKey() != key_before
+
+
+def test_build_rows_records_the_preview_mtime(store_with_entries):
+    store = store_with_entries.store
+    rows = {r.entry.id: r for r in build_rows(store.load(), previews_dir=store.previews_dir)}
+    assert rows["complete"].preview_mtime == pytest.approx(os.stat(store.previews_dir / "complete.png").st_mtime)
+    assert rows["aborted"].preview_mtime is None  # no preview
+    assert all(r.preview_mtime is None for r in build_rows(store.load()))  # no previews folder given
+
+
 def test_a_newer_selection_wins_over_a_late_preview(gallery, qtbot):
     gallery.select_entry("complete")
     token = gallery.details._token
