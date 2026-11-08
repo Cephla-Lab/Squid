@@ -444,6 +444,54 @@ def test_piezo_only_confirm_asks_once_and_homes(piezo_only):
     scope.close()
 
 
+def _record_objective_changer(scope, events):
+    """A stand-in objective changer on scope, recording its calls in events."""
+    changer = MagicMock()
+    changer.home.side_effect = lambda *args, **kwargs: events.append("changer.home")
+    changer.move_to_objective.side_effect = lambda *args, **kwargs: events.append("changer.move_to_objective")
+    scope.addons.objective_changer = changer
+
+
+@pytest.mark.parametrize("xeryon", [True, False])
+def test_a_piezo_only_restart_asks_before_the_objective_changer_moves(piezo_only, monkeypatch, xeryon):
+    """A restart (skip_init) homes no stage axis, but turns an objective changer to the default objective (a Xeryon
+    re-homes first) with no Z motor to clear the objective: the stop sign comes first, about the changer."""
+    scope = _scope()
+    monkeypatch.setattr(control._def, "USE_XERYON", xeryon)  # after the build: it would build a real Xeryon's twin
+    events = []
+    _record_objective_changer(scope, events)
+    scope._confirm_objective_lowered = lambda stage_homes: events.append(("asked", stage_homes)) or True
+    scope._prepare_for_use(skip_init=True)
+    assert events == [("asked", False)] + (["changer.home"] if xeryon else []) + ["changer.move_to_objective"]
+    scope.close()
+
+
+def test_declining_on_a_restart_quits_before_the_objective_changer_moves(piezo_only, monkeypatch, closes):
+    scope = _scope()
+    monkeypatch.setattr(control._def, "USE_XERYON", True)
+    events = []
+    _record_objective_changer(scope, events)
+    scope._confirm_objective_lowered = lambda stage_homes: False
+    with pytest.raises(StartupHomingDeclined):
+        scope._prepare_for_use(skip_init=True)
+    assert events == [] and len(closes) == 1
+
+
+def test_a_startup_that_homes_no_stage_axis_still_asks_before_the_objective_changer(piezo_only, monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", False)
+    scope = _scope()
+    events = []
+    _record_objective_changer(scope, events)
+    scope._confirm_objective_lowered = lambda stage_homes: events.append(("asked", stage_homes)) or True
+    scope._prepare_for_use(skip_init=False)
+    assert events[0] == ("asked", False) and "changer.move_to_objective" in events
+    scope.close()
+
+
+def test_a_piezo_only_restart_without_an_objective_changer_asks_nothing(piezo_only):
+    _scope(confirm_objective_lowered=lambda stage_homes: pytest.fail("asked")).close()
+
+
 # --- One exclusion for every claim (set_stage_homing_blocker) ---
 
 

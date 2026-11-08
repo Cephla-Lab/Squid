@@ -757,13 +757,14 @@ class Microscope:
         self._config_repo = repo
         self.illumination_controller.config_repo = repo
 
-    def _confirm_startup_homing(self, warm: bool) -> bool:
+    def _confirm_startup_homing(self, skip_init: bool, warm: bool) -> bool:
         """Piezo-only: the stop sign before startup moves what can hit the sample with the nosepiece up - the stage to
-        its X and Y limit switches (not on a warm start), or an objective changer, which homes and turns at every
-        startup and has no Z motor to clear the objective first. True when the nosepiece was confirmed lowered, False
-        when startup needs no confirmation. Declined, or no one to ask: closes the hardware (construction fails, so no
-        caller can) and raises, before anything of startup runs."""
-        stage_homes = not warm and startup_needs_objective_prompt()
+        its X and Y limit switches (not on a restart, skip_init, nor on a warm start), or an objective changer, which
+        every startup turns to the default objective (a Xeryon re-homes first, even on a restart) with no Z motor to
+        clear the objective. True when the nosepiece was confirmed lowered, False when startup needs no confirmation.
+        Declined, or no one to ask: closes the hardware (construction fails, so no caller can) and raises, before
+        anything of startup runs."""
+        stage_homes = not skip_init and not warm and startup_needs_objective_prompt()
         changer_moves = control._def.IS_PIEZO_ONLY and self.addons.objective_changer is not None
         if not (stage_homes or changer_moves):
             return False
@@ -785,7 +786,7 @@ class Microscope:
         warm = mcu is not None and mcu.startup_was_warm  # a warm start homes no stage axis
         # Before anything moves: the piezo homes next (toward the sample), then X and Y go to their limit switches, then
         # an objective changer homes and turns.
-        objective_lowered = False if skip_init else self._confirm_startup_homing(warm)
+        objective_lowered = self._confirm_startup_homing(skip_init, warm)
         self.low_level_drivers.prepare_for_use(skip_init=skip_init)
         # A warm start leaves the piezo where the controller says it is (and homes it when the controller has no code)
         self.addons.prepare_for_use(skip_init=skip_init, piezo_um=mcu.startup_piezo_um() if warm else None)
