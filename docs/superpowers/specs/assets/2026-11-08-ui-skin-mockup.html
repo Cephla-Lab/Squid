@@ -1,0 +1,264 @@
+<h2>Direction C across the whole window: light default, dark available</h2>
+<p class="subtitle">Light is now the starting mode, the Well Selector has square cells again, and you can swap the typeface to see how the same skin reads on an Ubuntu box. Use the two rows of buttons to flip the preview; your clicks are recorded.</p>
+
+<style>
+.sq-rows{display:flex;flex-wrap:wrap;gap:.6rem 2rem;margin:0 0 1rem}
+.sq-toggle{display:flex;gap:.6rem;align-items:center}
+.sq-toggle.options{flex-direction:row}
+.sq-toggle .lead{font-size:.75rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em;margin-right:.2rem}
+.sq-toggle .opt{display:flex;align-items:center;gap:.6rem;padding:.5rem .9rem;border:2px solid var(--border);border-radius:10px;background:var(--bg-secondary);cursor:pointer;font-size:.9rem;font-weight:500}
+.sq-toggle .opt:hover{border-color:var(--accent)}
+.sq-toggle .opt.selected{border-color:var(--selected-border);background:var(--selected-bg)}
+.sq-toggle .opt .sw{width:18px;height:18px;border-radius:5px;border:1px solid rgba(0,0,0,.2);flex:none}
+.sq-toggle .opt small{color:var(--text-secondary);font-weight:400}
+.sq-notes{margin-top:1.25rem;color:var(--text-secondary);font-size:.85rem;max-width:72ch}
+.sq-notes li{margin:.25rem 0}
+
+/* ---------- window ---------- */
+.win{--font:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;font-family:var(--font);font-size:12.5px;line-height:1.3;color:var(--tx);background:var(--bg);border:1px solid var(--bd);border-radius:10px;overflow:hidden;width:100%;max-width:1560px;box-shadow:0 8px 30px rgba(0,0,0,.18)}
+.win.f-ubuntu{--font:"Ubuntu","Noto Sans","DejaVu Sans",sans-serif}
+.win *{box-sizing:border-box}
+.win .menubar{display:flex;align-items:center;gap:2px;padding:4px 8px;background:var(--bg);border-bottom:1px solid var(--bd);font-size:12.5px}
+.win .menubar span{padding:3px 9px;border-radius:4px;color:var(--tx)}
+.win .menubar .right{margin-left:auto;display:flex;gap:4px;color:var(--mu)}
+.win .menubar .right span{padding:3px 7px}
+.win .grid{display:grid;grid-template-columns:minmax(0,1fr) 520px;grid-template-rows:auto;gap:10px;padding:10px}
+.win .leftcol{display:flex;flex-direction:column;gap:10px;min-width:0}
+.win .dock{background:var(--sf);border:1px solid var(--bd);border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,.05);display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.win .dock-h{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--mu);border-bottom:1px solid var(--bd);background:var(--hdr-bg)}
+.win .dock-h .grip{width:14px;height:6px;border-top:1px solid var(--bd2);border-bottom:1px solid var(--bd2);opacity:.9}
+.win .dock-h .meta{margin-left:auto;font-weight:400;letter-spacing:0;text-transform:none}
+.win .tabs{display:flex;gap:2px;padding:3px;background:var(--tabs-bg);border-radius:6px;margin:8px 10px 0}
+.win .tab{padding:5px 11px;color:var(--mu);white-space:nowrap;border-radius:4px;font-weight:500}
+.win .tab.on{color:var(--tx);background:var(--tab-on-bg);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.win .canvas-wrap{display:flex;gap:6px;padding:10px;flex:1;min-height:0}
+.win .canvas{flex:1;min-height:520px;border-radius:6px;background:#050507 radial-gradient(circle at 38% 46%,rgba(56,189,120,.42),transparent 9%),radial-gradient(circle at 55% 60%,rgba(56,189,120,.32),transparent 7%),radial-gradient(circle at 62% 38%,rgba(56,189,120,.36),transparent 6%),radial-gradient(circle at 30% 65%,rgba(56,189,120,.28),transparent 5%),radial-gradient(circle at 48% 30%,rgba(56,189,120,.3),transparent 5%);border:1px solid var(--bd)}
+.win .lut{width:54px;border-radius:6px;background:linear-gradient(to top,#07071a,#0d0d44 60%,#101066);border:1px solid var(--bd);position:relative;color:#c9c9e6;font-size:9.5px}
+.win .lut span{position:absolute;right:5px;transform:translateY(-50%)}
+.win .img-status{display:flex;align-items:center;gap:14px;padding:6px 12px;border-top:1px solid var(--bd);color:var(--mu);font-size:11.5px;white-space:nowrap;overflow:hidden}
+.win .img-status b{color:var(--tx);font-weight:500}
+.win .img-status .sep{color:var(--bd2)}
+.win .img-status .right{margin-left:auto;display:flex;gap:6px}
+.win .wells{padding:10px 12px 12px;display:flex;justify-content:center}
+.win .wgrid{display:grid;grid-template-columns:22px repeat(12,30px);grid-auto-rows:30px;gap:3px;font-size:10.5px;color:var(--mu)}
+.win .wgrid .h{display:flex;align-items:center;justify-content:center}
+.win .wgrid .c{background:var(--in-bg);border:1px solid var(--bd);border-radius:4px}
+.win .wgrid .c.on{background:var(--ac-soft);border-color:var(--ac)}
+.win .controls{display:flex;flex-direction:column;gap:10px;min-width:0}
+.win .sec{background:var(--sf);border:1px solid var(--bd);border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,.05);padding:10px 12px}
+.win .sec.tabbed{padding:0}
+.win .sec.tabbed .body{padding:10px 12px}
+.win .row{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.win .row:last-child{margin-bottom:0}
+.win .lbl{color:var(--mu);white-space:nowrap}
+.win .lbl.w{min-width:108px}
+.win .lbl.xs{min-width:14px}
+.win .in{flex:1;min-width:0;height:26px;display:flex;align-items:center;padding:0 8px;background:var(--in-bg);border:1px solid var(--in-bd);border-bottom-color:var(--in-bd-b);border-radius:4px;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.win .in.sm{flex:0 0 76px}
+.win .in.md{flex:0 0 104px}
+.win .in.dim{color:var(--mu)}
+.win .in.ro{background:transparent;border-color:transparent;padding-left:0}
+.win .sel::after{content:"";margin-left:auto;flex:none;width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid var(--mu)}
+.win .spin::after{content:"";margin-left:auto;flex:none;width:6px;height:6px;border-right:1.5px solid var(--mu);border-bottom:1.5px solid var(--mu);transform:rotate(45deg) translateY(-2px)}
+.win .btn{height:26px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:6px;border-radius:4px;border:1px solid var(--btn-bd);background:var(--btn-bg);color:var(--tx);white-space:nowrap;font-weight:500;box-shadow:0 1px 0 rgba(0,0,0,.06)}
+.win .btn.pri{background:var(--ac);border-color:var(--ac);color:var(--ac-tx);box-shadow:none}
+.win .btn.big{height:auto;padding:7px 14px;text-align:center;line-height:1.2;font-weight:600}
+.win .btn.grow{flex:1}
+.win .btn.wide{width:100%}
+.win .dot{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.85}
+.win .chk{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.win .chk i{width:14px;height:14px;border-radius:4px;border:1.5px solid var(--in-bd-b);background:var(--in-bg);display:inline-block;position:relative;flex:none}
+.win .chk.on i{background:var(--ac);border-color:var(--ac)}
+.win .chk.on i::after{content:"";position:absolute;left:4px;top:1px;width:3px;height:7px;border-right:2px solid var(--ac-tx);border-bottom:2px solid var(--ac-tx);transform:rotate(45deg)}
+.win .chk.dim{color:var(--mu)}
+.win .slider{flex:1;height:4px;border-radius:2px;background:var(--in-bd-b);position:relative;margin:0 6px;opacity:.9}
+.win .slider::before{content:"";position:absolute;left:0;top:0;height:100%;width:39%;background:var(--ac);border-radius:2px}
+.win .slider::after{content:"";position:absolute;left:39%;top:50%;width:14px;height:14px;border-radius:50%;background:var(--thumb);border:2px solid var(--ac);transform:translate(-50%,-50%)}
+.win .group{display:flex;align-items:center;gap:8px;flex:1;height:30px;padding:0 8px;border:1px solid var(--in-bd);border-radius:4px;background:var(--sf)}
+.win .group .in{height:22px}
+.win .group.on{border-color:var(--ac);background:var(--ac-soft)}
+.win .group.fixed{flex:0 0 80px}
+.win .band{background:var(--band);border:1px solid var(--band-bd);border-radius:4px;padding:8px;margin-bottom:8px}
+.win .band .row:last-child{margin-bottom:0}
+.win .list{flex:1;border:1px solid var(--in-bd);background:var(--in-bg);border-radius:4px;padding:5px 0}
+.win .list div{padding:3px 10px;display:flex;align-items:center;gap:8px}
+.win .list .sw{width:8px;height:8px;border-radius:50%;flex:none}
+.win .two{display:flex;gap:10px;align-items:stretch}
+.win .two .opts{flex:0 0 112px;display:flex;flex-direction:column;justify-content:space-around;padding:2px 0}
+.win .two .acts{flex:0 0 124px;display:flex;flex-direction:column;justify-content:space-between}
+.win .nav{padding:8px 12px 10px}
+.win .nav svg{display:block;width:100%;height:auto;color:var(--tx)}
+.win .nav .navbtns{display:flex;justify-content:flex-end;gap:6px;margin-top:6px}
+.win .statusbar{display:flex;align-items:center;gap:14px;padding:5px 12px;border-top:1px solid var(--bd);background:var(--bg);font-size:11.5px;color:var(--mu);white-space:nowrap;overflow:hidden}
+.win .statusbar b{color:var(--tx);font-weight:600}
+.win .statusbar .warn{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--warn-bg);color:var(--warn-tx);border:1px solid var(--warn-bd);max-width:560px;overflow:hidden;text-overflow:ellipsis}
+.win .statusbar .warn i{width:12px;height:12px;border-radius:50%;background:var(--warn-tx);color:var(--warn-bg);font-style:normal;font-size:9px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex:none}
+
+/* C light */
+.c-light{--bg:#f3f3f3;--sf:#fbfbfb;--hdr-bg:#f6f6f6;--bd:#e5e5e5;--bd2:#cfcfcf;--tx:#1a1a1a;--mu:#5f5f5f;--in-bg:#ffffff;--in-bd:#e0e0e0;--in-bd-b:#8a8a8a;--btn-bg:#fbfbfb;--btn-bd:#d9d9d9;--ac:#0067c0;--ac-tx:#ffffff;--ac-soft:#e8f1fb;--band:#f7f9fc;--band-bd:#e5e5e5;--thumb:#ffffff;--tabs-bg:#ececec;--tab-on-bg:#ffffff;--warn-bg:#fff4ce;--warn-tx:#8a5a00;--warn-bd:#f5dd9a}
+/* C dark */
+.c-dark{--bg:#202020;--sf:#2b2b2b;--hdr-bg:#272727;--bd:#3a3a3a;--bd2:#4a4a4a;--tx:#f0f0f0;--mu:#a6a6a6;--in-bg:#333333;--in-bd:#454545;--in-bd-b:#9a9a9a;--btn-bg:#353535;--btn-bd:#474747;--ac:#4cc2ff;--ac-tx:#0b1a24;--ac-soft:rgba(76,194,255,.16);--band:#30343a;--band-bd:#3d4148;--thumb:#2b2b2b;--tabs-bg:#262626;--tab-on-bg:#3c3c3c;--warn-bg:#3d3200;--warn-tx:#ffd45c;--warn-bd:#5a4a00}
+.win.c-dark{box-shadow:0 8px 30px rgba(0,0,0,.5)}
+.c-dark .btn{box-shadow:none}
+.c-dark .dock,.c-dark .sec{box-shadow:none}
+.c-dark .tab.on{box-shadow:none}
+.c-dark .canvas{border-color:#000}
+</style>
+
+<div class="sq-rows">
+  <div class="sq-toggle options" id="sq-mode">
+    <span class="lead">Mode</span>
+    <div class="opt option selected" data-choice="default-light" data-theme="c-light" onclick="sqTheme(this)"><span class="sw" style="background:#f3f3f3"></span>Light <small>default</small></div>
+    <div class="opt option" data-choice="preview-dark" data-theme="c-dark" onclick="sqTheme(this)"><span class="sw" style="background:#202020"></span>Dark <small>via Settings</small></div>
+  </div>
+  <div class="sq-toggle options" id="sq-font">
+    <span class="lead">Typeface</span>
+    <div class="opt option selected" data-choice="font-segoe" data-font="f-segoe" onclick="sqFont(this)"><span class="sw" style="background:#0067c0"></span>Segoe UI <small>Windows</small></div>
+    <div class="opt option" data-choice="font-ubuntu" data-font="f-ubuntu" onclick="sqFont(this)"><span class="sw" style="background:#e95420"></span>Ubuntu <small>Ubuntu 22.04</small></div>
+  </div>
+</div>
+
+<div class="win c-light" id="sq-win" data-mode="c-light">
+  <div class="menubar"><span>Settings</span><span>Utils</span><div class="right"><span>Squid+ · Aries · simulation</span></div></div>
+  <div class="grid">
+    <div class="leftcol">
+      <div class="dock">
+        <div class="dock-h"><span class="grip"></span>Image Display<span class="meta">Fluorescence 405 nm Ex · 20.00 ms</span></div>
+        <div class="tabs"><span class="tab on">Live View</span><span class="tab">Multichannel Acquisition</span><span class="tab">Mosaic View</span><span class="tab">Plots</span><span class="tab">Laser-Based Focus</span></div>
+        <div class="canvas-wrap">
+          <div class="canvas"></div>
+          <div class="lut"><span style="top:4%">1.0</span><span style="top:14%">0.9</span><span style="top:24%">0.8</span><span style="top:34%">0.7</span><span style="top:44%">0.6</span><span style="top:54%">0.5</span><span style="top:64%">0.4</span><span style="top:74%">0.3</span><span style="top:84%">0.2</span><span style="top:92%">0.1</span><span style="top:97%">0</span></div>
+        </div>
+        <div class="img-status">
+          <span>Position <b>(0, 0)</b></span><span class="sep">|</span><span>Value <b>N/A</b></span><span class="sep">|</span><span>Stage <b>X=50.00 mm, Y=0.00 mm, Z=0.000 mm</b></span><span class="sep">|</span><span>Piezo <b>150.0 µm</b></span>
+          <div class="right"><span class="btn">Hide Well Selector</span><span class="btn">Over-exposed Pixels</span><span class="btn">Line Profiler</span></div>
+        </div>
+      </div>
+      <div class="dock">
+        <div class="dock-h"><span class="grip"></span>Well Selector<span class="meta">96 well plate · 6 wells selected</span></div>
+        <div class="wells">
+          <div class="wgrid">
+            <div class="h"></div><div class="h">1</div><div class="h">2</div><div class="h">3</div><div class="h">4</div><div class="h">5</div><div class="h">6</div><div class="h">7</div><div class="h">8</div><div class="h">9</div><div class="h">10</div><div class="h">11</div><div class="h">12</div>
+            <div class="h">A</div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div>
+            <div class="h">B</div><div class="c"></div><div class="c on"></div><div class="c on"></div><div class="c on"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div>
+            <div class="h">C</div><div class="c"></div><div class="c on"></div><div class="c on"></div><div class="c on"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div>
+            <div class="h">D</div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div>
+            <div class="h">E</div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div>
+            <div class="h">F</div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div>
+            <div class="h">G</div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div>
+            <div class="h">H</div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div><div class="c"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="sec">
+        <div class="row"><span class="lbl">Configuration Profile</span><span class="in sel">default</span><span class="btn">Save As</span></div>
+      </div>
+      <div class="sec">
+        <div class="row"><span class="lbl w">Trigger Mode</span><span class="in sel">Software Trigger</span><span class="lbl">Trigger FPS</span><span class="in sm spin">10</span></div>
+        <div class="row"><span class="lbl w">Live Configuration</span><span class="in sel">Fluorescence 405 nm Ex</span><span class="btn pri"><span class="dot"></span>Live</span><span class="btn">Snap</span></div>
+        <div class="row"><span class="lbl w">Exposure Time</span><span class="in md spin">20.00 ms</span><span class="lbl">Analog Gain</span><span class="in md spin">10.00</span><span class="btn">Autolevel</span></div>
+        <div class="row"><span class="lbl w">Illumination</span><span class="slider"></span><span class="in sm spin">39.00%</span></div>
+        <div class="row"><span class="chk dim"><i></i>Show Z-offset controls</span></div>
+      </div>
+      <div class="sec tabbed">
+        <div class="tabs"><span class="tab on">Stages</span><span class="tab">Piezo</span><span class="tab">Confocal</span><span class="tab">Camera</span><span class="tab">Contrast AF</span><span class="tab">Laser AF</span><span class="tab">Focus Map</span></div>
+        <div class="body">
+          <div class="row"><span class="lbl xs">X</span><span class="in md ro dim">49.9999 mm</span><span class="in md spin">0.000 mm</span><span class="btn grow">Forward</span><span class="btn grow">Backward</span></div>
+          <div class="row"><span class="lbl xs">Y</span><span class="in md ro dim">0.0000 mm</span><span class="in md spin">0.000 mm</span><span class="btn grow">Forward</span><span class="btn grow">Backward</span></div>
+        </div>
+      </div>
+      <div class="sec tabbed">
+        <div class="tabs"><span class="tab on">Wellplate Multipoint</span><span class="tab">Flexible Multipoint</span></div>
+        <div class="body">
+          <div class="row"><span class="lbl w">Saving Path</span><span class="in">C:\Users\Cephla\Downloads</span><span class="btn">Browse</span></div>
+          <div class="row"><span class="lbl w">Experiment ID</span><span class="in dim">e.g. 2026-11-08_plate3</span></div>
+          <div class="row">
+            <span class="group on"><span class="chk on"><i></i>XY</span><span class="in sel">Current Position</span></span>
+            <span class="group"><span class="chk"><i></i>Z</span><span class="in sel dim">From Bottom</span></span>
+            <span class="group fixed"><span class="chk"><i></i>Time</span></span>
+          </div>
+          <div class="band">
+            <div class="row"><span class="lbl w">Scan Shape</span><span class="in sm sel">Square</span><span class="lbl">Scan Size</span><span class="in sm spin">0.10 mm</span><span class="lbl">Coverage</span><span class="in sm dim">0 (N/A)</span></div>
+            <div class="row"><span class="lbl w">FOV Overlap</span><span class="in sm spin">10.00%</span><span class="btn grow">Save Coordinates</span></div>
+          </div>
+          <div class="two">
+            <div class="list">
+              <div><span class="sw" style="background:#7c3aed"></span>Fluorescence 405 nm Ex</div>
+              <div><span class="sw" style="background:#22c55e"></span>Fluorescence 488 nm Ex</div>
+              <div><span class="sw" style="background:#eab308"></span>Fluorescence 561 nm Ex</div>
+              <div><span class="sw" style="background:#ef4444"></span>Fluorescence 638 nm Ex</div>
+              <div><span class="sw" style="background:#9f1239"></span>Fluorescence 730 nm Ex</div>
+            </div>
+            <div class="opts"><span class="chk"><i></i>Contrast AF</span><span class="chk"><i></i>Laser AF</span><span class="chk"><i></i>Use Focus Map</span><span class="chk"><i></i>Skip Saving</span></div>
+            <div class="acts"><span class="btn">Snap Images</span><span class="btn pri big">Start<br>Acquisition</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="row"><span class="lbl">Objective Lens</span><span class="in sel">20x</span><span class="lbl">Sample Format</span><span class="in sel">96 well plate</span></div>
+      </div>
+      <div class="sec nav">
+        <svg viewBox="0 0 330 222" fill="none" stroke="currentColor" stroke-width="1.2">
+          <defs><pattern id="wellpat2" x="36" y="26" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="12" cy="12" r="10.5" stroke="currentColor" fill="none"/></pattern></defs>
+          <rect x="8" y="8" width="314" height="206" rx="12"/>
+          <rect x="36" y="26" width="288" height="192" fill="url(#wellpat2)" stroke="none"/>
+          <rect x="30" y="20" width="294" height="196" rx="4"/>
+          <g fill="currentColor" stroke="none" font-family="inherit" font-size="10" opacity=".85">
+            <text x="46" y="17" text-anchor="middle">1</text><text x="70" y="17" text-anchor="middle">2</text><text x="94" y="17" text-anchor="middle">3</text><text x="118" y="17" text-anchor="middle">4</text><text x="142" y="17" text-anchor="middle">5</text><text x="166" y="17" text-anchor="middle">6</text><text x="190" y="17" text-anchor="middle">7</text><text x="214" y="17" text-anchor="middle">8</text><text x="238" y="17" text-anchor="middle">9</text><text x="262" y="17" text-anchor="middle">10</text><text x="286" y="17" text-anchor="middle">11</text><text x="310" y="17" text-anchor="middle">12</text>
+            <text x="21" y="42">A</text><text x="21" y="66">B</text><text x="21" y="90">C</text><text x="21" y="114">D</text><text x="21" y="138">E</text><text x="21" y="162">F</text><text x="21" y="186">G</text><text x="21" y="210">H</text>
+          </g>
+          <circle cx="70" cy="62" r="9" fill="#0067c0" fill-opacity=".25" stroke="#0067c0"/><circle cx="94" cy="62" r="9" fill="#0067c0" fill-opacity=".25" stroke="#0067c0"/><circle cx="118" cy="62" r="9" fill="#0067c0" fill-opacity=".25" stroke="#0067c0"/>
+          <circle cx="70" cy="86" r="9" fill="#0067c0" fill-opacity=".25" stroke="#0067c0"/><circle cx="94" cy="86" r="9" fill="#0067c0" fill-opacity=".25" stroke="#0067c0"/><circle cx="118" cy="86" r="9" fill="#0067c0" fill-opacity=".25" stroke="#0067c0"/>
+          <circle cx="46" cy="38" r="2.5" fill="#e11d48" stroke="none"/>
+        </svg>
+        <div class="navbtns"><span class="btn">Align</span><span class="btn">Clear Scan Grid</span></div>
+      </div>
+      <span class="btn wide">Enable Performance Mode</span>
+    </div>
+  </div>
+  <div class="statusbar">
+    <span><b>RAM usage</b> 2.25 GB</span><span>peak 2.32 GB</span><span>available 43.9 GB</span>
+    <span class="warn"><i>!</i>[06:37] Region 'current': 1 of 1 planned FOVs fall outside the stage limits</span>
+  </div>
+</div>
+
+<ul class="sq-notes">
+  <li>Well Selector cells are square again, the same size they are today, and the grid stays centred in its dock exactly as now.</li>
+  <li>On Ubuntu the skin is pixel-for-pixel the same: it's a Qt stylesheet plus palette, so nothing in it depends on Windows. Only the typeface differs, because the skin asks for the system UI font and gets Ubuntu there instead of Segoe UI. Pick the Ubuntu button above to see that.</li>
+  <li>Dark mode is a manual switch in the Settings menu, remembered between sessions. A "follow the OS" option is possible on both platforms later (Windows registry on one side, the GNOME colour-scheme key on the other), but it isn't part of the first cut.</li>
+  <li>The purple pyqtgraph dock bars become quiet card headers with a grip; the docks still drag and resize exactly as now.</li>
+  <li>Live and Start Acquisition are the only filled accent buttons, so the eye finds the two actions that matter.</li>
+</ul>
+
+<script>
+(function () {
+  var fontLoaded = false;
+  function apply(theme) {
+    var win = document.getElementById('sq-win');
+    win.classList.remove('c-light', 'c-dark');
+    win.classList.add(theme);
+    win.setAttribute('data-mode', theme);
+  }
+  window.sqTheme = function (el) {
+    apply(el.getAttribute('data-theme'));
+    if (typeof toggleSelect === 'function') toggleSelect(el);
+  };
+  window.sqFont = function (el) {
+    var win = document.getElementById('sq-win');
+    var f = el.getAttribute('data-font');
+    if (f === 'f-ubuntu' && !fontLoaded) {
+      var link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = 'https://fonts.googleapis.com/css2?family=Ubuntu:wght@400;500;700&display=swap';
+      document.head.appendChild(link);
+      fontLoaded = true;
+    }
+    win.classList.remove('f-segoe', 'f-ubuntu');
+    win.classList.add(f);
+    if (typeof toggleSelect === 'function') toggleSelect(el);
+  };
+})();
+</script>
