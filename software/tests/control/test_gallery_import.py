@@ -7,11 +7,17 @@ from datetime import datetime
 import pytest
 
 from control.gallery_import import (
+    NO_IMAGES,
     RECORDED_METADATA_KEYS,
     import_folder,
+    inspect_images,
+    is_acquisition_folder,
     is_snap_folder,
     metadata_from_folder,
     protocol_rounds,
+    read_acquisition_entry,
+    scan_acquisitions,
+    split_experiment_name,
 )
 from squid.acquisition_history import HistoryStore, entry_id_for
 from tests.control.gallery_fixtures import saving_root, write_acquisition, write_protocol_run  # noqa: F401
@@ -213,3 +219,131 @@ def test_a_partly_known_run_imports_only_the_unknown_rounds_under_the_parent(sto
     parent = store.entry(entry_id_for(str(run)))
     assert len(parent.rounds) == 2 and entry_id_for(first) not in [r.id for r in parent.rounds]
     assert parent.outcome == "complete" and parent.reason == "derived"
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Folder names and metadata
+# ---------------------------------------------------------------------------------------------------------
+
+
+def test_split_experiment_name_reads_the_controller_timestamp_suffix():
+    label, started = split_experiment_name("plate_3_2026-11-07_14-05-09.123456")
+    assert label == "plate_3"
+    assert started == datetime(2026, 11, 7, 14, 5, 9, 123456)
+
+
+def test_split_experiment_name_without_a_timestamp_keeps_the_name():
+    assert split_experiment_name("my_experiment") == ("my_experiment", None)
+
+
+def test_split_experiment_name_with_only_a_timestamp_uses_it_as_the_label():
+    label, started = split_experiment_name("2026-11-07_14-05-09.5")
+    assert label == "2026-11-07_14-05-09.5"
+    assert started == datetime(2026, 11, 7, 14, 5, 9, 500000)
+
+
+def test_is_acquisition_folder_needs_a_metadata_file(tmp_path):
+    assert not is_acquisition_folder(str(tmp_path))
+    (tmp_path / "configurations.xml").write_text("<modes/>")  # what older versions wrote
+    assert is_acquisition_folder(str(tmp_path))
+    assert not is_acquisition_folder(str(tmp_path / "configurations.xml"))
+
+
+def test_read_acquisition_entry_from_yaml(saving_root):
+    started = datetime(2026, 11, 7, 9, 30, 0)
+    folder = write_acquisition(
+        saving_root, "plate_3_2026-11-07_09-30-00.000000", start_time=started.timestamp(), with_overview=True
+    )
+
+    entry = read_acquisition_entry(str(folder))
+
+    assert entry.label == "plate_3"
+    assert entry.started == started
+    assert entry.widget_type == "wellplate"
+    assert entry.objective == "20x"
+    assert entry.magnification == 20.0
+    assert entry.wellplate_format == "96 well plate"
+    assert entry.channels == ["BF LED matrix full", "Fluorescence 488 nm Ex"]
+    assert (entry.nz, entry.nt) == (3, 2)
+    assert (entry.num_regions, entry.num_fovs) == (2, 8)
+    assert entry.image_format == "TIFF images"
+    assert entry.has_settings
+    assert entry.thumbnail_source == os.path.join(str(folder), "0", "mosaic_view", "mosaic_plate_5um.ome.tiff")
+    assert "Channels (2): BF LED matrix full, Fluorescence 488 nm Ex" in entry.summary_lines()
+
+
+def test_read_acquisition_entry_falls_back_to_the_json_and_csv(saving_root):
+    """Folders from before acquisition.yaml existed still list, dated from the folder name."""
+    folder = write_acquisition(saving_root, "old_2026-05-05_13-02-12.243959", with_yaml=False, nz=200, nt=1)
+
+    entry = read_acquisition_entry(str(folder))
+
+    assert entry.started == datetime(2026, 5, 5, 13, 2, 12, 243959)
+    assert entry.objective == "20x"
+    assert (entry.nz, entry.nt) == (200, 1)
+    assert entry.num_fovs == 8  # the coordinates.csv rows
+    assert entry.num_regions is None
+    assert not entry.has_settings
+    assert entry.thumbnail_source.endswith(".tiff")
+
+
+def test_read_acquisition_entry_survives_a_broken_yaml(saving_root):
+    folder = write_acquisition(saving_root, "broken_2026-01-01_00-00-00.000000")
+    (folder / "acquisition.yaml").write_text("acquisition: [unclosed")
+
+    entry = read_acquisition_entry(str(folder))
+
+    assert entry.label == "broken"
+    assert entry.nz == 3  # from the json
+    assert entry.has_settings  # the file is there; loading it reports the error
+
+
+@pytest.mark.parametrize(
+    "images, expected",
+    [
+        ("tiff", "TIFF images"),
+        ("bmp", "BMP images"),
+        ("multipage", "Multi-page TIFF"),
+        ("ome", "OME-TIFF"),
+        ("zarr", "OME-Zarr"),
+        ("none", NO_IMAGES),
+    ],
+)
+def test_inspect_images_names_the_storage_format(saving_root, images, expected):
+    folder = write_acquisition(saving_root, f"fmt_{images}", images=images)
+
+    fmt, source = inspect_images(str(folder))
+
+    assert fmt == expected
+    if images in ("zarr", "none"):
+        assert source is None
+    else:
+        assert source and os.path.isfile(source)
+
+
+def test_inspect_images_prefers_the_mosaic_overview(saving_root):
+    folder = write_acquisition(saving_root, "zarr_with_overview", images="zarr", with_overview=True)
+
+    fmt, source = inspect_images(str(folder))
+
+    assert fmt == "OME-Zarr"
+    assert source.endswith("mosaic_plate_5um.ome.tiff")
+
+
+def test_scan_acquisitions_lists_newest_first_and_skips_other_folders(saving_root):
+    write_acquisition(saving_root, "older_2026-11-01_08-00-00.000000", start_time=datetime(2026, 11, 1, 8).timestamp())
+    write_acquisition(saving_root, "newer_2026-11-06_08-00-00.000000", start_time=datetime(2026, 11, 6, 8).timestamp())
+    (saving_root / "not_an_acquisition").mkdir()
+    (saving_root / "stray.txt").write_text("x")
+    undated = saving_root / "undated"
+    undated.mkdir()
+    (undated / "acquisition parameters.json").write_text("{}")
+    os.utime(undated, (0, datetime(2026, 11, 3, 8).timestamp()))  # sorted by mtime when nothing else is known
+
+    names = [e.label for e in scan_acquisitions(str(saving_root))]
+
+    assert names == ["newer", "undated", "older"]
+
+
+def test_scan_acquisitions_of_a_missing_root_is_empty(tmp_path):
+    assert scan_acquisitions(str(tmp_path / "nowhere")) == []

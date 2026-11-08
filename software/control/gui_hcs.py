@@ -1274,11 +1274,10 @@ class HighContentScreeningGui(QMainWindow):
             # Gallery of the acquisitions saved under the saving folder: one opens in the NDViewer tab, shows
             # in the file browser, or hands its settings back to the multipoint tab it was run from.
             from control.widgets_gallery import AcquisitionGalleryWidget
+            from squid.acquisition_history import HistoryStore, history_dir
 
-            self.acquisitionGalleryWidget = AcquisitionGalleryWidget(self._acquisition_saving_root)
-            self.acquisitionGalleryWidget.set_viewer_available(
-                self.ndviewerTab is not None,
-                hint="The NDViewer tab is off (Settings > Preferences > Views); opening shows the folder instead.",
+            self.acquisitionGalleryWidget = AcquisitionGalleryWidget(
+                HistoryStore(history_dir()), import_root_provider=self._acquisition_saving_root
             )
             self.imageDisplayTabs.addTab(self.acquisitionGalleryWidget, "Gallery")
 
@@ -1637,7 +1636,7 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController.ndviewer_end_zarr_acquisition.connect(self.ndviewerTab.end_zarr_acquisition)
 
         if self.acquisitionGalleryWidget is not None:
-            self.acquisitionGalleryWidget.signal_open_acquisition.connect(self._open_acquisition_in_ndviewer)
+            self.acquisitionGalleryWidget.signal_open_in_squid.connect(self._open_acquisition_in_ndviewer)
             self.acquisitionGalleryWidget.signal_load_settings.connect(self._load_acquisition_settings_from_folder)
             self.multipointController.acquisition_finished.connect(self._refresh_gallery_after_acquisition)
 

@@ -1,151 +1,209 @@
-"""The Gallery tab lists the acquisition folders under the saving directory and opens the chosen one."""
+"""The Gallery tab lists the acquisition history, newest first, in a grid or a list, narrowed by status and text."""
 
 import os
-import time
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import Mock
 
+import cv2
+import numpy as np
 import pytest
-from qtpy.QtCore import Qt
-from qtpy.QtGui import QDesktopServices
+import yaml
 
+import control._def
+import control.widgets_gallery
 from control.widgets_gallery import (
-    NO_IMAGES,
+    STATUS_FILTERS,
     AcquisitionGalleryWidget,
-    inspect_images,
-    is_acquisition_folder,
-    read_acquisition_entry,
-    scan_acquisitions,
-    split_experiment_name,
+    GalleryRow,
+    GalleryView,
+    build_rows,
+    filter_counts,
+    matches,
+    status_label_for,
 )
-from tests.control.gallery_fixtures import saving_root, write_acquisition  # noqa: F401  (saving_root is a fixture)
+from squid.acquisition_history import HistoryEntry, HistoryStore
 
-# ---------------------------------------------------------------------------------------------------------
-# Folder names and metadata
-# ---------------------------------------------------------------------------------------------------------
+T0 = 1762596000.0
 
 
-def test_split_experiment_name_reads_the_controller_timestamp_suffix():
-    label, started = split_experiment_name("plate_3_2026-11-07_14-05-09.123456")
-    assert label == "plate_3"
-    assert started == datetime(2026, 11, 7, 14, 5, 9, 123456)
+def _metadata(channels, objective="20x", image_format="TIFF images", sample="96 well plate"):
+    return {
+        "widget_type": "wellplate",
+        "objective": objective,
+        "magnification": 20.0,
+        "wellplate_format": sample,
+        "channels": list(channels),
+        "num_regions": 2,
+        "num_fovs": 8,
+        "nz": 3,
+        "nt": 2,
+        "image_format": image_format,
+    }
 
 
-def test_split_experiment_name_without_a_timestamp_keeps_the_name():
-    assert split_experiment_name("my_experiment") == ("my_experiment", None)
+def _missing_drive_folder(tmp_path):
+    """A folder on a drive that is not mounted (Windows), else a folder that is simply gone."""
+    if os.name == "nt":
+        for letter in "QZYXWVUTSRPONMLKJIHG":
+            if not os.path.exists(f"{letter}:\\"):
+                return f"{letter}:\\gone\\run", "Drive offline"
+    return str(tmp_path / "gone" / "run"), "Folder missing"
 
 
-def test_split_experiment_name_with_only_a_timestamp_uses_it_as_the_label():
-    label, started = split_experiment_name("2026-11-07_14-05-09.5")
-    assert label == "2026-11-07_14-05-09.5"
-    assert started == datetime(2026, 11, 7, 14, 5, 9, 500000)
+def _write_png(store, name, shape=(48, 64, 3)):
+    image = np.zeros(shape, dtype=np.uint8)
+    image[:, :, 1] = 200
+    assert cv2.imwrite(str(store.previews_dir / name), image)
 
 
-def test_is_acquisition_folder_needs_a_metadata_file(tmp_path):
-    assert not is_acquisition_folder(str(tmp_path))
-    (tmp_path / "configurations.xml").write_text("<modes/>")  # what older versions wrote
-    assert is_acquisition_folder(str(tmp_path))
-    assert not is_acquisition_folder(str(tmp_path / "configurations.xml"))
+@pytest.fixture
+def store_with_entries(tmp_path):
+    """Five entries: complete run with a preview, aborted at 38 %, running, offline, and a snap; newest first:
+    running, snap, aborted, offline, complete."""
+    store = HistoryStore(tmp_path / "history")
+    folders = {}
+    for name in ("complete", "aborted", "running", "snap"):
+        folders[name] = tmp_path / "data" / name
+        folders[name].mkdir(parents=True)
+    offline_folder, offline_label = _missing_drive_folder(tmp_path)
 
+    def started(id_, at, channels, kind="run", **extra):
+        store.append(
+            {
+                "type": "started",
+                "id": id_,
+                "kind": kind,
+                "name": id_,
+                "folder": str(folders[id_]),
+                "metadata": _metadata(channels, **extra),
+                "at": at,
+            }
+        )
 
-def test_read_acquisition_entry_from_yaml(saving_root):
-    started = datetime(2026, 11, 7, 9, 30, 0)
-    folder = write_acquisition(
-        saving_root, "plate_3_2026-11-07_09-30-00.000000", start_time=started.timestamp(), with_overview=True
+    def finished(id_, at, outcome, fraction):
+        store.append(
+            {"type": "finished", "id": id_, "outcome": outcome, "fraction_done": fraction, "ended_at": at, "at": at}
+        )
+
+    started("complete", T0, ["BF LED matrix full", "Fluorescence 488 nm Ex"])
+    finished("complete", T0 + 100, "complete", 1.0)
+    _write_png(store, "complete.png")
+    store.append({"type": "preview", "id": "complete", "file": "complete.png", "channels": ["BF"], "at": T0 + 101})
+    store.append(
+        {
+            "type": "imported",
+            "id": "offline",
+            "kind": "run",
+            "name": "offline",
+            "folder": offline_folder,
+            "started_at": T0 + 1000,
+            "outcome": "complete",
+            "metadata": _metadata(["Fluorescence 561 nm Ex"], objective="10x"),
+            "at": T0 + 1000,
+        }
     )
-
-    entry = read_acquisition_entry(str(folder))
-
-    assert entry.label == "plate_3"
-    assert entry.started == started
-    assert entry.widget_type == "wellplate"
-    assert entry.objective == "20x"
-    assert entry.magnification == 20.0
-    assert entry.wellplate_format == "96 well plate"
-    assert entry.channels == ["BF LED matrix full", "Fluorescence 488 nm Ex"]
-    assert (entry.nz, entry.nt) == (3, 2)
-    assert (entry.num_regions, entry.num_fovs) == (2, 8)
-    assert entry.image_format == "TIFF images"
-    assert entry.has_settings
-    assert entry.thumbnail_source == os.path.join(str(folder), "0", "mosaic_view", "mosaic_plate_5um.ome.tiff")
-    assert "Channels (2): BF LED matrix full, Fluorescence 488 nm Ex" in entry.summary_lines()
+    started("aborted", T0 + 2000, ["Fluorescence 638 nm Ex"], image_format="OME-Zarr")
+    finished("aborted", T0 + 2100, "aborted", 0.38)
+    started("snap", T0 + 3000, ["BF LED matrix full"], kind="snap")
+    finished("snap", T0 + 3001, "complete", 1.0)
+    started("running", T0 + 4000, ["Fluorescence 405 nm Ex"])
+    _write_png(store, "running.png")
+    store.append({"type": "preview", "id": "running", "file": "running.png", "channels": ["405"], "at": T0 + 4001})
+    return SimpleNamespace(store=store, folders=folders, offline_label=offline_label)
 
 
-def test_read_acquisition_entry_falls_back_to_the_json_and_csv(saving_root):
-    """Folders from before acquisition.yaml existed still list, dated from the folder name."""
-    folder = write_acquisition(saving_root, "old_2026-05-05_13-02-12.243959", with_yaml=False, nz=200, nt=1)
-
-    entry = read_acquisition_entry(str(folder))
-
-    assert entry.started == datetime(2026, 5, 5, 13, 2, 12, 243959)
-    assert entry.objective == "20x"
-    assert (entry.nz, entry.nt) == (200, 1)
-    assert entry.num_fovs == 8  # the coordinates.csv rows
-    assert entry.num_regions is None
-    assert not entry.has_settings
-    assert entry.thumbnail_source.endswith(".tiff")
-
-
-def test_read_acquisition_entry_survives_a_broken_yaml(saving_root):
-    folder = write_acquisition(saving_root, "broken_2026-01-01_00-00-00.000000")
-    (folder / "acquisition.yaml").write_text("acquisition: [unclosed")
-
-    entry = read_acquisition_entry(str(folder))
-
-    assert entry.label == "broken"
-    assert entry.nz == 3  # from the json
-    assert entry.has_settings  # the file is there; loading it reports the error
+@pytest.fixture
+def gallery(qtbot, store_with_entries, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        control.widgets_gallery, "LAST_GALLERY_VIEW_CACHE", str(tmp_path / "cache" / "last_gallery_view.yaml")
+    )
+    monkeypatch.setattr(control._def, "RECORD_SNAPS_IN_HISTORY", True)
+    widget = AcquisitionGalleryWidget(store_with_entries.store, import_root_provider=lambda: None)
+    qtbot.addWidget(widget)
+    widget.show()  # showEvent runs the first load
+    qtbot.waitUntil(lambda: len(widget.rows()) == 5, timeout=10000)
+    yield widget
+    widget.shutdown()
 
 
-@pytest.mark.parametrize(
-    "images, expected",
-    [
-        ("tiff", "TIFF images"),
-        ("bmp", "BMP images"),
-        ("multipage", "Multi-page TIFF"),
-        ("ome", "OME-TIFF"),
-        ("zarr", "OME-Zarr"),
-        ("none", NO_IMAGES),
-    ],
-)
-def test_inspect_images_names_the_storage_format(saving_root, images, expected):
-    folder = write_acquisition(saving_root, f"fmt_{images}", images=images)
-
-    fmt, source = inspect_images(str(folder))
-
-    assert fmt == expected
-    if images in ("zarr", "none"):
-        assert source is None
-    else:
-        assert source and os.path.isfile(source)
+def _reload_and_wait(widget, qtbot):
+    widget.reload()
+    qtbot.waitUntil(lambda: not widget._loading, timeout=10000)
 
 
-def test_inspect_images_prefers_the_mosaic_overview(saving_root):
-    folder = write_acquisition(saving_root, "zarr_with_overview", images="zarr", with_overview=True)
-
-    fmt, source = inspect_images(str(folder))
-
-    assert fmt == "OME-Zarr"
-    assert source.endswith("mosaic_plate_5um.ome.tiff")
+def _ids(widget):
+    return [row.entry.id for row in widget.rows()]
 
 
-def test_scan_acquisitions_lists_newest_first_and_skips_other_folders(saving_root):
-    write_acquisition(saving_root, "older_2026-11-01_08-00-00.000000", start_time=datetime(2026, 11, 1, 8).timestamp())
-    write_acquisition(saving_root, "newer_2026-11-06_08-00-00.000000", start_time=datetime(2026, 11, 6, 8).timestamp())
-    (saving_root / "not_an_acquisition").mkdir()
-    (saving_root / "stray.txt").write_text("x")
-    undated = saving_root / "undated"
-    undated.mkdir()
-    (undated / "acquisition parameters.json").write_text("{}")
-    os.utime(undated, (0, datetime(2026, 11, 3, 8).timestamp()))  # sorted by mtime when nothing else is known
-
-    names = [e.label for e in scan_acquisitions(str(saving_root))]
-
-    assert names == ["newer", "undated", "older"]
+def _row(widget, entry_id):
+    return next(row for row in widget.rows() if row.entry.id == entry_id)
 
 
-def test_scan_acquisitions_of_a_missing_root_is_empty(tmp_path):
-    assert scan_acquisitions(str(tmp_path / "nowhere")) == []
+# ---------------------------------------------------------------------------------------------------------
+# Pure model
+# ---------------------------------------------------------------------------------------------------------
+
+
+def test_build_rows_labels_statuses(store_with_entries):
+    rows = {row.entry.id: row for row in build_rows(store_with_entries.store.load(), running_fraction=0.38)}
+
+    assert {k: r.status_label for k, r in rows.items()} == {
+        "complete": "Complete",
+        "aborted": "Aborted at 38%",
+        "running": "Running 38%",
+        "offline": store_with_entries.offline_label,
+        "snap": "Snap · Complete",
+    }
+    assert rows["complete"].availability == "online"
+    assert rows["offline"].availability in ("drive_offline", "folder_missing")
+    assert "488" in rows["complete"].search_text and "20x" in rows["complete"].search_text
+    assert "96 well plate" in rows["complete"].search_text and "tiff images" in rows["complete"].search_text
+    assert build_rows(store_with_entries.store.load())[0].status_label == "Running"
+
+
+def test_status_label_for_protocol_runs_and_unfinished_fractions():
+    rounds = [HistoryEntry(id=f"r{i}", kind="run", name=f"r{i}", folder="x") for i in range(3)]
+    protocol = HistoryEntry(id="p", kind="protocol_run", name="p", folder="x", outcome="running", rounds=rounds)
+    assert status_label_for(protocol, "online", running_fraction=0.5) == "Running · round 3"
+    aborted = HistoryEntry(id="a", kind="run", name="a", folder="x", outcome="aborted")
+    assert status_label_for(aborted, "online") == "Aborted"
+    assert status_label_for(aborted, "folder_missing") == "Folder missing"
+    failed = HistoryEntry(id="f", kind="run", name="f", folder="x", outcome="failed")
+    assert status_label_for(failed, "online") == "Failed"
+    running = HistoryEntry(id="r", kind="run", name="r", folder="x", outcome="running")
+    assert status_label_for(running, "drive_offline") == "Running"  # running wins over availability
+
+
+def test_matches_filters_by_status_and_text():
+    def row(id_, outcome, availability, channels, kind="run"):
+        entry = HistoryEntry(id=id_, kind=kind, name=id_, folder="x", outcome=outcome, metadata={"channels": channels})
+        return GalleryRow(
+            entry=entry,
+            availability=availability,
+            status_label=status_label_for(entry, availability),
+            search_text=" ".join([id_, *channels]).lower(),
+        )
+
+    online = row("plate", "complete", "online", ["Fluorescence 488 nm Ex"])
+    gone = row("gone", "complete", "drive_offline", ["BF"])
+    missing = row("missing", "aborted", "folder_missing", ["BF"])
+    snap = row("snap", "complete", "online", ["BF"], kind="snap")
+
+    assert [matches(r, "", "Offline") for r in (online, gone, missing, snap)] == [False, True, True, False]
+    assert [matches(r, "", "Complete") for r in (online, gone, missing, snap)] == [True, False, False, True]
+    assert not matches(missing, "", "Aborted")  # offline rows show under Offline only
+    assert [matches(r, "", "Snaps") for r in (online, gone, missing, snap)] == [False, False, False, True]
+    assert all(matches(r, "", "All") for r in (online, gone, missing, snap))
+    assert matches(online, "488", "All") and not matches(gone, "488", "All")
+    assert matches(online, "FLUORESCENCE", "Complete") and not matches(online, "488", "Failed")
+
+
+def test_filter_counts_count_each_status(store_with_entries):
+    counts = filter_counts(build_rows(store_with_entries.store.load()))
+
+    assert counts == {"All": 5, "Running": 1, "Complete": 2, "Aborted": 1, "Failed": 0, "Offline": 1, "Snaps": 1}
+    assert tuple(counts) == STATUS_FILTERS
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -153,191 +211,195 @@ def test_scan_acquisitions_of_a_missing_root_is_empty(tmp_path):
 # ---------------------------------------------------------------------------------------------------------
 
 
-@pytest.fixture
-def two_acquisitions(saving_root):
-    write_acquisition(
-        saving_root,
-        "older_2026-11-01_08-00-00.000000",
-        start_time=datetime(2026, 11, 1, 8).timestamp(),
-        channels=("BF LED matrix full",),
-    )
-    write_acquisition(
-        saving_root,
-        "newer_2026-11-06_08-00-00.000000",
-        start_time=datetime(2026, 11, 6, 8).timestamp(),
-        widget_type="flexible",
-        with_overview=True,
-    )
-    return saving_root
+def test_set_running_progress_relabels_the_running_row(gallery):
+    assert _row(gallery, "running").status_label == "Running"
+    generation = gallery._generation
+
+    gallery.set_running_progress(0.38)
+
+    assert gallery._generation == generation  # no reload
+    assert _row(gallery, "running").status_label == "Running 38%"
+    assert gallery._table_status_items["running"].text() == "Running 38%"
+    assert gallery._items["running"].toolTip().startswith("Running 38%")
+    gallery.set_running_progress(None)
+    assert _row(gallery, "running").status_label == "Running"
 
 
-@pytest.fixture
-def gallery(qtbot, two_acquisitions):
-    widget = AcquisitionGalleryWidget(lambda: str(two_acquisitions))
+def test_gallery_lists_the_history_newest_first(gallery):
+    assert _ids(gallery) == ["running", "snap", "aborted", "offline", "complete"]
+    assert gallery.list_widget.count() == 5
+    assert gallery.count_label.text() == "5"
+    assert "5 acquisitions" in gallery.status_label.text()
+    item = gallery.list_widget.item(4)
+    assert item.text() == f"complete\n{datetime.fromtimestamp(T0):%Y-%m-%d %H:%M}"
+    assert item.toolTip().startswith("Complete")
+    assert "Channels (2): BF LED matrix full, Fluorescence 488 nm Ex" in item.toolTip()
+    assert "Objective: 20x (20x)" in item.toolTip()
+
+
+def test_a_protocol_run_tile_counts_its_rounds(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setattr(control.widgets_gallery, "LAST_GALLERY_VIEW_CACHE", str(tmp_path / "view.yaml"))
+    store = HistoryStore(tmp_path / "history")
+    run_dir = tmp_path / "run"
+    store.append({"type": "protocol_started", "id": "run", "name": "screen", "folder": str(run_dir), "at": T0})
+    for i in range(2):
+        store.append(
+            {
+                "type": "started",
+                "id": f"round{i}",
+                "name": f"round{i}",
+                "folder": str(run_dir / f"round{i}"),
+                "parent": "run",
+                "at": T0 + i,
+            }
+        )
+    widget = AcquisitionGalleryWidget(store, import_root_provider=lambda: None)
     qtbot.addWidget(widget)
-    widget.show()  # showEvent follows the saving folder and runs the first scan
-    qtbot.waitUntil(lambda: widget.count() == 2, timeout=10000)
-    yield widget
-    widget.shutdown()
+    try:
+        widget.reload()
+        qtbot.waitUntil(lambda: len(widget.rows()) == 1, timeout=10000)
+        assert widget.list_widget.item(0).text() == f"screen · 2 rounds\n{datetime.fromtimestamp(T0):%Y-%m-%d %H:%M}"
+        assert widget.rows()[0].status_label == "Running · round 2"
+    finally:
+        widget.shutdown()
 
 
-def wait_for_thumbnails(qtbot, widget):
-    expected = {e.path for e in widget.entries() if e.thumbnail_source}
-    qtbot.waitUntil(lambda: set(widget._thumbnail_cache) >= expected, timeout=10000)
+def test_grid_and_list_show_the_same_rows_and_the_view_is_remembered(gallery, tmp_path, monkeypatch):
+    cache = tmp_path / "cache" / "last_gallery_view.yaml"
+    assert gallery.view is GalleryView.GRID
+    assert gallery._stack.currentWidget() is gallery.list_widget
+
+    gallery.set_view(GalleryView.LIST)
+
+    assert gallery.view is GalleryView.LIST
+    assert gallery._stack.currentWidget() is gallery.table_widget
+    table = gallery.table_widget
+    assert table.rowCount() == len(gallery.rows()) == gallery.list_widget.count()
+    headers = [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
+    assert headers == ["Name", "Started", "Sample", "Objective", "Channels", "FOVs", "Nz / Nt", "Format", "Status"]
+    assert [table.item(r, 0).text() for r in range(table.rowCount())] == _ids(gallery)
+    assert table.isSortingEnabled()
+    assert table.item(2, headers.index("Status")).text() == "Aborted at 38%"
+    assert table.item(2, headers.index("Nz / Nt")).text() == "3 / 2"
+    assert yaml.safe_load(cache.read_text()) == {"view": "list"}
+
+    again = AcquisitionGalleryWidget(gallery._store, import_root_provider=lambda: None)
+    try:
+        assert again.view is GalleryView.LIST
+    finally:
+        again.shutdown()
+
+    gallery.view_toggle.click()
+    assert gallery.view is GalleryView.GRID
+    assert yaml.safe_load(cache.read_text()) == {"view": "grid"}
 
 
-def test_gallery_lists_the_saving_folder_newest_first(gallery, two_acquisitions):
-    assert gallery.root == os.path.normpath(str(two_acquisitions))
-    assert gallery.root_edit.text() == gallery.root
-    assert [e.label for e in gallery.entries()] == ["newer", "older"]
-    assert gallery.count_label.text() == "2"
-    assert "2 acquisitions" in gallery.status_label.text()
-    item = gallery.list_widget.item(0)
-    assert item.text() == "newer\n2026-11-06 08:00"
-    assert "Channels (2)" in item.toolTip()
+def test_status_filter_chips_narrow_the_list(gallery):
+    assert set(gallery.filter_buttons) == set(STATUS_FILTERS)
+    assert gallery.filter_buttons["All"].text() == "All 5"
+    assert gallery.filter_buttons["Aborted"].text() == "Aborted 1"
+    assert gallery.filter_buttons["Failed"].text() == "Failed 0"
 
+    gallery.filter_buttons["Aborted"].click()
 
-def test_gallery_loads_thumbnails_in_the_background(gallery, qtbot):
-    wait_for_thumbnails(qtbot, gallery)
-    for entry in gallery.entries():
-        source, _mtime, pixmap = gallery._thumbnail_cache[entry.path]
-        assert source == entry.thumbnail_source
-        assert max(pixmap.width(), pixmap.height()) <= AcquisitionGalleryWidget.THUMBNAIL_SIZE
-        assert not gallery._items[entry.path].icon().isNull()
+    assert _ids(gallery) == ["aborted"]
+    assert gallery.filter_buttons["Aborted"].isChecked() and not gallery.filter_buttons["All"].isChecked()
+    assert gallery.list_widget.count() == 1 and gallery.table_widget.rowCount() == 1
+    assert gallery.count_label.text() == "1 of 5"
 
-
-def test_double_click_opens_the_selected_acquisition_in_the_viewer(gallery, qtbot):
-    gallery.select_path(gallery.entries()[1].path)
-    with qtbot.waitSignal(gallery.signal_open_acquisition, timeout=1000) as blocker:
-        gallery.list_widget.itemDoubleClicked.emit(gallery.list_widget.currentItem())
-    assert blocker.args == [gallery.entries()[1].path]
-    assert gallery.btn_open.isEnabled()
-    assert "older" in gallery.details_label.text()
-
-
-def test_without_a_viewer_opening_shows_the_folder_instead(gallery, qtbot, monkeypatch):
-    opened = []
-    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()) or True)
-    gallery.set_viewer_available(False, hint="NDViewer is off")
-    gallery.select_path(gallery.entries()[0].path)
-
-    with qtbot.assertNotEmitted(gallery.signal_open_acquisition):
-        gallery.open_selected()
-
-    assert os.path.normpath(opened[0]) == gallery.entries()[0].path
-    assert gallery.status_label.text() == "NDViewer is off"
-    assert gallery.btn_open.text() == "Open (NDViewer unavailable)"
-
-
-def test_show_in_file_browser_opens_the_folder(gallery, monkeypatch):
-    opened = []
-    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()) or True)
-    gallery.select_path(gallery.entries()[0].path)
-    gallery.show_selected_in_file_browser()
-    assert os.path.normpath(opened[0]) == gallery.entries()[0].path
-
-
-def test_load_settings_emits_the_folder_only_when_it_has_an_acquisition_yaml(gallery, qtbot, saving_root):
-    gallery.select_path(gallery.entries()[0].path)
-    assert gallery.btn_load_settings.isEnabled()
-    with qtbot.waitSignal(gallery.signal_load_settings, timeout=1000) as blocker:
-        gallery.load_selected_settings()
-    assert blocker.args == [gallery.entries()[0].path]
-
-    write_acquisition(saving_root, "legacy_2026-11-07_08-00-00.000000", with_yaml=False)
-    gallery.refresh()
-    qtbot.waitUntil(lambda: gallery.count() == 3, timeout=10000)
-    legacy = gallery.entries()[0]
-    assert not legacy.has_settings
-    gallery.select_path(legacy.path)
-    assert not gallery.btn_load_settings.isEnabled()
-    with qtbot.assertNotEmitted(gallery.signal_load_settings):
-        gallery.load_selected_settings()
-    assert "settings cannot be loaded" in gallery.details_label.text()
-
-
-def test_filter_hides_non_matching_acquisitions(gallery):
+    gallery.set_status_filter("Complete")
+    assert _ids(gallery) == ["snap", "complete"]
     gallery.filter_edit.setText("488")
-    hidden = {e.label: gallery._items[e.path].isHidden() for e in gallery.entries()}
-    assert hidden == {"newer": False, "older": True}
-    assert gallery.count_label.text() == "1 of 2"
-
+    assert _ids(gallery) == ["complete"]
+    assert gallery.filter_buttons["Complete"].text() == "Complete 2"  # counts ignore the search text
+    gallery.set_status_filter("All")
     gallery.filter_edit.setText("")
-    assert not any(gallery._items[e.path].isHidden() for e in gallery.entries())
+    assert len(gallery.rows()) == 5 and gallery.count_label.text() == "5"
 
 
-def test_refresh_keeps_the_selection_and_picks_up_new_folders(gallery, qtbot, saving_root):
-    selected = gallery.entries()[1].path
-    gallery.select_path(selected)
-    write_acquisition(saving_root, "newest_2026-11-07_08-00-00.000000", start_time=datetime(2026, 11, 7, 8).timestamp())
+def test_snaps_filter_only_when_enabled(gallery, qtbot, monkeypatch):
+    assert not gallery.filter_buttons["Snaps"].isHidden()
+    gallery.set_status_filter("Snaps")
+    assert _ids(gallery) == ["snap"]
 
-    gallery.refresh()
-    qtbot.waitUntil(lambda: gallery.count() == 3, timeout=10000)
+    monkeypatch.setattr(control._def, "RECORD_SNAPS_IN_HISTORY", False)
+    _reload_and_wait(gallery, qtbot)
 
-    assert gallery.entries()[0].label == "newest"
-    assert gallery.selected_entry().path == selected
+    assert gallery.filter_buttons["Snaps"].isHidden()
+    assert gallery.filter_buttons["All"].isChecked()  # a hidden chip cannot stay selected
+    assert len(gallery.rows()) == 5
 
-
-def test_browse_pins_the_root_and_saving_folder_returns(gallery, qtbot, tmp_path, two_acquisitions):
-    other = tmp_path / "elsewhere"
-    other.mkdir()
-    write_acquisition(other, "there_2026-11-02_08-00-00.000000")
-
-    gallery.set_root(str(other), pinned=True)
-    qtbot.waitUntil(lambda: gallery.count() == 1, timeout=10000)
-    assert gallery.entries()[0].label == "there"
-    gallery.refresh_if_needed()  # pinned: showing the tab again does not snap back to the saving folder
-    assert gallery.root == os.path.normpath(str(other))
-
-    gallery.follow_saving_folder()
-    qtbot.waitUntil(lambda: gallery.count() == 2, timeout=10000)
-    assert gallery.root == os.path.normpath(str(two_acquisitions))
+    monkeypatch.setattr(control._def, "RECORD_SNAPS_IN_HISTORY", True)
+    _reload_and_wait(gallery, qtbot)
+    assert not gallery.filter_buttons["Snaps"].isHidden()
 
 
-def test_gallery_follows_a_changed_saving_folder_when_shown(qtbot, tmp_path):
-    first = tmp_path / "first"
-    first.mkdir()
-    write_acquisition(first, "a_2026-11-02_08-00-00.000000")
-    second = tmp_path / "second"
-    second.mkdir()
-    write_acquisition(second, "b_2026-11-02_08-00-00.000000")
-    write_acquisition(second, "c_2026-11-03_08-00-00.000000")
-    current = {"root": str(first)}
-    widget = AcquisitionGalleryWidget(lambda: current["root"])
-    qtbot.addWidget(widget)
-    widget.show()
-    qtbot.waitUntil(lambda: widget.count() == 1, timeout=10000)
+def test_thumbnails_load_from_the_preview_png(gallery, qtbot):
+    qtbot.waitUntil(lambda: "complete" in gallery._thumbnail_cache, timeout=10000)
 
-    current["root"] = str(second)
-    widget.refresh_if_needed()
-    qtbot.waitUntil(lambda: widget.count() == 2, timeout=10000)
-    assert widget.root == os.path.normpath(str(second))
-    widget.shutdown()
+    path, mtime, pixmap = gallery._thumbnail_cache["complete"]
+    assert path == str(gallery._store.previews_dir / "complete.png")
+    assert mtime == os.stat(path).st_mtime
+    assert max(pixmap.width(), pixmap.height()) == AcquisitionGalleryWidget.THUMBNAIL_SIZE
+    assert not gallery._items["complete"].icon().isNull()
+    assert not gallery._table_name_items["complete"].icon().isNull()
+    assert "running" not in gallery._thumbnail_cache  # a running entry keeps the "Running…" placeholder
+    assert "aborted" not in gallery._thumbnail_cache  # no preview: the placeholder with the format text
+    assert not gallery._items["aborted"].icon().isNull()
 
 
-def test_gallery_without_a_saving_folder_says_so(qtbot):
-    widget = AcquisitionGalleryWidget(lambda: None)
-    qtbot.addWidget(widget)
-    widget.refresh()
-    assert widget.count() == 0
-    assert widget.status_label.text() == "No saving folder is set."
-    widget.set_root(str("Z:/definitely/not/here"), pinned=True)
-    assert "Folder not found" in widget.status_label.text()
-    widget.shutdown()
+def test_reload_keeps_the_selection_and_picks_up_new_events(gallery, qtbot, store_with_entries):
+    assert gallery.select_entry("aborted")
+    assert gallery.selected_entry().id == "aborted"
+    assert not gallery.select_entry("no-such-entry")
+    folder = store_with_entries.folders["complete"].parent / "newest"
+    folder.mkdir()
+    gallery._store.append(
+        {"type": "started", "id": "newest", "kind": "run", "name": "newest", "folder": str(folder), "metadata": {}}
+    )
+
+    gallery.reload()
+    qtbot.waitUntil(lambda: len(gallery.rows()) == 6, timeout=10000)
+
+    assert _ids(gallery)[0] == "newest"
+    assert gallery.selected_entry().id == "aborted"
+    assert gallery.list_widget.currentItem().text().startswith("aborted")
+    selected_rows = gallery.table_widget.selectionModel().selectedRows()
+    assert [gallery.table_widget.item(i.row(), 0).text() for i in selected_rows] == ["aborted"]
 
 
-def test_a_stale_scan_result_is_ignored(gallery, qtbot, tmp_path):
-    """A refresh started later always wins, whatever order the worker threads finish in."""
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    gallery.set_root(str(empty), pinned=True)
-    qtbot.waitUntil(lambda: gallery.count() == 0 and "0 acquisitions" in gallery.status_label.text(), timeout=10000)
-    stale_generation = gallery._generation - 1
-    gallery._on_scanned(stale_generation, "old-root", [Mock()])
-    assert gallery.count() == 0
+def test_history_file_change_triggers_a_reload(gallery, qtbot):
+    assert gallery._timer.isActive()
+    gallery._store.append({"type": "started", "id": "later", "kind": "run", "name": "later", "folder": "x"})
+
+    qtbot.waitUntil(lambda: len(gallery.rows()) == 6, timeout=5000)
+
+    gallery.hide()
+    assert not gallery._timer.isActive()
+
+
+def test_offline_entry_is_marked_and_listed(gallery, store_with_entries):
+    row = _row(gallery, "offline")
+    assert row.availability != "online"
+    assert row.status_label == store_with_entries.offline_label
+    assert gallery._items["offline"].toolTip().startswith(store_with_entries.offline_label)
+
+    gallery.set_status_filter("Offline")
+
+    assert _ids(gallery) == ["offline"]
+    assert gallery.filter_buttons["Offline"].text() == "Offline 1"
+
+
+def test_a_stale_load_result_is_ignored(gallery):
+    """A reload started later always wins, whatever order the worker threads finish in."""
+    gallery._on_loaded(gallery._generation - 1, ((0, 0), [Mock()]))
+    assert len(gallery.rows()) == 5
 
 
 def test_shutdown_drops_late_results(gallery):
     gallery.shutdown()
-    gallery._emit(gallery._events.scanned, gallery._generation, gallery.root, [])  # must not raise
-    gallery.refresh()  # a no-op after shutdown
+    assert not gallery._timer.isActive()
+    gallery._emit(gallery._events.loaded, gallery._generation, ((0, 0), []))  # must not raise
+    generation = gallery._generation
+    gallery.reload()  # a no-op after shutdown
+    assert gallery._generation == generation

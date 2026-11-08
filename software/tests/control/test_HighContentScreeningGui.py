@@ -400,7 +400,7 @@ def test_wellplate_yaml_moving_the_stack_to_the_stepper_gives_the_entries_the_st
 
 
 def test_gallery_tab_routes_open_and_load_settings_to_the_right_tabs(qtbot, confirm_exit_yes, monkeypatch, tmp_path):
-    """The Gallery tab follows the multipoint saving folder; opening an acquisition goes to the NDViewer tab,
+    """The Gallery tab lists the acquisition history; opening an acquisition goes to the NDViewer tab,
     loading its settings to the multipoint tab it was run from (chosen from acquisition.yaml, not the current tab)."""
     import os
 
@@ -428,7 +428,7 @@ def test_gallery_tab_routes_open_and_load_settings_to_the_right_tabs(qtbot, conf
     viewer = FakeViewerTab()
     win.imageDisplayTabs.addTab(viewer, "NDViewer")
     win.ndviewerTab = viewer
-    gallery.signal_open_acquisition.emit(str(tmp_path))
+    gallery.signal_open_in_squid.emit(str(tmp_path))
     assert viewer.opened == [str(tmp_path)]
     assert win.imageDisplayTabs.currentWidget() is viewer
 
