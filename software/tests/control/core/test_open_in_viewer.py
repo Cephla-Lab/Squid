@@ -45,28 +45,36 @@ def test_finished_run_dir_without_a_snapshot_is_none(tmp_path):
 
 
 def test_check_viewer_ok(tmp_path):
-    p = check_viewer(str(tmp_path), find_spec=lambda n: object(), isfile=lambda f: True)
+    p = check_viewer(str(tmp_path), find_spec=lambda n: object(), isfile=lambda f: True, version_of=lambda n: "0.5.0")
     assert p.ok and p.problem() == ""
     assert p.entry_point == str(tmp_path / "control" / "ndviewer_light" / "ndviewer_light" / "__main__.py")
 
 
 def test_check_viewer_reports_missing_packages(tmp_path):
     p = check_viewer(
-        str(tmp_path), find_spec=lambda n: None if n in ("vispy", "superqt") else object(), isfile=lambda f: True
+        str(tmp_path),
+        find_spec=lambda n: None if n in ("vispy", "superqt") else object(),
+        isfile=lambda f: True,
+        version_of=lambda n: "0.5.0",
     )
     assert p.missing_packages == ("vispy", "superqt")
     assert "pip install vispy superqt" in p.problem()
 
 
 def test_check_viewer_reports_missing_entry_point(tmp_path):
-    p = check_viewer(str(tmp_path), find_spec=lambda n: object(), isfile=lambda f: False)
+    p = check_viewer(str(tmp_path), find_spec=lambda n: object(), isfile=lambda f: False, version_of=lambda n: "0.5.0")
     assert not p.ok
     assert SUBMODULE_HINT in p.problem() and p.entry_point in p.problem()
 
 
 def test_check_viewer_never_imports_dotted_modules(tmp_path):
     seen = []
-    check_viewer(str(tmp_path), find_spec=lambda n: seen.append(n) or object(), isfile=lambda f: True)
+    check_viewer(
+        str(tmp_path),
+        find_spec=lambda n: seen.append(n) or object(),
+        isfile=lambda f: True,
+        version_of=lambda n: "0.5.0",
+    )
     assert seen == list(VIEWER_PACKAGES)
     assert all("." not in n for n in seen)
 
@@ -117,7 +125,12 @@ def test_software_dir_contains_the_control_package():
 
 def test_check_viewer_pins_ndv_in_the_install_hint(tmp_path):
     # The bundled viewer needs ndv>=0.5,<0.6 installed past ihist's numpy>=2 metadata (numpy stays below 2)
-    p = check_viewer(str(tmp_path), find_spec=lambda n: None if n == "ndv" else object(), isfile=lambda f: True)
+    p = check_viewer(
+        str(tmp_path),
+        find_spec=lambda n: None if n == "ndv" else object(),
+        isfile=lambda f: True,
+        version_of=lambda n: "0.5.0",
+    )
     assert NDV_INSTALL_COMMAND in p.problem() and "pip install ndv" not in p.problem()
 
 
