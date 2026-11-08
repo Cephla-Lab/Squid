@@ -6,6 +6,8 @@ The sweep sets raw levels (% of the line's firmware ceiling). The checks after i
 call (LaserEngineV2LightSource.set_intensity) with the new calibration installed as a candidate in the
 IlluminationController, so what is verified is what live view and acquisitions send. A reading counts only at the
 set-point asked for: the line READY (on DF line 3 with the shutter open), holding the target Squid sent and at it.
+The line is held in use (IlluminationController.use) while it is driven, as live view and acquisitions hold theirs:
+that keeps the 560 nm source from idling off and, in the shutter's On use mode, opens the 560 shutter.
 Light on/off is the Squid controller's TTL for the line's port, through the run's watchdog deadline; the engine also
 disarms by itself a few seconds after Squid stops polling it.
 """
@@ -19,6 +21,7 @@ from control.laser_engine_v2 import LaserEngineV2Error
 from control.laser_engine_v2_link import EngineLinkError
 from control.laser_engine_v2_status import SOURCE_560_LINE, LineInfo, LineState
 from control.models.illumination_config import IlluminationType
+from squid.abc import LightSourceHold
 from squid.intensity_calibration import EngineDrive, EngineLineIdentity, IntensityCalibration
 from squid.intensity_calibration_run import (
     CalibrationCancelled,
@@ -31,7 +34,7 @@ from squid.intensity_calibration_run import (
 
 # STAT? prints set-points to 3 decimals (A or V): a target within this of the value sent is the value sent
 TARGET_TOLERANCE = 0.0005 + 1e-6
-# The engine opens the DF shutter on the poll after line 3 reads READY (it holds it open while the 560 is in use)
+# The DF shutter opens on the poll after line 3 reads READY: while line 3 is held (On use), or always (Always open)
 SHUTTER_OPEN_TIMEOUT_S = 5.0
 
 
@@ -138,10 +141,8 @@ class EngineLineOutput:
 
     def check(self) -> None:
         """After every reading: the line must still be READY (a fault, the cover, the 560 key or a closed shutter would
-        make the reading dark or wrong) and still hold the set-point asked for (another client, a firmware change).
-        Counts as use, so the 560 nm source cannot idle off during a run."""
+        make the reading dark or wrong) and still hold the set-point asked for (another client, a firmware change)."""
         self._check_level()
-        self._engine.note_use([self._key])
 
     def on(self) -> None:
         self._ttl.set_percent(0.0)  # selects the port; the engine takes its level over USB, the controller DAC stays 0
@@ -247,10 +248,10 @@ class EngineCalibration:
         progress: Progress,
         keepalive: Callable[[], None],
         cancelled: Callable[[], bool],
-    ) -> None:
+    ) -> LightSourceHold:
         """Wake the line and wait until the engine reports it READY (TEC at temperature; for the 560 nm line the source
-        at the operator's power) and, on DF line 3, the shutter open. The light stays off; keepalive() runs on every
-        wait step."""
+        at the operator's power), then hold it in use and, on DF line 3, wait for the shutter to open. The light stays
+        off; keepalive() runs on every wait step. Returns the hold, for the caller to release when the channel ends."""
         key = f"L{target.engine_line}"
 
         def stop() -> bool:
@@ -275,8 +276,16 @@ class EngineCalibration:
             info = status.channels.get(key) if status is not None else None
             reason = info.reason if info is not None else "no status from the laser engine"
             raise LightSourceStopped(f"{target.name}: {key} not ready within {self.ready_timeout_s:g} s ({reason})")
+        # Held only once READY, so a shutter that does not open fails within its own timeout, not the READY one. The
+        # hold opens the 560 shutter (On use) and keeps the source from idling off; waking it counted as use until now.
+        hold = self.illumination.use("calibration", [target.wavelength_nm])
         if _is_aom(self.engine, target.engine_line):
-            self._wait_for_shutter(target, keepalive, cancelled)
+            try:
+                self._wait_for_shutter(target, keepalive, cancelled)
+            except Exception:
+                hold.release()
+                raise
+        return hold
 
     def _wait_for_shutter(self, target: ChannelTarget, keepalive: Callable[[], None], cancelled) -> None:
         deadline = time.monotonic() + self.shutter_open_timeout_s
@@ -293,19 +302,25 @@ class EngineCalibration:
                 )
             time.sleep(self.engine.query_interval_s)
 
-    def ready_now(self, target: ChannelTarget) -> None:
-        """For the test beam, on the GUI thread (no waiting): wake the line and refuse unless it is READY now (and, on
-        DF line 3, the shutter open)."""
+    def ready_now(self, target: ChannelTarget) -> LightSourceHold:
+        """For the test beam, on the GUI thread (no waiting): hold the line in use and refuse, letting it go, unless it
+        is READY now (and, on DF line 3, the shutter open). Returns the hold, for the caller to release when the beam
+        goes off."""
         key = f"L{target.engine_line}"
-        self.engine.wake_up(key)
-        status = self.engine.poll_once()
-        info = status.channels.get(key) if status is not None else None
-        if info is None:
-            raise LightSourceStopped(f"{key}: laser engine connection lost")
-        if not info.is_ready:
-            raise LightSourceStopped(f"{key} is not ready ({info.reason}); try again in a moment")
-        if _is_aom(self.engine, target.engine_line) and not status.shutter_open:
-            raise LightSourceStopped(f"{key}: the shutter is not open yet; try again in a moment")
+        hold = self.illumination.use("calibration", [target.wavelength_nm])  # wakes the line
+        try:
+            status = self.engine.poll_once()
+            info = status.channels.get(key) if status is not None else None
+            if info is None:
+                raise LightSourceStopped(f"{key}: laser engine connection lost")
+            if not info.is_ready:
+                raise LightSourceStopped(f"{key} is not ready ({info.reason}); try again in a moment")
+            if _is_aom(self.engine, target.engine_line) and not status.shutter_open:
+                raise LightSourceStopped(f"{key}: the shutter is not open yet; try again in a moment")
+        except Exception:
+            hold.release()
+            raise
+        return hold
 
     def output(self, microcontroller, target: ChannelTarget, deadline: Optional[WatchdogDeadline] = None):
         return EngineLineOutput(microcontroller, target, self.engine, self.light_source, self.illumination, deadline)

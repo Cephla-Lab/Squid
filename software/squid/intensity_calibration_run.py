@@ -25,6 +25,7 @@ import numpy as np
 import control._def
 import squid.logging
 from control.models.illumination_config import IlluminationChannelConfig, IlluminationType
+from squid.abc import LightSourceHold
 from squid.intensity_calibration import (
     CALIBRATIONS_DIR_NAME,
     VERIFY_MIN_GATED_PERCENT,
@@ -745,6 +746,7 @@ class CalibrationSession:
         self.meter: Optional[PowerMeter] = None
         self._active = None  # the output being driven (MicrocontrollerDacOutput or an engine line's)
         self._active_target: Optional[ChannelTarget] = None
+        self._test_beam_hold = LightSourceHold()  # an engine line the test beam holds in use (does nothing otherwise)
         self._cancelled = False
         self._paused_heartbeat_s: Optional[float] = None
         # True once a run or the test beam has driven a port: the controller is then left on that port at DAC 0,
@@ -912,7 +914,7 @@ class CalibrationSession:
         if self.meter is not None:
             self.meter.set_wavelength(target.wavelength_nm)
         if target.engine_line is not None:
-            self.engine.ready_now(target)  # on the GUI thread: no waiting for a line to warm up
+            self._test_beam_hold = self.engine.ready_now(target)  # on the GUI thread: no waiting for a line to warm up
         self._pause_heartbeat()
         try:
             # arming is inside: if it fails, the heartbeat must still come back
@@ -929,7 +931,11 @@ class CalibrationSession:
         try:
             output.safe_off()
         finally:
-            self._resume_heartbeat()
+            hold, self._test_beam_hold = self._test_beam_hold, LightSourceHold()
+            try:
+                hold.release()  # after the light is off: the 560 shutter closes
+            finally:
+                self._resume_heartbeat()
 
     def run(
         self,
@@ -952,6 +958,7 @@ class CalibrationSession:
                 if self._cancelled:
                     break
                 try:
+                    hold = LightSourceHold()
                     if self.engine is not None:
                         # before arming: a line can take minutes to warm up, with the light off; every wait step feeds
                         # the watchdog and reports what the meter reads, as the run's own readings are
@@ -959,28 +966,29 @@ class CalibrationSession:
                             self.feed_watchdog()
                             on_reading(name, self.meter.read_mw(), None)
 
-                        self.engine.prepare(target, progress, waiting, lambda: self._cancelled)
-                    deadline = self._arm_watchdog()  # again for every channel, in case it fired during the previous one
-                    result: Union[ChannelResult, Exception] = calibrate_channel(
-                        target,
-                        self._output_for(target, deadline),
-                        self.meter,
-                        self._factor_for(target),
-                        meter_info=self.meter.info,
-                        measured_in=measured_in,
-                        sensor_limit_mw=sensor_limit_mw,
-                        software_commit=commit,
-                        settle_s=self.settle_s,
-                        hold_s=self.hold_s,
-                        rest_s=self.rest_s,
-                        progress=progress,
-                        on_reading=on_reading,
-                        cancelled=lambda: self._cancelled,
-                        keepalive=self.feed_watchdog,
-                        deadline=deadline,
-                        sleep=self.sleep,
-                        clock=self.clock,
-                    )
+                        hold = self.engine.prepare(target, progress, waiting, lambda: self._cancelled)
+                    with hold:  # an engine line stays in use until the channel ends (the light is off by then)
+                        deadline = self._arm_watchdog()  # again for every channel, in case it fired during the last one
+                        result: Union[ChannelResult, Exception] = calibrate_channel(
+                            target,
+                            self._output_for(target, deadline),
+                            self.meter,
+                            self._factor_for(target),
+                            meter_info=self.meter.info,
+                            measured_in=measured_in,
+                            sensor_limit_mw=sensor_limit_mw,
+                            software_commit=commit,
+                            settle_s=self.settle_s,
+                            hold_s=self.hold_s,
+                            rest_s=self.rest_s,
+                            progress=progress,
+                            on_reading=on_reading,
+                            cancelled=lambda: self._cancelled,
+                            keepalive=self.feed_watchdog,
+                            deadline=deadline,
+                            sleep=self.sleep,
+                            clock=self.clock,
+                        )
                 except CalibrationCancelled as e:
                     result = e
                 except (

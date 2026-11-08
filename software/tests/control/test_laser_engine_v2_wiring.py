@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -434,9 +435,10 @@ def test_a_power_change_holds_the_acquisition_until_the_source_reads_it(monkeypa
         engine.close()
 
 
-def _engine_controller(engine, ttl_map, machine_configs_path):
+def _engine_controller(engine, ttl_map, machine_configs_path=Path("/nonexistent/machine_configs")):
     """An IlluminationController on `engine`, its port map read from `ttl_map` (wavelength -> port code) on every
-    call, so a test can remap a wavelength by editing the dict. No calibration files: intensities stay linear."""
+    call, so a test can remap a wavelength by editing the dict. No calibration files: intensities stay linear (the
+    default path holds none)."""
     from types import SimpleNamespace
 
     from control.lighting import IlluminationController, LightSourceType

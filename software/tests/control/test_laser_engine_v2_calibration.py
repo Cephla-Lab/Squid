@@ -11,6 +11,7 @@ import pytest
 from control._def import ILLUMINATION_CODE
 from control.laser_engine_v2_calibration import EngineCalibration
 from control.laser_engine_v2_link import EngineLink
+from control.laser_engine_v2_settings import SHUTTER_ON_USE
 from control.laser_engine_v2_sim import FakeEngine
 from control.microcontroller import Microcontroller, SimSerial
 from squid.intensity_calibration import EngineLineIdentity, load_calibration, write_calibration
@@ -83,6 +84,7 @@ def _calibrate(instrument, name, model=simulated_laser_mw, after=None):
         meter_info=meter.info,
         measured_in="widefield",
         sensor_limit_mw=500.0,
+        software_commit="test",
         settle_s=0.0,
         hold_s=1.0,
         rest_s=0.0,
@@ -259,10 +261,12 @@ def test_a_560_line_whose_shutter_does_not_open_is_refused(tmp_path):
         with pytest.raises(LightSourceStopped, match="shutter did not open"):
             side.prepare(target, lambda *a: None, lambda: None, lambda: False)
         assert inst.engine.get_latest_status().channels["L3"].is_ready  # READY alone is not enough
+        assert not inst.engine._line3_held()  # a refused channel does not keep the 560 in use
         session = _session(inst)
         with pytest.raises(LightSourceStopped, match="shutter is not open"):
             session.test_beam_on(target, 30.0)
         assert ("on",) not in inst.mcu.calls
+        assert not inst.engine._line3_held()
     finally:
         inst.engine.close()
 
@@ -487,3 +491,37 @@ def test_a_run_of_one_wavelength_resends_the_other_wavelength_on_its_line(tmp_pa
         assert _sets(inst, 2, mark) == ["LINE2:SET %.4f" % (0.5 * 2.045)]
     finally:
         inst.engine.close()
+
+
+# ---- the line in use: the 560 shutter in On use, the idle-off ------------------------------------------------------------
+def test_a_run_holds_the_560_in_use_while_it_drives_it_then_lets_go(instrument):
+    """In On use (the default) the shutter opens only while something holds line 3, and a held line 3 cannot idle off:
+    the run holds it for the channel, and the shutter closes when the channel ends."""
+    assert instrument.engine.shutter_mode == SHUTTER_ON_USE
+    instrument.engine.set_source_power_mw(300.0)
+    session = _session(instrument)
+    session.connect()
+    held = []
+    results = session.run(
+        [t for t in session.targets() if t.engine_line == 3],
+        measured_in="widefield",
+        sensor_limit_mw=500.0,
+        on_reading=lambda name, mw, level: held.append(instrument.engine._line3_held()) if level is not None else None,
+    )
+    assert all(isinstance(r, ChannelResult) and r.calibration.verification == "pass" for r in results.values())
+    assert held and all(held)  # every reading of the sweep and the checks
+    assert not instrument.engine._line3_held()
+    instrument.engine.poll_once()
+    assert not instrument.fake.shut_open
+
+
+def test_the_test_beam_holds_the_560_in_use_until_it_is_turned_off(instrument):
+    instrument.engine.set_source_power_mw(300.0)
+    assert instrument.engine.wait_until_ready(["L3"], timeout_s=10.0)
+    session = _session(instrument)
+    target = next(t for t in session.targets() if t.engine_line == 3)
+    session.test_beam_on(target, 30.0)
+    assert instrument.engine._line3_held() and instrument.fake.shut_open
+    session.test_beam_off(target)
+    instrument.engine.poll_once()
+    assert not instrument.engine._line3_held() and not instrument.fake.shut_open

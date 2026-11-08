@@ -1054,6 +1054,7 @@ def _run_line(fail_check_after=None, on_reading=None):
         meter_info=meter.info,
         measured_in="widefield",
         sensor_limit_mw=500.0,
+        software_commit="test",
         settle_s=0.0,
         hold_s=10.0,
         sleep=time.sleep,
