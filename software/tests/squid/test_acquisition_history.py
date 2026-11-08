@@ -39,17 +39,21 @@ def test_history_dir_honours_the_environment_override(tmp_path, monkeypatch):
     assert ah.history_dir() == tmp_path / "h"
 
 
-def test_entry_id_differs_by_folder_and_is_stable():
-    a = ah.entry_id_for(r"D:\data\plate_3_2026-11-06_09-12-33")
-    b = ah.entry_id_for(r"E:\other\plate_3_2026-11-06_09-12-33")
-    assert a != b and a.startswith("plate_3_2026-11-06_09-12-33-")
-    assert a == ah.entry_id_for(r"D:\data\plate_3_2026-11-06_09-12-33")
+def test_entry_id_differs_by_folder_and_is_stable(tmp_path):
+    name = "plate_3_2026-11-06_09-12-33"
+    one = os.path.join(str(tmp_path), "data", name)
+    two = os.path.join(str(tmp_path), "other", name)
+    a = ah.entry_id_for(one)
+    b = ah.entry_id_for(two)
+    assert a != b and a.startswith(name + "-")
+    assert a == ah.entry_id_for(one)
 
 
 def test_folder_availability(tmp_path):
     assert ah.folder_availability(str(tmp_path)) == "online"
     assert ah.folder_availability(str(tmp_path / "gone")) == "folder_missing"
-    assert ah.folder_availability(r"Q:\data\run", exists=lambda p: False) == "drive_offline"
+    gone = "Q:/data/run" if os.name == "nt" else "/mnt/gone/run"
+    assert ah.folder_availability(gone, exists=lambda p: False) == "drive_offline"
 
 
 def test_started_then_finished_folds_into_one_complete_entry(tmp_path):
