@@ -471,6 +471,10 @@ class AcquisitionGalleryWidget(QWidget):
         # (base pixmap cacheKey, status label, snap) -> the tile with its status badge, shared by grid and table
         self._badged: Dict[Tuple[int, str, bool], QPixmap] = {}
         self._acquiring = False
+        # Set while no acquisition runs: an import's preview work waits on it (paused, not cancelled, by a run).
+        self._acquisition_idle = threading.Event()
+        self._acquisition_idle.set()
+        self._history_write_error: Optional[str] = None  # the import worker's last failed history write
         self._deferred_import: Optional[str] = None  # the first-launch import accepted during an acquisition
         self._offer_pending = False  # the first-launch offer's folder check is running
 
@@ -663,8 +667,13 @@ class AcquisitionGalleryWidget(QWidget):
 
     def set_acquiring(self, active: bool) -> None:
         """While an acquisition runs nothing is imported (no preview work during a run): the import button is off
-        and an accepted first-launch import waits until it is over."""
+        and an accepted first-launch import waits until it is over. An import already running goes on adding its
+        entries but pauses its previews until the acquisition is over."""
         self._acquiring = bool(active)
+        if self._acquiring:
+            self._acquisition_idle.clear()
+        else:
+            self._acquisition_idle.set()
         self._update_import_button()
         if not self._acquiring and self._deferred_import is not None:
             folder, self._deferred_import = self._deferred_import, None
@@ -717,21 +726,46 @@ class AcquisitionGalleryWidget(QWidget):
             result = str(e) or type(e).__name__
         self._emit(self._events.imported, serial, folder, result)
 
+    def _wait_for_acquisition_idle(self) -> bool:
+        """Block (on the import worker) while an acquisition runs; False when the gallery was shut down meanwhile."""
+        while not self._acquisition_idle.wait(0.1):
+            if self._closed:
+                return False
+        return not self._closed
+
     def _make_preview(self, folder: str, entry_id: str) -> None:
         """Write the entry's preview PNG and record it in the history (called by the importer for each addition).
-        The size on disk is left unknown: walking every file of every imported folder is not cheap."""
+        The size on disk is left unknown: walking every file of every imported folder is not cheap. Waits while an
+        acquisition runs, so an import never competes with one for the disk."""
+        if not self._wait_for_acquisition_idle():
+            return
         channels = write_preview_png(folder, str(self._store.previews_dir / f"{entry_id}.png"))
         if channels:
-            self._store.append(
-                {
-                    "type": "preview",
-                    "id": entry_id,
-                    "file": f"{entry_id}.png",
-                    "channels": list(channels),
-                    "bytes_on_disk": None,
-                    "at": time.time(),
-                }
-            )
+            try:
+                self._store.append(
+                    {
+                        "type": "preview",
+                        "id": entry_id,
+                        "file": f"{entry_id}.png",
+                        "channels": list(channels),
+                        "bytes_on_disk": None,
+                        "at": time.time(),
+                    }
+                )
+            except OSError as e:
+                self._log.warning(f"Could not write the preview of {entry_id} to the history: {e}")
+                with self._lock:
+                    self._history_write_error = str(e)
+
+    def _append_history(self, event: dict) -> bool:
+        """store.append on the GUI thread; a write error is logged and shown on the status line, never raised."""
+        try:
+            self._store.append(event)
+            return True
+        except OSError as e:
+            self._log.warning(f"Could not write the history {self._store.path}: {e}")
+            self.status_label.setText(f"Could not write the history: {e}")
+            return False
 
     def _on_imported(self, serial: int, folder: str, result) -> None:
         if self._closed:
@@ -744,6 +778,10 @@ class AcquisitionGalleryWidget(QWidget):
             message = import_status_text(folder, result)
         else:
             message = f"Importing {folder} failed: {result}"
+        with self._lock:
+            write_error, self._history_write_error = self._history_write_error, None
+        if write_error is not None:
+            message += f". Could not write the history: {write_error}"
         self.status_label.setText(message)
         self._status_after_load = message
         self.reload()
@@ -809,8 +847,9 @@ class AcquisitionGalleryWidget(QWidget):
             os.makedirs(os.path.dirname(os.path.abspath(marker)), exist_ok=True)
             with open(marker, "w", encoding="utf-8") as f:
                 f.write(f"offered {datetime.now().isoformat()}\n")
-        except OSError:
-            self._log.exception(f"Could not write {marker}")
+        except OSError as e:
+            self._log.warning(f"Could not write {marker}: {e}")
+            self.status_label.setText(f"Could not write the history: {e}")
         if answer != QMessageBox.Yes:
             return
         if self._acquiring:
@@ -1142,7 +1181,8 @@ class AcquisitionGalleryWidget(QWidget):
         entry = self._allowed("remove")
         if entry is None:
             return
-        self._store.append({"type": "removed", "id": entry.id})
+        if not self._append_history({"type": "removed", "id": entry.id}):
+            return
         message = f"Removed {entry.name} from the history (data untouched)"
         self.status_label.setText(message)
         self._status_after_load = message
@@ -1163,13 +1203,17 @@ class AcquisitionGalleryWidget(QWidget):
         if os.path.normcase(expected) != os.path.normcase(got):
             self.status_label.setText(f"Not relocated: the folder must be named {expected}, not {got}")
             return
-        self._store.append({"type": "relocated", "id": entry.id, "folder": new})
+        if not self._append_history({"type": "relocated", "id": entry.id, "folder": new}):
+            return
         missing = []
         for r in entry.rounds:
             name = os.path.basename(os.path.normpath(r.folder)) if r.folder else ""
             candidate = os.path.join(new, name)
             if name and os.path.isdir(candidate):
-                self._store.append({"type": "relocated", "id": r.id, "folder": candidate})
+                if not self._append_history({"type": "relocated", "id": r.id, "folder": candidate}):
+                    self._status_after_load = self.status_label.text()  # the run moved, a round did not
+                    self.reload()
+                    return
             else:
                 missing.append(name or r.name)
         message = f"Located {entry.name} at {new}"
@@ -1306,6 +1350,7 @@ class AcquisitionGalleryWidget(QWidget):
         """Stop the timer and the worker threads; late results are dropped."""
         with self._lock:
             self._closed = True
+        self._acquisition_idle.set()  # releases an import preview waiting for an acquisition; it sees _closed
         self._timer.stop()
         self._scan_executor.shutdown(wait=False, cancel_futures=True)
         self._import_executor.shutdown(wait=False, cancel_futures=True)

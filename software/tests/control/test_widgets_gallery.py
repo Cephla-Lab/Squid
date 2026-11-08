@@ -399,11 +399,113 @@ def test_the_import_button_waits_for_a_running_acquisition(gallery, qtbot, savin
     assert not gallery.btn_import.isEnabled()
     assert gallery.btn_import.toolTip() == "Wait for the running acquisition to finish"
     write_acquisition(saving_root, "imp", start_time=T0 + 10)
-    gallery.import_path(str(saving_root))  # an import already asked for still finishes, but leaves the button off
-    qtbot.waitUntil(lambda: "imp" in _ids_by_name(gallery), timeout=10000)
+    gallery.import_path(str(saving_root))  # an import already asked for adds its entries, its previews wait
+    qtbot.waitUntil(lambda: any(e.name == "imp" for e in gallery._store.load()), timeout=10000)
     assert not gallery.btn_import.isEnabled()
     gallery.set_acquiring(False)
-    assert gallery.btn_import.isEnabled() and gallery.btn_import.toolTip() == ""
+    assert gallery.btn_import.toolTip() == ""
+    qtbot.waitUntil(lambda: "imp" in _ids_by_name(gallery) and gallery.btn_import.isEnabled(), timeout=10000)
+
+
+def _track_previews(gallery, monkeypatch):
+    """Record write_preview_png calls, and set an event each time the import worker leaves _make_preview."""
+    calls, left = [], threading.Event()
+    real_write = control.widgets_gallery.write_preview_png
+    real_make = gallery._make_preview
+
+    def write(folder, out_path):
+        calls.append(folder)
+        return real_write(folder, out_path)
+
+    def make(folder, entry_id):
+        try:
+            real_make(folder, entry_id)
+        finally:
+            left.set()
+
+    monkeypatch.setattr(control.widgets_gallery, "write_preview_png", write)
+    monkeypatch.setattr(gallery, "_make_preview", make)
+    return calls, left
+
+
+def test_an_import_pauses_its_previews_while_an_acquisition_runs(gallery, qtbot, saving_root, monkeypatch):
+    write_acquisition(saving_root, "imp", start_time=T0 + 10)
+    calls, left = _track_previews(gallery, monkeypatch)
+    gallery.set_acquiring(True)
+
+    gallery.import_path(str(saving_root))
+    qtbot.waitUntil(lambda: any(e.name == "imp" for e in gallery._store.load()), timeout=10000)  # metadata goes on
+    qtbot.wait(300)
+    assert calls == [] and not left.is_set()  # the preview waits for the acquisition
+
+    gallery.set_acquiring(False)
+    assert left.wait(10) and len(calls) == 1
+    qtbot.waitUntil(lambda: "imp" in _ids_by_name(gallery), timeout=10000)
+    assert next(e for e in gallery._store.load() if e.name == "imp").preview is not None
+
+
+def test_shutdown_releases_an_import_preview_paused_by_an_acquisition(gallery, qtbot, saving_root, monkeypatch):
+    write_acquisition(saving_root, "imp", start_time=T0 + 10)
+    calls, left = _track_previews(gallery, monkeypatch)
+    gallery.set_acquiring(True)
+    gallery.import_path(str(saving_root))
+    qtbot.waitUntil(lambda: any(e.name == "imp" for e in gallery._store.load()), timeout=10000)
+    n_events = len(gallery._store.events())
+
+    gallery.shutdown()
+
+    assert left.wait(10)
+    assert calls == [] and len(gallery._store.events()) == n_events
+    assert not list(gallery._store.previews_dir.glob("imp-*"))
+
+
+class _UnwritableStore(HistoryStore):
+    """A history that reads but cannot be written to."""
+
+    def append(self, event):
+        raise PermissionError(13, "Permission denied", str(self.path))
+
+
+def test_a_history_write_error_on_remove_is_shown_not_raised(gallery, qtbot, store_with_entries):
+    gallery._store.__class__ = _UnwritableStore
+    gallery.select_entry("aborted")
+    n_events = len(store_with_entries.store.events())
+
+    gallery.remove_selected()  # raises nothing
+
+    assert gallery.status_label.text().startswith("Could not write the history: ")
+    assert "Permission denied" in gallery.status_label.text()
+    _reload_and_wait(gallery, qtbot)
+    assert "aborted" in _ids(gallery) and len(store_with_entries.store.events()) == n_events
+
+
+def test_a_history_write_error_on_locate_is_shown_not_raised(gallery, qtbot, monkeypatch, tmp_path):
+    gallery.select_entry("offline")
+    right = tmp_path / "elsewhere" / os.path.basename(gallery.selected_entry().folder)
+    right.mkdir(parents=True)
+    monkeypatch.setattr(control.widgets_gallery.QFileDialog, "getExistingDirectory", lambda *a: str(right))
+    gallery._store.__class__ = _UnwritableStore
+
+    gallery.locate_selected()  # raises nothing
+
+    assert gallery.status_label.text().startswith("Could not write the history: ")
+    _reload_and_wait(gallery, qtbot)
+    assert _row(gallery, "offline").availability != "online"
+
+
+def test_a_history_write_error_on_an_import_preview_is_shown_not_raised(gallery, qtbot, saving_root, monkeypatch):
+    write_acquisition(saving_root, "imp", start_time=T0 + 10)
+    real_append = HistoryStore.append
+
+    def append(store, event):
+        if event.get("type") == "preview":
+            raise PermissionError(13, "Permission denied", "history.jsonl")
+        real_append(store, event)
+
+    monkeypatch.setattr(HistoryStore, "append", append)
+    gallery.import_path(str(saving_root))
+    qtbot.waitUntil(lambda: "imp" in _ids_by_name(gallery), timeout=10000)
+    assert "Could not write the history: " in gallery.status_label.text()
 
 
 def test_the_status_line_is_plain_text(gallery):
