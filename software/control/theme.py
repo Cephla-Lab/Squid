@@ -8,11 +8,13 @@ Keep this module importable with only the standard library, qtpy and pyqtgraph: 
 ``squid.*`` and no numpy at module scope. All Qt access goes through qtpy so either binding works.
 """
 
+import sys
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Optional
 
-from qtpy.QtGui import QColor, QPalette
+from qtpy.QtCore import QObject, Signal
+from qtpy.QtGui import QBrush, QColor, QFont, QFontDatabase, QPalette
 from qtpy.QtWidgets import QApplication
 
 THEMES = ("light", "dark", "classic")
@@ -425,3 +427,182 @@ def _mix(a: str, b: str, weight_a: float) -> str:
     """``#rrggbb`` blend of two ``#rrggbb`` colours, ``weight_a`` of ``a``."""
     mixed = (round(x * weight_a + y * (1 - weight_a)) for x, y in zip(_rgb(a), _rgb(b)))
     return "#" + "".join(f"{c:02x}" for c in mixed)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Applying a theme to the running application
+# ---------------------------------------------------------------------------------------------------------------
+
+_manager: "Optional[ThemeManager]" = None
+
+# Originals of the pyqtgraph methods the dock theme replaces, saved on first patch.
+_dock_originals: dict = {}
+
+
+def icon_cache_dir(theme: str) -> Path:
+    """Where the recoloured indicator icons for ``theme`` are written (relative to the working directory)."""
+    return Path("cache") / "theme_icons" / theme
+
+
+def _dock_label_update_style(tokens: Tokens):
+    """A ``DockLabel.updateStyle`` rendering the quiet card header (pyqtgraph 0.14 structure, Dock.py:283-323)."""
+
+    def updateStyle(self):
+        r = "3px"
+        if self.dim:
+            fg = _mix(tokens.muted, tokens.header, 0.7)
+        else:
+            fg = tokens.muted
+        bg = tokens.header
+        border = tokens.border
+
+        if self.orientation == "vertical":
+            self.vStyle = """DockLabel {
+                background-color : %s;
+                color : %s;
+                border-top-right-radius: 0px;
+                border-top-left-radius: %s;
+                border-bottom-right-radius: 0px;
+                border-bottom-left-radius: %s;
+                border-width: 0px;
+                border-right: 1px solid %s;
+                padding-top: 3px;
+                padding-bottom: 3px;
+                font-size: %s;
+            }""" % (
+                bg,
+                fg,
+                r,
+                r,
+                border,
+                self.fontSize,
+            )
+            self.setStyleSheet(self.vStyle)
+        else:
+            self.hStyle = """DockLabel {
+                background-color : %s;
+                color : %s;
+                border-top-right-radius: %s;
+                border-top-left-radius: %s;
+                border-bottom-right-radius: 0px;
+                border-bottom-left-radius: 0px;
+                border-width: 0px;
+                border-bottom: 1px solid %s;
+                padding-left: 3px;
+                padding-right: 3px;
+                font-size: %s;
+            }""" % (
+                bg,
+                fg,
+                r,
+                r,
+                border,
+                self.fontSize,
+            )
+            self.setStyleSheet(self.hStyle)
+
+    return updateStyle
+
+
+def _dock_update_style(original, tokens: Tokens):
+    """Wrap ``Dock.updateStyle`` so the widget-area border uses the theme border instead of black."""
+
+    def updateStyle(self):
+        original(self)
+        self.widgetArea.setStyleSheet(self.widgetArea.styleSheet().replace("#000", tokens.border))
+
+    return updateStyle
+
+
+def _install_dock_theme(tokens: Optional[Tokens]) -> None:
+    """Restyle pyqtgraph docks with ``tokens``, or restore pyqtgraph's own look with ``None``."""
+    import importlib
+
+    dock_module = importlib.import_module("pyqtgraph.dockarea.Dock")
+    if not _dock_originals:
+        _dock_originals["label"] = dock_module.DockLabel.updateStyle
+        _dock_originals["dock"] = dock_module.Dock.updateStyle
+    if tokens is None:
+        dock_module.DockLabel.updateStyle = _dock_originals["label"]
+        dock_module.Dock.updateStyle = _dock_originals["dock"]
+    else:
+        dock_module.DockLabel.updateStyle = _dock_label_update_style(tokens)
+        dock_module.Dock.updateStyle = _dock_update_style(_dock_originals["dock"], tokens)
+    for widget in QApplication.allWidgets():
+        if isinstance(widget, (dock_module.DockLabel, dock_module.Dock)):
+            widget.updateStyle()
+
+
+class ThemeManager(QObject):
+    """Applies Light, Dark or Classic to the application and tells listeners when it changed."""
+
+    theme_changed = Signal(str)
+
+    def __init__(self, app: QApplication):
+        super().__init__()
+        self._app = app
+        self._default_font = QFont(app.font())
+        self._default_palette = QPalette(app.palette())
+        self._current = "classic"
+
+    @property
+    def current(self) -> str:
+        return self._current
+
+    def tokens(self) -> Tokens:
+        return {"light": LIGHT, "dark": DARK}.get(self._current, CLASSIC)
+
+    def color(self, name: str) -> QColor:
+        return QColor(getattr(self.tokens(), name))
+
+    def row_brush(self, name: str) -> QBrush:
+        return QBrush(self.color(name))
+
+    def is_classic(self) -> bool:
+        return self._current == "classic"
+
+    def needs_restart(self, new_theme: str) -> bool:
+        """True when switching to ``new_theme`` crosses between Classic and a skinned theme."""
+        return (self._current == "classic") != (new_theme == "classic")
+
+    def apply(self, theme: str) -> None:
+        if theme not in THEMES:
+            raise ValueError(f"unknown theme {theme!r}; expected one of {THEMES}")
+        app = self._app
+        if theme == "classic":
+            app.setStyleSheet("")
+            app.setPalette(self._default_palette)
+            app.setFont(self._default_font)
+            _install_dock_theme(None)
+        else:
+            tokens = LIGHT if theme == "light" else DARK
+            icons = write_theme_icons(tokens, icon_cache_dir(theme))
+            app.setStyleSheet(build_stylesheet(tokens, scale_factor(app), icons))
+            app.setPalette(build_palette(tokens))
+            if sys.platform == "win32":
+                app.setFont(QFont("Segoe UI", 8))
+            else:
+                app.setFont(QFontDatabase.systemFont(QFontDatabase.GeneralFont))
+            _install_dock_theme(tokens)
+        self._current = theme
+        self.theme_changed.emit(theme)
+
+
+def install(app: QApplication, theme: str) -> ThemeManager:
+    """Create (or reuse) the application's ThemeManager and apply ``theme``."""
+    global _manager
+    if _manager is None:
+        _manager = ThemeManager(app)
+    _manager.apply(theme)
+    return _manager
+
+
+def manager() -> ThemeManager:
+    """The ThemeManager; before ``install`` a Classic one that changes nothing."""
+    global _manager
+    if _manager is None:
+        app = QApplication.instance()
+        if app is None:
+            raise RuntimeError("theme needs a QApplication")
+        _manager = ThemeManager(app)
+    return _manager
