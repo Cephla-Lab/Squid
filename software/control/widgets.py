@@ -21,6 +21,8 @@ import squid.logging
 from control.core.config import ConfigRepository
 from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
+from control.core.laser_auto_focus_controller import RelativeZError
+from control.core.relative_z_range import TRAVEL_EPS_UM, nz_for_range
 from control.core.mosaic_utils import format_well_id
 from control.core.geometry_utils import calculate_well_coverage, default_scan_shape, get_effective_well_size
 from control.microcontroller import Microcontroller
@@ -1123,12 +1125,20 @@ class AcquisitionYAMLDropMixin:
         raise NotImplementedError("Subclass must implement _apply_yaml_settings()")
 
 
+_Z_RANGE_SUFFIX = " μm"
+_RELATIVE_Z_RANGE_SUFFIX = " μm from reference"
+
+
 class _ZRangeMixin:
     """Set Z-range entries in the motor the z-stack runs on.
 
     With "Piezo Z-Stack" checked (always, on a piezo-only scope) the Z-min/Z-max entries are piezo
     positions in µm and the stepper holds where it is; unchecked, they are stepper z in µm. Host widgets
-    have ``stage``, ``multipointController``, ``checkbox_usePiezo``, ``entry_minZ`` and ``entry_maxZ``.
+    have ``stage``, ``multipointController``, ``checkbox_usePiezo``, ``checkbox_withReflectionAutofocus``,
+    ``entry_minZ`` and ``entry_maxZ``.
+
+    With laser AF checked, Set Range is relative instead: the entries are µm from the laser AF reference plane,
+    in the actuator laser AF drives (the piezo when the scope has one, else the stepper).
     """
 
     def _stack_z_um(self) -> float:
@@ -1150,11 +1160,40 @@ class _ZRangeMixin:
             low_um, high_um = SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000, SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
         z_um = self._stack_z_um()
         for entry in (self.entry_minZ, self.entry_maxZ):
+            entry.setSuffix(_Z_RANGE_SUFFIX)
             entry.setRange(low_um, high_um)
             entry.setValue(z_um)
 
+    def _actuator_travel_um(self) -> Tuple[float, float]:
+        """Travel of the actuator laser AF drives, in µm: the piezo's [0, range], or the stepper's Z software limits."""
+        piezo = self.multipointController.piezo
+        if piezo is not None:
+            return 0.0, float(piezo.range_um)
+        return SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000, SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
+
+    def _reset_relative_z_range_entries(self):
+        """Relative Set Range: both entries start at the reference plane (0 / 0), within ± the actuator's travel."""
+        low_um, high_um = self._actuator_travel_um()
+        span_um = high_um - low_um
+        for entry in (self.entry_minZ, self.entry_maxZ):
+            entry.setSuffix(_RELATIVE_Z_RANGE_SUFFIX)
+            entry.setRange(-span_um, span_um)
+            entry.setValue(0.0)
+
     def _push_set_z_range(self):
-        """Hand the Set Z-range entries to the controller (a piezo range holds the stepper where it is)."""
+        """Hand the Set Z-range entries to the controller (a piezo range holds the stepper where it is).
+
+        Called in Set Range, where the laser AF checkbox picks the mode: checked, the entries are a range relative
+        to the laser AF reference and the stepper holds; unchecked, they are absolute positions, as before.
+        Either way the other kind of range is cleared.
+        """
+        if self.checkbox_withReflectionAutofocus.isChecked():
+            self.multipointController.set_laser_af_relative_range_um((self.entry_minZ.value(), self.entry_maxZ.value()))
+            self.multipointController.set_piezo_z_range_um(None)
+            z_mm = self.stage.get_pos().z_mm
+            self.multipointController.set_z_range(z_mm, z_mm)
+            return
+        self.multipointController.set_laser_af_relative_range_um(None)
         if self.checkbox_usePiezo.isChecked():
             z_mm = self.stage.get_pos().z_mm
             self.multipointController.set_z_range(z_mm, z_mm)
@@ -7770,12 +7809,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         "Apply current settings" share this. Returns None, or a reason nothing further should happen.
         """
         # No Set Z-range in this tab: locations keep their own z, the stack is dz & Nz from the current z
-        # (Hongquan, 2026-10-31). A piezo range left by the Wellplate tab must not leak into this run.
+        # (Hongquan, 2026-10-31). A piezo or relative range left by the Wellplate tab must not leak into this run.
         z = self.stage.get_pos().z_mm
         dz = self.entry_deltaZ.value()
         Nz = self.entry_NZ.value()
         self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))  # dz is in um, z in mm
         self.multipointController.set_piezo_z_range_um(None)
+        self.multipointController.set_laser_af_relative_range_um(None)
 
         if self.checkbox_useFocusMap.isChecked():
             self.focusMapWidget.fit_surface()
@@ -8255,6 +8295,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
         self.multipointController.set_piezo_z_range_um(None)
+        self.multipointController.set_laser_af_relative_range_um(None)
 
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
@@ -8601,6 +8642,9 @@ class WellplateMultiPointWidget(
 
         # Add state tracking for Z parameters
         self.stored_z_params = dict(self.INITIAL_STORED_Z_PARAMS)
+        # The laser AF reference_identity the relative Set Range entries were started, measured or loaded against:
+        # a different identity at signal_reference_changed clears them (an identical reload re-emits it too).
+        self._relative_range_identity = None
 
         # Add state tracking for Time parameters
         self.stored_time_params = {"dt": None, "nt": None}
@@ -8998,7 +9042,17 @@ class WellplateMultiPointWidget(
         self.z_max_layout.addWidget(self.goto_maxZ_button)
         z_range_layout.addLayout(self.z_max_layout)
 
-        self.z_controls_range_frame.setLayout(z_range_layout)
+        # Status line under the Z-min / Z-max row (e.g. a relative range cleared by a laser AF reference change)
+        self.label_z_range_status = QLabel()
+        self.label_z_range_status.setWordWrap(True)
+        self.label_z_range_status.setVisible(False)
+        z_range_frame_layout = QVBoxLayout()
+        z_range_frame_layout.setContentsMargins(0, 0, 0, 0)
+        z_range_frame_layout.setSpacing(0)
+        z_range_frame_layout.addLayout(z_range_layout)
+        z_range_frame_layout.addWidget(self.label_z_range_status)
+
+        self.z_controls_range_frame.setLayout(z_range_frame_layout)
         self.z_controls_range_frame.setVisible(False)  # Initially hidden (shown when "Set Range" mode)
         grid.addWidget(self.z_controls_range_frame, 1, 0, 1, 3)  # Span full row (columns 0, 1, 2)
 
@@ -9088,6 +9142,10 @@ class WellplateMultiPointWidget(
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
         self.checkbox_withReflectionAutofocus.toggled.connect(lambda _c: self._update_laser_af_per_stack_state())
+        self.checkbox_withReflectionAutofocus.toggled.connect(self._on_laser_af_toggled)
+        laser_af = self._laser_af()
+        if laser_af is not None:
+            laser_af.signal_reference_changed.connect(self._on_laser_af_reference_changed)
         self.combobox_z_order.currentIndexChanged.connect(lambda _i: self._update_laser_af_per_stack_state())
         self._update_laser_af_per_stack_state()
         self.checkbox_genAFMap.toggled.connect(self.multipointController.set_gen_focus_map_flag)
@@ -9698,9 +9756,14 @@ class WellplateMultiPointWidget(
         self.stored_z_params["z_mode"] = self.combobox_z_mode.currentText()
 
     def _on_stack_motor_changed(self):
-        """A range recorded on one motor means nothing on the other: restart it at the new motor's position."""
+        """A range recorded on one motor means nothing on the other: restart it at the new motor's position.
+
+        A relative range is left alone: it is in the actuator laser AF drives, which this checkbox does not change
+        (a stepper stack on a piezo scope is refused at Start).
+        """
         self.stored_z_params["z_min"] = self.stored_z_params["z_max"] = None
-        self._reset_z_range_entries()
+        if not self._relative_mode():
+            self._reset_z_range_entries()
 
     def restore_z_parameters(self):
         """Restore stored Z parameters when showing controls"""
@@ -9920,17 +9983,11 @@ class WellplateMultiPointWidget(
                 if widget:
                     widget.setVisible(is_visible)
 
-        # Disable and uncheck reflection autofocus checkbox if Z-range is visible
-        if is_visible:
-            self.checkbox_withReflectionAutofocus.setChecked(False)
-        self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
+        # Laser AF stays available in Set Range: it picks the mode (checked, the range is relative to its reference).
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
-        current_z = self._stack_z_um()
-        self.entry_minZ.setValue(current_z)
-        if is_visible:
-            self._reset_reflection_af_reference()
-        self.entry_maxZ.setValue(current_z)
+        self._set_z_range_status("")
+        self._restart_z_range()
 
         # Safely connect or disconnect signals
         try:
@@ -10069,45 +10126,175 @@ class WellplateMultiPointWidget(
         z_min = self.entry_minZ.value()
         z_max = self.entry_maxZ.value()
         dz = self.entry_deltaZ.value()
-        nz = math.ceil((z_max - z_min) / dz) + 1
+        if self._relative_mode():
+            nz = nz_for_range(z_min, z_max, dz)
+        else:
+            nz = math.ceil((z_max - z_min) / dz) + 1
         self.entry_NZ.setValue(nz)
 
     def set_z_min(self):
-        z_value = self._stack_z_um()
-        self.entry_minZ.setValue(z_value)
-        self._reset_reflection_af_reference()
+        if self._relative_mode():
+            self._set_relative_z(self.entry_minZ)
+        else:
+            self.entry_minZ.setValue(self._stack_z_um())
 
     def set_z_max(self):
-        z_value = self._stack_z_um()
-        self.entry_maxZ.setValue(z_value)
+        if self._relative_mode():
+            self._set_relative_z(self.entry_maxZ)
+        else:
+            self.entry_maxZ.setValue(self._stack_z_um())
 
     def goto_z_min(self):
-        self._move_stack_z_to_um(self.entry_minZ.value())
+        if self._relative_mode():
+            self._goto_relative_z(self.entry_minZ)
+        else:
+            self._move_stack_z_to_um(self.entry_minZ.value())
 
     def goto_z_max(self):
-        self._move_stack_z_to_um(self.entry_maxZ.value())
+        if self._relative_mode():
+            self._goto_relative_z(self.entry_maxZ)
+        else:
+            self._move_stack_z_to_um(self.entry_maxZ.value())
 
     def update_z_min(self, z_pos_um):
         if z_pos_um < self.entry_minZ.value():
             self.entry_minZ.setValue(z_pos_um)
-            self._reset_reflection_af_reference()
 
     def update_z_max(self, z_pos_um):
         if z_pos_um > self.entry_maxZ.value():
             self.entry_maxZ.setValue(z_pos_um)
 
-    def _reset_reflection_af_reference(self):
-        if self.checkbox_withReflectionAutofocus.isChecked():
-            was_live = self.liveController.is_live
+    # --- Set Range relative to the laser AF reference (laser AF checked) ------------------------------------------
+
+    def _set_range_shown(self) -> bool:
+        return self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() == "Set Range"
+
+    def _relative_mode(self) -> bool:
+        """Set Range with laser AF checked: the Z-min / Z-max entries are µm from the laser AF reference plane."""
+        return self.checkbox_withReflectionAutofocus.isChecked() and self._set_range_shown()
+
+    def _laser_af(self):
+        return getattr(self.multipointController, "laserAutoFocusController", None)
+
+    def _laser_af_reference_identity(self) -> Optional[tuple]:
+        laser_af = self._laser_af()
+        return laser_af.reference_identity if laser_af is not None else None
+
+    def _restart_z_range(self):
+        """Start the Set Range entries over in the current mode: 0 / 0 from the laser AF reference (remembering which
+        reference that is), or both at the stack motor's position."""
+        if self._relative_mode():
+            self._reset_relative_z_range_entries()
+            self._relative_range_identity = self._laser_af_reference_identity()
+        else:
+            self._reset_z_range_entries()
+
+    def _set_z_range_status(self, text: str):
+        self.label_z_range_status.setText(text)
+        self.label_z_range_status.setVisible(bool(text))
+
+    def _on_laser_af_toggled(self, _checked):
+        """In Set Range the laser AF checkbox picks the mode, and the same numbers mean something else in the other
+        one: clear the range (relative 0 / 0, or absolute at the stack motor's position)."""
+        if self._set_range_shown():
+            self._set_z_range_status("")
+            self._restart_z_range()
+
+    def _on_laser_af_reference_changed(self, _has_reference):
+        """Clear the relative range when the laser AF reference it was set against is gone.
+
+        signal_reference_changed is re-emitted on every config reload, even with nothing changed, so compare the
+        reference identity by value rather than clearing on every emit.
+        """
+        if not self._relative_mode():
+            return
+        if self._laser_af_reference_identity() == self._relative_range_identity:
+            return
+        had_range = (self.entry_minZ.value(), self.entry_maxZ.value()) != (0.0, 0.0)
+        self._restart_z_range()
+        if had_range:
+            msg = "Laser AF reference changed — Z-range cleared, set it again."
+            self._set_z_range_status(msg)
+            self._log.info(msg)
+
+    def _ready_laser_af(self):
+        """The laser AF controller when it can measure against a reference; otherwise say so and return None."""
+        laser_af = self._laser_af()
+        if laser_af is None or not laser_af.is_initialized or not laser_af.laser_af_properties.has_reference:
+            error_dialog("Set the laser AF reference first.")
+            return None
+        return laser_af
+
+    def _with_live_paused(self, fn):
+        """Run fn with live view paused: laser AF and live share the microcontroller's serial link."""
+        was_live = self.liveController.is_live
+        try:
             if was_live:
                 self.liveController.stop_live()
-            if not self.multipointController.laserAutoFocusController.set_reference():
-                error_dialog("Failed to set reference for reflection autofocus. Is the laser autofocus initialized?")
+            return fn()
+        finally:
             if was_live:
                 self.liveController.start_live()
 
+    def _set_relative_z(self, entry):
+        """Relative Set Z-min / Z-max: the actuator's distance from the laser AF reference plane here (anchor rule).
+
+        On a failed measurement the entry keeps its value and a dialog says why.
+        """
+        laser_af = self._ready_laser_af()
+        if laser_af is None:
+            return
+        try:
+            measurement = self._with_live_paused(laser_af.measure_relative_z_um)
+        except RelativeZError as e:
+            error_dialog(str(e))
+            return
+        self._set_z_range_status("")
+        entry.setValue(measurement.z_rel_um)
+        self._relative_range_identity = laser_af.reference_identity
+        self._log.info(
+            f"Relative z {measurement.z_rel_um:+.2f} µm from the laser AF reference "
+            f"({'anchor reused' if measurement.anchor_reused else 'locked on'})"
+        )
+
+    def _goto_relative_z(self, entry):
+        """Relative Go To: lock on (anchor rule), then an absolute move to anchor + the entry's value.
+
+        A failed lock-on, or a target outside the travel, returns the actuator to where it started and says why.
+        """
+        laser_af = self._ready_laser_af()
+        if laser_af is None:
+            return
+        value_um = entry.value()
+
+        def go():
+            z_now_um = laser_af.actuator_position_um()
+            low_um, high_um = self._actuator_travel_um()
+            try:
+                anchor_um, _reused = laser_af.find_anchor_um()
+                target_um = anchor_um + value_um
+                if not low_um - TRAVEL_EPS_UM <= target_um <= high_um + TRAVEL_EPS_UM:
+                    raise RelativeZError(
+                        f"Can't go there: {value_um:+.1f} µm from the laser AF reference is {target_um:.1f} µm here, "
+                        f"outside the travel ({low_um:.0f} to {high_um:.0f} µm)."
+                    )
+            except RelativeZError:
+                try:
+                    laser_af.move_actuator_to_um(z_now_um)  # the lock-on may have moved the actuator
+                except Exception:
+                    self._log.error("Failed to return the actuator after a failed Go To", exc_info=True)
+                raise
+            laser_af.move_actuator_to_um(min(max(target_um, low_um), high_um))  # snap an in-tolerance overshoot
+
+        try:
+            self._with_live_paused(go)
+        except RelativeZError as e:
+            error_dialog(str(e))
+
     def init_z(self):
         # sets initial z range form the current z position used after startup of the GUI
+        if self._relative_mode():
+            return  # the entries are µm from the laser AF reference, not motor positions
         z_um = self._stack_z_um()
 
         # block entry update signals
@@ -10243,6 +10430,7 @@ class WellplateMultiPointWidget(
             Nz = self.entry_NZ.value()
             self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))  # dz is in um, z in mm
             self.multipointController.set_piezo_z_range_um(None)
+            self.multipointController.set_laser_af_relative_range_um(None)
 
         if self.checkbox_useFocusMap.isChecked():
             # Try to fit the surface; on success set the surface fitter in the controller
@@ -10416,9 +10604,8 @@ class WellplateMultiPointWidget(
 
             # Restore Z controls based on Z mode
             if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() == "Set Range":
-                # In Set Range mode, Nz comes from the range, and laser AF stays off (see toggle_z_range_controls)
+                # In Set Range mode, Nz comes from the range (laser AF stays enabled: it picks the mode)
                 self.entry_NZ.setEnabled(False)
-                self.checkbox_withReflectionAutofocus.setEnabled(False)
 
             # Restore coverage based on XY mode
             if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position":
@@ -10462,6 +10649,7 @@ class WellplateMultiPointWidget(
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
         self.multipointController.set_piezo_z_range_um(None)
+        self.multipointController.set_laser_af_relative_range_um(None)
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
         self.multipointController.run_acquisition(acquire_current_fov=True)
@@ -10653,18 +10841,21 @@ class WellplateMultiPointWidget(
         for widget in widgets_to_block:
             widget.blockSignals(True)
 
-        # Only a piezo range marks Set Range in the YAML: z_range_mm is written for every z mode.
+        # Only a piezo range or a laser-AF-relative range marks Set Range in the YAML: z_range_mm is written for
+        # every z mode.
         piezo_z_range_um = yaml_data.piezo_z_range_um if yaml_data.use_piezo else None
+        relative_range_um = yaml_data.laser_af_relative_range_um
 
         try:
-            # Z-stack settings
-            self.checkbox_z.setChecked(yaml_data.nz > 1)
+            # Z-stack settings (the saved Nz of a relative range is for reading only: a 0 / 0 range is one plane)
+            self.checkbox_z.setChecked(yaml_data.nz > 1 or relative_range_um is not None)
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
             self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
 
-            # Z mode - Set Range for a saved piezo range, otherwise the YAML's z-stacking config as the dropdown shows it
-            if piezo_z_range_um is not None:
+            # Z mode - Set Range for a saved piezo or relative range, otherwise the YAML's z-stacking config as the
+            # dropdown shows it
+            if piezo_z_range_um is not None or relative_range_um is not None:
                 self.combobox_z_mode.setCurrentText("Set Range")
             else:
                 self.combobox_z_mode.setCurrentText(_z_mode_for_z_stacking_config(yaml_data.z_stacking_config))
@@ -10692,9 +10883,9 @@ class WellplateMultiPointWidget(
             if yaml_data.channel_names:
                 self.channel_sequence.set_included_order(yaml_data.channel_names)
 
-            # Autofocus
+            # Autofocus (a relative range is Set Range with laser AF on)
             self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
-            self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+            self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af or relative_range_um is not None)
             self.checkbox_laserAfPerStack.setChecked(yaml_data.laser_af_per_stack)
 
             # XY mode - set to Select Wells for wellplate YAML
@@ -10728,10 +10919,16 @@ class WellplateMultiPointWidget(
             self.update_tab_styles()
             self.update_coordinates()
 
-            # After update_control_visibility, which starts both entries at the current position
+            # After update_control_visibility, which starts both entries at the current position (or at 0 / 0)
             if piezo_z_range_um is not None:
                 self.entry_minZ.setValue(piezo_z_range_um[0])
                 self.entry_maxZ.setValue(piezo_z_range_um[1])
+            elif relative_range_um is not None:
+                self._reset_relative_z_range_entries()  # relative units and limits, before the values
+                self.entry_minZ.setValue(relative_range_um[0])
+                self.entry_maxZ.setValue(relative_range_um[1])
+                self._relative_range_identity = self._laser_af_reference_identity()
+                self._set_z_range_status("")
 
     def _load_well_regions(self, regions):
         """Load well regions from YAML and select them in the well selector."""
