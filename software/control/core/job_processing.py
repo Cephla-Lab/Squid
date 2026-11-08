@@ -6,7 +6,7 @@ import time
 import json
 from datetime import datetime
 from contextlib import contextmanager
-from typing import ClassVar, Dict, Generic, List, Optional, Set, Tuple, TypeVar, Union
+from typing import TYPE_CHECKING, ClassVar, Dict, Generic, List, Optional, Set, Tuple, TypeVar, Union
 from uuid import uuid4
 
 from dataclasses import dataclass, field
@@ -28,6 +28,9 @@ from control.core.memory_profiler import (
     set_worker_operation,
     log_memory,
 )
+
+if TYPE_CHECKING:  # imported lazily at run time, in the writer process
+    from control.core.zarr_writer import ZarrWriter
 
 
 @dataclass
