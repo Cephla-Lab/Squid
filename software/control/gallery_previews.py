@@ -116,27 +116,36 @@ def _overview_channel_names(path: str) -> List[str]:
 
 
 def _acquisition_channel_names(folder: str) -> List[str]:
-    """The channel names listed in the run's acquisition.yaml; [] when there is none (older data) or it is unreadable."""
-    try:
-        with open(os.path.join(folder, "acquisition.yaml"), encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    except (OSError, yaml.YAMLError):
-        return []
-    channels = data.get("channels") if isinstance(data, dict) else None
-    if not isinstance(channels, list):
-        return []
-    return [str(c["name"]) for c in channels if isinstance(c, dict) and c.get("name")]
+    """The channel names the run recorded, from acquisition.yaml or, for older runs, acquisition_channels.yaml; []
+    when neither names any (oldest data) or they are unreadable."""
+    for file_name in ("acquisition.yaml", "acquisition_channels.yaml"):
+        try:
+            with open(os.path.join(folder, file_name), encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+        except (OSError, yaml.YAMLError):
+            continue
+        channels = data.get("channels") if isinstance(data, dict) else None
+        if isinstance(channels, list):
+            names = [str(c["name"]) for c in channels if isinstance(c, dict) and c.get("name")]
+            if names:
+                return names
+    return []
 
 
-def _parse_image_name(name: str, channel_names: Sequence[str] = ()) -> Optional[Tuple[str, int, int, str]]:
-    """(region, fov, z, channel) of an individual image file name, or None. A known channel name is matched as the
-    file's suffix first (longest first), which settles names whose region and channel both contain underscores or
-    digits; the pattern alone decides files of channels the run did not list."""
+def _channel_suffixes(channel_names: Sequence[str]) -> List[Tuple[str, str]]:
+    """(file-name suffix, channel) for each known channel, longest suffix first, as the saver writes the names."""
+    return sorted(((f"_{c.replace(' ', '_')}", c) for c in channel_names), key=lambda s: -len(s[0]))
+
+
+def _parse_image_name(name: str, suffixes: Sequence[Tuple[str, str]] = ()) -> Optional[Tuple[str, int, int, str]]:
+    """(region, fov, z, channel) of an individual image file name, or None. A known channel (_channel_suffixes) is
+    matched as the file's suffix first, which settles names whose region and channel both contain underscores or
+    digits; the pattern alone decides files of channels the run did not list (and would mis-split a channel name
+    that starts with digits, such as "488 nm", when the run recorded no channel names at all)."""
     stem, dot, ext = name.rpartition(".")
     if not dot or ext.lower() not in _IMAGE_EXTENSIONS:
         return None
-    for channel in sorted(channel_names, key=len, reverse=True):
-        suffix = "_" + channel.replace(" ", "_")
+    for suffix, channel in suffixes:
         if stem.endswith(suffix):
             m = _IMAGE_STEM.match(stem[: -len(suffix)])
             if m:
@@ -149,11 +158,12 @@ def _parse_image_name(name: str, channel_names: Sequence[str] = ()) -> Optional[
 
 def _first_fov_images(timepoint_path: str, channel_names: Sequence[str] = ()) -> Dict[str, str]:
     """Channel name -> file, for the smallest (region, fov) found and the smallest z of each channel."""
+    suffixes = _channel_suffixes(channel_names)
     candidates = []  # (region, fov, z, channel, path)
     try:
         with os.scandir(timepoint_path) as it:
             for entry in it:
-                parsed = _parse_image_name(entry.name, channel_names)
+                parsed = _parse_image_name(entry.name, suffixes)
                 if parsed and entry.is_file():
                     candidates.append((*parsed, entry.path))
     except OSError:

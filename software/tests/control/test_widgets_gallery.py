@@ -1356,3 +1356,25 @@ def test_a_protocol_run_is_searched_by_what_its_rounds_used(tmp_path):
     for needle in ("screen", "round1", "488", "40x", "zarr", "384"):
         assert matches(row, needle, "All"), needle
     assert not matches(row, "561", "All")
+
+
+def test_showing_the_gallery_during_a_load_does_not_restart_it(gallery):
+    gallery.hide()
+    gallery._loading = True  # as if a reload were in flight: it is testing the folders already
+    generation = gallery._generation
+    try:
+        gallery.show()
+        assert gallery._generation == generation
+    finally:
+        gallery._loading = False
+
+
+def test_a_reload_of_the_same_rows_keeps_the_scroll_position(gallery, qtbot):
+    gallery.resize(gallery.THUMBNAIL_SIZE + 60, 160)  # the five tiles overflow the grid
+    QApplication.processEvents()
+    gallery.list_widget.doItemsLayout()
+    bar = gallery.list_widget.verticalScrollBar()
+    assert bar.maximum() > 0
+    bar.setValue(bar.maximum())
+    _reload_and_wait(gallery, qtbot)
+    assert bar.value() == bar.maximum() > 0

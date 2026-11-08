@@ -266,3 +266,12 @@ def test_a_channel_name_starting_with_digits_is_told_apart_by_the_run_s_channel_
     assert sorted(src.channels) == ["488 nm", BF]
     assert os.path.basename(src.image_paths["488 nm"]) == "A1_0_0_488_nm.tiff"
     assert os.path.basename(src.image_paths[BF]) == "A1_0_0_BF_LED_matrix_full.tiff"
+
+
+def test_channel_names_fall_back_to_the_older_acquisition_channels_file(saving_root):
+    folder = write_acquisition(saving_root, "older", channels=("488 nm", BF), with_yaml=False)
+    with open(folder / "acquisition_channels.yaml", "w", encoding="utf-8") as f:
+        f.write("channels:\n  - name: 488 nm\n  - name: BF LED matrix full\nobjective: 20x\n")
+    src = find_preview_source(str(folder))
+    assert sorted(src.channels) == ["488 nm", BF]
+    assert os.path.basename(src.image_paths["488 nm"]) == "A1_0_0_488_nm.tiff"

@@ -127,7 +127,7 @@ def image_format_of(entry: HistoryEntry) -> Optional[str]:
     return md.get("image_format") or image_format_for_saving_option(md.get("file_format"))
 
 
-def _search_parts(entry: HistoryEntry) -> list:
+def _search_parts(entry: HistoryEntry) -> List[Optional[str]]:
     md = entry.metadata
     parts = [entry.name, md.get("wellplate_format"), *_channels(entry), md.get("objective"), image_format_of(entry)]
     return parts + _protocol_names(entry)
@@ -955,6 +955,8 @@ class AcquisitionGalleryWidget(QWidget):
     def _populate(self, reset_sort: bool = False) -> None:
         self._update_chips()
         needle = self.filter_edit.text()
+        shown_before = [row.entry.id for row in self._shown]
+        scroll_before = (self.list_widget.verticalScrollBar().value(), self.table_widget.verticalScrollBar().value())
         self._shown = [row for row in self._all_rows if matches(row, needle, self._status_filter)]
         self._syncing_selection = True
         try:
@@ -962,6 +964,11 @@ class AcquisitionGalleryWidget(QWidget):
             self._populate_table(reset_sort)
         finally:
             self._syncing_selection = False
+        if [row.entry.id for row in self._shown] == shown_before:
+            # A reload that lists the same entries (a show of the tab, a progress tick) keeps the scroll position.
+            for view, value in zip((self.list_widget, self.table_widget), scroll_before):
+                view.doItemsLayout()  # the icon grid lays itself out later otherwise, and would clamp the value to 0
+                view.verticalScrollBar().setValue(value)
         total, shown = len(self._all_rows), len(self._shown)
         self.count_label.setText(f"{shown} of {total}" if shown != total else f"{total}")
         selected = self._selected_id if self._shown_row(self._selected_id) is not None else None
@@ -1356,8 +1363,10 @@ class AcquisitionGalleryWidget(QWidget):
         if not self._closed:
             self._timer.start()
             # A full reload, not only when the history changed: the folders are tested again on the worker, so a
-            # drive plugged back in (which changes neither the history nor the previews) comes back online.
-            self.reload()
+            # drive plugged back in (which changes neither the history nor the previews) comes back online. A load
+            # already in flight is testing them, so it is left to finish.
+            if not self._loading:
+                self.reload()
         self.signal_shown.emit()
 
     def hideEvent(self, event):  # noqa: N802 (Qt naming)
