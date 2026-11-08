@@ -26,7 +26,13 @@ def test_save_theme_choice_without_ini_returns_false(tmp_path):
 
 
 def test_default_ui_theme_is_light():
-    assert control._def.UI_THEME == "light"
+    # The default as written in _def.py: the loaded value follows this rig's ini, which may set ui_theme.
+    import re
+    from pathlib import Path
+
+    source = Path(control._def.__file__).read_text(encoding="utf-8")
+    assert re.search(r'^UI_THEME = "light"', source, re.MULTILINE)
+    assert theme.load_theme_choice() in theme.THEMES
 
 
 def test_save_theme_choice_failed_replace_leaves_ini_intact(tmp_path, monkeypatch):
@@ -43,6 +49,27 @@ def test_save_theme_choice_failed_replace_leaves_ini_intact(tmp_path, monkeypatc
     assert theme.save_theme_choice(str(ini), "dark") is False
     assert ini.read_text() == original
     assert [p.name for p in tmp_path.iterdir()] == ["configuration_test.ini"]
+
+
+def test_save_theme_choice_goes_through_the_shared_ini_writer(tmp_path, monkeypatch):
+    import control.utils
+
+    ini = tmp_path / "configuration_test.ini"
+    ini.write_text("[GENERAL]\ncamera_type = Default\n")
+    calls = []
+    real = control.utils.write_ini_atomically
+    monkeypatch.setattr(
+        control.utils, "write_ini_atomically", lambda config, path: calls.append(path) or real(config, path)
+    )
+    assert theme.save_theme_choice(str(ini), "dark") is True
+    assert calls == [str(ini)]
+
+    def refuse(config, path):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(control.utils, "write_ini_atomically", refuse)
+    assert theme.save_theme_choice(str(ini), "light") is False
+    assert "ui_theme = dark" in ini.read_text()
 
 
 def test_save_theme_choice_adds_missing_general_section(tmp_path):
