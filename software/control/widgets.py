@@ -482,9 +482,11 @@ class NDViewerTab(QWidget):
         """False (placeholder shown with the upgrade command) when the installed ndv is below the viewer's floor."""
         try:
             import ndv
+
+            installed = getattr(ndv, "__version__", "0")
         except ImportError:
-            return True  # the import of the viewer reports a missing ndv itself
-        problem = ndv_version_problem(getattr(ndv, "__version__", "0"))
+            installed = None  # the viewer's own placeholder would print an unsafe `pip install ndv[...]`
+        problem = ndv_version_problem(installed)
         if problem is None:
             return True
         self._log.error(problem.replace("\n", " "))

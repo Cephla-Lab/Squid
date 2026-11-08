@@ -130,3 +130,39 @@ def test_ndv_version_at_or_above_the_floor_is_fine(installed):
 def test_ndv_below_the_floor_names_the_version_and_the_upgrade(installed):
     problem = ndv_version_problem(installed)
     assert installed in problem and NDV_INSTALL_COMMAND in problem
+
+
+def test_missing_ndv_message_carries_the_install_command():
+    problem = ndv_version_problem(None)
+    assert "none is installed" in problem and NDV_INSTALL_COMMAND in problem
+
+
+@pytest.mark.parametrize("installed, ok", [("0.5.0", True), ("0.5.1", True), ("0.4.1", False), ("0.4.1.dev13", False)])
+def test_check_viewer_reads_the_ndv_version_from_metadata(tmp_path, installed, ok):
+    # ndv 0.4 is present, so find_spec is fine, but the launched viewer would fail on luts.name / scales
+    p = check_viewer(str(tmp_path), find_spec=lambda n: object(), isfile=lambda f: True, version_of=lambda n: installed)
+    assert p.ok is ok
+    assert (NDV_INSTALL_COMMAND in p.problem()) is (not ok)
+
+
+def test_check_viewer_does_not_look_up_a_version_when_ndv_is_missing(tmp_path):
+    def version_of(name):
+        raise AssertionError("version lookup for a missing package")
+
+    p = check_viewer(
+        str(tmp_path),
+        find_spec=lambda n: None if n == "ndv" else object(),
+        isfile=lambda f: True,
+        version_of=version_of,
+    )
+    assert p.missing_packages == ("ndv",) and NDV_INSTALL_COMMAND in p.problem()
+
+
+def test_check_viewer_treats_an_unregistered_ndv_as_absent(tmp_path):
+    import importlib.metadata
+
+    def version_of(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    p = check_viewer(str(tmp_path), find_spec=lambda n: object(), isfile=lambda f: True, version_of=version_of)
+    assert not p.ok and "none is installed" in p.problem()

@@ -4,6 +4,7 @@ Qt-free on purpose: the GUI widgets call these helpers and show the dialogs; eve
 without the viewer, which Squid's CI never checks out (the ndviewer_light submodule stays uninitialised there).
 """
 
+import importlib.metadata
 import importlib.util
 import os
 import subprocess
@@ -34,8 +35,15 @@ NDV_INSTALL_COMMAND = (
 )
 
 
-def ndv_version_problem(installed: str) -> Optional[str]:
-    """None when the installed ndv meets the viewer's floor, else the message (with the upgrade command)."""
+def ndv_version_problem(installed: Optional[str]) -> Optional[str]:
+    """None when the installed ndv meets the viewer's floor, else the message (with the install command).
+
+    ``installed`` None means ndv is absent; the message then says so instead of leaving the bundled
+    viewer to print its own ``pip install ndv[...]`` hint, which would resolve ihist and pull numpy 2 in.
+    """
+    floor = f"{NDV_MIN_VERSION[0]}.{NDV_MIN_VERSION[1]}"
+    if installed is None:
+        return f"NDViewer needs ndv {floor} or newer; none is installed.\nInstall with:  {NDV_INSTALL_COMMAND}"
     parts = []
     for piece in installed.split(".")[:2]:
         digits = "".join(ch for ch in piece if ch.isdigit())
@@ -67,10 +75,11 @@ class ViewerPreflight:
     missing_packages: Tuple[str, ...]
     entry_point: str
     entry_point_exists: bool
+    ndv_problem: Optional[str] = None  # an installed ndv below the viewer's floor (see ndv_version_problem)
 
     @property
     def ok(self) -> bool:
-        return not self.missing_packages and self.entry_point_exists
+        return not self.missing_packages and self.entry_point_exists and self.ndv_problem is None
 
     def problem(self) -> str:
         """The dialog text when not ok; empty when ok."""
@@ -83,6 +92,8 @@ class ViewerPreflight:
                 lines.append(NDV_INSTALL_COMMAND)
             if others:
                 lines.append(f"pip install {' '.join(others)}")
+        if self.ndv_problem:
+            lines.append(self.ndv_problem)
         if not self.entry_point_exists:
             lines.append(f"The viewer submodule is not checked out ({self.entry_point}).")
             lines.append(f"Run: {SUBMODULE_HINT}")
@@ -93,11 +104,23 @@ def check_viewer(
     software_dir: str,
     find_spec: Callable[[str], object] = importlib.util.find_spec,
     isfile: Callable[[str], bool] = os.path.isfile,
+    version_of: Callable[[str], str] = importlib.metadata.version,
 ) -> ViewerPreflight:
-    """Find every problem a launch would hit, without importing the viewer or Qt."""
+    """Find every problem a launch would hit, without importing the viewer or Qt.
+
+    The ndv version is read from the installed distribution's metadata (no import): an ndv below the
+    viewer's floor launches a viewer that fails on its first dataset.
+    """
     missing = tuple(name for name in VIEWER_PACKAGES if find_spec(name) is None)
     entry_point = viewer_entry_point(software_dir)
-    return ViewerPreflight(missing, entry_point, bool(isfile(entry_point)))
+    ndv_problem = None
+    if "ndv" not in missing:
+        try:
+            installed = version_of("ndv")
+        except importlib.metadata.PackageNotFoundError:
+            installed = None
+        ndv_problem = ndv_version_problem(installed)
+    return ViewerPreflight(missing, entry_point, bool(isfile(entry_point)), ndv_problem)
 
 
 def viewer_launch_command(run_dir: str) -> List[str]:
