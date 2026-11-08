@@ -126,12 +126,13 @@ def test_wholly_skipped_first_fov_creates_its_zarr_array(tmp_path, zarr_writers,
     data = _read_zarr(zarr_info, 0)
     if layout == "6d":
         assert data.shape == (2, 1, 2, 3, *SHAPE)  # the region array, every FOV
-        assert _squid_attrs(zarr_info, 0)["skipped_frames"] == [[0, 0, c, k] for c, k in frames]
+        expected_skips = [[0, 0, c, k] for c, k in frames]
     else:
         assert data.shape == (1, 2, 3, *SHAPE)
-        assert _squid_attrs(zarr_info, 0)["skipped_frames"] == [[0, c, k] for c, k in frames]
+        expected_skips = [[0, c, k] for c, k in frames]
     assert data.dtype == np.uint16
     assert not data.any()
+    assert "skipped_frames" not in _squid_attrs(zarr_info, 0)  # written once, at finalize
     if layout == "hcs":
         with open(os.path.join(zarr_info.get_well_path("A1"), "zarr.json")) as f:
             well = json.load(f)["attributes"]["ome"]["well"]
@@ -139,7 +140,9 @@ def test_wholly_skipped_first_fov_creates_its_zarr_array(tmp_path, zarr_writers,
         assert os.path.exists(os.path.join(zarr_info.get_plate_path(), "zarr.json"))
 
     assert SaveZarrJob.finalize_all_writers()
-    assert _squid_attrs(zarr_info, 0)["acquisition_complete"] is True
+    squid_attrs = _squid_attrs(zarr_info, 0)
+    assert squid_attrs["skipped_frames"] == expected_skips
+    assert squid_attrs["acquisition_complete"] is True
 
 
 @pytest.mark.parametrize("notice_first", [True, False])
@@ -163,9 +166,10 @@ def test_partly_skipped_fov_writes_images_and_records_the_rest(tmp_path, zarr_wr
         assert (data[0, c, k] == 10 * c + k + 1).all()
     for c, k in skipped:
         assert not data[0, c, k].any()
-    assert _squid_attrs(zarr_info, 0)["skipped_frames"] == [[0, 0, 0], [0, 1, 2]]
     assert SaveZarrJob.finalize_all_writers()
-    assert _squid_attrs(zarr_info, 0)["acquisition_complete"] is True
+    squid_attrs = _squid_attrs(zarr_info, 0)
+    assert squid_attrs["skipped_frames"] == [[0, 0, 0], [0, 1, 2]]
+    assert squid_attrs["acquisition_complete"] is True
 
 
 def test_a_zarr_run_without_skips_writes_no_skipped_frames_attribute(tmp_path, zarr_writers):

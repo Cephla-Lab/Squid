@@ -15,7 +15,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -362,9 +362,9 @@ class ZarrWriter:
         self._finalized = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._owns_loop = False  # True if we created the loop ourselves
-        # Frames left at the fill value on purpose (outside the travel), as index lists in the array's leading
-        # axis order: [t, c, z] (5D) or [fov, t, c, z] (6D).
-        self._skipped_frames: List[List[int]] = []
+        # Frames left at the fill value on purpose (outside the travel), as index tuples in the array's leading
+        # axis order: (t, c, z) (5D) or (fov, t, c, z) (6D). Kept in memory; finalize() / abort() write them.
+        self._skipped_frames: Set[Tuple[int, ...]] = set()
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         """Get or create the event loop (only used for init/finalize)."""
@@ -729,8 +729,9 @@ class ZarrWriter:
 
     def record_skipped(self, t: int, c: int, z: int, fov: Optional[int] = None) -> None:
         """Record a frame left out on purpose (its target was outside the actuator's travel): it stays at the fill
-        value, and _squid.skipped_frames lists it, as [t, c, z] (5D) or [fov, t, c, z] (6D), so array[*entry] is
-        the plane. Written to zarr.json at once, so the record does not depend on finalize().
+        value. finalize() (or abort()) lists it in _squid.skipped_frames, sorted, as [t, c, z] (5D) or
+        [fov, t, c, z] (6D), so array[*entry] is the plane. Nothing is written before then: zarr.json is rewritten
+        once, not per frame (coordinates.csv already records every skip as it happens).
 
         Args:
             t: Time point index
@@ -739,22 +740,13 @@ class ZarrWriter:
             fov: FOV index (required for 6D datasets, ignored for 5D)
         """
         self._check_frame_index(t, c, z, fov)
-        entry = [int(t), int(c), int(z)] if self._config.ndim == 5 else [int(fov), int(t), int(c), int(z)]
-        if entry in self._skipped_frames:
-            return
-        self._skipped_frames.append(entry)
-        self._skipped_frames.sort()
+        entry = (int(t), int(c), int(z)) if self._config.ndim == 5 else (int(fov), int(t), int(c), int(z))
+        self._skipped_frames.add(entry)
 
-        zarr_json_path = self._get_metadata_zarr_json_path()
-        try:
-            with open(zarr_json_path, "r") as f:
-                zarr_json = json.load(f)
-            zarr_json["attributes"]["_squid"]["skipped_frames"] = self._skipped_frames
-            with open(zarr_json_path, "w") as f:
-                json.dump(zarr_json, f, indent=2)
-        except (OSError, json.JSONDecodeError, KeyError) as e:
-            raise RuntimeError(f"Failed to record skipped frames in {zarr_json_path}: {e}") from e
-        log.debug(f"Recorded skipped frame {entry} in {zarr_json_path}")
+    def _put_skipped_frames(self, squid_attrs: Dict[str, Any]) -> None:
+        """Add _squid.skipped_frames, sorted, when any frame was recorded (absent otherwise, as before)."""
+        if self._skipped_frames:
+            squid_attrs["skipped_frames"] = [list(entry) for entry in sorted(self._skipped_frames)]
 
     def wait_for_pending(self, timeout_s: Optional[float] = None) -> int:
         """Wait for pending writes (blocking).
@@ -808,6 +800,7 @@ class ZarrWriter:
                 attrs = zarr_json.get("attributes", {})
                 if "_squid" in attrs:
                     attrs["_squid"]["acquisition_complete"] = True
+                    self._put_skipped_frames(attrs["_squid"])
                     zarr_json["attributes"] = attrs
                 with open(zarr_json_path, "w") as f:
                     json.dump(zarr_json, f, indent=2)
@@ -841,6 +834,7 @@ class ZarrWriter:
                     if "_squid" in attrs:
                         attrs["_squid"]["acquisition_complete"] = False
                         attrs["_squid"]["aborted"] = True
+                        self._put_skipped_frames(attrs["_squid"])
                         zarr_json["attributes"] = attrs
                     with open(zarr_json_path, "w") as f:
                         json.dump(zarr_json, f, indent=2)

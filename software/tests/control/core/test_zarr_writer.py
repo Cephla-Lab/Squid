@@ -511,7 +511,8 @@ class TestHCSMetadata:
 
 class TestZarrWriterRecordSkipped:
     """record_skipped: frames left out of a relative z-stack (outside the travel) stay at the fill value and are
-    listed in _squid.skipped_frames, as index lists in the array's leading axis order."""
+    listed in _squid.skipped_frames, as index lists in the array's leading axis order, when the writer finalizes
+    (or aborts): zarr.json is not rewritten per frame."""
 
     @staticmethod
     def _writer(temp_dir, shape, name="test.zarr"):
@@ -536,7 +537,6 @@ class TestZarrWriterRecordSkipped:
         writer.record_skipped(t=0, c=1, z=0)
         writer.record_skipped(t=1, c=0, z=2)  # recorded once
 
-        assert self._squid(writer)["skipped_frames"] == [[0, 1, 0], [1, 0, 2]]
         writer.finalize()
         squid_attrs = self._squid(writer)
         assert squid_attrs["skipped_frames"] == [[0, 1, 0], [1, 0, 2]]
@@ -547,11 +547,12 @@ class TestZarrWriterRecordSkipped:
 
         writer.record_skipped(t=0, c=1, z=1, fov=2)
 
-        assert self._squid(writer)["skipped_frames"] == [[2, 0, 1, 1]]
         with pytest.raises(ValueError, match="FOV index required"):
             writer.record_skipped(t=0, c=0, z=0)
         with pytest.raises(ValueError, match="FOV index"):
             writer.record_skipped(t=0, c=0, z=0, fov=3)
+        writer.finalize()
+        assert self._squid(writer)["skipped_frames"] == [[2, 0, 1, 1]]
 
     @pytest.mark.parametrize(
         "t, c, z, message", [(2, 0, 0, "Time index"), (0, 2, 0, "Channel index"), (0, 0, 3, "Z index")]
@@ -560,6 +561,7 @@ class TestZarrWriterRecordSkipped:
         writer = self._writer(tmp_path, (2, 2, 3, 8, 8))
         with pytest.raises(ValueError, match=message):
             writer.record_skipped(t=t, c=c, z=z)
+        writer.finalize()
         assert "skipped_frames" not in self._squid(writer)
 
     def test_needs_an_open_writer(self, tmp_path):
@@ -574,6 +576,30 @@ class TestZarrWriterRecordSkipped:
         writer.finalize()
         with pytest.raises(RuntimeError, match="finalized"):
             writer.record_skipped(t=0, c=0, z=0)
+
+    def test_many_skips_leave_zarr_json_alone_until_finalize(self, tmp_path):
+        # 5,000 frames, recorded in reverse order: none of them rewrites zarr.json; finalize writes them all, sorted.
+        writer = self._writer(tmp_path, (10, 5, 100, 8, 8))
+        zarr_json_path = writer._get_metadata_zarr_json_path()
+        before = (os.stat(zarr_json_path).st_mtime_ns, open(zarr_json_path, "rb").read())
+        frames = [(t, c, z) for t in range(10) for c in range(5) for z in range(100)]
+
+        for t, c, z in reversed(frames):
+            writer.record_skipped(t=t, c=c, z=z)
+
+        assert (os.stat(zarr_json_path).st_mtime_ns, open(zarr_json_path, "rb").read()) == before
+        writer.finalize()
+        assert self._squid(writer)["skipped_frames"] == [list(frame) for frame in frames]
+
+    def test_abort_keeps_the_skipped_frames(self, tmp_path):
+        writer = self._writer(tmp_path, (1, 2, 3, 8, 8))
+        writer.record_skipped(t=0, c=1, z=2)
+
+        writer.abort()
+
+        squid_attrs = self._squid(writer)
+        assert squid_attrs["skipped_frames"] == [[0, 1, 2]]
+        assert (squid_attrs["acquisition_complete"], squid_attrs["aborted"]) == (False, True)
 
     def test_a_writer_with_no_skips_has_no_skipped_frames_attribute(self, tmp_path):
         writer = self._writer(tmp_path, (1, 1, 1, 8, 8))
