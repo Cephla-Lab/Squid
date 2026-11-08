@@ -177,6 +177,26 @@ def test_a_wavelength_on_two_ports_lists_only_the_channel_whose_port_drives_it(t
         inst.engine.close()
 
 
+def test_a_remapped_port_is_calibrated_on_the_line_its_source_drives(tmp_path):
+    """controller_port_mapping D2: 15 sends 488 nm (on port D2) out on D5's TTL code: live view drives it on L5, so the
+    calibration lists it and calibrates L5."""
+    yaml = ENGINE_YAML.replace("  D2: 12\n", "  D2: 15\n").replace("  D5: 15\n", "  D5: 12\n")
+    inst = engine_instrument(tmp_path, yaml=yaml)
+    try:
+        side = EngineCalibration(inst.illumination)
+        names = [t.name for t in side.targets(inst.repo.get_illumination_config())]
+        assert "Fluorescence 488 nm Ex" in names
+        target = _target(side, "Fluorescence 488 nm Ex")
+        assert (target.controller_port, target.source_code, target.engine_line) == ("D2", 15, 5)
+        mark = len(inst.fake.sent)
+        output, run = _calibrate(inst, "Fluorescence 488 nm Ex")
+        c = run().calibration
+        assert c.verification == "pass" and c.engine.line == 5
+        assert _sets(inst, 5, mark) and not _sets(inst, 2, mark)
+    finally:
+        inst.engine.close()
+
+
 def test_a_disconnected_engine_offers_no_channels(instrument):
     instrument.fake.unplug()
     instrument.engine.poll_once()

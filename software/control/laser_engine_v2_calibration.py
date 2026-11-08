@@ -191,8 +191,9 @@ class EngineCalibration:
         self.shutter_open_timeout_s = SHUTTER_OPEN_TIMEOUT_S
 
     def targets(self, config) -> List[ChannelTarget]:
-        """Epi-illumination channels whose port is the engine line their wavelength drives (the TTL map's port: with a
-        wavelength on two ports, only the one the map uses), on lines fitted in this variant."""
+        """Epi-illumination channels whose source drives the engine line their wavelength drives (with a wavelength on
+        two ports, only the one the TTL map uses), on lines fitted in this variant. The source is the port's code in
+        controller_port_mapping, so a remapped port (D2: 15) counts as the line it drives (L5), as in live view."""
         if config is None or self.engine.is_connection_lost():
             return []
         status = self.engine.get_latest_status() or self.engine.poll_once()
@@ -203,7 +204,7 @@ class EngineCalibration:
             if channel.type != IlluminationType.EPI_ILLUMINATION or not channel.wavelength_nm:
                 continue
             line = self.engine.line_for_wavelength(channel.wavelength_nm)
-            if line is None or channel.controller_port != f"D{line}":
+            if line is None or source_code_to_port_index(config.get_source_code(channel)) != line - 1:
                 continue
             info = status.channels.get(f"L{line}")
             if info is None or info.state == LineState.UNUSED:
