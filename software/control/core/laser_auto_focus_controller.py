@@ -29,6 +29,10 @@ LOCK_ON_FAILED_MESSAGE = (
     "Couldn't lock onto the laser AF reference here: the spot was not found, was too far from the "
     "reference, or did not match it. Move closer to the reference plane and try again."
 )
+RETURN_AFTER_LOCK_ON_FAILED_MESSAGE = (
+    "Locked onto the laser AF reference, but couldn't move Z back to where it was: Z may be left at the "
+    "reference plane. Check the focus drive, then set the value again."
+)
 
 
 @dataclass(frozen=True)
@@ -547,7 +551,8 @@ class LaserAutofocusController(QObject):
     def measure_relative_z_um(self) -> RelativeZMeasurement:
         """Measure the actuator distance (um) from the laser AF reference plane at the current XY.
 
-        The actuator ends where it started, on success and on failure.
+        The actuator ends where it started, on success and on failure. When moving it back fails after a
+        good lock-on, RelativeZError says so instead of returning a measurement.
         """
         if not self.is_initialized or not self.laser_af_properties.has_reference:
             raise RelativeZError("Set the laser AF reference first.")
@@ -556,13 +561,20 @@ class LaserAutofocusController(QObject):
         moved = rec is None or not self._stage_unchanged_since(rec)
         try:
             anchor, reused = self.find_anchor_um()
-        finally:
+        except BaseException:
             if moved:
                 try:
                     self.move_actuator_to_um(z_now)
                 except Exception:
                     # Never mask the original error with a failed restore.
                     self._log.error("Failed to restore the actuator to its start position", exc_info=True)
+            raise
+        if moved:
+            try:
+                self.move_actuator_to_um(z_now)
+            except Exception as e:
+                # The lock-on worked but Z is not back where the user left it: not a measurement to store.
+                raise RelativeZError(RETURN_AFTER_LOCK_ON_FAILED_MESSAGE) from e
         return RelativeZMeasurement(z_rel_um=z_now - anchor, anchor_reused=reused)
 
     def set_reference(self) -> bool:

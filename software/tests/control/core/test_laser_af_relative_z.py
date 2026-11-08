@@ -317,6 +317,27 @@ def test_failed_restore_does_not_mask_the_original_error(ctrl):
     assert str(e.value) == LOCK_ON_FAILED_MESSAGE
 
 
+def test_a_failed_return_after_a_good_lock_on_is_an_error_not_a_measurement(ctrl):
+    # Start at 130 µm, lock on at 100 µm, then the move back to 130 µm fails. The actuator is not where the user left
+    # it, so Set Min / Set Max must not store a value as if the measurement went normally.
+    ctrl.piezo.position = 100.0
+    ctrl.record_lock_on()
+    ctrl.stage.x_mm += 1.0
+    ctrl.piezo.position = 130.0
+    real_move_to = ctrl.piezo.move_to
+
+    def return_fails(um):
+        if um == 130.0:
+            raise OSError("piezo offline")
+        real_move_to(um)
+
+    ctrl.piezo.move_to = return_fails
+    with pytest.raises(RelativeZError, match="couldn't move Z back") as e:
+        ctrl.measure_relative_z_um()
+    assert isinstance(e.value.__cause__, OSError)
+    assert ctrl.move_to_target_calls == [0.0]  # the lock-on itself ran and succeeded
+
+
 def _non_round_trip_pair():
     for x in np.arange(10.0, 11.0, 0.0173):
         for off in (8, 16, 24, 40):

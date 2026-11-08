@@ -210,7 +210,7 @@ def apply_acquisition_settings(
         regions=len(fov_lists),
         fovs=sum(len(coords) for coords in fov_lists.values()),
         channels=list(data.channel_names),
-        nz=data.nz,
+        nz=controller.effective_nz(),  # what the run takes: a relative range derives Nz from the range and dz
     )
 
 
@@ -231,7 +231,7 @@ def export_acquisition_settings(controller, scan_coordinates, objective_store, c
         },
         "channels": [ch.name for ch in controller.selected_configurations],
         "z_stack": {
-            "nz": int(controller.NZ),
+            "nz": int(controller.effective_nz()),  # the Nz the run takes, as acquisition.yaml saves it
             "delta_z_um": float(controller.deltaZ) * 1000.0,
             "config": serialize_for_yaml(controller.z_stacking_config),
             "order": controller.z_stack_order,

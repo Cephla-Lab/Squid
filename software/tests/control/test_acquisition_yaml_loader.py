@@ -782,6 +782,19 @@ class TestLaserAfRelativeRange:
         )
         assert parse_acquisition_yaml(str(tmp_path)).laser_af_relative_range_um == (-5.0, 15.0)
 
+    @pytest.mark.parametrize("value", [[-5, 15, 20], [-5], [], "-5, 15", ["a", "b"], [True, 15], [None, 15]])
+    def test_a_malformed_relative_range_is_refused_not_dropped(self, value):
+        # [-5, 15, 20] used to load as no range at all, and the run went ahead without the requested window.
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        with pytest.raises(ValueError, match=r"laser_af_relative_range_um must be \[z_min, z_max\]"):
+            parse_acquisition_dict(self._dict(laser_af_relative_range_um=value))
+
+    def test_a_null_relative_range_is_no_range(self):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        assert parse_acquisition_dict(self._dict(laser_af_relative_range_um=None)).laser_af_relative_range_um is None
+
     def test_relative_and_absolute_range_together_are_refused(self):
         from control.acquisition_yaml_loader import parse_acquisition_dict
 
