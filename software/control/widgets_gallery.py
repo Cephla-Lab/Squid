@@ -45,6 +45,7 @@ from qtpy.QtWidgets import (
 )
 
 import squid.logging
+from control.gallery_previews import array_to_pixmap, load_thumbnail_array
 
 # Any one of these marks a folder as a saved acquisition (older versions wrote only the last two).
 METADATA_FILES = ("acquisition.yaml", "acquisition parameters.json", "acquisition_channels.yaml", "configurations.xml")
@@ -55,9 +56,6 @@ NO_IMAGES = "No images"
 _EXPERIMENT_NAME = re.compile(
     r"^(?P<label>.*?)_?(?P<stamp>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})(?P<fraction>\.\d+)?$",
 )
-
-# Largest overview whose channels are all read for a thumbnail; above it only the first channel is read.
-_MAX_OVERVIEW_BYTES_FOR_MIP = 64 * 1024 * 1024
 
 
 @dataclass
@@ -368,92 +366,6 @@ def scan_acquisitions(root: str) -> List[AcquisitionEntry]:
 # ---------------------------------------------------------------------------------------------------------
 # Thumbnails
 # ---------------------------------------------------------------------------------------------------------
-
-
-def _read_image_for_thumbnail(source: str) -> Optional[np.ndarray]:
-    """The 2D (or H,W,3 color) array to thumbnail, reading as little of the file as makes sense."""
-    ext = os.path.splitext(source)[1].lower()
-    if ext in (".tif", ".tiff"):
-        with tifffile.TiffFile(source) as tif:
-            pages = tif.pages
-            first = pages[0].asarray()
-            if first.ndim == 2 and len(pages) > 1 and first.nbytes * len(pages) <= _MAX_OVERVIEW_BYTES_FOR_MIP:
-                # A small multi-channel overview: a max projection over its channels shows every stain.
-                mip = first
-                for page in pages[1:]:
-                    plane = page.asarray()
-                    if plane.shape == first.shape:
-                        mip = np.maximum(mip, plane)
-                return mip
-            return first
-    image = cv2.imread(source, cv2.IMREAD_UNCHANGED)
-    if image is None:
-        return None
-    if image.ndim == 3 and image.shape[2] >= 3:
-        image = cv2.cvtColor(image[:, :, :3], cv2.COLOR_BGR2RGB)
-    return image
-
-
-def _fit_within(image: np.ndarray, max_size: int) -> np.ndarray:
-    """Scale so the longer side is max_size: large frames shrink, a small overview grows to fill its tile."""
-    h, w = image.shape[:2]
-    scale = max_size / max(h, w, 1)
-    if scale == 1.0:
-        return image
-    size = (max(1, int(round(w * scale))), max(1, int(round(h * scale))))
-    interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_NEAREST
-    return cv2.resize(image, size, interpolation=interpolation)
-
-
-def _stretch_to_uint8(image: np.ndarray) -> np.ndarray:
-    """Percentile contrast stretch: a dim 16-bit image still shows its structure in a thumbnail."""
-    if image.dtype == np.uint8:
-        return image
-    data = image.astype(np.float32)
-    finite = data[np.isfinite(data)]
-    if finite.size == 0:
-        return np.zeros(image.shape[:2], dtype=np.uint8)
-    lo, hi = np.percentile(finite, (0.5, 99.5))
-    if hi <= lo:
-        # A flat image: scale by the dtype's range, so an empty frame stays black and a lit one shows grey.
-        full_scale = float(np.iinfo(image.dtype).max) if np.issubdtype(image.dtype, np.integer) else 1.0
-        return np.clip(data * (255.0 / full_scale), 0, 255).astype(np.uint8)
-    return np.clip((data - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
-
-
-def load_thumbnail_array(source: str, max_size: int) -> Optional[np.ndarray]:
-    """A uint8 grayscale (H,W) or color (H,W,3) thumbnail of an image file, no side longer than max_size.
-
-    None when the file cannot be read or is not an image plane.
-    """
-    try:
-        image = _read_image_for_thumbnail(source)
-    except Exception:
-        return None
-    if image is None:
-        return None
-    image = np.squeeze(image)
-    if image.ndim == 3 and image.shape[-1] not in (3, 4):
-        image = image[0]  # a (C,Y,X) stack whose first page was already a stack: first plane
-    if image.ndim == 3:
-        image = image[:, :, :3]
-    if image.ndim != 2 and image.ndim != 3:
-        return None
-    if image.ndim == 2 and image.dtype == bool:
-        image = image.astype(np.uint8) * 255
-    image = _fit_within(np.ascontiguousarray(image), max_size)
-    return np.ascontiguousarray(_stretch_to_uint8(image))
-
-
-def array_to_pixmap(array: np.ndarray) -> QPixmap:
-    """A QPixmap of a uint8 grayscale (H,W) or RGB (H,W,3) array (the data is copied)."""
-    array = np.ascontiguousarray(array, dtype=np.uint8)
-    h, w = array.shape[:2]
-    if array.ndim == 2:
-        image = QImage(array.data, w, h, w, QImage.Format_Grayscale8)
-    else:
-        image = QImage(array.data, w, h, 3 * w, QImage.Format_RGB888)
-    return QPixmap.fromImage(image.copy())
 
 
 def square_tile(pixmap: QPixmap, size: int) -> QPixmap:

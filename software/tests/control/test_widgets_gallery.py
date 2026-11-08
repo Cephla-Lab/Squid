@@ -16,10 +16,8 @@ from qtpy.QtGui import QDesktopServices
 from control.widgets_gallery import (
     NO_IMAGES,
     AcquisitionGalleryWidget,
-    array_to_pixmap,
     inspect_images,
     is_acquisition_folder,
-    load_thumbnail_array,
     read_acquisition_entry,
     scan_acquisitions,
     split_experiment_name,
@@ -93,13 +91,24 @@ def write_acquisition(
         import cv2
 
         cv2.imwrite(str(tp / "A1_0_0_BF_LED_matrix_full.bmp"), (image >> 8).astype(np.uint8))
+    for t in range(1, 2 if nt > 1 else 1):  # a second timepoint folder with its own images
+        later = folder / str(t)
+        later.mkdir()
+        if images == "tiff":
+            for region, n in regions:
+                for fov in range(n):
+                    for ch in channels:
+                        tifffile.imwrite(later / f"{region}_{fov}_0_{ch.replace(' ', '_')}.tiff", image)
     if with_overview:
-        mosaic = tp / "mosaic_view"
-        mosaic.mkdir()
-        stack = np.zeros((2, 40, 60), dtype=np.uint16)
-        stack[0, :20, :] = 4000  # top half lit in channel 0
-        stack[1, 20:, :] = 4000  # bottom half lit in channel 1
-        tifffile.imwrite(mosaic / "mosaic_plate_5um.ome.tiff", stack, metadata={"axes": "CYX"})
+        for t in range(2 if nt > 1 else 1):
+            mosaic = folder / str(t) / "mosaic_view"
+            mosaic.mkdir()
+            stack = np.zeros((2, 40, 60), dtype=np.uint16)
+            stack[0, :20, :] = 4000  # top half lit in channel 0
+            stack[1, 20:, :] = 4000  # bottom half lit in channel 1
+            tifffile.imwrite(mosaic / "mosaic_plate_5um.ome.tiff", stack, metadata={"axes": "CYX"})
+            with open(mosaic / "mosaic_plate_5um.yaml", "w", encoding="utf-8") as f:
+                yaml.dump({"channel_names": list(channels)}, f)
     return folder
 
 
@@ -236,70 +245,6 @@ def test_scan_acquisitions_lists_newest_first_and_skips_other_folders(saving_roo
 
 def test_scan_acquisitions_of_a_missing_root_is_empty(tmp_path):
     assert scan_acquisitions(str(tmp_path / "nowhere")) == []
-
-
-# ---------------------------------------------------------------------------------------------------------
-# Thumbnails
-# ---------------------------------------------------------------------------------------------------------
-
-
-def test_load_thumbnail_array_stretches_16bit_and_fits_the_size(tmp_path):
-    image = np.full((400, 800), 1000, dtype=np.uint16)
-    image[:, 400:] = 1200  # a dim image: 200 counts of contrast out of 65535
-    path = tmp_path / "dim.tiff"
-    tifffile.imwrite(path, image)
-
-    thumb = load_thumbnail_array(str(path), 100)
-
-    assert thumb.dtype == np.uint8
-    assert thumb.shape == (50, 100)
-    assert thumb[:, :45].max() < 10 and thumb[:, 55:].min() > 245
-
-
-def test_load_thumbnail_array_max_projects_a_small_overview(tmp_path):
-    stack = np.zeros((2, 40, 60), dtype=np.uint16)
-    stack[0, :20, 10:50] = 4000  # channel 0 lights the top of a well, channel 1 the bottom
-    stack[1, 20:, 10:50] = 4000
-    path = tmp_path / "mosaic_plate_5um.ome.tiff"
-    tifffile.imwrite(path, stack, metadata={"axes": "CYX"})
-
-    thumb = load_thumbnail_array(str(path), 60)
-
-    assert thumb.shape == (40, 60)
-    assert thumb[:, 10:50].min() > 200  # both halves lit: the channels were combined
-    assert thumb[:, :10].max() < 10 and thumb[:, 50:].max() < 10
-
-
-def test_load_thumbnail_array_keeps_a_flat_image_at_its_own_level(tmp_path):
-    """No contrast to stretch: an empty frame stays black, a lit one shows grey instead of black."""
-    tifffile.imwrite(tmp_path / "dark.tiff", np.zeros((20, 20), dtype=np.uint16))
-    tifffile.imwrite(tmp_path / "lit.tiff", np.full((20, 20), 32768, dtype=np.uint16))
-
-    assert load_thumbnail_array(str(tmp_path / "dark.tiff"), 100).max() == 0
-    lit = load_thumbnail_array(str(tmp_path / "lit.tiff"), 100)
-    assert 120 <= lit.min() <= lit.max() <= 135
-
-
-def test_load_thumbnail_array_reads_color_images_and_rejects_junk(tmp_path):
-    import cv2
-
-    color = np.zeros((30, 40, 3), dtype=np.uint8)
-    color[..., 2] = 255  # BGR red
-    cv2.imwrite(str(tmp_path / "c.png"), color)
-    (tmp_path / "junk.tiff").write_bytes(b"not a tiff")
-
-    thumb = load_thumbnail_array(str(tmp_path / "c.png"), 40)
-    assert thumb.shape == (30, 40, 3)
-    assert thumb[0, 0].tolist() == [255, 0, 0]  # RGB
-    assert load_thumbnail_array(str(tmp_path / "junk.tiff"), 100) is None
-    assert load_thumbnail_array(str(tmp_path / "missing.tiff"), 100) is None
-
-
-def test_array_to_pixmap(qtbot):
-    gray = array_to_pixmap(np.zeros((20, 30), dtype=np.uint8))
-    rgb = array_to_pixmap(np.zeros((20, 30, 3), dtype=np.uint8))
-    assert (gray.width(), gray.height()) == (30, 20)
-    assert (rgb.width(), rgb.height()) == (30, 20)
 
 
 # ---------------------------------------------------------------------------------------------------------
