@@ -63,13 +63,15 @@ python3 -m pip install --upgrade pip
 # install libraries
 # numpy>=2: the bundled viewer (control/ndviewer_light) needs ndv>=0.5, whose ihist dependency requires
 # numpy 2; the numpy<2 pin from #501 (scipy 1.12 wheels built against numpy 1) is no longer needed.
-pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy>=2" tifffile scipy pyreadline3
+# apt's python3-pyqtgraph above drags in Ubuntu 22.04's matplotlib 3.5, scipy 1.8 and pyqtgraph 0.12, all
+# built for numpy 1; the floors make pip install numpy 2 builds that shadow them (user site comes first).
+pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy>=2" tifffile "scipy>=1.13" "matplotlib>=3.9" "pyqtgraph>=0.13.4" pyreadline3
 # opencv<5: OpenCV 5 (2026-07) is what pip picks with numpy 2; Squid is tested on the 4.x API.
 pip3 install "opencv-python-headless<5" "opencv-contrib-python-headless<5"
 # mcp<2: mcp 2.0 dropped the decorator API that the MCP bridge (mcp_microscope_server.py) is written against
 # ndv>=0.5,<0.6 + pyconify: what control/ndviewer_light requires (pyconify through superqt[iconify]).
 # aicsimageio is gone: its only user was control/stitcher.py, which nothing imports.
-pip3 install napari==0.5.4 scikit-image dask_image ome_zarr basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa pyvisa-py pyusb hidapi filelock lxml_html_clean psutil "mcp<2" "ndv>=0.5,<0.6" pyconify
+pip3 install napari==0.5.4 scikit-image dask_image ome_zarr basicpy pytest pytest-qt pytest-xvfb gitpython pydantic_xml pyvisa pyvisa-py pyusb hidapi filelock lxml_html_clean psutil "mcp<2" "ndv>=0.5,<0.6" pyconify
 
 # Optional: PI V-308 / C-414 focus stage (USE_PI_FOCUS_STAGE). Safe to skip if unused;
 # squid.stage.pi imports it lazily and only needs it to connect to real hardware, so
