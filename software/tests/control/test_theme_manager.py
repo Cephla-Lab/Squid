@@ -92,3 +92,16 @@ def test_manager_before_install_is_classic_and_touches_nothing(qapp, monkeypatch
 def test_apply_rejects_unknown_theme(mgr):
     with pytest.raises(ValueError):
         mgr.apply("blue")
+
+
+def test_classic_on_a_pristine_app_touches_nothing(qapp, monkeypatch):
+    calls = []
+    font, palette, sheet = qapp.font(), qapp.palette(), qapp.styleSheet()
+    monkeypatch.setattr(qapp, "setFont", lambda *a: calls.append("font"))
+    monkeypatch.setattr(qapp, "setPalette", lambda *a: calls.append("palette"))
+    monkeypatch.setattr(qapp, "setStyleSheet", lambda *a: calls.append("sheet"))
+    m = theme.ThemeManager(qapp)
+    m.apply("classic")
+    assert calls == []
+    assert qapp.font() == font and qapp.palette() == palette and qapp.styleSheet() == sheet
+    assert m.is_classic()

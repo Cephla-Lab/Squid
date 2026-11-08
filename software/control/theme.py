@@ -561,6 +561,7 @@ class ThemeManager(QObject):
         self._default_font = QFont(app.font())
         self._default_palette = QPalette(app.palette())
         self._current = "classic"
+        self._skinned_applied = False
 
     @property
     def current(self) -> str:
@@ -587,11 +588,16 @@ class ThemeManager(QObject):
             raise ValueError(f"unknown theme {theme!r}; expected one of {THEMES}")
         app = self._app
         if theme == "classic":
-            app.setStyleSheet("")
-            app.setPalette(self._default_palette)
-            app.setFont(self._default_font)
-            _install_dock_theme(None)
+            # Only undo what this manager did: setFont/setPalette on a pristine app would override the platform
+            # theme's per-class fonts and mark the palette as application-set, changing Classic's rendering.
+            if self._skinned_applied:
+                app.setStyleSheet("")
+                app.setPalette(self._default_palette)
+                app.setFont(self._default_font)
+                _install_dock_theme(None)
+                self._skinned_applied = False
         else:
+            self._skinned_applied = True
             tokens = LIGHT if theme == "light" else DARK
             icons = write_theme_icons(tokens, icon_cache_dir(theme))
             app.setStyleSheet(build_stylesheet(tokens, scale_factor(app), icons))
