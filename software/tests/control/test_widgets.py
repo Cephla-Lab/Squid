@@ -1056,8 +1056,13 @@ class TestBackpressureMonitorWidgetTimer:
 
 
 @pytest.fixture
-def ndviewer_tab(qtbot):
-    """Create an NDViewerTab instance for testing."""
+def ndviewer_tab(qtbot, monkeypatch):
+    """Create an NDViewerTab instance for testing.
+
+    The tab's ndv version guard is neutralised: these tests mock the viewer module, so they must not
+    depend on the ndv installed locally (the guard has its own test below).
+    """
+    monkeypatch.setattr(control.widgets, "ndv_version_problem", lambda installed: None)
     widget = NDViewerTab()
     qtbot.addWidget(widget)
     return widget
@@ -1074,6 +1079,16 @@ class TestNDViewerTab:
         # Check placeholder exists with correct text (isVisible() is False before widget shown)
         assert widget._placeholder is not None
         assert widget._placeholder.text() == NDViewerTab._PLACEHOLDER_WAITING
+
+    def test_old_ndv_shows_the_upgrade_command_instead_of_a_viewer(self, ndviewer_tab, monkeypatch, tmp_path):
+        """An install that pulled the submodule without upgrading ndv gets the command, not a half-working tab."""
+        monkeypatch.setattr(control.widgets, "ndv_version_problem", lambda v: "NDViewer needs ndv 0.5; run X")
+        widget = ndviewer_tab
+        widget.set_dataset_path(str(tmp_path))
+        assert widget._viewer is None
+        assert widget._placeholder.text() == "NDViewer needs ndv 0.5; run X"
+        assert widget._ensure_viewer_ready() is False
+        assert widget._viewer is None
 
     def test_set_dataset_path_none_shows_placeholder(self, ndviewer_tab):
         """Test that setting None path shows the waiting placeholder."""

@@ -20,8 +20,26 @@ _log = squid.logging.get_logger(__name__)
 VIEWER_PACKAGES: Tuple[str, ...] = ("ndv", "vispy", "tensorstore", "xarray", "dask", "superqt", "pyconify")
 VIEWER_MODULE = "control.ndviewer_light.ndviewer_light"
 SUBMODULE_HINT = "git submodule update --init software/control/ndviewer_light"
-# What the pip hint installs for a missing package: the bundled viewer requires ndv>=0.5,<0.6
-_PIP_SPECS = {"ndv": '"ndv>=0.5,<0.6"'}
+# The bundled viewer requires ndv>=0.5,<0.6: what the pip hint installs for a missing ndv, and the floor
+# the NDViewer tab checks before it builds the viewer (an install that pulled the submodule without
+# upgrading ndv would otherwise get a half-working tab: names lost, navigation dead).
+NDV_MIN_VERSION = (0, 5)
+NDV_PIP_SPEC = '"ndv>=0.5,<0.6"'
+_PIP_SPECS = {"ndv": NDV_PIP_SPEC}
+
+
+def ndv_version_problem(installed: str) -> Optional[str]:
+    """None when the installed ndv meets the viewer's floor, else the message (with the upgrade command)."""
+    parts = []
+    for piece in installed.split(".")[:2]:
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    if tuple(parts) >= NDV_MIN_VERSION:
+        return None
+    return (
+        f"NDViewer needs ndv {NDV_MIN_VERSION[0]}.{NDV_MIN_VERSION[1]} or newer; {installed} is installed.\n"
+        f"Upgrade with:  pip install {NDV_PIP_SPEC} pyconify"
+    )
 
 
 def software_dir() -> str:
