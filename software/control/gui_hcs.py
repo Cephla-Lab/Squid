@@ -114,6 +114,7 @@ from control.widgets_slack import SlackSettingsDialog, load_slack_settings_from_
 
 # Acquisition history (the Gallery tab) and the standalone ndviewer_light window
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from control.acquisition_history_recorder import AcquisitionHistoryRecorder
 from control.ndviewer_launcher import launch_ndviewer_light, resolve_ndviewer_light
 from squid.acquisition_history import HistoryStore, history_dir, normalize_folder
@@ -210,6 +211,7 @@ class QtMultiPointController(MultiPointController, QObject):
     napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
     signal_set_display_tabs = Signal(list, int, str)  # configs: list, Nz: int, xy_mode: str
     signal_acquisition_save_target = Signal(object)  # Optional[str] — output dir for save view
+    signal_history_run_started = Signal(object, object)  # history entry id or None, run folder or None
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
     signal_coordinates = Signal(float, float, float, int)  # x, y, z, region
@@ -305,6 +307,8 @@ class QtMultiPointController(MultiPointController, QObject):
         exp_id = parameters.experiment_ID
         save_target = os.path.join(base, exp_id) if (base and exp_id) else None
         self.signal_acquisition_save_target.emit(save_target)
+        # The history id is read now, on the starting thread: a short run clears it before a queued slot runs.
+        self.signal_history_run_started.emit(self.history_entry_id, save_target)
 
         # NDViewer push-based API: emit start_acquisition signal
         scan_info = parameters.scan_position_information
@@ -604,6 +608,20 @@ class QtMultiPointController(MultiPointController, QObject):
             if not well_pattern.match(region_name):
                 return False
         return len(scan_info.scan_region_names) > 0
+
+
+@dataclass(eq=False)
+class _HistoryRun:
+    """One acquisition's gallery-preview timing: its last timepoint, the overview saves seen, the one awaited."""
+
+    entry_id: Optional[str]
+    folder: Optional[str]
+    last_timepoint: Optional[int] = None
+    saved_paths: set = field(default_factory=set)  # normalized mosaic_view dirs saved while it ran
+    awaited_save: Optional[str] = None  # its last timepoint's mosaic_view dir, once it ended without it
+    preview_made: bool = False
+    finished: bool = False
+    timer: Optional[QTimer] = None  # the wait for awaited_save
 
 
 class HighContentScreeningGui(QMainWindow):
@@ -1646,8 +1664,7 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController.ndviewer_end_zarr_acquisition.connect(self.ndviewerTab.end_zarr_acquisition)
 
         # Acquisition history: the finished run's preview waits for its last mosaic overview save (live-only too).
-        self.multipointController.signal_acquisition_start.connect(self._on_history_acquisition_start)
-        self.multipointController.signal_acquisition_save_target.connect(self._on_history_save_target)
+        self.multipointController.signal_history_run_started.connect(self._on_history_run_started)
         self.multipointController.timepoint_finished.connect(self._on_history_timepoint_finished)
         self.multipointController.acquisition_finished.connect(self._on_history_acquisition_finished)
         if self.unifiedMosaicWidget is not None:
@@ -3114,12 +3131,8 @@ class HighContentScreeningGui(QMainWindow):
         )
         self.multipointController.history_recorder = self.historyRecorder
         # Per-run preview timing (see _on_history_acquisition_finished).
-        self._history_run: Optional[Tuple[Optional[str], Optional[str]]] = None  # (entry id, acquisition folder)
-        self._history_last_timepoint: Optional[int] = None
-        self._history_saved_paths: set = set()  # normalized mosaic_view dirs saved since the run started
-        self._history_awaited_save: Optional[str] = None  # the last timepoint's mosaic_view dir, once the run ended
-        self._history_preview_made = False
-        self._history_timer: Optional[QTimer] = None
+        self._history_run: Optional[_HistoryRun] = None  # the latest run
+        self._history_waiting: List[_HistoryRun] = []  # ended runs still waiting for their last overview save
         self._history_preview_futures: list = []
         self._history_preview_poll: Optional[QTimer] = None
         self._gallery_acquisition_progress: Optional[Tuple[int, int, int]] = None  # region, regions, timepoint
@@ -3136,89 +3149,86 @@ class HighContentScreeningGui(QMainWindow):
     # Preview timing: the preview is drawn from the last timepoint's mosaic overview, which the save executor may
     # still be writing when acquisition_finished arrives (or which may never come).
 
-    def _on_history_acquisition_start(self) -> None:
-        if self._history_timer is not None:
-            self._history_timer.stop()
-        # The recorder's started() ran before this signal, so the id is this run's.
-        self._history_run = (self.multipointController.history_entry_id, None)
-        self._history_last_timepoint = None
-        self._history_saved_paths = set()
-        self._history_awaited_save = None
-        self._history_preview_made = False
-
-    def _on_history_save_target(self, save_target) -> None:
-        """The run's folder; the controller emits it right after signal_acquisition_start."""
-        if self._history_run is not None:
-            self._history_run = (self._history_run[0], save_target)
+    def _on_history_run_started(self, entry_id: Optional[str], save_target: Optional[str]) -> None:
+        """A run started. The controller emits its history id and folder at start time, from the thread that started
+        it, so a short TCP-started run that is over before this slot runs still gets its preview. A run still waiting
+        for its overview save keeps waiting: it is in _history_waiting with its own timer."""
+        self._history_run = _HistoryRun(entry_id, save_target)
 
     def _on_history_timepoint_finished(self, time_point: int) -> None:
-        if self._history_run is not None:
-            self._history_last_timepoint = time_point
+        run = self._history_run
+        if run is not None and not run.finished:
+            run.last_timepoint = time_point
 
-    def _overview_save_expected(self) -> bool:
+    def _overview_save_expected(self, run: _HistoryRun) -> bool:
         mosaic = self.unifiedMosaicWidget
         return (
             mosaic is not None
             and mosaic.layers_initialized
             and bool(control._def.SAVE_DOWNSAMPLED_OVERVIEW or control._def.SAVE_DOWNSAMPLED_WELL_IMAGES)
             and not self.performance_mode
-            and self._history_last_timepoint is not None
+            and run.last_timepoint is not None
         )
 
     def _on_history_acquisition_finished(self) -> None:
-        if self._history_run is None or self._history_preview_made or self._history_awaited_save is not None:
+        run = self._history_run
+        if run is None or run.finished:
             return
-        entry_id, folder = self._history_run
-        if entry_id is None or not folder:
-            self._history_run = None
+        run.finished = True
+        if run.entry_id is None or not run.folder:
             return
-        if not self._overview_save_expected():
-            self._make_history_preview(replace=False)
+        if not self._overview_save_expected(run):
+            self._make_history_preview(run, replace=False)
             return
         awaited = normalize_folder(
-            os.path.join(folder, f"{self._history_last_timepoint:0{control._def.FILE_ID_PADDING}}", "mosaic_view")
+            os.path.join(run.folder, f"{run.last_timepoint:0{control._def.FILE_ID_PADDING}}", "mosaic_view")
         )
-        if awaited in self._history_saved_paths:
-            self._make_history_preview(replace=False)
+        if awaited in run.saved_paths:
+            self._make_history_preview(run, replace=False)
             return
-        self._history_awaited_save = awaited
-        if self._history_timer is None:
-            self._history_timer = QTimer(self)
-            self._history_timer.setSingleShot(True)
-            self._history_timer.timeout.connect(self._on_history_preview_wait_over)
-        self._history_timer.start(self.GALLERY_PREVIEW_WAIT_MS)
+        run.awaited_save = awaited
+        run.timer = QTimer(self)
+        run.timer.setSingleShot(True)
+        run.timer.timeout.connect(lambda run=run: self._on_history_preview_wait_over(run))
+        run.timer.start(self.GALLERY_PREVIEW_WAIT_MS)
+        self._history_waiting.append(run)
 
     def _on_history_view_saved(self, path: str) -> None:
         """A mosaic overview save finished (queued from the save executor's thread)."""
-        if self._history_run is None:
-            return
         saved = normalize_folder(path)
-        self._history_saved_paths.add(saved)
-        if self._history_awaited_save is None or saved != self._history_awaited_save:
-            return  # not awaited yet, or an earlier timepoint's save finishing late
-        self._history_awaited_save = None
-        if self._history_timer is not None:
-            self._history_timer.stop()
-        # When the wait ran out first, the final overview replaces the provisional preview.
-        self._make_history_preview(replace=self._history_preview_made)
+        run = self._history_run
+        if run is not None and not run.finished:
+            run.saved_paths.add(saved)
+        for waiting in [w for w in self._history_waiting if w.awaited_save == saved]:
+            self._stop_waiting(waiting)
+            # When the wait ran out first, the final overview replaces the provisional preview.
+            self._make_history_preview(waiting, replace=waiting.preview_made)
 
-    def _on_history_preview_wait_over(self) -> None:
-        if self._history_awaited_save is None or self._history_preview_made:
+    def _on_history_preview_wait_over(self, run: _HistoryRun) -> None:
+        if run not in self._history_waiting:
             return
-        self.log.info("The last mosaic overview save has not reported; making the gallery preview without it")
-        self._make_history_preview(replace=False)
+        if run.preview_made:  # the second wait is over too: a save this late is not waited for
+            self._stop_waiting(run)
+            return
+        self.log.info(f"The last mosaic overview of {run.folder} has not reported; making its preview without it")
+        self._make_history_preview(run, replace=False)
+        run.timer.start(self.GALLERY_PREVIEW_WAIT_MS)  # the overview may still land and replace it
 
-    def _make_history_preview(self, *, replace: bool) -> None:
-        if self._history_run is None:
-            return
-        entry_id, folder = self._history_run
-        if entry_id is None or not folder:
-            return
-        self._history_preview_made = True
+    def _stop_waiting(self, run: _HistoryRun) -> None:
+        run.awaited_save = None
+        if run.timer is not None:
+            run.timer.stop()
+            run.timer.deleteLater()
+            run.timer = None
+        if run in self._history_waiting:
+            self._history_waiting.remove(run)
+
+    def _make_history_preview(self, run: _HistoryRun, *, replace: bool) -> None:
+        run.preview_made = True
         try:
-            future = self.historyRecorder.make_preview(entry_id, folder, replace=replace)
+            future = self.historyRecorder.make_preview(run.entry_id, run.folder, replace=replace)
         except Exception:
-            self.log.exception(f"Could not schedule the gallery preview of {folder}")
+            self.log.exception(f"Could not schedule the gallery preview of {run.folder}")
             return
         if future is None or self.acquisitionGalleryWidget is None:
             return
@@ -3423,9 +3433,10 @@ class HighContentScreeningGui(QMainWindow):
         # Stop the history's preview thread, then the gallery's scan and thumbnail threads
         if getattr(self, "historyRecorder", None) is not None:
             try:
-                for timer in (self._history_timer, self._history_preview_poll):
-                    if timer is not None:
-                        timer.stop()
+                for run in list(self._history_waiting):
+                    self._stop_waiting(run)
+                if self._history_preview_poll is not None:
+                    self._history_preview_poll.stop()
                 self.historyRecorder.shutdown()
             except Exception:
                 self.log.exception(f"Error shutting down the acquisition history recorder during {context}")

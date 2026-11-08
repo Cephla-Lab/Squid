@@ -553,11 +553,9 @@ def test_gallery_is_wired_to_the_history_viewer_and_launcher(qtbot, confirm_exit
     assert len(loaded) == 1
 
 
-def test_preview_waits_for_the_final_overview_save(qtbot, confirm_exit_yes, monkeypatch, tmp_path):
-    """The preview is made from the last timepoint's mosaic overview once it is written, or after a timeout (then
-    remade when the overview lands); without an overview to wait for it is made when the acquisition ends."""
-    import os
-
+def _preview_timing_gui(qtbot, monkeypatch, tmp_path):
+    """A simulated GUI whose recorder records make_preview calls, with an overview save expected and a 500 ms wait;
+    the controller's own history_entry_id reads None (a short run has already cleared it)."""
     monkeypatch.setenv("SQUID_ACQUISITION_HISTORY_DIR", str(tmp_path / "history"))
     scope = control.microscope.Microscope.build_from_global_config(True)
     win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
@@ -575,19 +573,29 @@ def test_preview_waits_for_the_final_overview_save(qtbot, confirm_exit_yes, monk
     assert mosaic is not None
     monkeypatch.setattr(mosaic, "layers_initialized", True)
     monkeypatch.setattr(mosaic, "save_for_timepoint", lambda time_point: None)  # the saves are emitted by hand
+    monkeypatch.setattr(type(win.multipointController), "history_entry_id", property(lambda self: None))
+    return win, calls
+
+
+def test_preview_waits_for_the_final_overview_save(qtbot, confirm_exit_yes, monkeypatch, tmp_path):
+    """The preview is made from the last timepoint's mosaic overview once it is written, or after a timeout (then
+    remade when the overview lands); without an overview to wait for it is made when the acquisition ends."""
+    import os
+
+    win, calls = _preview_timing_gui(qtbot, monkeypatch, tmp_path)
     mpc = win.multipointController
-    current_id = [None]
-    monkeypatch.setattr(type(mpc), "history_entry_id", property(lambda self: current_id[0]))
-    run = str(tmp_path / "run")
+    mosaic = win.unifiedMosaicWidget
+
+    def folder(entry_id):
+        return str(tmp_path / f"run_{entry_id}")
 
     def start(entry_id):
-        current_id[0] = entry_id
         mpc.signal_acquisition_start.emit()
-        mpc.signal_acquisition_save_target.emit(run)
-        current_id[0] = None  # the id is read at start, not at the end
+        mpc.signal_acquisition_save_target.emit(folder(entry_id))
+        mpc.signal_history_run_started.emit(entry_id, folder(entry_id))
 
-    def saved(time_point):
-        mosaic.signal_view_saved.emit(os.path.join(run, str(time_point), "mosaic_view"))
+    def saved(entry_id, time_point):
+        mosaic.signal_view_saved.emit(os.path.join(folder(entry_id), str(time_point), "mosaic_view"))
 
     # (a) The final save comes after the end; an earlier timepoint's late save is not the one awaited.
     start("e1")
@@ -595,12 +603,12 @@ def test_preview_waits_for_the_final_overview_save(qtbot, confirm_exit_yes, monk
     mpc.timepoint_finished.emit(1)
     mpc.acquisition_finished.emit()
     assert calls == []
-    saved(0)
+    saved("e1", 0)
     assert calls == []
-    saved(1)
-    assert calls == [("e1", run, False)]
+    saved("e1", 1)
+    assert calls == [("e1", folder("e1"), False)]
     qtbot.wait(700)
-    assert calls == [("e1", run, False)]
+    assert calls == [("e1", folder("e1"), False)]
 
     # (b) The overview never reports: the preview is made anyway once the wait is over.
     calls.clear()
@@ -608,31 +616,33 @@ def test_preview_waits_for_the_final_overview_save(qtbot, confirm_exit_yes, monk
     mpc.timepoint_finished.emit(0)
     mpc.acquisition_finished.emit()
     assert calls == []
-    qtbot.waitUntil(lambda: calls == [("e2", run, False)], timeout=1000)
-    qtbot.wait(300)
-    assert calls == [("e2", run, False)]
+    qtbot.waitUntil(lambda: calls == [("e2", folder("e2"), False)], timeout=1000)
+    qtbot.wait(800)  # past the second wait too
+    assert calls == [("e2", folder("e2"), False)]
+    saved("e2", 0)  # too late to be waited for
+    assert calls == [("e2", folder("e2"), False)]
 
     # (c) The overview lands after the timeout: the provisional preview is replaced.
     calls.clear()
     start("e3")
     mpc.timepoint_finished.emit(0)
     mpc.acquisition_finished.emit()
-    qtbot.waitUntil(lambda: calls == [("e3", run, False)], timeout=1000)
-    saved(0)
-    assert calls == [("e3", run, False), ("e3", run, True)]
-    saved(0)
+    qtbot.waitUntil(lambda: calls == [("e3", folder("e3"), False)], timeout=1000)
+    saved("e3", 0)
+    assert calls == [("e3", folder("e3"), False), ("e3", folder("e3"), True)]
+    saved("e3", 0)
     assert len(calls) == 2
 
     # (d) The overview is written before the acquisition ends: the preview is made at the end, without waiting.
     calls.clear()
     start("e4")
     mpc.timepoint_finished.emit(0)
-    saved(0)
+    saved("e4", 0)
     assert calls == []
     mpc.acquisition_finished.emit()
-    assert calls == [("e4", run, False)]
+    assert calls == [("e4", folder("e4"), False)]
     qtbot.wait(700)
-    assert calls == [("e4", run, False)]
+    assert calls == [("e4", folder("e4"), False)]
 
     # (e) No overview expected: the preview is made when the acquisition ends.
     calls.clear()
@@ -640,6 +650,62 @@ def test_preview_waits_for_the_final_overview_save(qtbot, confirm_exit_yes, monk
     start("e5")
     mpc.timepoint_finished.emit(0)
     mpc.acquisition_finished.emit()
-    assert calls == [("e5", run, False)]
+    assert calls == [("e5", folder("e5"), False)]
     qtbot.wait(700)
-    assert calls == [("e5", run, False)]
+    assert calls == [("e5", folder("e5"), False)]
+
+
+def test_a_back_to_back_start_keeps_the_previous_runs_preview(qtbot, confirm_exit_yes, monkeypatch, tmp_path):
+    """Run N still waiting for its last overview save when run N+1 starts gets its preview: on its save (even one
+    landing during run N+1), or on its timeout and then replaced by the late save."""
+    import os
+
+    win, calls = _preview_timing_gui(qtbot, monkeypatch, tmp_path)
+    mpc = win.multipointController
+    mosaic = win.unifiedMosaicWidget
+
+    def run(entry_id):
+        folder = str(tmp_path / f"run_{entry_id}")
+        mpc.signal_acquisition_start.emit()
+        mpc.signal_history_run_started.emit(entry_id, folder)
+        mpc.timepoint_finished.emit(0)
+        return folder
+
+    def saved(folder):
+        mosaic.signal_view_saved.emit(os.path.join(folder, "0", "mosaic_view"))
+
+    # Its save lands while the next run is going.
+    f6 = run("e6")
+    mpc.acquisition_finished.emit()
+    f7 = run("e7")
+    assert calls == []
+    saved(f6)
+    assert calls == [("e6", f6, False)]
+
+    # The next run's own wait is unaffected; its save never comes, so its timeout makes it.
+    mpc.acquisition_finished.emit()
+    f8 = run("e8")
+    qtbot.waitUntil(lambda: ("e7", f7, False) in calls, timeout=1000)
+    # ... and the save landing during the run after it still replaces the provisional picture.
+    saved(f7)
+    assert calls == [("e6", f6, False), ("e7", f7, False), ("e7", f7, True)]
+    mpc.acquisition_finished.emit()
+    saved(f8)
+    assert calls[-1] == ("e8", f8, False) and len(calls) == 4
+
+
+def test_the_preview_uses_the_history_id_captured_at_start(qtbot, confirm_exit_yes, monkeypatch, tmp_path):
+    """A TCP-started run can be over (and the controller's id cleared) before a queued GUI slot runs: the id travels
+    with signal_history_run_started instead."""
+    win, calls = _preview_timing_gui(qtbot, monkeypatch, tmp_path)
+    monkeypatch.setattr(win.unifiedMosaicWidget, "layers_initialized", False)
+    mpc = win.multipointController
+    folder = str(tmp_path / "run_e9")
+    assert mpc.history_entry_id is None
+
+    mpc.signal_history_run_started.emit("e9", folder)
+    mpc.signal_acquisition_start.emit()
+    mpc.timepoint_finished.emit(0)
+    mpc.acquisition_finished.emit()
+
+    assert calls == [("e9", folder, False)]
