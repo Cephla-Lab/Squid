@@ -25,6 +25,7 @@ from control.core.multi_point_utils import (
     PlateViewInit,
 )
 from control.core.objective_store import ObjectiveStore
+from control.core.relative_z_range import frame_targets, nz_for_range
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.piezo import PiezoStage
@@ -59,6 +60,12 @@ from squid.config import CameraPixelFormat
 # Module-level logger for static methods
 _log = squid.logging.get_logger(__name__)
 
+# A relative Z-range with no valid lock-on record: the run stops when the first FOV's lock-on fails.
+RELATIVE_FIRST_FOV_LOCK_ON_FAILED_MESSAGE = (
+    "Couldn't lock onto the laser AF reference at the first FOV: move near the reference plane, "
+    "or measure a relative z once."
+)
+
 
 def save_job_classes_for_format(file_saving_option: FileSavingOption) -> List[Type[Job]]:
     """The saving job classes that implement the given file saving format."""
@@ -82,6 +89,13 @@ def _z_steps_below_center(nz: int) -> int:
 
 
 class MultiPointWorker:
+    # Relative-mode state (Set Range with laser AF on). Class defaults so a bare instance (tests build some with
+    # __new__) runs in absolute / plain mode.
+    laser_af_relative_range_um: Optional[Tuple[float, float]] = None
+    _relative_mode: bool = False
+    _anchor_um: Optional[float] = None
+    _require_first_lock_on: bool = False
+
     def __init__(
         self,
         scope: Microscope,
@@ -193,6 +207,13 @@ class MultiPointWorker:
         self.laser_af_per_stack = acquisition_parameters.laser_af_per_stack
         self.z_range = acquisition_parameters.z_range
         self.piezo_z_range_um = acquisition_parameters.piezo_z_range_um
+        # Set Range with laser AF on: (z_min, z_max) µm from each FOV's laser AF anchor, or None.
+        self.laser_af_relative_range_um = acquisition_parameters.laser_af_relative_range_um
+        self._relative_mode = self.laser_af_relative_range_um is not None
+        self._anchor_um = None  # the actuator position (µm) the current FOV's planes are relative to
+        self._require_first_lock_on = False  # set per time point by initialize_z_stack
+        self._relative_offsets_um: List[float] = []  # the current FOV's channel offsets, per selected channel
+        self._out_of_travel_by_k: Dict[int, List[str]] = {}  # the current FOV's skipped channels per plane
 
         self.crop = SEGMENTATION_CROP
 
@@ -829,14 +850,33 @@ class MultiPointWorker:
             self.piezo.move_to(piezo_max_um if self.z_stacking_config == "FROM TOP" else piezo_min_um)
             self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
+        # A relative range starts the time point at the last lock-on's anchor, not at the Start-time z (usually
+        # Z-max, often outside the capture range). With no valid record the first FOV's lock-on must succeed.
+        if self._relative_mode:
+            record = self.laser_auto_focus_controller.valid_lock_on()
+            if record is not None:
+                self._move_actuator_to_um(record.anchor_um)
+                self._anchor_um = record.anchor_um
+            self._require_first_lock_on = record is None
+
         self.z_pos = self.stage.get_pos().z_mm  # zpos at the beginning of the scan
 
     def initialize_coordinates_dataframe(self):
         base_columns = ["z_level", "x (mm)", "y (mm)", "z (um)", "time"]
         piezo_column = ["z_piezo (um)"] if self.use_piezo else []
-        self.coordinates_pd = pd.DataFrame(columns=["region", "fov"] + base_columns + piezo_column)
+        relative_columns = ["z_rel (um)", "out_of_travel"] if self._relative_mode else []
+        self.coordinates_pd = pd.DataFrame(columns=["region", "fov"] + base_columns + piezo_column + relative_columns)
 
-    def update_coordinates_dataframe(self, region_id, z_level, pos: squid.abc.Pos, fov=None, z_piezo_um=None):
+    def update_coordinates_dataframe(
+        self,
+        region_id,
+        z_level,
+        pos: squid.abc.Pos,
+        fov=None,
+        z_piezo_um=None,
+        z_rel_um=None,
+        skipped_channels=None,
+    ):
         base_data = {
             "z_level": [z_level],
             "x (mm)": [pos.x_mm],
@@ -847,8 +887,12 @@ class MultiPointWorker:
         piezo_data = {}
         if self.use_piezo:
             piezo_data = {"z_piezo (um)": [self.z_piezo_um if z_piezo_um is None else z_piezo_um]}
+        relative_data = {}
+        if self._relative_mode:
+            # The plane's distance from the reference, and the channels left out there (outside the travel).
+            relative_data = {"z_rel (um)": [z_rel_um], "out_of_travel": [";".join(skipped_channels or [])]}
 
-        new_row = pd.DataFrame({"region": [region_id], "fov": [fov], **base_data, **piezo_data})
+        new_row = pd.DataFrame({"region": [region_id], "fov": [fov], **base_data, **piezo_data, **relative_data})
 
         self.coordinates_pd = pd.concat([self.coordinates_pd, new_row], ignore_index=True)
 
@@ -1129,6 +1173,9 @@ class MultiPointWorker:
 
     def acquire_at_position(self, region_id, current_path, fov):
         self._applied_config = None
+        if self._relative_mode:
+            self._acquire_relative(region_id, current_path, fov)
+            return
         af_succeeded = self.perform_autofocus(region_id, fov)
         if not af_succeeded:
             self._log.error(
@@ -1251,13 +1298,212 @@ class MultiPointWorker:
             self._reset_channel_z_offset()
         return z_steps_taken
 
+    # --- Relative z-stack: Set Range with laser AF on, planes relative to each FOV's laser AF anchor ----------
+
+    def _acquire_relative(self, region_id, current_path, fov) -> None:
+        """One FOV of a relative z-stack, in place of perform_autofocus, prepare_z_stack, the stack steps and
+        move_z_back_after_stack.
+
+        Lock on (Z restored to where it was on any failure); with no valid lock-on record a failed first lock-on
+        stops the run. Then every frame is an absolute move to anchor + z_min + k * dz + channel offset; a frame
+        outside the actuator's travel is skipped and reported, never clamped. Z ends at the anchor.
+        """
+        if self.z_stack_order == "Z FIRST":
+            raise NotImplementedError("A relative Z-range does not run in Z First order yet.")
+        af_succeeded = self._relative_lock_on(region_id, fov)
+        try:
+            if not af_succeeded and self._require_first_lock_on:
+                self._log.error(RELATIVE_FIRST_FOV_LOCK_ON_FAILED_MESSAGE)
+                self._abort_due_to_error()
+                return
+            if (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
+                # The next time point's lock-on starts here: the anchor on a stepper, so it starts from
+                # displacement 0; the stage z on a piezo scope, where the piezo holds the anchor.
+                self._last_time_point_z_pos[(region_id, fov)] = (
+                    self.stage.get_pos().z_mm if self._actuator_is_piezo() else self._anchor_um / 1000
+                )
+            targets = self._relative_targets(self.selected_configurations, af_succeeded)
+            skipped = [(c, k) for c, row in enumerate(targets) for k, target in enumerate(row) if target is None]
+            self._report_skipped_frames(region_id, fov, skipped)
+            self._acquire_relative_channel_first(region_id, current_path, fov, targets)
+            self._timepoint_fov_count += 1
+        finally:
+            self._move_actuator_to_um(self._anchor_um)
+
+    def _acquire_relative_channel_first(self, region_id, current_path, fov, targets) -> None:
+        """For each plane k, every channel whose target at k is inside the travel; one coordinates row per k."""
+        z_min_um = self.laser_af_relative_range_um[0]
+        dz_um = abs(self.deltaZ) * 1000
+        nz = self._relative_nz()
+        n_configs = len(self.selected_configurations)
+        for k in range(nz):
+            file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{k:0{FILE_ID_PADDING}}"
+            # Record the plane's nominal, un-offset position (computed even where it lies outside the travel).
+            z_rel_um = z_min_um + k * dz_um
+            nominal_um = self._anchor_um + z_rel_um
+            acquire_pos = self.stage.get_pos()
+            z_piezo_um = None
+            if self._actuator_is_piezo():
+                z_piezo_um = nominal_um
+            else:
+                acquire_pos = acquire_pos.model_copy(update={"z_mm": nominal_um / 1000})
+            self._begin_z_level(region_id, current_path, fov, k, file_ID, acquire_pos)
+
+            for config_idx, config in enumerate(self.selected_configurations):
+                if self.abort_requested_fn():
+                    break
+                target_um = targets[config_idx][k]
+                if target_um is None:
+                    continue
+                self._move_actuator_to_um(target_um)
+                current_image = fov * nz * n_configs + k * n_configs + config_idx + 1
+                self._acquire_channel_image(config, config_idx, file_ID, current_path, k, region_id, fov, current_image)
+
+            self._finish_z_level(
+                region_id,
+                fov,
+                k,
+                acquire_pos,
+                z_piezo_um,
+                z_rel_um=z_rel_um,
+                skipped_channels=self._out_of_travel_by_k.get(k, []),
+            )
+            # On an abort, stop here: the caller handles it once.
+            if self.abort_requested_fn():
+                break
+            self.af_fov_count = self.af_fov_count + 1
+
+    def _relative_lock_on(self, region_id, fov, channel_name=None) -> bool:
+        """Lock on to the laser AF reference plane. True on success.
+
+        On any failure (a False return or an exception anywhere in the AF) Z is restored absolutely to where it
+        was (z_pre) and settled; a failed restore raises, and run() treats that as fatal. Either way _anchor_um
+        is the actuator position afterwards: the reference plane, or z_pre. A success is recorded as the last
+        lock-on and lifts the first-FOV requirement. Counted per FOV, or per stack when channel_name names the
+        channel re-locking before its stack.
+        """
+        locked = self._laser_af_anchor(region_id, fov, restore_on_failure=True, channel_name=channel_name)
+        if channel_name is None:
+            if locked:
+                self._laser_af_successes += 1
+            else:
+                self._laser_af_failures += 1
+        elif locked:
+            self._laser_af_per_stack_successes += 1
+        else:
+            self._laser_af_per_stack_failures += 1
+        self._anchor_um = self._actuator_position_um()
+        where = f"region '{region_id}' fov {fov}" + (f" before the '{channel_name}' stack" if channel_name else "")
+        self._log.info(f"relative z-stack anchor, {where}: {self._anchor_um:.3f} µm")
+        if locked:
+            self.laser_auto_focus_controller.record_lock_on()
+            self._require_first_lock_on = False
+        else:
+            self._log.error(
+                f"laser AF lock-on failed, {where}: Z restored to {self._anchor_um:.3f} µm, stacking from there"
+            )
+        return locked
+
+    def _relative_nz(self) -> int:
+        """Planes in the relative range at the run's dz (the same Nz the controller derived)."""
+        return nz_for_range(*self.laser_af_relative_range_um, abs(self.deltaZ) * 1000)
+
+    def _relative_targets(self, configs, af_succeeded: bool) -> List[List[Optional[float]]]:
+        """Absolute actuator target (µm) per [channel][k] from the current anchor, None outside the travel."""
+        z_min_um = self.laser_af_relative_range_um[0]
+        self._relative_offsets_um = [self._channel_offset_um(config, af_succeeded) for config in configs]
+        return frame_targets(
+            self._anchor_um,
+            z_min_um,
+            self._relative_nz(),
+            abs(self.deltaZ) * 1000,
+            self._relative_offsets_um,
+            self._actuator_travel_um(),
+        )
+
+    def _channel_offset_um(self, config, af_succeeded: bool) -> float:
+        """The channel's z-offset (µm) from the anchor, under _apply_channel_z_offset's gates, else 0.
+
+        The relative path adds it to each absolute target instead of moving by it (no apply / undo moves, so
+        no clamp).
+        """
+        if not (self.apply_channel_offset and self.do_reflection_af):
+            return 0.0
+        raw_target = config.z_offset_um
+        if raw_target is None:
+            return 0.0
+        if not math.isfinite(raw_target):
+            self._log.warning(f"Channel '{config.name}' has non-finite z_offset_um={raw_target!r}; treating as 0")
+            return 0.0
+        if not af_succeeded:
+            if raw_target:
+                self._log.warning(
+                    f"Skipping per-channel z-offset for '{config.name}' because reflection AF failed for this FOV"
+                )
+            return 0.0
+        return float(raw_target)
+
+    def _actuator_is_piezo(self) -> bool:
+        # The actuator is the one laser AF drives: the piezo whenever the scope has one (its _move_z), else the
+        # stage z. Relative mode refuses a stage stack on a piezo scope, so this matches use_piezo.
+        return getattr(self.laser_auto_focus_controller, "piezo", None) is not None
+
+    def _actuator_position_um(self) -> float:
+        return self.piezo.position if self._actuator_is_piezo() else self.stage.get_pos().z_mm * 1000
+
+    def _actuator_travel_um(self) -> Tuple[float, float]:
+        """The actuator's travel in µm: the piezo's [0, range], or the stage's Z software limits."""
+        if self._actuator_is_piezo():
+            return 0.0, float(self.piezo.range_um)
+        limits = control._def.SOFTWARE_POS_LIMIT
+        return limits.Z_NEGATIVE * 1000, limits.Z_POSITIVE * 1000
+
+    def _move_actuator_to_um(self, um: float) -> None:
+        """Absolute actuator move (no clamp: the caller passes a target inside the travel), then settle."""
+        if self._actuator_is_piezo():
+            self.piezo.move_to(um)
+            self.z_piezo_um = um  # only after the move succeeded
+            if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+        else:
+            self.stage.move_z_to(um / 1000)
+            self._sleep(squid.stage.utils.z_stabilization_time_s())
+
+    def _report_skipped_frames(self, region_id, fov, skipped: List[Tuple[int, int]]) -> None:
+        """Report this FOV's frames left out because their target is outside the actuator's travel.
+
+        skipped: (config_idx, k) pairs, from targets computed by _relative_targets for the current anchor.
+        Sets the skipped channels per plane for the FOV's coordinates.csv rows and logs one warning naming each
+        frame (plane k, channel) and why (below / past the travel). Anything else that reports skipped frames
+        (run-summary counts, a notice to the writers) belongs here too.
+        """
+        names = [config.name for config in self.selected_configurations]
+        self._out_of_travel_by_k = {}
+        for config_idx, k in skipped:
+            self._out_of_travel_by_k.setdefault(k, []).append(names[config_idx])
+        if not skipped:
+            return
+        low_um, high_um = self._actuator_travel_um()
+        z_min_um = self.laser_af_relative_range_um[0]
+        dz_um = abs(self.deltaZ) * 1000
+        frames = []
+        for config_idx, k in skipped:
+            target_um = self._anchor_um + z_min_um + k * dz_um + self._relative_offsets_um[config_idx]
+            reason = f"below {low_um:g} µm" if target_um < low_um else f"past {high_um:g} µm"
+            frames.append(f"plane {k} '{names[config_idx]}' at {target_um:.2f} µm ({reason})")
+        self._log.warning(
+            f"region '{region_id}' fov {fov}: {len(skipped)} frame(s) outside the travel "
+            f"[{low_um:g}, {high_um:g}] µm skipped, not clamped: " + "; ".join(frames)
+        )
+
     def _begin_z_level(self, region_id, current_path, fov, z_level, file_ID, acquire_pos=None):
         if acquire_pos is None:
             acquire_pos = self.stage.get_pos()
         metadata = {"x": acquire_pos.x_mm, "y": acquire_pos.y_mm, "z": acquire_pos.z_mm}
         self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
 
-        if z_level == 0 and (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
+        # A relative stack records its anchor instead (_acquire_relative): plane 0 is below the reference.
+        if z_level == 0 and (self.do_reflection_af or self.do_autofocus) and self.Nt > 1 and not self._relative_mode:
             self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
 
         # laser af characterization mode
@@ -1268,9 +1514,19 @@ class MultiPointWorker:
 
         return acquire_pos
 
-    def _finish_z_level(self, region_id, fov, z_level, acquire_pos, z_piezo_um=None):
+    def _finish_z_level(
+        self, region_id, fov, z_level, acquire_pos, z_piezo_um=None, z_rel_um=None, skipped_channels=None
+    ):
         # updates coordinates df
-        self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov, z_piezo_um=z_piezo_um)
+        self.update_coordinates_dataframe(
+            region_id,
+            z_level,
+            acquire_pos,
+            fov,
+            z_piezo_um=z_piezo_um,
+            z_rel_um=z_rel_um,
+            skipped_channels=skipped_channels,
+        )
         self.callbacks.signal_current_fov(acquire_pos.x_mm, acquire_pos.y_mm)
 
     def _acquire_channel_image(self, config, config_idx, file_ID, current_path, z_level, region_id, fov, current_image):
@@ -1348,10 +1604,11 @@ class MultiPointWorker:
         per-channel z-offset gate would apply offsets from an unanchored z.
 
         Z is not reliably unchanged on failure: move_to_target can succeed and leave Z at the reference
-        plane before the region offset raises. With restore_on_failure (the per-stack re-AF) the absolute
-        pre-AF Z is restored (an exception from that restore propagates: run() treats it as fatal) and the
-        piezo cache is re-read on every outcome, since the laser AF controller moves the piezo directly
-        (its _move_z). The per-FOV caller re-reads the cache itself in acquire_at_position.
+        plane before the region offset raises. With restore_on_failure (the per-stack re-AF, and every lock-on
+        of a relative z-stack) the absolute pre-AF Z is restored (an exception from that restore propagates:
+        run() treats it as fatal) and the piezo cache is re-read on every outcome, since the laser AF controller
+        moves the piezo directly (its _move_z). The per-FOV caller re-reads the cache itself in
+        acquire_at_position.
         """
         if restore_on_failure:
             # The controller moves the piezo whenever the scope has one (its _move_z), whichever actuator runs
