@@ -2004,6 +2004,19 @@ class PreferencesDialog(QDialog):
         )
         mosaic_layout.addRow("Save Downsampled Well Images:", self.save_downsampled_checkbox)
 
+        # Z-stack projection (how planes of a z-stack are combined in the mosaic and its saved overview)
+        self.mosaic_z_projection_combo = QComboBox()
+        self.mosaic_z_projection_combo.addItem("Max intensity projection", "mip")
+        self.mosaic_z_projection_combo.addItem("Last plane acquired", "last_plane")
+        self.mosaic_z_projection_combo.setCurrentIndex(
+            max(0, self.mosaic_z_projection_combo.findData(control._def.MOSAIC_Z_PROJECTION.value))
+        )
+        self.mosaic_z_projection_combo.setToolTip(
+            "How the mosaic view and its saved overview combine the planes of a z-stack: "
+            "the running maximum, or whichever plane was acquired last."
+        )
+        mosaic_layout.addRow("Z-stack projection:", self.mosaic_z_projection_combo)
+
         mosaic_group.content.addLayout(mosaic_layout)
         layout.addWidget(mosaic_group)
 
@@ -2019,6 +2032,32 @@ class PreferencesDialog(QDialog):
 
         ndviewer_group.content.addLayout(ndviewer_layout)
         layout.addWidget(ndviewer_group)
+
+        # Gallery section
+        gallery_group = CollapsibleGroupBox("Gallery")
+        gallery_layout = QFormLayout()
+
+        # Record snaps in the acquisition history
+        self.record_snaps_checkbox = QCheckBox()
+        self.record_snaps_checkbox.setChecked(control._def.RECORD_SNAPS_IN_HISTORY)
+        self.record_snaps_checkbox.setToolTip(
+            "Record single snaps from the multipoint tabs in the acquisition history (shown in the Gallery tab)."
+        )
+        gallery_layout.addRow("Record snaps in the acquisition history:", self.record_snaps_checkbox)
+
+        # ndviewer_light location
+        self.ndviewer_light_command_edit = QLineEdit()
+        self.ndviewer_light_command_edit.setText(control._def.NDVIEWER_LIGHT_COMMAND)
+        self.ndviewer_light_command_edit.setPlaceholderText("auto-detect (PATH, installed package, submodule)")
+        self.ndviewer_light_command_edit.setToolTip(
+            "Leave empty to find ndviewer_light automatically (the ndviewer-light command on the PATH, "
+            "the package in Squid's Python, or Squid's submodule). Otherwise an executable, a command line, "
+            "or a folder containing the ndviewer_light package."
+        )
+        gallery_layout.addRow("ndviewer_light location:", self.ndviewer_light_command_edit)
+
+        gallery_group.content.addLayout(gallery_layout)
+        layout.addWidget(gallery_group)
 
         layout.addStretch()
         self.tab_widget.addTab(tab, "Views")
@@ -2488,6 +2527,13 @@ class PreferencesDialog(QDialog):
             "enable_ndviewer",
             "true" if self.enable_ndviewer_checkbox.isChecked() else "false",
         )
+        self.config.set("VIEWS", "mosaic_z_projection", self.mosaic_z_projection_combo.currentData())
+        self.config.set(
+            "VIEWS",
+            "record_snaps_in_history",
+            "true" if self.record_snaps_checkbox.isChecked() else "false",
+        )
+        self.config.set("VIEWS", "ndviewer_light_command", self.ndviewer_light_command_edit.text().strip())
 
         # Hardware Simulation settings (in [SIMULATION] section)
         self._ensure_section("SIMULATION")
@@ -2626,6 +2672,11 @@ class PreferencesDialog(QDialog):
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = self.display_mosaic_view_checkbox.isChecked()
         control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
         control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
+        control._def.MOSAIC_Z_PROJECTION = control._def.ZProjectionMode.convert_to_enum(
+            self.mosaic_z_projection_combo.currentData()
+        )
+        control._def.RECORD_SNAPS_IN_HISTORY = self.record_snaps_checkbox.isChecked()
+        control._def.NDVIEWER_LIGHT_COMMAND = self.ndviewer_light_command_edit.text().strip()
 
         # Prior stage speed and acceleration (the stage already has them: _send_prior_motion_settings)
         if self.prior_speed_spinbox is not None:
@@ -3028,6 +3079,21 @@ class PreferencesDialog(QDialog):
         new_val = self.enable_ndviewer_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable NDViewer *", str(old_val), str(new_val), True))
+
+        old_val = control._def.MOSAIC_Z_PROJECTION.value
+        new_val = self.mosaic_z_projection_combo.currentData()
+        if old_val != new_val:
+            changes.append(("Z-stack projection", str(old_val), str(new_val), False))
+
+        old_val = control._def.RECORD_SNAPS_IN_HISTORY
+        new_val = self.record_snaps_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Record snaps in history", str(old_val), str(new_val), False))
+
+        old_val = control._def.NDVIEWER_LIGHT_COMMAND
+        new_val = self.ndviewer_light_command_edit.text().strip()
+        if old_val != new_val:
+            changes.append(("ndviewer_light location", str(old_val), str(new_val), False))
 
         # Hardware Simulation settings (require restart)
         old_val = self._get_config_value("SIMULATION", "simulate_camera", "false").lower() == "true"
