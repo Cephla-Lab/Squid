@@ -13,9 +13,9 @@ from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Optional
 
-from qtpy.QtCore import QObject, Signal
+from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtGui import QBrush, QColor, QFont, QFontDatabase, QPalette
-from qtpy.QtWidgets import QApplication
+from qtpy.QtWidgets import QApplication, QWidget
 
 THEMES = ("light", "dark", "classic")
 
@@ -168,7 +168,6 @@ CLASSIC = replace(
 # tight on purpose: they keep size hints within a few px of Fusion's so the Controls dock does not widen.
 # control_height is not applied as a min-height for the same reason.
 _LENGTHS = {
-    "hair": 1,
     "input_pad_y": 1,
     "input_pad_x": 2,
     "button_pad_y": 2,
@@ -217,6 +216,7 @@ QToolTip {{ background: {surface}; color: {text}; border: {hair} solid {border};
 /* Cards: only widgets carrying role="card", and group boxes. Never a bare QFrame/QWidget border. */
 QWidget[role="card"] {{ background: {surface}; border: {hair} solid {border}; border-bottom-color: {shadow}; border-radius: {card_radius}; }}
 QGroupBox {{ background: {surface}; border: {hair} solid {border}; border-bottom-color: {shadow}; border-radius: {card_radius}; margin-top: {group_title_band}; }}
+QGroupBox[role="group-plain"] {{ margin-top: 0; }}
 QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: {card_radius}; padding: 0 {tab_gap}; }}
 
 /* Tabs: segmented pills in a tray */
@@ -268,14 +268,21 @@ QPushButton:checked {{ background: {accent_soft}; border-color: {accent}; }}
 QPushButton:disabled {{ background: {ground}; color: {disabled_text}; border-color: {border}; }}
 QPushButton[role="primary"] {{ background: {accent}; color: {accent_text}; border-color: {accent}; }}
 QPushButton[role="primary"]:disabled {{ background: {accent_soft}; color: {disabled_text}; border-color: {accent_soft}; }}
+QPushButton[role="primary"]:hover {{ background: {primary_hover}; border-color: {primary_hover}; }}
+QPushButton[role="primary"]:pressed {{ background: {primary_pressed}; border-color: {primary_pressed}; }}
 QPushButton[role="action"][on="true"] {{ background: {accent_soft}; border-color: {accent}; }}
+QPushButton[role="action"][on="true"]:disabled {{ background: {ground}; color: {disabled_text}; border-color: {border}; }}
+QPushButton[role="action-bold"] {{ font-weight: bold; }}
 
-/* Label roles */
-QLabel[role="note"] {{ color: {muted}; }}
-QLabel[role="hint"] {{ color: {muted}; font-style: italic; }}
-QLabel[role="danger"] {{ color: {danger_text}; font-weight: bold; }}
-QLabel[role="success"] {{ color: {success_text}; }}
-QLabel[role="banner-danger"] {{ background: {banner_bg}; color: #ffffff; border-radius: {control_radius}; padding: {tip_pad}; }}
+/* Label roles: muted notes and hints, danger and success text, banners and callouts */
+QLabel[role="note"], QLabel[role="note-gray"], QLabel[role="status-idle"] {{ color: {muted}; }}
+QLabel[role="hint"], QLabel[role="hint-gray"] {{ color: {muted}; font-style: italic; }}
+QLabel[role="danger"], QLabel[role="danger-soft"], QLabel[role="danger-text-bold"], QLabel[role="alert-bold"], QLabel[role="alert-bold-first"] {{ color: {danger_text}; font-weight: bold; }}
+QLabel[role="danger-text"], QLabel[role="alert"], QLabel[role="status-bad"] {{ color: {danger_text}; }}
+QGroupBox[role="alert-group"] {{ color: {danger_text}; }}
+QLabel[role="success"], QLabel[role="status-ok"] {{ color: {success_text}; }}
+QLabel[role="banner-danger"], QLabel[role="banner-engine"] {{ background: {banner_bg}; color: #ffffff; border-radius: {control_radius}; padding: {tip_pad}; }}
+QLabel[role="banner-danger"] {{ font-weight: bold; }}
 QLabel[role="callout-warning"] {{ background: {warning_bg}; color: {warning_text}; border: {hair} solid {warning_border}; border-radius: {control_radius}; padding: {tip_pad}; }}
 
 /* Grouped settings (XY/Z/Time frames and the scan-settings band) */
@@ -353,10 +360,14 @@ def build_stylesheet(tokens: Tokens, scale: float, icon_dir: Optional[Path]) -> 
     values["slider_handle_radius"] = f"{handle_outer // 2}px"
     values["slider_overhang"] = f"{(handle_outer - groove) // 2}px"
     values["scrollbar_handle_radius"] = f"{(px(_LENGTHS['scrollbar']) - 2 * px(_LENGTHS['scrollbar_inset'])) // 2}px"
-    values["radio_radius"] = f"{(px(tokens.checkbox_size) + 2 * px(_LENGTHS['hair'])) // 2}px"
+    values["radio_radius"] = f"{(px(tokens.checkbox_size) + 2) // 2}px"
     values["spin_arrow"] = f"{px(tokens.checkbox_size) * 3 // 4}px"
     values["disabled_text"] = _mix(tokens.text, tokens.ground, 0.4)
     values["group_title_band"] = _GROUP_TITLE_BAND
+    # Borders are one device pixel at any scale; only the other lengths grow.
+    values["hair"] = "1px"
+    values["primary_hover"] = _mix(tokens.accent, tokens.text, 0.85)
+    values["primary_pressed"] = _mix(tokens.accent, tokens.text, 0.7)
 
     qss = _BASE_QSS.format(**values)
     if icon_dir is not None:
@@ -367,6 +378,12 @@ def build_stylesheet(tokens: Tokens, scale: float, icon_dir: Optional[Path]) -> 
 def build_palette(tokens: Tokens) -> QPalette:
     """A QPalette carrying the token colours, so unstyled and custom-painted widgets follow the theme."""
     palette = QPalette()
+    # Fusion draws bevels and separators from Dark, Mid and Midlight: keep them close to Button in both themes.
+    if _relative_luminance(tokens.ground) < 0.2:
+        dark, mid = _mix(tokens.button_bg, "#000000", 0.5), _mix(tokens.button_bg, "#000000", 0.75)
+        midlight = _mix(tokens.button_bg, tokens.tab_selected, 0.5)
+    else:
+        dark, mid, midlight = tokens.input_border_bottom, tokens.button_border, tokens.surface
     roles = {
         QPalette.Window: tokens.ground,
         QPalette.WindowText: tokens.text,
@@ -383,9 +400,9 @@ def build_palette(tokens: Tokens) -> QPalette:
         QPalette.HighlightedText: tokens.accent_text,
         QPalette.Link: tokens.accent,
         QPalette.Light: tokens.tab_selected,
-        QPalette.Midlight: tokens.surface,
-        QPalette.Mid: tokens.button_border,
-        QPalette.Dark: tokens.input_border_bottom,
+        QPalette.Midlight: midlight,
+        QPalette.Mid: mid,
+        QPalette.Dark: dark,
         QPalette.Shadow: tokens.shadow,
     }
     for role, colour in roles.items():
@@ -661,3 +678,74 @@ def save_theme_choice(ini_path: Optional[str], choice: str) -> bool:
                 os.remove(tmp_name)
             except OSError:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Roles: one name per meaning, rendered as today's literal in Classic and as a stylesheet rule otherwise
+# ---------------------------------------------------------------------------
+
+_LAVENDER = "background-color: #C2C2FF"
+
+# role (or "role:state") -> the literal stylesheet the call sites use today. Several roles may share a literal.
+CLASSIC_STYLES = {
+    "primary": _LAVENDER,
+    "action": _LAVENDER,
+    "action:on": "background-color: #C2FFC2",
+    "action-bold": "background-color: #C2C2FF; font-weight: bold;",
+    "note": "color: #666;",
+    "note-gray": "color: gray;",
+    "hint": "color: #666; font-style: italic;",
+    "hint-gray": "color: gray; font-style: italic;",
+    "danger": "color: #CC0000; font-weight: bold;",
+    "danger-soft": "color: #e74c3c; font-weight: bold;",
+    "danger-text": "color: #c0392b;",
+    "danger-text-bold": "color: #c0392b; font-weight: bold;",
+    "alert": "color: #b00020;",
+    "alert-bold": "color: #b00020; font-weight: bold;",
+    "alert-bold-first": "font-weight: bold; color: #b00020;",
+    "alert-group": "QGroupBox { color: #b00020; }",
+    "success": "color: #2e7d32;",
+    "status-ok": "color: green;",
+    "status-bad": "color: red;",
+    "status-idle": "color: gray;",
+    "banner-danger": "background-color: #FF6B6B; color: white; font-weight: bold; padding: 8px;",
+    "banner-engine": "background-color: #c0392b; color: white; padding: 4px;",
+    "callout-warning": "background-color: #fff3cd; padding: 10px; border-radius: 4px;",
+    "card": "",
+    "group-plain": "",
+}
+
+
+def classic_style(role: str, **states: bool) -> str:
+    """Today's literal stylesheet for ``role``; a true state with its own ``role:state`` entry wins."""
+    if role not in CLASSIC_STYLES:
+        raise KeyError(role)
+    for name, value in states.items():
+        if value and f"{role}:{name}" in CLASSIC_STYLES:
+            return CLASSIC_STYLES[f"{role}:{name}"]
+    return CLASSIC_STYLES[role]
+
+
+def set_role(widget: QWidget, role: str, **states: bool) -> None:
+    """Style ``widget`` by meaning: the Classic literal in Classic, ``role``/state properties otherwise.
+
+    States are independent dynamic properties, so others set elsewhere (``dropTarget``) are left alone.
+    """
+    literal = classic_style(role, **states)
+    if manager().is_classic():
+        widget.setStyleSheet(literal)
+        return
+    # A state given on an earlier call but not this one is switched off rather than left stale.
+    for name in widget.property("_roleStates") or []:
+        if name not in states:
+            widget.setProperty(name, False)
+    widget.setStyleSheet("")
+    widget.setProperty("role", role)
+    for name, value in states.items():
+        widget.setProperty(name, value)
+    widget.setProperty("_roleStates", list(states))
+    if role == "card":
+        # A stylesheet background/border paints on a QWidget subclass only with this attribute.
+        widget.setAttribute(Qt.WA_StyledBackground, True)
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
