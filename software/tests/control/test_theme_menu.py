@@ -73,3 +73,48 @@ def test_unsaveable_ini_blocks_classic_transition_both_ways(gui, qapp, monkeypat
     win.appearance_actions["light"].trigger()
     assert warned and not prompted and qapp.styleSheet() == ""
     assert win.appearance_actions["classic"].isChecked()
+
+
+def test_reclicking_the_active_theme_does_nothing(gui, monkeypatch):
+    win, ini = gui
+    before = ini.read_text()
+    monkeypatch.setattr(control._def, "CACHED_CONFIG_FILE_PATH", None)  # a save would warn
+    warned, applied = [], []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a) or QMessageBox.Ok)
+    manager = theme.manager()
+    real_apply = manager.apply
+    monkeypatch.setattr(manager, "apply", lambda t: applied.append(t) or real_apply(t))
+    win.appearance_actions["light"].trigger()
+    assert not warned and not applied
+    assert ini.read_text() == before
+    assert win.appearance_actions["light"].isChecked()
+
+
+def test_picking_the_active_theme_cancels_a_pending_classic(gui, monkeypatch):
+    win, ini = gui
+    monkeypatch.setattr(QMessageBox, "exec_", lambda self: 0)  # "Later"
+    win.appearance_actions["classic"].trigger()
+    assert "ui_theme = classic" in ini.read_text()
+    win.appearance_actions["light"].trigger()
+    assert "ui_theme = light" in ini.read_text()
+    assert win.appearance_actions["classic"].text() == "Classic"
+    assert win.appearance_actions["light"].isChecked()
+
+
+def test_restart_now_calls_restart_application(gui, monkeypatch):
+    win, ini = gui
+    buttons = []
+    real_add = QMessageBox.addButton
+
+    def recording_add(self, *args):
+        button = real_add(self, *args)
+        buttons.append(button)
+        return button
+
+    monkeypatch.setattr(QMessageBox, "addButton", recording_add)
+    monkeypatch.setattr(QMessageBox, "exec_", lambda self: 0)
+    monkeypatch.setattr(QMessageBox, "clickedButton", lambda self: buttons[0])  # "Restart Now"
+    restarted = []
+    monkeypatch.setattr(win, "restart_application", lambda: restarted.append(True))
+    win.appearance_actions["classic"].trigger()
+    assert restarted == [True]

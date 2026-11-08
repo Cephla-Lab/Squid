@@ -2055,6 +2055,8 @@ class HighContentScreeningGui(QMainWindow):
 
     def _on_theme_chosen(self, choice):
         manager = theme.manager()
+        if choice == manager.current and self._pending_theme is None:
+            return
         saved = theme.save_theme_choice(control._def.CACHED_CONFIG_FILE_PATH, choice)
         if manager.needs_restart(choice):
             if not saved:
