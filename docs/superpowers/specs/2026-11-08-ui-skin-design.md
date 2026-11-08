@@ -82,7 +82,7 @@ Light/Dark and Segoe/Ubuntu buttons at the top are mockup controls, not product)
   (The Windows size was the person's decision; see above. Moving to 9 pt later is a one-token change plus
   a re-check of the Controls column width, which grows about 11 % at 9 pt.)
 - **Where the switch lives**: Settings menu, an "Appearance" submenu with three exclusive radio actions:
-  Light, Dark, Classic. Applies immediately.
+  Light, Dark, Classic. Light/Dark apply immediately; entering or leaving Classic applies after restart.
 - **Where it persists**: in the machine `.ini` under `[GENERAL]` as `ui_theme = light | dark | classic`,
   the same store the Preferences dialog's Views tab already uses for UI preferences. Read at startup through
   `control._def` (default `light` when absent). Written by the menu action using the same ConfigParser
