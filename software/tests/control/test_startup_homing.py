@@ -392,7 +392,9 @@ def test_piezo_only_decline_closes_the_hardware_and_raises(piezo_only, monkeypat
     home = MagicMock()
     monkeypatch.setattr(control.microscope.Microscope, "home_xyz", home)
     with pytest.raises(StartupHomingDeclined):
-        control.microscope.Microscope.build_from_global_config(True, confirm_objective_lowered=lambda: False)
+        control.microscope.Microscope.build_from_global_config(
+            True, confirm_objective_lowered=lambda stage_homes: False
+        )
     home.assert_not_called()
     assert len(closes) == 1
 
@@ -407,7 +409,9 @@ def test_piezo_only_stop_sign_comes_before_anything_moves(piezo_only, monkeypatc
     scope.addons.piezo_stage = piezo
     sent = _spy_commands(scope.low_level_drivers.microcontroller)
     at_stop_sign = []
-    scope._confirm_objective_lowered = lambda: at_stop_sign.append((list(sent), piezo.home.call_count)) or lowered
+    scope._confirm_objective_lowered = lambda stage_homes: (
+        at_stop_sign.append((list(sent), piezo.home.call_count)) or lowered
+    )
     if lowered:
         scope._prepare_for_use(skip_init=False)
     else:
@@ -424,7 +428,7 @@ def test_piezo_only_decline_stops_before_the_objective_changer_moves(piezo_only)
     scope = _scope()
     changer = MagicMock()
     scope.addons.objective_changer = changer
-    scope._confirm_objective_lowered = lambda: False
+    scope._confirm_objective_lowered = lambda stage_homes: False
     with pytest.raises(StartupHomingDeclined):
         scope._prepare_for_use(skip_init=False)
     changer.home.assert_not_called()
@@ -434,9 +438,9 @@ def test_piezo_only_decline_stops_before_the_objective_changer_moves(piezo_only)
 def test_piezo_only_confirm_asks_once_and_homes(piezo_only):
     asked = []
     scope = control.microscope.Microscope.build_from_global_config(
-        True, confirm_objective_lowered=lambda: asked.append(1) or True
+        True, confirm_objective_lowered=lambda stage_homes: asked.append(stage_homes) or True
     )
-    assert asked == [1] and scope.startup_homing is StartupHoming.HOMED
+    assert asked == [True] and scope.startup_homing is StartupHoming.HOMED  # the stop sign says the stage homes
     scope.close()
 
 
@@ -673,8 +677,8 @@ def test_signature_is_the_same_in_another_process():
 
 def test_signature_text_starts_with_the_format_and_covers_every_axis():
     lines = config_signature_text().split("\n")
-    assert lines[0] == "format=1"
-    assert len(lines) == 1 + 3 * 13
+    assert lines[0] == "format=2"
+    assert len(lines) == 1 + 3 * 13 + 5  # + the objective piezo's DAC
     assert all("=" in line for line in lines)
 
 
@@ -718,6 +722,29 @@ def test_each_host_only_setting_changes_the_signature(monkeypatch, field, value)
     assert config_signature() != before
 
 
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("HAS_OBJECTIVE_PIEZO", "flip"),
+        ("OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE", 2.5),
+        ("OBJECTIVE_PIEZO_RANGE_UM", 150),
+        ("OBJECTIVE_PIEZO_FLIP_DIR", "flip"),
+    ],
+)
+def test_each_piezo_dac_setting_changes_the_signature(monkeypatch, name, value):
+    """A warm start keeps the code the piezo's DAC holds: a new gain would move the piezo, a new mapping would misreport
+    where it is."""
+    before = config_signature()
+    monkeypatch.setattr(control._def, name, (not getattr(control._def, name)) if value == "flip" else value)
+    assert config_signature() != before
+
+
+def test_the_dac_reference_divider_changes_the_signature(monkeypatch):
+    before = config_signature()
+    monkeypatch.setattr(control._def.OUTPUT_GAINS, "REFDIV", not control._def.OUTPUT_GAINS.REFDIV)
+    assert config_signature() != before
+
+
 def test_limit_switch_config_changes_the_signature(monkeypatch):
     before = config_signature()
     real = control._def.limit_switch_config_byte
@@ -740,7 +767,7 @@ def test_format_version_changes_the_signature(monkeypatch):
     import control.startup_homing
 
     before = config_signature()
-    monkeypatch.setattr(control.startup_homing, "CONFIG_SIGNATURE_FORMAT", 2)
+    monkeypatch.setattr(control.startup_homing, "CONFIG_SIGNATURE_FORMAT", CONFIG_SIGNATURE_FORMAT + 1)
     assert config_signature() != before
 
 
@@ -1061,11 +1088,41 @@ def test_microscope_warm_start_skips_homing_and_prompt(monkeypatch, piezo_only):
     monkeypatch.setattr(control.microscope.Microscope, "home_xyz", home)
     asked = []
     scope = control.microscope.Microscope.build_from_global_config(
-        True, confirm_objective_lowered=lambda: asked.append(1)
+        True, confirm_objective_lowered=lambda stage_homes: asked.append(1)
     )
     assert scope.startup_homing is StartupHoming.ALREADY_HOMED and not asked
     home.assert_not_called()
     scope.close()
+
+
+@pytest.mark.parametrize("kind", ["xeryon", "turret"])
+def test_a_piezo_only_warm_start_asks_before_the_objective_changer_moves(monkeypatch, piezo_only, kind):
+    """No Z motor clears the objective for the changer, which homes and turns at every startup: the stop sign comes
+    first, about the changer (the stage does not home)."""
+    events = _record_changer(monkeypatch, kind)
+    sim = _homed(_scope_sim())
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    asked = []
+    scope = control.microscope.Microscope.build_from_global_config(
+        True, confirm_objective_lowered=lambda stage_homes: asked.append((stage_homes, list(events))) or True
+    )
+    try:
+        assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+        assert asked == [(False, [])]  # once, before anything moved, saying the stage does not home
+        assert [e[0] for e in events if e[0] in ("home", "move_to_objective")] == ["home", "move_to_objective"]
+    finally:
+        scope.close()
+
+
+def test_declining_the_objective_changer_stop_sign_quits_before_it_moves(monkeypatch, piezo_only, closes):
+    events = _record_changer(monkeypatch, "xeryon")
+    sim = _homed(_scope_sim())
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    with pytest.raises(StartupHomingDeclined):
+        control.microscope.Microscope.build_from_global_config(
+            True, confirm_objective_lowered=lambda stage_homes: False
+        )
+    assert events == [] and len(closes) == 1
 
 
 def test_a_microscope_relaunch_is_warm(monkeypatch):
@@ -1120,13 +1177,30 @@ def test_a_startup_reply_is_not_read_as_focus_wheel_or_encoder_data(new_firmware
     assert micro.startup_piezo_um() == pytest.approx(150, abs=0.01)
 
 
-def _piezo_scope(monkeypatch, sim):
+def test_a_new_piezo_voltage_range_is_not_a_warm_start(monkeypatch):
+    """The new gain would turn the code the DAC still holds into another voltage: the piezo would move, with no stop
+    sign, while startup reported where it was."""
+    sim = _homed(before_close=_leave_piezo_at(150))
+    monkeypatch.setattr(control._def, "OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE", 10)
+    micro = Microcontroller(serial_device=sim)
+    try:
+        assert micro.startup_verdict is StartupVerdict.SIGNATURE_MISMATCH and not micro.startup_was_warm
+    finally:
+        micro.close()
+
+
+@pytest.fixture
+def has_piezo(monkeypatch):
+    """From the earlier session on: a piezo is part of the signed configuration."""
     monkeypatch.setattr(control._def, "HAS_OBJECTIVE_PIEZO", True)
+
+
+def _piezo_scope(monkeypatch, sim):
     monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
     return control.microscope.Microscope.build_from_global_config(True)
 
 
-def test_a_warm_start_leaves_the_piezo_where_the_last_session_left_it(monkeypatch):
+def test_a_warm_start_leaves_the_piezo_where_the_last_session_left_it(monkeypatch, has_piezo):
     sim = _homed(_scope_sim(), before_close=_leave_piezo_at(150))
     scope = _piezo_scope(monkeypatch, sim)
     try:
@@ -1137,7 +1211,7 @@ def test_a_warm_start_leaves_the_piezo_where_the_last_session_left_it(monkeypatc
         scope.close()
 
 
-def test_a_warm_start_homes_a_piezo_the_controller_has_no_position_for(monkeypatch):
+def test_a_warm_start_homes_a_piezo_the_controller_has_no_position_for(monkeypatch, has_piezo):
     """No code written since power-up (the last session had no piezo): nothing says where it is, so it homes."""
     scope = _piezo_scope(monkeypatch, _homed(_scope_sim()))
     try:

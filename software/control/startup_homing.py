@@ -70,7 +70,7 @@ def home_stage_confirmation_text(has_z_lift: bool) -> str:
     return f"{moves} The stage will not return to where it is now."
 
 
-CONFIG_SIGNATURE_FORMAT = 1  # bump when the fields or their rendering below change
+CONFIG_SIGNATURE_FORMAT = 2  # bump when the fields or their rendering below change
 
 
 def _number(value) -> str:
@@ -83,7 +83,9 @@ def _number(value) -> str:
 def config_signature_text() -> str:
     """The canonical text the configuration signature hashes: one name=value line per setting that the controller was
     configured with (Microcontroller.configure_actuators, apply_limit_switch_config) or that the homing direction
-    derives from, so a change to any of them makes a stored "homed" verdict stale."""
+    derives from, so a change to any of them makes a stored "homed" verdict stale; and the objective piezo's DAC
+    settings, since a warm start keeps the code the DAC holds (a new gain would move the piezo, a new mapping would
+    misreport where it is)."""
     import squid.config  # not at module level: control.microcontroller imports this module
 
     stage = squid.config.get_stage_config()
@@ -106,6 +108,14 @@ def config_signature_text() -> str:
             (f"{a}_FULL_STEPS_PER_REV", _number(axis.FULL_STEPS_PER_REV)),
         ]
         lines.extend(f"{name}={value}" for name, value in fields)
+    piezo = [
+        ("HAS_OBJECTIVE_PIEZO", str(int(control._def.HAS_OBJECTIVE_PIEZO))),
+        ("OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE", _number(control._def.OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE)),
+        ("OBJECTIVE_PIEZO_RANGE_UM", _number(control._def.OBJECTIVE_PIEZO_RANGE_UM)),
+        ("OBJECTIVE_PIEZO_FLIP_DIR", str(int(control._def.OBJECTIVE_PIEZO_FLIP_DIR))),
+        ("OUTPUT_GAINS_REFDIV", str(int(control._def.OUTPUT_GAINS.REFDIV))),
+    ]
+    lines.extend(f"{name}={value}" for name, value in piezo)
     return "\n".join(lines)
 
 

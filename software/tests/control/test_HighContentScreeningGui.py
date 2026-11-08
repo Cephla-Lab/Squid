@@ -639,7 +639,7 @@ def test_home_x_refused_while_the_stage_is_still_moving(qtbot, confirm_exit_yes,
 
 
 def test_home_x_on_piezo_only_asks_and_passes_the_confirmation(qtbot, confirm_exit_yes, monkeypatch, piezo_only):
-    gui = _gui(qtbot, confirm_objective_lowered=lambda: True)
+    gui = _gui(qtbot, confirm_objective_lowered=lambda stage_homes: True)
     _auto_confirm(monkeypatch)
     homes = []
     monkeypatch.setattr(gui.stage, "home", lambda **kw: homes.append(kw))
@@ -656,7 +656,7 @@ def test_home_x_on_piezo_only_asks_and_passes_the_confirmation(qtbot, confirm_ex
 
 
 def test_home_stage_on_piezo_only_asks_at_the_stop_sign(qtbot, confirm_exit_yes, monkeypatch, piezo_only):
-    gui = _gui(qtbot, confirm_objective_lowered=lambda: True)
+    gui = _gui(qtbot, confirm_objective_lowered=lambda stage_homes: True)
     _auto_confirm(monkeypatch)
     asked = []
     monkeypatch.setattr(

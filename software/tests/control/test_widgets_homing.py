@@ -27,6 +27,17 @@ def test_home_button_accepts(qtbot):
     assert dialog.result() == QDialog.Accepted
 
 
+def test_the_stop_sign_names_the_objective_changer_when_the_stage_does_not_home(qtbot):
+    stage = NosepieceLoweredDialog(None)
+    changer = NosepieceLoweredDialog(None, stage_homes=False)
+    for dialog in (stage, changer):
+        qtbot.addWidget(dialog)
+    assert stage.heading.text() == "Lower the nosepiece before the stage homes"
+    assert changer.heading.text() == "Lower the nosepiece before the objective changer moves"
+    assert "limit switches" not in changer.text.text() and "objective changer" in changer.text.text()
+    assert changer.home_button.text() == "Nosepiece lowered – Continue"
+
+
 def test_decline_button_rejects_and_carries_the_given_label(qtbot):
     dialog = _shown_dialog(qtbot, decline_text="Cancel")
     assert dialog.decline_button.text() == "Cancel"
