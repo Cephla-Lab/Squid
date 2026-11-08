@@ -509,6 +509,79 @@ class TestHCSMetadata:
         assert len(attrs["ome"]["well"]["images"]) == 3
 
 
+class TestZarrWriterRecordSkipped:
+    """record_skipped: frames left out of a relative z-stack (outside the travel) stay at the fill value and are
+    listed in _squid.skipped_frames, as index lists in the array's leading axis order."""
+
+    @staticmethod
+    def _writer(temp_dir, shape, name="test.zarr"):
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+
+        config = ZarrAcquisitionConfig(
+            output_path=os.path.join(temp_dir, name), shape=shape, dtype=np.uint16, pixel_size_um=1.0
+        )
+        writer = ZarrWriter(config)
+        writer.initialize()
+        return writer
+
+    @staticmethod
+    def _squid(writer):
+        with open(writer._get_metadata_zarr_json_path()) as f:
+            return json.load(f)["attributes"]["_squid"]
+
+    def test_records_skipped_frames_in_the_squid_attributes(self, tmp_path):
+        writer = self._writer(tmp_path, (2, 2, 3, 8, 8))
+
+        writer.record_skipped(t=1, c=0, z=2)
+        writer.record_skipped(t=0, c=1, z=0)
+        writer.record_skipped(t=1, c=0, z=2)  # recorded once
+
+        assert self._squid(writer)["skipped_frames"] == [[0, 1, 0], [1, 0, 2]]
+        writer.finalize()
+        squid_attrs = self._squid(writer)
+        assert squid_attrs["skipped_frames"] == [[0, 1, 0], [1, 0, 2]]
+        assert squid_attrs["acquisition_complete"] is True
+
+    def test_6d_records_the_fov(self, tmp_path):
+        writer = self._writer(tmp_path, (3, 1, 2, 2, 8, 8))
+
+        writer.record_skipped(t=0, c=1, z=1, fov=2)
+
+        assert self._squid(writer)["skipped_frames"] == [[2, 0, 1, 1]]
+        with pytest.raises(ValueError, match="FOV index required"):
+            writer.record_skipped(t=0, c=0, z=0)
+        with pytest.raises(ValueError, match="FOV index"):
+            writer.record_skipped(t=0, c=0, z=0, fov=3)
+
+    @pytest.mark.parametrize(
+        "t, c, z, message", [(2, 0, 0, "Time index"), (0, 2, 0, "Channel index"), (0, 0, 3, "Z index")]
+    )
+    def test_rejects_an_index_outside_the_array(self, tmp_path, t, c, z, message):
+        writer = self._writer(tmp_path, (2, 2, 3, 8, 8))
+        with pytest.raises(ValueError, match=message):
+            writer.record_skipped(t=t, c=c, z=z)
+        assert "skipped_frames" not in self._squid(writer)
+
+    def test_needs_an_open_writer(self, tmp_path):
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+
+        config = ZarrAcquisitionConfig(
+            output_path=os.path.join(tmp_path, "test.zarr"), shape=(1, 1, 1, 8, 8), dtype=np.uint16, pixel_size_um=1.0
+        )
+        with pytest.raises(RuntimeError, match="not initialized"):
+            ZarrWriter(config).record_skipped(t=0, c=0, z=0)
+        writer = self._writer(tmp_path, (1, 1, 1, 8, 8), name="done.zarr")
+        writer.finalize()
+        with pytest.raises(RuntimeError, match="finalized"):
+            writer.record_skipped(t=0, c=0, z=0)
+
+    def test_a_writer_with_no_skips_has_no_skipped_frames_attribute(self, tmp_path):
+        writer = self._writer(tmp_path, (1, 1, 1, 8, 8))
+        writer.write_frame(np.ones((8, 8), dtype=np.uint16), t=0, c=0, z=0)
+        writer.finalize()
+        assert "skipped_frames" not in self._squid(writer)
+
+
 class TestZarrWriterInfo:
     """Tests for ZarrWriterInfo dataclass."""
 

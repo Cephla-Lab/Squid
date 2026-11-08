@@ -8,7 +8,7 @@ import os
 import tempfile
 import glob
 from datetime import datetime
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 import numpy as np
 import tifffile
@@ -20,6 +20,12 @@ if TYPE_CHECKING:  # pragma: no cover - type-checking only
 
 # Constants for metadata keys
 WRITTEN_INDICES_KEY = "written_indices"
+# "t-c-z" keys, as WRITTEN_INDICES_KEY, of planes a skip notice left empty (outside the travel). Present only once a
+# notice arrives; they count toward completion and go into the finished file's OME-XML (SKIPPED_FRAMES_NAMESPACE).
+SKIPPED_INDICES_KEY = "skipped_indices"
+SKIPPED_FRAMES_NAMESPACE = "squid.skipped_frames"
+SKIPPED_FRAMES_ANNOTATION_ID = "Annotation:SquidSkippedFrames"
+SKIPPED_FRAME_REASON = "out of travel"
 PLANES_KEY = "planes"
 SAVED_COUNT_KEY = "saved_count"
 EXPECTED_COUNT_KEY = "expected_count"
@@ -85,6 +91,14 @@ def validate_capture_info(info: "CaptureInfo", acq_info: "AcquisitionInfo", imag
 
 
 def initialize_metadata(acq_info: "AcquisitionInfo", info: "CaptureInfo", image: np.ndarray) -> Dict[str, Any]:
+    return initialize_metadata_for_shape(acq_info, info, image.shape[-2:], image.dtype)
+
+
+def initialize_metadata_for_shape(
+    acq_info: "AcquisitionInfo", info: "CaptureInfo", frame_shape: Sequence[int], dtype: Any
+) -> Dict[str, Any]:
+    """The stack's metadata from a frame's (height, width) and dtype, so a skip notice can start a file without an
+    image."""
     channel_names = acq_info.channel_names or []
     time_increment = float(acq_info.time_increment_s) if acq_info.time_increment_s is not None else None
     time_increment_unit = "s" if time_increment is not None else None
@@ -95,14 +109,14 @@ def initialize_metadata(acq_info: "AcquisitionInfo", info: "CaptureInfo", image:
     physical_size_y = float(acq_info.physical_size_y_um) if acq_info.physical_size_y_um is not None else None
     physical_size_y_unit = "µm" if physical_size_y is not None else None
     return {
-        DTYPE_KEY: np.dtype(image.dtype).str,
+        DTYPE_KEY: np.dtype(dtype).str,
         AXES_KEY: "TZCYX",
         SHAPE_KEY: [
             int(acq_info.total_time_points),
             int(acq_info.total_z_levels),
             int(acq_info.total_channels),
-            int(image.shape[-2]),
-            int(image.shape[-1]),
+            int(frame_shape[-2]),
+            int(frame_shape[-1]),
         ],
         CHANNEL_NAMES_KEY: channel_names,
         WRITTEN_INDICES_KEY: [],
@@ -317,10 +331,49 @@ def augment_ome_xml(existing_xml: Optional[str], metadata: Dict[str, Any]) -> st
             attrib={key: str(value) for key, value in plane.items()},
         )
 
+    skipped_indices = metadata.get(SKIPPED_INDICES_KEY) or []
+    if skipped_indices:
+        _add_skipped_frames_annotation(root, image, skipped_indices)
+
     xml_body = ET.tostring(root, encoding="unicode")
     if not xml_body.startswith("<?xml"):
         xml_body = '<?xml version="1.0" encoding="UTF-8"?>' + xml_body
     return xml_body
+
+
+def _add_skipped_frames_annotation(root, image, skipped_indices: List[str]) -> None:
+    """List the skipped planes in a MapAnnotation (one M per plane, K="t,c,z"), referenced from the Image.
+
+    The temporary metadata JSON is deleted when the file completes, so the skips must be in the file itself.
+    """
+    import xml.etree.ElementTree as ET
+
+    ome = "{http://www.openmicroscopy.org/Schemas/OME/2016-06}"
+    annotations = root.find(f"{ome}StructuredAnnotations")
+    if annotations is None:
+        # The schema puts StructuredAnnotations after the Images (and before any ROI).
+        last_image = max(i for i, child in enumerate(root) if child.tag == f"{ome}Image")
+        annotations = ET.Element(f"{ome}StructuredAnnotations")
+        root.insert(last_image + 1, annotations)
+    for old in annotations.findall(f"{ome}MapAnnotation"):
+        if old.get("Namespace") == SKIPPED_FRAMES_NAMESPACE:
+            annotations.remove(old)
+    for old in image.findall(f"{ome}AnnotationRef"):
+        if old.get("ID") == SKIPPED_FRAMES_ANNOTATION_ID:
+            image.remove(old)
+
+    annotation = ET.SubElement(
+        annotations,
+        f"{ome}MapAnnotation",
+        attrib={"ID": SKIPPED_FRAMES_ANNOTATION_ID, "Namespace": SKIPPED_FRAMES_NAMESPACE},
+    )
+    value = ET.SubElement(annotation, f"{ome}Value")
+    planes = sorted(tuple(int(n) for n in key.split("-")) for key in skipped_indices)
+    for t, c, z in planes:
+        entry = ET.SubElement(value, f"{ome}M", attrib={"K": f"{t},{c},{z}"})
+        entry.text = SKIPPED_FRAME_REASON
+    # AnnotationRef is the last of the Image's children in the schema, after Pixels.
+    ET.SubElement(image, f"{ome}AnnotationRef", attrib={"ID": SKIPPED_FRAMES_ANNOTATION_ID})
 
 
 def ensure_output_directory(path: str) -> None:
