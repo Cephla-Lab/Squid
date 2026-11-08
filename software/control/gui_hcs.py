@@ -3052,7 +3052,18 @@ class HighContentScreeningGui(QMainWindow):
         Performs hardware cleanup, spawns a new process with --skip-init flag,
         then quits the current application. Hardware initialization is skipped in the new
         process since hardware is already in a known state.
+
+        Refused while an acquisition runs: the cleanup would tear the hardware down under the
+        worker and leave the output incomplete. Checked here, not in the dialogs, so every
+        caller is covered.
         """
+        if self.multipointController.acquisition_in_progress():
+            QMessageBox.warning(
+                self,
+                "Acquisition running",
+                "An acquisition is running. Abort it or wait for it to finish, then restart.",
+            )
+            return
         if not self._confirm_end_fluidics_run("restart"):
             return
 
