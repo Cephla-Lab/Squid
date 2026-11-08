@@ -2048,7 +2048,11 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             if _views_config.has_option("VIEWS", "ndviewer_light_command"):
                 NDVIEWER_LIGHT_COMMAND = _views_config.get("VIEWS", "ndviewer_light_command").strip()
             if _views_config.has_option("VIEWS", "record_snaps_in_history"):
-                RECORD_SNAPS_IN_HISTORY = _views_config.get("VIEWS", "record_snaps_in_history").lower() in ("true", "1", "yes")
+                RECORD_SNAPS_IN_HISTORY = _views_config.get("VIEWS", "record_snaps_in_history").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
     except Exception as e:
         log.warning(f"Failed to load Views settings from config: {e}")
 
