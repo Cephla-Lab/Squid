@@ -114,3 +114,12 @@ def test_palette_follows_tokens():
 def test_theme_module_uses_qtpy_only():
     src = Path(theme.__file__).read_text()
     assert "PyQt5" not in src and "PyQt6" not in src and "PySide" not in src
+
+
+def test_importing_theme_does_not_import_def():
+    import subprocess, sys
+    from pathlib import Path
+
+    code = "import sys, control.theme; assert 'control._def' not in sys.modules, 'theme imports _def eagerly'"
+    software = Path(theme.__file__).resolve().parents[1]
+    subprocess.run([sys.executable, "-c", code], cwd=software, check=True)

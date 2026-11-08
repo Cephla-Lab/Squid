@@ -606,3 +606,42 @@ def manager() -> ThemeManager:
             raise RuntimeError("theme needs a QApplication")
         _manager = ThemeManager(app)
     return _manager
+
+
+# ---------------------------------------------------------------------------
+# Persistence of the chosen theme ([GENERAL] ui_theme in the machine ini)
+# ---------------------------------------------------------------------------
+
+
+def load_theme_choice() -> str:
+    """The theme named by ``[GENERAL] ui_theme``; anything unknown falls back to ``"light"``."""
+    import control._def
+    import squid.logging
+
+    raw = control._def.UI_THEME
+    choice = str(raw).strip().lower()
+    if choice in THEMES:
+        return choice
+    squid.logging.get_logger("theme").warning(f"Unknown ui_theme {raw!r}; using 'light'")
+    return "light"
+
+
+def save_theme_choice(ini_path: Optional[str], choice: str) -> bool:
+    """Write ``ui_theme = choice`` into ``[GENERAL]`` of ``ini_path``; False if it cannot be written."""
+    if not ini_path:
+        return False
+    from configparser import ConfigParser, Error as ConfigParserError
+
+    try:
+        if not Path(ini_path).is_file():
+            return False
+        config = ConfigParser()
+        config.read(ini_path)
+        if not config.has_section("GENERAL"):
+            config.add_section("GENERAL")
+        config.set("GENERAL", "ui_theme", choice)
+        with open(ini_path, "w") as file:
+            config.write(file)
+        return True
+    except (OSError, ConfigParserError):
+        return False
