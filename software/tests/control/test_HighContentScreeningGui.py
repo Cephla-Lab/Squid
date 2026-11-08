@@ -908,6 +908,31 @@ def test_wellplate_yaml_with_a_relative_range_reloads_relative_set_range_and_rea
     assert w.multipointController.piezo_z_range_um is not None
 
 
+@pytest.mark.parametrize("laser_af", [False, True])
+def test_wellplate_toggling_time_keeps_the_set_range(qtbot, monkeypatch, confirm_exit_yes, laser_af):
+    from control.acquisition_yaml_loader import AcquisitionYAMLData
+
+    monkeypatch.setattr(control._def, "HAS_OBJECTIVE_PIEZO", True)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    w = win.wellplateMultiPointWidget
+    if laser_af:
+        rng, nz, yaml = (-5.0, 20.0), 14, dict(laser_af=True, laser_af_relative_range_um=(-5.0, 20.0))
+    else:
+        rng, nz, yaml = (20.0, 26.0), 4, dict(piezo_z_range_um=(20.0, 26.0))
+    w._apply_yaml_settings(AcquisitionYAMLData(widget_type="wellplate", nz=nz, delta_z_um=2.0, use_piezo=True, **yaml))
+    assert (w.entry_minZ.value(), w.entry_maxZ.value(), w.entry_NZ.value()) == (*rng, nz)
+
+    for checked in (not w.checkbox_time.isChecked(), w.checkbox_time.isChecked()):  # Time on and off again
+        w.checkbox_time.setChecked(checked)
+        assert (w.entry_minZ.value(), w.entry_maxZ.value(), w.entry_NZ.value()) == (*rng, nz)
+
+    w.configure_controller_from_ui()  # what Start runs
+    controller = w.multipointController
+    assert tuple(controller.laser_af_relative_range_um if laser_af else controller.piezo_z_range_um) == rng
+
+
 def test_wellplate_yaml_moving_the_stack_to_the_stepper_gives_the_entries_the_stepper_limits(
     qtbot, monkeypatch, confirm_exit_yes
 ):

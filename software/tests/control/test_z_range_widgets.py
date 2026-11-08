@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from qtpy.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QLabel, QSpinBox, QWidget
+from qtpy.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QSpinBox, QWidget
 
 import control._def
 import control.acquisition_yaml_loader
@@ -665,6 +665,67 @@ def test_relative_entries_survive_init_z_and_a_stack_motor_change(qtbot):
 
     assert (fake.entry_minZ.value(), fake.entry_maxZ.value()) == (-5.0, 20.0)
     assert "from reference" in fake.entry_minZ.suffix()
+
+
+# Set Range in absolute mode (laser AF off: piezo positions, the piezo at 20 µm) and relative mode (laser AF on: µm
+# from the reference): a range the user set, and what the entries restart at.
+RANGE_SET = {False: (30.0, 50.0), True: (-5.0, 20.0)}
+RANGE_RESTARTED = {False: (20.0, 20.0), True: (0.0, 0.0)}
+
+
+def _in_set_range(laser_af):
+    """A Wellplate stand-in with the Set Range rows, entered the way the widget enters it (toggle_z_range_controls),
+    with a range set."""
+    fake = _relative_fake()
+    fake.checkbox_withReflectionAutofocus.setChecked(laser_af)
+    fake.z_min_layout, fake.z_max_layout, fake.dz_layout = (QHBoxLayout(QWidget(fake.label_parent)) for _ in range(3))
+    fake.z_min_layout.addWidget(fake.entry_minZ)  # rows inside a never-shown parent: showing them opens no window
+    fake.z_max_layout.addWidget(fake.entry_maxZ)
+    fake.updateGeometry = fake.update = lambda: None
+    fake._z_range_controls_shown = None  # as the widget's __init__ leaves it
+    _bind(fake, WellplateMultiPointWidget, "toggle_z_range_controls", "hide_z_controls")
+    fake.toggle_z_range_controls(True)
+    fake.entry_minZ.setValue(RANGE_SET[laser_af][0])
+    fake.entry_maxZ.setValue(RANGE_SET[laser_af][1])
+    return fake
+
+
+@pytest.mark.parametrize("laser_af", [False, True])
+def test_toggling_time_keeps_the_set_range(qtbot, laser_af):
+    # Toggling Time runs update_control_visibility -> show_z_controls -> toggle_z_range_controls(True) with Set Range
+    # already shown. Restarting the range there collapsed Nz to 1, so Start took one plane instead of the stack.
+    fake = _in_set_range(laser_af)
+
+    fake.toggle_z_range_controls(True)
+
+    assert (fake.entry_minZ.value(), fake.entry_maxZ.value()) == RANGE_SET[laser_af]
+
+
+@pytest.mark.parametrize("laser_af", [False, True])
+def test_coming_back_to_set_range_from_another_z_mode_restarts_the_range(qtbot, laser_af):
+    fake = _in_set_range(laser_af)
+
+    fake.combobox_z_mode.setCurrentText("From Bottom")
+    fake.toggle_z_range_controls(False)  # on_z_mode_changed
+    fake.combobox_z_mode.setCurrentText("Set Range")
+    fake.toggle_z_range_controls(True)
+
+    assert (fake.entry_minZ.value(), fake.entry_maxZ.value()) == RANGE_RESTARTED[laser_af]
+
+
+@pytest.mark.parametrize("laser_af", [False, True])
+def test_unchecking_z_with_time_checked_still_restarts_the_range_when_z_comes_back(qtbot, laser_af):
+    # With Time checked, unchecking Z hides the rows through hide_z_controls alone (update_control_visibility does not
+    # call show_z_controls). Re-checking Z restarts the range as before: the stored range is not checked against a
+    # laser AF mode or reference that changed while Z was off.
+    fake = _in_set_range(laser_af)
+
+    fake.checkbox_z.setChecked(False)
+    fake.hide_z_controls()  # on_z_toggled(False)
+    fake.checkbox_z.setChecked(True)
+    fake.toggle_z_range_controls(True)  # on_z_toggled(True) -> show_z_controls(True)
+
+    assert (fake.entry_minZ.value(), fake.entry_maxZ.value()) == RANGE_RESTARTED[laser_af]
 
 
 def _yaml(use_piezo, piezo_z_range_um=None, nz=4, delta_z_um=2.0, laser_af=False, laser_af_relative_range_um=None):

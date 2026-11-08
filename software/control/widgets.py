@@ -8714,6 +8714,9 @@ class WellplateMultiPointWidget(
 
         # Add state tracking for Z parameters
         self.stored_z_params = dict(self.INITIAL_STORED_Z_PARAMS)
+        # Whether the Set Range rows are showing (None until toggle_z_range_controls first runs): the range restarts
+        # only when they appear or disappear, not on a refresh that leaves them as they are.
+        self._z_range_controls_shown = None
         # The laser AF reference_identity the relative Set Range entries were started, entered or loaded against
         # (None: no reference then): a different identity at signal_reference_changed clears them, except that a
         # range entered without a reference is adopted by the first one (an identical reload re-emits it too).
@@ -9867,6 +9870,9 @@ class WellplateMultiPointWidget(
                 widget = layout.itemAt(i).widget()
                 if widget:
                     widget.setVisible(False)
+        # Hidden here without toggle_z_range_controls (with Time checked, nothing else runs it): showing them again
+        # restarts the range, as before.
+        self._z_range_controls_shown = False
 
         # Set single-slice parameters
         current_z = self._stack_z_um()
@@ -10061,8 +10067,12 @@ class WellplateMultiPointWidget(
         # Laser AF stays available in Set Range: it picks the mode (checked, the range is relative to its reference).
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
-        self._set_z_range_status("")
-        self._restart_z_range()
+        # Restart the range only when the rows appear or disappear. Toggling Time runs this again with Set Range
+        # still shown (update_control_visibility -> show_z_controls), and restarting there dropped the user's range.
+        if is_visible != self._z_range_controls_shown:
+            self._z_range_controls_shown = is_visible
+            self._set_z_range_status("")
+            self._restart_z_range()
 
         # Safely connect or disconnect signals
         try:
