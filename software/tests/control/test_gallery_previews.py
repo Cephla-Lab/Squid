@@ -5,6 +5,7 @@ import shutil
 
 import cv2
 import numpy as np
+import pytest
 import tifffile
 
 from control.gallery_previews import (
@@ -246,3 +247,22 @@ def test_array_to_pixmap(qtbot):
     rgb = array_to_pixmap(np.zeros((20, 30, 3), dtype=np.uint8))
     assert (gray.width(), gray.height()) == (30, 20)
     assert (rgb.width(), rgb.height()) == (30, 20)
+
+
+@pytest.mark.parametrize("with_yaml", [True, False])
+def test_first_fov_images_accept_underscores_in_the_region_name(saving_root, with_yaml):
+    """Flexible scans take ids such as sample_left; the two numbers, not the first underscore, split the name."""
+    folder = write_acquisition(
+        saving_root, "flex", widget_type="flexible", regions=(("sample_left", 2),), with_yaml=with_yaml
+    )
+    src = find_preview_source(str(folder))
+    assert src.kind == "images" and sorted(src.channels) == sorted([BF, F488])
+    assert all(os.path.basename(p).startswith("sample_left_0_0_") for p in src.image_paths.values())
+
+
+def test_a_channel_name_starting_with_digits_is_told_apart_by_the_run_s_channel_list(saving_root):
+    folder = write_acquisition(saving_root, "digits", channels=("488 nm", BF))
+    src = find_preview_source(str(folder))
+    assert sorted(src.channels) == ["488 nm", BF]
+    assert os.path.basename(src.image_paths["488 nm"]) == "A1_0_0_488_nm.tiff"
+    assert os.path.basename(src.image_paths[BF]) == "A1_0_0_BF_LED_matrix_full.tiff"

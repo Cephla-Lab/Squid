@@ -6,7 +6,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -25,10 +25,14 @@ PREVIEW_MAX_SIDE = 512
 # Largest overview whose channels are all read for a thumbnail; above it only the first channel is read.
 _MAX_OVERVIEW_BYTES_FOR_MIP = 64 * 1024 * 1024
 
-# <region>_<fov>_<z>_<channel name with underscores>.<extension>
+# <region>_<fov>_<z>_<channel name with underscores>.<extension>. The region may itself contain underscores (a
+# flexible-scan id such as sample_left), so it is matched greedily and the two numbers anchor the split; a channel
+# name that starts with digits is told apart by the run's own channel list (_parse_image_name).
+_IMAGE_EXTENSIONS = ("tiff", "tif", "bmp", "png", "jpg", "jpeg")
 _IMAGE_NAME = re.compile(
-    r"^(?P<region>[^_]+)_(?P<fov>\d+)_(?P<z>\d+)_(?P<channel>.+)\.(tiff|tif|bmp|png|jpg|jpeg)$", re.IGNORECASE
+    r"^(?P<region>.+)_(?P<fov>\d+)_(?P<z>\d+)_(?P<channel>.+)\.(" + "|".join(_IMAGE_EXTENSIONS) + r")$", re.IGNORECASE
 )
+_IMAGE_STEM = re.compile(r"^(?P<region>.+)_(?P<fov>\d+)_(?P<z>\d+)$")
 _OVERVIEW_NAME = re.compile(r"^mosaic_.*\.ome\.tiff?$", re.IGNORECASE)
 # MULTI_PAGE_TIFF: <timepoint>/<region>_<fov>_stack.tiff, one page per (z, channel)
 _STACK_NAME = re.compile(r"^(?P<region>.+)_(?P<fov>\d+)_stack\.tiff?$", re.IGNORECASE)
@@ -111,17 +115,47 @@ def _overview_channel_names(path: str) -> List[str]:
     return [f"channel {i + 1}" for i in range(_overview_plane_count(path))]
 
 
-def _first_fov_images(timepoint_path: str) -> Dict[str, str]:
+def _acquisition_channel_names(folder: str) -> List[str]:
+    """The channel names listed in the run's acquisition.yaml; [] when there is none (older data) or it is unreadable."""
+    try:
+        with open(os.path.join(folder, "acquisition.yaml"), encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return []
+    channels = data.get("channels") if isinstance(data, dict) else None
+    if not isinstance(channels, list):
+        return []
+    return [str(c["name"]) for c in channels if isinstance(c, dict) and c.get("name")]
+
+
+def _parse_image_name(name: str, channel_names: Sequence[str] = ()) -> Optional[Tuple[str, int, int, str]]:
+    """(region, fov, z, channel) of an individual image file name, or None. A known channel name is matched as the
+    file's suffix first (longest first), which settles names whose region and channel both contain underscores or
+    digits; the pattern alone decides files of channels the run did not list."""
+    stem, dot, ext = name.rpartition(".")
+    if not dot or ext.lower() not in _IMAGE_EXTENSIONS:
+        return None
+    for channel in sorted(channel_names, key=len, reverse=True):
+        suffix = "_" + channel.replace(" ", "_")
+        if stem.endswith(suffix):
+            m = _IMAGE_STEM.match(stem[: -len(suffix)])
+            if m:
+                return m["region"], int(m["fov"]), int(m["z"]), channel
+    m = _IMAGE_NAME.match(name)
+    if m:
+        return m["region"], int(m["fov"]), int(m["z"]), m["channel"].replace("_", " ")
+    return None
+
+
+def _first_fov_images(timepoint_path: str, channel_names: Sequence[str] = ()) -> Dict[str, str]:
     """Channel name -> file, for the smallest (region, fov) found and the smallest z of each channel."""
     candidates = []  # (region, fov, z, channel, path)
     try:
         with os.scandir(timepoint_path) as it:
             for entry in it:
-                m = _IMAGE_NAME.match(entry.name)
-                if m and entry.is_file():
-                    candidates.append(
-                        (m["region"], int(m["fov"]), int(m["z"]), m["channel"].replace("_", " "), entry.path)
-                    )
+                parsed = _parse_image_name(entry.name, channel_names)
+                if parsed and entry.is_file():
+                    candidates.append((*parsed, entry.path))
     except OSError:
         return {}
     if not candidates:
@@ -199,7 +233,7 @@ def find_preview_source(folder: str) -> PreviewSource:
             return PreviewSource("overview", overview_path=overview, channels=_overview_channel_names(overview))
     if timepoints:
         first = timepoints[0][1]
-        images = _first_fov_images(first)
+        images = _first_fov_images(first, _acquisition_channel_names(folder))
         if images:
             return PreviewSource("images", image_paths=images, channels=list(images))
         stack = _first_fov_file(first, _STACK_NAME)
