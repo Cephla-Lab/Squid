@@ -328,9 +328,14 @@ def test_tile_text_shows_what_is_known():
 
 
 def _icon_pixel(item, x, y, size=180):
-    """The colour name at (x, y) of the item's icon. The badge's top padding row (y=5) is sampled, away from its
-    rounded corners, because the text below it renders differently from platform to platform."""
-    return item.icon().pixmap(size, size).toImage().pixelColor(x, y).name()
+    """The colour at (x, y) of the item's icon. The badge's top padding row (y=5) is sampled, away from its rounded
+    corners, because the text below it renders differently from platform to platform."""
+    return item.icon().pixmap(size, size).toImage().pixelColor(x, y)
+
+
+def _same_colour(a, b, tolerance=8) -> bool:
+    """Equal up to the loss of a 16-bit pixmap (Linux's offscreen pixmaps are RGB565: up to 4 per channel)."""
+    return max(abs(a.red() - b.red()), abs(a.green() - b.green()), abs(a.blue() - b.blue())) <= tolerance
 
 
 BADGE_PIXEL = (12, 5)  # inside the status badge (top-left), above its text
@@ -340,21 +345,24 @@ SNAP_PIXEL = (170, 5)  # inside the snap tag (top-right), above its text
 def test_tiles_carry_a_status_badge_coloured_by_status(gallery, qtbot):
     qtbot.waitUntil(lambda: gallery._thumbnail_cache.get("complete") is not None, timeout=10000)
     complete, aborted, snap = (gallery._items[i] for i in ("complete", "aborted", "snap"))
-    assert _icon_pixel(complete, *BADGE_PIXEL) == status_badge_colour("Complete").name()
-    assert _icon_pixel(aborted, *BADGE_PIXEL) == status_badge_colour("Aborted at 38%").name()
-    assert status_badge_colour("Complete") != status_badge_colour("Aborted at 38%")
+
+    def badge_is(item, label, pixel=BADGE_PIXEL):
+        got, want = _icon_pixel(item, *pixel), status_badge_colour(label)
+        assert _same_colour(got, want), f"{label}: {got.name()} vs {want.name()}"
+
+    badge_is(complete, "Complete")
+    badge_is(aborted, "Aborted at 38%")
+    assert not _same_colour(status_badge_colour("Complete"), status_badge_colour("Aborted at 38%"))
     assert complete.icon().pixmap(180, 180).cacheKey() != aborted.icon().pixmap(180, 180).cacheKey()
     # The snap tag sits in the top-right corner; other tiles have none there.
-    assert _icon_pixel(snap, *SNAP_PIXEL) == SNAP_BADGE_COLOUR.name()
-    assert _icon_pixel(complete, *SNAP_PIXEL) != SNAP_BADGE_COLOUR.name()
+    assert _same_colour(_icon_pixel(snap, *SNAP_PIXEL), SNAP_BADGE_COLOUR), _icon_pixel(snap, *SNAP_PIXEL).name()
+    assert not _same_colour(_icon_pixel(complete, *SNAP_PIXEL), SNAP_BADGE_COLOUR)
     # The table shows the same badged tile.
-    table_icon = gallery._table_name_items["aborted"].icon()
-    assert (
-        table_icon.pixmap(180, 180).toImage().pixelColor(*BADGE_PIXEL).name() == status_badge_colour("Aborted").name()
-    )
+    table_pixel = gallery._table_name_items["aborted"].icon().pixmap(180, 180).toImage().pixelColor(*BADGE_PIXEL)
+    assert _same_colour(table_pixel, status_badge_colour("Aborted")), table_pixel.name()
     # A progress tick repaints the running tile's badge.
     gallery.set_running_progress(0.5)
-    assert _icon_pixel(gallery._items["running"], *BADGE_PIXEL) == status_badge_colour("Running 50%").name()
+    badge_is(gallery._items["running"], "Running 50%")
 
 
 def test_selection_and_progress_never_touch_the_data_folders(gallery, store_with_entries):
