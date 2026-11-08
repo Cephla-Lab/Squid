@@ -222,6 +222,11 @@ class EngineCalibration:
             )
         return targets
 
+    @property
+    def simulated(self) -> bool:
+        """The simulated engine (build_simulated_engine), which the simulated meter can read."""
+        return self.engine.simulated
+
     def drive(self, wavelength_nm: int) -> EngineDrive:
         return self.light_source.engine_drive(wavelength_nm)
 

@@ -62,6 +62,7 @@ def engine_instrument(tmp_path, serial="SN-1", fake=None, yaml=ENGINE_YAML, star
         serial_number=serial,
     )
     engine.sim_engine, engine.sim_source = fake, source  # as build_simulated_engine does
+    engine.simulated = True
     mcu = FakeMicrocontroller(0.6)
     illumination = IlluminationController(
         mcu,

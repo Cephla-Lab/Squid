@@ -335,6 +335,17 @@ def engine_session(tmp_path, monkeypatch):
     inst.engine.close()
 
 
+def test_a_real_engine_behind_a_simulated_controller_cannot_connect_or_light(qtbot, engine_session, answers):
+    inst, session = engine_session
+    inst.engine.simulated = False  # per-component simulation: the controller simulated, the engine real
+    dialog = _dialog(qtbot, session)
+    dialog.button_connect.click()
+    assert session.meter is None and "laser engine is real" in dialog.label_result.text()
+    dialog.table.selectRow(0)
+    dialog.button_test_beam.setChecked(True)
+    assert not dialog.button_test_beam.isChecked() and session.source_state()[0] is False
+
+
 def test_engine_lines_show_their_ceiling_and_the_560_power(qtbot, engine_session, answers):
     inst, session = engine_session
     inst.engine.set_source_power_mw(300.0)

@@ -816,6 +816,13 @@ class CalibrationSession:
     def connect(self, resource: Optional[str] = None) -> PowerMeterInfo:
         self.disconnect()
         if self.microcontroller.is_simulated:
+            if self.engine is not None and not self.engine.simulated:
+                # per-component simulation: the simulated meter reads the simulated engine, and the simulated
+                # controller cannot switch a real engine's light
+                raise PowerMeterError(
+                    "the controller is simulated but the laser engine is real: neither the simulated meter nor a real "
+                    "one can measure it; simulate both or neither"
+                )
             self.meter = SimulatedPowerMeter(self.source_state, model=self._simulated_source_mw)
         else:
             self.meter = ThorlabsPowerMeter(resource=resource)

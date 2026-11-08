@@ -16,7 +16,7 @@ from control.laser_engine_v2_sim import FakeEngine
 from control.microcontroller import Microcontroller, SimSerial
 from squid.intensity_calibration import EngineLineIdentity, load_calibration, write_calibration
 from squid.intensity_calibration_run import CalibrationSession, ChannelResult, LightSourceStopped, calibrate_channel
-from squid.power_meter import PowerMeterInfo, simulated_aom_mw, simulated_laser_mw
+from squid.power_meter import PowerMeterError, PowerMeterInfo, simulated_aom_mw, simulated_laser_mw
 from tests.control.engine_calibration_fixtures import ENGINE_YAML, engine_instrument
 from tests.squid.calibration_fixtures import FakeTime, make_engine_calibration
 
@@ -401,6 +401,16 @@ def test_the_simulated_meter_sees_the_engines_actual_output_through_the_controll
     assert side.simulated_light(instrument.mcu, target) == (True, pytest.approx(0.5, abs=1e-4))
     instrument.fake.lines[1]["now"] = 0.25 * 2.045  # what the engine holds, not what was asked
     assert side.simulated_light(instrument.mcu, target)[1] == pytest.approx(0.25)
+
+
+def test_a_real_engine_behind_a_simulated_controller_refuses_the_simulated_meter(instrument):
+    """The simulated meter reads the simulated engine. A real engine behind a simulated controller (per-component
+    simulation) has none, and the simulated controller cannot switch its light: Connect refuses, as a meter error."""
+    instrument.engine.simulated = False  # as a real engine has it
+    session = _session(instrument)
+    with pytest.raises(PowerMeterError, match="laser engine is real"):
+        session.connect()
+    assert session.meter is None
 
 
 def test_the_simulated_controller_reports_its_port_ttl():
