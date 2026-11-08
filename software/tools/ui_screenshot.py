@@ -70,6 +70,23 @@ def _set_aside_persisted_gui_state():
         os.replace(*_aside_state)
 
 
+def _leftovers_of_an_interrupted_run(machine_ini):
+    """Print a recovery hint for each file an interrupted run left behind; True if the run must not start."""
+    must_stop = False
+    state = os.path.join(SOFTWARE_DIR, "cache", "multipoint_widget_config.yaml")
+    if os.path.exists(state + ".ui_screenshot_aside"):
+        # Setting state aside again would overwrite the saved copy with this session's file.
+        print(f"leftover {state}.ui_screenshot_aside from an interrupted run: move it back to {state}, then rerun")
+        must_stop = True
+    if machine_ini:
+        copy = os.path.join(SOFTWARE_DIR, os.path.basename(machine_ini))
+        if os.path.exists(copy) and os.path.abspath(copy) != os.path.abspath(machine_ini):
+            with open(copy, "rb") as a, open(machine_ini, "rb") as b:
+                if a.read() == b.read():
+                    print(f"{copy} matches {machine_ini}: if you did not put it there, an interrupted run left it")
+    return must_stop
+
+
 def _restore_config():
     """Undo _install_machine_ini and _set_aside_persisted_gui_state. Safe to call more than once."""
     global _config_state, _aside_state
@@ -128,11 +145,16 @@ def _install_process_hygiene():
     real_exit = os._exit
 
     def exit_after_reaping_children(code):
-        for p in multiprocessing.active_children():
-            p.terminate()
-            p.join(2)
-        _restore_config()
-        real_exit(_run_exit_code(code))
+        try:
+            for p in multiprocessing.active_children():
+                p.terminate()
+                p.join(2)
+            _restore_config()
+        except BaseException:
+            _log("cleanup at exit failed:\n" + traceback.format_exc())
+            _run["failed"] = True
+        finally:
+            real_exit(_run_exit_code(code))
 
     os._exit = exit_after_reaping_children
 
@@ -322,6 +344,8 @@ def main():
     if args.compare:
         return compare_images(args.compare[0], args.compare[1], args.out)
     machine_ini = os.path.abspath(args.machine_ini) if args.machine_ini else _default_machine_ini()
+    if _leftovers_of_an_interrupted_run(machine_ini):
+        return 1
     try:
         return run_gui(os.path.abspath(args.out), args.theme, args.font, machine_ini)
     finally:

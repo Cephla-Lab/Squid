@@ -156,6 +156,9 @@ To start the program when no hardware is connected, use
 python3 main_hcs.py --simulation
 ```
 
+### Appearance
+**Settings > Appearance** offers three looks: **Light** (the default), **Dark** and **Classic** (the look of earlier releases). Light and Dark switch immediately; switching to or from Classic takes effect after a restart. The choice is saved in the machine `.ini` as `ui_theme` under `[GENERAL]` (`light`, `dark` or `classic`).
+
 ## Updating an existing install
 `filter_wheels.yaml`, `illumination_channel_config.yaml`, and
 `Xeryon_settings.txt` were tracked in older revisions and are now
