@@ -94,6 +94,54 @@ def test_apply_rejects_unknown_theme(mgr):
         mgr.apply("blue")
 
 
+def test_live_switch_repaints_viewports_with_the_new_palette(qapp, qtbot, mgr):
+    from qtpy.QtWidgets import QLabel, QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget
+
+    mgr.apply("light")
+    # Children of a shown window, as in the GUI: a top-level widget alone does not show the stale palette.
+    window = QWidget()
+    qtbot.addWidget(window)
+    layout = QVBoxLayout(window)
+    edit = QPlainTextEdit("log line")
+    area = QScrollArea()
+    area.setWidget(QLabel("child"))
+    layout.addWidget(edit)
+    layout.addWidget(area)
+    window.show()
+    qtbot.waitExposed(window)
+
+    mgr.apply("dark")
+    assert edit.viewport().palette().color(QPalette.Base) == QColor(theme.DARK.input_bg)
+    assert area.viewport().palette().color(QPalette.Window) == QColor(theme.DARK.ground)
+
+    mgr.apply("light")
+    assert edit.viewport().palette().color(QPalette.Base) == QColor(theme.LIGHT.input_bg)
+    assert area.viewport().palette().color(QPalette.Window) == QColor(theme.LIGHT.ground)
+
+
+def test_dock_theme_on_an_unfamiliar_pyqtgraph_does_not_raise(qapp, monkeypatch):
+    dockmod = importlib.import_module("pyqtgraph.dockarea.Dock")
+    monkeypatch.setattr(theme, "_dock_originals", {})
+    monkeypatch.delattr(dockmod.DockLabel, "updateStyle")  # a pyqtgraph without the method the patch wraps
+    theme._install_dock_theme(theme.LIGHT)
+    assert "updateStyle" not in vars(dockmod.DockLabel)  # left as pyqtgraph has it: unpatched
+
+
+def test_failed_apply_leaves_the_current_theme_and_classic_still_works(qapp, mgr, monkeypatch):
+    mgr.apply("light")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("icons failed")
+
+    monkeypatch.setattr(theme, "write_theme_icons", boom)
+    with pytest.raises(RuntimeError):
+        mgr.apply("dark")
+    assert mgr.current == "light"
+    assert qapp.palette().color(QPalette.Window) == QColor(theme.LIGHT.ground)
+    mgr.apply("classic")
+    assert mgr.is_classic() and qapp.styleSheet() == ""
+
+
 def test_classic_on_a_pristine_app_touches_nothing(qapp, monkeypatch):
     calls = []
     font, palette, sheet = qapp.font(), qapp.palette(), qapp.styleSheet()

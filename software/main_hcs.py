@@ -71,7 +71,15 @@ if __name__ == "__main__":
     # QMessageBox before any other startup side effects (logging, migration).
     app = QApplication(["Squid"])
     app.setStyle("Fusion")
-    control.theme.install(app, control.theme.load_theme_choice())
+    try:
+        control.theme.install(app, control.theme.load_theme_choice())
+    except Exception:
+        # The look is never a reason not to start: fall back to Classic (no stylesheet, default palette).
+        squid.logging.get_logger("main_hcs").exception("Could not apply the UI theme; starting in Classic")
+        try:
+            control.theme.install(app, "classic")
+        except Exception:
+            squid.logging.get_logger("main_hcs").exception("Could not restore the Classic look either")
     app.setWindowIcon(QIcon("icon/cephla_logo.ico"))
 
     # Single-instance check before file logging or migration so a losing

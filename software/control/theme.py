@@ -8,6 +8,7 @@ Keep this module importable with only the standard library, qtpy and pyqtgraph: 
 ``squid.*`` and no numpy at module scope. All Qt access goes through qtpy so either binding works.
 """
 
+import logging
 import sys
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
@@ -20,6 +21,9 @@ from qtpy.QtWidgets import QApplication, QWidget
 THEMES = ("light", "dark", "classic")
 
 _ICON_TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "icon" / "theme"
+
+# The logger squid.logging.get_logger("theme") returns, without importing squid.* at module scope.
+_log = logging.getLogger("squid.theme")
 
 
 @dataclass(frozen=True)
@@ -631,22 +635,35 @@ def _dock_update_style(original, tokens: Tokens):
 
 
 def _install_dock_theme(tokens: Optional[Tokens]) -> None:
-    """Restyle pyqtgraph docks with ``tokens``, or restore pyqtgraph's own look with ``None``."""
+    """Restyle pyqtgraph docks with ``tokens``, or restore pyqtgraph's own look with ``None``.
+
+    The patch is written against pyqtgraph 0.14's Dock internals. On a pyqtgraph it does not fit, it logs and
+    leaves pyqtgraph's own look rather than stop the theme (and Squid's startup) with an exception.
+    """
     import importlib
 
-    dock_module = importlib.import_module("pyqtgraph.dockarea.Dock")
-    if not _dock_originals:
-        _dock_originals["label"] = dock_module.DockLabel.updateStyle
-        _dock_originals["dock"] = dock_module.Dock.updateStyle
-    if tokens is None:
-        dock_module.DockLabel.updateStyle = _dock_originals["label"]
-        dock_module.Dock.updateStyle = _dock_originals["dock"]
-    else:
-        dock_module.DockLabel.updateStyle = _dock_label_update_style(tokens)
-        dock_module.Dock.updateStyle = _dock_update_style(_dock_originals["dock"], tokens)
-    for widget in QApplication.allWidgets():
-        if isinstance(widget, (dock_module.DockLabel, dock_module.Dock)):
-            widget.updateStyle()
+    try:
+        dock_module = importlib.import_module("pyqtgraph.dockarea.Dock")
+        if not _dock_originals:
+            originals = {"label": dock_module.DockLabel.updateStyle, "dock": dock_module.Dock.updateStyle}
+            _dock_originals.update(originals)
+        if tokens is None:
+            dock_module.DockLabel.updateStyle = _dock_originals["label"]
+            dock_module.Dock.updateStyle = _dock_originals["dock"]
+        else:
+            dock_module.DockLabel.updateStyle = _dock_label_update_style(tokens)
+            dock_module.Dock.updateStyle = _dock_update_style(_dock_originals["dock"], tokens)
+        for widget in QApplication.allWidgets():
+            if isinstance(widget, (dock_module.DockLabel, dock_module.Dock)):
+                widget.updateStyle()
+    except Exception:
+        _log.exception("Could not restyle pyqtgraph docks; they keep pyqtgraph's own look")
+        if _dock_originals:
+            try:
+                dock_module.DockLabel.updateStyle = _dock_originals["label"]
+                dock_module.Dock.updateStyle = _dock_originals["dock"]
+            except Exception:
+                pass
 
 
 class ThemeManager(QObject):
@@ -686,25 +703,33 @@ class ThemeManager(QObject):
         if theme not in THEMES:
             raise ValueError(f"unknown theme {theme!r}; expected one of {THEMES}")
         app = self._app
+        # Palette and font go in before the stylesheet: a stylesheet change repolishes every widget against the
+        # palette in force at that moment, and a palette set afterwards does not reach widgets already polished
+        # (a Light text edit or scroll area would stay white under Dark's light text).
         if theme == "classic":
             # Only undo what this manager did: setFont/setPalette on a pristine app would override the platform
             # theme's per-class fonts and mark the palette as application-set, changing Classic's rendering.
             if self._skinned_applied:
-                app.setStyleSheet("")
                 app.setPalette(self._default_palette)
                 app.setFont(self._default_font)
+                app.setStyleSheet("")
                 _install_dock_theme(None)
                 self._skinned_applied = False
         else:
-            self._skinned_applied = True
+            # Everything that can fail is built before the application is touched, so a failure leaves the
+            # current theme in place.
             tokens = LIGHT if theme == "light" else DARK
             icons = write_theme_icons(tokens, icon_cache_dir(theme))
-            app.setStyleSheet(build_stylesheet(tokens, scale_factor(app), icons))
-            app.setPalette(build_palette(tokens))
+            sheet = build_stylesheet(tokens, scale_factor(app), icons)
+            palette = build_palette(tokens)
             if sys.platform == "win32":
-                app.setFont(QFont("Segoe UI", 8))
+                font = QFont("Segoe UI", 8)
             else:
-                app.setFont(QFontDatabase.systemFont(QFontDatabase.GeneralFont))
+                font = QFontDatabase.systemFont(QFontDatabase.GeneralFont)
+            self._skinned_applied = True
+            app.setPalette(palette)
+            app.setFont(font)
+            app.setStyleSheet(sheet)
             _install_dock_theme(tokens)
         self._current = theme
         self.theme_changed.emit(theme)
