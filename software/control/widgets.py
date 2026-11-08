@@ -5616,6 +5616,14 @@ class LiveControlWidget(QFrame):
             # sample is already being exposed.
             _sync_live_button(self, "Stop", "Live", self.btn_snap)
 
+    def set_acquisition_running(self, running):
+        """An acquisition stops live on its own and owns the camera and the light while it runs: show the
+        real live state, and lock Live and Snap until it finishes."""
+        _sync_live_button(self, "Stop", "Live", self.btn_snap)
+        self.btn_live.setEnabled(not running)
+        if running:
+            self.btn_snap.setEnabled(False)
+
     def snap(self):
         """Acquire and display one frame with the current live configuration."""
         if self.liveController.is_live:
