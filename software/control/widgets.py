@@ -3551,7 +3551,7 @@ class LaserAutofocusSettingWidget(QWidget):
 
         # Create and set background color
         palette = self.palette()
-        palette.setColor(self.backgroundRole(), QColor(240, 240, 240))
+        palette.setColor(self.backgroundRole(), theme.manager().color("row_disabled"))
         self.setPalette(palette)
 
         self.spinboxes = {}
@@ -15542,6 +15542,7 @@ class ControllerPortMappingDialog(QDialog):
         self.setMinimumSize(400, 450)
         self._setup_ui()
         self._load_mappings()
+        theme.manager().theme_changed.connect(self._recolour_rows)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -15577,6 +15578,13 @@ class ControllerPortMappingDialog(QDialog):
 
         layout.addLayout(button_layout)
 
+    def _recolour_rows(self) -> None:
+        """Repaint the read-only port cells for the current theme; the editors are left untouched."""
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None:
+                item.setBackground(theme.manager().row_brush("row_disabled"))
+
     def _load_mappings(self):
         """Load current port mappings into the table"""
         from control.models.illumination_config import IlluminationChannelConfig
@@ -15594,7 +15602,7 @@ class ControllerPortMappingDialog(QDialog):
             # Controller port (read-only)
             port_item = QTableWidgetItem(port)
             port_item.setFlags(port_item.flags() & ~Qt.ItemIsEditable)
-            port_item.setBackground(QColor(240, 240, 240))
+            port_item.setBackground(theme.manager().row_brush("row_disabled"))
             self.table.setItem(row, 0, port_item)
 
             # Source code (editable spinbox with N/A option)
@@ -16978,6 +16986,8 @@ class WarningErrorWidget(QWidget):
         self._handler = None
         self._poll_timer = None
         self._setup_ui()
+        self._restyle()
+        theme.manager().theme_changed.connect(self._restyle)
 
     def connect_handler(self, handler: "BufferingHandler"):
         """Connect to a logging handler and start polling for messages.
@@ -17056,12 +17066,6 @@ class WarningErrorWidget(QWidget):
         self.btn_expand.setFixedHeight(18)
         self.btn_expand.setMinimumWidth(32)  # Allow width to grow for longer text
         self.btn_expand.setCursor(Qt.PointingHandCursor)
-        self.btn_expand.setStyleSheet(
-            "QPushButton { background-color: #666; color: white; border-radius: 9px; "
-            "font-size: 11px; font-weight: bold; padding: 0px 6px; }"
-            "QPushButton:hover { background-color: #444; }"
-            "QPushButton:pressed { background-color: #222; }"
-        )
         self.btn_expand.clicked.connect(self._on_expand_clicked)
         self.btn_expand.setVisible(False)
 
@@ -17069,10 +17073,6 @@ class WarningErrorWidget(QWidget):
         self.btn_dismiss = QPushButton("✕")
         self.btn_dismiss.setFixedSize(18, 18)
         self.btn_dismiss.setCursor(Qt.PointingHandCursor)
-        self.btn_dismiss.setStyleSheet(
-            "QPushButton { background: transparent; border: none; color: #888; font-size: 14px; padding: 0px; }"
-            "QPushButton:hover { color: #000; }"
-        )
         self.btn_dismiss.clicked.connect(self.dismiss_current)
 
         layout.addWidget(self.label_icon)
@@ -17080,6 +17080,25 @@ class WarningErrorWidget(QWidget):
         layout.addWidget(self.btn_expand)
         layout.addWidget(self.btn_dismiss)
         layout.addStretch()  # Push everything to the left
+
+    def _restyle(self, *_):
+        """Build the pill and dismiss button styles from the current theme's tokens, and repaint the message."""
+        t = theme.manager().tokens()
+        self.btn_expand.setStyleSheet(
+            f"QPushButton {{ background-color: {t.pill_bg}; color: white; border-radius: 9px; "
+            "font-size: 11px; font-weight: bold; padding: 0px 6px; }"
+            f"QPushButton:hover {{ background-color: {t.pill_hover}; }}"
+            f"QPushButton:pressed {{ background-color: {t.pill_pressed}; }}"
+        )
+        self.btn_dismiss.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: none; color: {t.icon_button_fg}; font-size: 14px; "
+            "padding: 0px; }"
+            f"QPushButton:hover {{ color: {t.icon_button_hover_fg}; }}"
+        )
+        # The popup is transient (it closes when clicked outside): drop an open one rather than leave it stale.
+        self._cleanup_popup()
+        if self._messages:
+            self._update_display()
 
     def _on_expand_clicked(self):
         """Handle expand button click."""
@@ -17098,7 +17117,10 @@ class WarningErrorWidget(QWidget):
         self._cleanup_popup()
 
         self._popup = QFrame(self.window(), Qt.Popup | Qt.FramelessWindowHint)
-        self._popup.setStyleSheet("QFrame { background-color: white; border: 1px solid #aaa; border-radius: 6px; }")
+        t = theme.manager().tokens()
+        self._popup.setStyleSheet(
+            f"QFrame {{ background-color: {t.popup_bg}; border: 1px solid {t.popup_border}; border-radius: 6px; }}"
+        )
 
         popup_layout = QVBoxLayout(self._popup)
         popup_layout.setContentsMargins(0, 0, 0, 0)
@@ -17106,16 +17128,18 @@ class WarningErrorWidget(QWidget):
 
         # Header with title and Clear All button
         header = QWidget()
-        header.setStyleSheet("background-color: #f5f5f5; border-bottom: 1px solid #ddd;")
+        header.setStyleSheet(
+            f"background-color: {t.popup_header_bg}; border-bottom: 1px solid {t.popup_header_border};"
+        )
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(12, 8, 12, 8)
         header_label = QLabel(f"<b>Warnings & Errors</b> ({len(self._messages)})")
         btn_clear = QPushButton("Clear All")
         btn_clear.setCursor(Qt.PointingHandCursor)
         btn_clear.setStyleSheet(
-            "QPushButton { background-color: #e74c3c; color: white; border: none; "
+            f"QPushButton {{ background-color: {t.clear_bg}; color: white; border: none; "
             "border-radius: 4px; padding: 4px 12px; font-weight: bold; }"
-            "QPushButton:hover { background-color: #c0392b; }"
+            f"QPushButton:hover {{ background-color: {t.clear_hover}; }}"
         )
         btn_clear.clicked.connect(self._clear_all_from_popup)
         header_layout.addWidget(header_label)
@@ -17128,10 +17152,10 @@ class WarningErrorWidget(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setStyleSheet("QScrollArea { border: none; background: white; }")
+        scroll.setStyleSheet(f"QScrollArea {{ border: none; background: {t.popup_bg}; }}")
 
         list_widget = QWidget()
-        list_widget.setStyleSheet("background: white;")
+        list_widget.setStyleSheet(f"background: {t.popup_bg};")
         list_layout = QVBoxLayout(list_widget)
         list_layout.setContentsMargins(0, 0, 0, 0)
         list_layout.setSpacing(0)
@@ -17185,10 +17209,11 @@ class WarningErrorWidget(QWidget):
         dt = msg["datetime"]
         msg_id = msg["id"]
 
+        t = theme.manager().tokens()
         item = QWidget()
         is_error = level >= logging.ERROR
-        bg_color = "#fef2f2" if is_error else "#fefce8"
-        item.setStyleSheet(f"background-color: {bg_color}; border-bottom: 1px solid #eee;")
+        bg_color = t.error_bg if is_error else t.warn_bg
+        item.setStyleSheet(f"background-color: {bg_color}; border-bottom: 1px solid {t.popup_row_border};")
 
         layout = QHBoxLayout(item)
         layout.setContentsMargins(12, 8, 12, 8)
@@ -17196,7 +17221,7 @@ class WarningErrorWidget(QWidget):
 
         # Level indicator
         icon_label = QLabel("⬤")
-        icon_color = "#dc2626" if is_error else "#ca8a04"
+        icon_color = t.error_icon_bg if is_error else t.warn_dot
         icon_label.setStyleSheet(f"color: {icon_color}; font-size: 8px;")
         icon_label.setFixedWidth(14)
         icon_label.setAlignment(Qt.AlignCenter)
@@ -17204,16 +17229,16 @@ class WarningErrorWidget(QWidget):
         # Date/Time - show full date and time
         time_str = dt.strftime("%m/%d %H:%M:%S")
         time_label = QLabel(time_str)
-        time_label.setStyleSheet("color: #666; font-size: 11px; font-family: monospace;")
+        time_label.setStyleSheet(f"color: {t.popup_time_fg}; font-size: 11px; font-family: monospace;")
         time_label.setFixedWidth(90)
 
         # Message (allow wrapping)
         core_msg = self._extract_core_message(message)
         if count > 1:
-            core_msg = f"{core_msg} <b style='color: #666;'>(×{count})</b>"
+            core_msg = f"{core_msg} <b style='color: {t.popup_time_fg};'>(×{count})</b>"
         msg_label = QLabel(core_msg)
         msg_label.setWordWrap(True)
-        msg_label.setStyleSheet("font-size: 12px; color: #333;")
+        msg_label.setStyleSheet(f"font-size: 12px; color: {t.popup_msg_fg};")
         msg_label.setTextFormat(Qt.RichText)
         msg_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
@@ -17222,8 +17247,9 @@ class WarningErrorWidget(QWidget):
         btn_dismiss.setFixedSize(20, 20)
         btn_dismiss.setCursor(Qt.PointingHandCursor)
         btn_dismiss.setStyleSheet(
-            "QPushButton { background: #ddd; border: none; color: #666; border-radius: 10px; font-size: 12px; }"
-            "QPushButton:hover { background: #ccc; color: #333; }"
+            f"QPushButton {{ background: {t.dismiss_bg}; border: none; color: {t.dismiss_fg}; border-radius: 10px; "
+            "font-size: 12px; }"
+            f"QPushButton:hover {{ background: {t.dismiss_hover_bg}; color: {t.dismiss_hover_fg}; }}"
         )
         btn_dismiss.clicked.connect(lambda checked, mid=msg_id: self._dismiss_by_id(mid))
 
@@ -17334,19 +17360,22 @@ class WarningErrorWidget(QWidget):
         is_error = level >= logging.ERROR
 
         # Colors
+        t = theme.manager().tokens()
         if is_error:
-            bg_color = "#fef2f2"
-            text_color = "#b91c1c"
+            bg_color = t.error_bg
+            text_color = t.error_fg
             icon_text = "✕"
             icon_style = (
-                "background-color: #dc2626; color: white; font-weight: bold; font-size: 12px; border-radius: 10px;"
+                f"background-color: {t.error_icon_bg}; color: white; font-weight: bold; font-size: 12px; "
+                "border-radius: 10px;"
             )
         else:
-            bg_color = "#fefce8"
-            text_color = "#a16207"
+            bg_color = t.warn_bg
+            text_color = t.warn_fg
             icon_text = "!"
             icon_style = (
-                "background-color: #eab308; color: white; font-weight: bold; font-size: 14px; border-radius: 10px;"
+                f"background-color: {t.warn_icon_bg}; color: white; font-weight: bold; font-size: 14px; "
+                "border-radius: 10px;"
             )
 
         self.setStyleSheet(f"background-color: {bg_color}; border-radius: 4px;")

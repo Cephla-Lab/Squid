@@ -8,7 +8,7 @@ import os
 from typing import Optional
 
 from qtpy.QtCore import Qt, Signal
-from qtpy.QtGui import QColor
+from qtpy.QtGui import QBrush
 from qtpy.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -298,8 +298,10 @@ class WorkflowRunnerDialog(QDialog):
         self._workflow = Workflow.create_default()
         self._is_running = False
         self._is_paused = False
+        self._highlight_index = -1
         self._setup_ui()
         self._load_workflow_to_table()
+        theme.manager().theme_changed.connect(self._recolour_rows)
 
     def _setup_ui(self):
         self.setWindowTitle("Workflow Runner")
@@ -483,9 +485,9 @@ class WorkflowRunnerDialog(QDialog):
         if not is_acquisition:
             return
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-        item.setBackground(QColor(240, 240, 255))  # Light blue
+        item.setBackground(theme.manager().row_brush("row_highlight"))
         if include_foreground:
-            item.setForeground(QColor(128, 128, 128))  # Gray text
+            item.setForeground(QBrush(theme.manager().color("row_text_muted")))
 
     def _on_include_toggled(self, row: int, checked: bool):
         """Handle include checkbox toggle."""
@@ -727,6 +729,7 @@ class WorkflowRunnerDialog(QDialog):
 
     def highlight_sequence(self, index: int):
         """Highlight the currently running sequence."""
+        self._highlight_index = index
         for row in range(self.table.rowCount()):
             background = self._get_row_background_color(row, is_running=(row == index))
             for col in range(self.table.columnCount()):
@@ -734,14 +737,25 @@ class WorkflowRunnerDialog(QDialog):
                 if item:
                     item.setBackground(background)
 
-    def _get_row_background_color(self, row: int, is_running: bool = False) -> QColor:
-        """Get the appropriate background color for a table row."""
+    def _get_row_background_color(self, row: int, is_running: bool = False) -> QBrush:
+        """Get the appropriate background brush for a table row."""
+        mgr = theme.manager()
         if is_running:
-            return QColor(200, 255, 200)  # Light green for running
+            return mgr.row_brush("row_running")
         seq = self._workflow.sequences[row] if row < len(self._workflow.sequences) else None
         if seq and seq.is_acquisition():
-            return QColor(240, 240, 255)  # Light blue for acquisition
-        return QColor(255, 255, 255)  # White for scripts
+            return mgr.row_brush("row_highlight")
+        return mgr.row_brush("input_bg")
+
+    def _recolour_rows(self) -> None:
+        """Repaint row brushes for the current theme without touching cell text or widgets."""
+        self.highlight_sequence(self._highlight_index)
+        muted = QBrush(theme.manager().color("row_text_muted"))
+        for row in range(self.table.rowCount()):
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
+                if item is not None and item.foreground().style() != Qt.NoBrush:
+                    item.setForeground(muted)
 
     def clear_highlight(self):
         """Clear all row highlights."""

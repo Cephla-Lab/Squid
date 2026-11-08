@@ -61,6 +61,32 @@ class Tokens:
     row_invalid: str
     row_conflict: str
     row_text_muted: str
+    # Status-bar warning/error widget (pill, popup, rows); Classic is today's literals.
+    pill_bg: str
+    pill_hover: str
+    pill_pressed: str
+    icon_button_fg: str
+    icon_button_hover_fg: str
+    popup_bg: str
+    popup_border: str
+    popup_header_bg: str
+    popup_header_border: str
+    popup_row_border: str
+    popup_time_fg: str
+    popup_msg_fg: str
+    clear_bg: str
+    clear_hover: str
+    dismiss_bg: str
+    dismiss_fg: str
+    dismiss_hover_bg: str
+    dismiss_hover_fg: str
+    error_bg: str
+    error_fg: str
+    error_icon_bg: str
+    warn_bg: str
+    warn_fg: str
+    warn_icon_bg: str
+    warn_dot: str
     # Geometry, logical px at 96 dpi.
     control_height: int
     control_radius: int
@@ -103,6 +129,31 @@ LIGHT = Tokens(
     row_invalid="#fde7e9",
     row_conflict="#fbe4c8",
     row_text_muted="#5f5f5f",
+    pill_bg="#595959",
+    pill_hover="#444444",
+    pill_pressed="#222222",
+    icon_button_fg="#6b6b6b",
+    icon_button_hover_fg="#000000",
+    popup_bg="#ffffff",
+    popup_border="#aaaaaa",
+    popup_header_bg="#f5f5f5",
+    popup_header_border="#dddddd",
+    popup_row_border="#eeeeee",
+    popup_time_fg="#5f5f5f",
+    popup_msg_fg="#333333",
+    clear_bg="#c0392b",
+    clear_hover="#a93226",
+    dismiss_bg="#dddddd",
+    dismiss_fg="#4d4d4d",
+    dismiss_hover_bg="#cccccc",
+    dismiss_hover_fg="#222222",
+    error_bg="#fef2f2",
+    error_fg="#b91c1c",
+    error_icon_bg="#dc2626",
+    warn_bg="#fefce8",
+    warn_fg="#8a5a00",
+    warn_icon_bg="#eab308",
+    warn_dot="#ca8a04",
     control_height=26,
     control_radius=4,
     tray_radius=6,
@@ -144,6 +195,31 @@ DARK = Tokens(
     row_invalid="#4a2328",
     row_conflict="#4a3318",
     row_text_muted="#a6a6a6",
+    pill_bg="#555555",
+    pill_hover="#6a6a6a",
+    pill_pressed="#7a7a7a",
+    icon_button_fg="#a6a6a6",
+    icon_button_hover_fg="#ffffff",
+    popup_bg="#2b2b2b",
+    popup_border="#454545",
+    popup_header_bg="#272727",
+    popup_header_border="#3a3a3a",
+    popup_row_border="#3a3a3a",
+    popup_time_fg="#a6a6a6",
+    popup_msg_fg="#f0f0f0",
+    clear_bg="#c0392b",
+    clear_hover="#e74c3c",
+    dismiss_bg="#3a3a3a",
+    dismiss_fg="#d0d0d0",
+    dismiss_hover_bg="#4a4a4a",
+    dismiss_hover_fg="#ffffff",
+    error_bg="#4a2328",
+    error_fg="#ff8a80",
+    error_icon_bg="#dc2626",
+    warn_bg="#3d3200",
+    warn_fg="#ffd45c",
+    warn_icon_bg="#a16207",
+    warn_dot="#eab308",
     control_height=26,
     control_radius=4,
     tray_radius=6,
@@ -162,6 +238,24 @@ CLASSIC = replace(
     row_invalid="#ffcdcd",
     row_conflict="#ffd2d2",
     row_text_muted="#808080",
+    pill_bg="#666",
+    pill_hover="#444",
+    pill_pressed="#222",
+    icon_button_fg="#888",
+    icon_button_hover_fg="#000",
+    popup_bg="white",
+    popup_border="#aaa",
+    popup_header_border="#ddd",
+    popup_row_border="#eee",
+    popup_time_fg="#666",
+    popup_msg_fg="#333",
+    clear_bg="#e74c3c",
+    clear_hover="#c0392b",
+    dismiss_bg="#ddd",
+    dismiss_fg="#666",
+    dismiss_hover_bg="#ccc",
+    dismiss_hover_fg="#333",
+    warn_fg="#a16207",
 )
 
 # Lengths the stylesheet uses beyond the geometry tokens, logical px at 96 dpi. Input and button paddings are

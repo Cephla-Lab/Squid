@@ -10,7 +10,7 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from qtpy.QtCore import QSignalBlocker, Qt, QTimer, Signal
-from qtpy.QtGui import QBrush, QColor
+from qtpy.QtGui import QBrush
 from qtpy.QtWidgets import (
     QDialog,
     QCheckBox,
@@ -66,8 +66,6 @@ except ImportError:
 _SCOPE_ALL = "all imaging rows"
 _SCOPE_SELECTED = "selected rows"
 _STRING_FIELDS = ("name", "round", "folder", "settings", "coordinates")
-_HIGHLIGHT = QColor(255, 244, 180)
-_INVALID = QColor(255, 205, 205)
 
 
 class FluidicsConfigError(RuntimeError):
@@ -132,6 +130,7 @@ class ProtocolTab(QWidget):
 
         self._build_ui()
         self._render()
+        theme.manager().theme_changed.connect(self._recolour_rows)
 
     # ---------- public surface ----------
 
@@ -227,6 +226,23 @@ class ProtocolTab(QWidget):
         if not self._protocol.sequences:
             return "the protocol is empty"
         return None
+
+    def _recolour_rows(self) -> None:
+        """Repaint the invalid/marked row brushes for the current theme without re-rendering the tree."""
+        mgr = theme.manager()
+        for gi in range(self.tree.topLevelItemCount()):
+            group = self.tree.topLevelItem(gi)
+            for ci in range(group.childCount()):
+                child = group.child(ci)
+                index = child.data(0, Qt.UserRole)
+                if index in self._problems:
+                    brush = mgr.row_brush("row_invalid")
+                elif index == self._highlight_row:
+                    brush = mgr.row_brush("row_marked")
+                else:
+                    continue
+                for column in range(7):
+                    child.setBackground(column, brush)
 
     def highlight_row(self, row_index: Optional[int]) -> None:
         self._highlight_row = row_index
@@ -771,10 +787,10 @@ class ProtocolTab(QWidget):
         if i in self._problems:
             item.setToolTip(6, self._problems[i])
             for column in range(7):
-                item.setBackground(column, QBrush(_INVALID))
+                item.setBackground(column, theme.manager().row_brush("row_invalid"))
         elif i == self._highlight_row:
             for column in range(7):
-                item.setBackground(column, QBrush(_HIGHLIGHT))
+                item.setBackground(column, theme.manager().row_brush("row_marked"))
         return item
 
     def _select_row(self, index: int) -> None:

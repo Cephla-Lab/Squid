@@ -44,7 +44,7 @@ def _method_range(lines, start_pattern):
 
 
 # Blocks still owned by later tasks. Task 10 deletes it.
-DEFERRED = {"widgets.py": [r"class WarningErrorWidget\("]}
+DEFERRED = {}
 
 
 def test_main_window_files_carry_no_role_literals():
