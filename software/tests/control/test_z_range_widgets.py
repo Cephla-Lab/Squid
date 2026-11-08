@@ -339,6 +339,7 @@ _RELATIVE_METHODS = (
     "_set_z_range_status",
     "_on_laser_af_toggled",
     "_on_laser_af_reference_changed",
+    "_remember_relative_range_reference",
     "_on_stack_motor_changed",
     "update_Nz",
     "update_z_min",
@@ -351,7 +352,9 @@ _RELATIVE_METHODS = (
 )
 
 
-def _relative_fake(measurements=(), anchor_um=100.0, is_live=True, piezo_um=20.0, stepper_only=False):
+def _relative_fake(
+    measurements=(), anchor_um=100.0, is_live=True, piezo_um=20.0, stepper_only=False, has_reference=True
+):
     """A Wellplate stand-in in Set Range with laser AF checked (relative mode), live running by default."""
     fake = _fake(WellplateMultiPointWidget, use_piezo=not stepper_only, piezo_um=piezo_um)
     piezo = fake.multipointController.piezo
@@ -360,6 +363,9 @@ def _relative_fake(measurements=(), anchor_um=100.0, is_live=True, piezo_um=20.0
     fake.calls = []
     fake.liveController = _FakeLive(fake.calls, is_live)
     fake.laser_af = _FakeLaserAF(piezo, fake.calls, measurements, anchor_um)
+    if not has_reference:
+        fake.laser_af.laser_af_properties.has_reference = False
+        fake.laser_af.reference_identity = None
     fake.multipointController.laserAutoFocusController = fake.laser_af
     fake.label_parent = QWidget()  # never shown, so showing the status line opens no window
     fake.label_z_range_status = QLabel(fake.label_parent)
@@ -370,6 +376,8 @@ def _relative_fake(measurements=(), anchor_um=100.0, is_live=True, piezo_um=20.0
     fake._log = MagicMock()
     fake._relative_range_identity = None
     _bind(fake, WellplateMultiPointWidget, *_RELATIVE_METHODS)
+    for entry in (fake.entry_minZ, fake.entry_maxZ):  # as the widget connects them
+        entry.valueChanged.connect(fake._remember_relative_range_reference)
     fake.checkbox_z.setChecked(True)
     fake.combobox_z_mode.setCurrentText("Set Range")
     fake.checkbox_withReflectionAutofocus.setChecked(True)
@@ -584,6 +592,43 @@ def test_reference_identity_change_clears_the_relative_range_but_a_benign_reemit
     assert fake.entry_minZ.value() == -4.0
 
 
+def test_reference_cleared_clears_the_relative_range(qtbot):
+    fake = _relative_fake(measurements=[12.5])
+    WellplateMultiPointWidget.set_z_min(fake)
+
+    fake.laser_af.reference_identity = None  # e.g. initialize_auto cleared the reference
+    fake._on_laser_af_reference_changed(False)
+
+    assert (fake.entry_minZ.value(), fake.entry_maxZ.value()) == (0.0, 0.0)
+    assert fake.label_z_range_status.text() == "Laser AF reference changed — Z-range cleared, set it again."
+
+
+def test_a_range_typed_without_a_reference_is_kept_when_the_first_reference_appears(qtbot):
+    fake = _relative_fake(has_reference=False)
+    fake.entry_minZ.setValue(-5.0)  # typed while no reference exists
+    fake.entry_maxZ.setValue(20.0)
+
+    fake.laser_af.reference_identity = IDENTITY  # Set Reference
+    fake._on_laser_af_reference_changed(True)
+
+    assert (fake.entry_minZ.value(), fake.entry_maxZ.value()) == (-5.0, 20.0)
+    assert fake.label_z_range_status.text() == ""
+
+    fake.laser_af.reference_identity = IDENTITY[:-1] + ("another-crop",)  # a real change after that
+    fake._on_laser_af_reference_changed(True)
+    assert (fake.entry_minZ.value(), fake.entry_maxZ.value()) == (0.0, 0.0)
+    assert fake.label_z_range_status.text() == "Laser AF reference changed — Z-range cleared, set it again."
+
+
+def test_typing_remembers_the_reference_it_is_relative_to(qtbot):
+    fake = _relative_fake()
+    fake._relative_range_identity = None
+
+    fake.entry_minZ.setValue(-5.0)  # typed (valueChanged)
+
+    assert fake._relative_range_identity == IDENTITY
+
+
 def test_reference_identity_change_in_absolute_set_range_changes_nothing(qtbot):
     fake = _relative_fake()
     fake.checkbox_withReflectionAutofocus.setChecked(False)
@@ -722,6 +767,43 @@ def test_yaml_with_a_relative_range_selects_set_range_checks_laser_af_and_fills_
     assert (host.entry_minZ.value(), host.entry_maxZ.value()) == rng
     assert "from reference" in host.entry_minZ.suffix()
     assert host._relative_range_identity == IDENTITY  # a later real reference change clears these
+
+
+def test_yaml_relative_range_loaded_without_a_reference_is_kept_when_one_appears(qtbot):
+    # e.g. a protocol YAML, or the control server loading a YAML into the tab, before Set Reference
+    host = _wellplate_for_yaml(use_piezo=True, piezo_um=50.0)
+    laser_af = SimpleNamespace(reference_identity=None)
+    host.multipointController.laserAutoFocusController = laser_af
+    host.label_parent = QWidget()
+    host.label_z_range_status = QLabel(host.label_parent)
+    _bind(
+        host,
+        WellplateMultiPointWidget,
+        "_reset_relative_z_range_entries",
+        "_actuator_travel_um",
+        "_laser_af",
+        "_laser_af_reference_identity",
+        "_set_z_range_status",
+        "_restart_z_range",
+        "_on_laser_af_reference_changed",
+    )
+    WellplateMultiPointWidget._apply_yaml_settings(
+        host, _yaml(use_piezo=True, nz=14, laser_af=True, laser_af_relative_range_um=(-5.0, 20.0))
+    )
+    assert host._relative_range_identity is None
+
+    laser_af.reference_identity = IDENTITY  # Set Reference
+    host._on_laser_af_reference_changed(True)
+    assert (host.entry_minZ.value(), host.entry_maxZ.value()) == (-5.0, 20.0)
+    assert host.label_z_range_status.text() == ""
+
+    host._on_laser_af_reference_changed(True)  # benign re-emit
+    assert (host.entry_minZ.value(), host.entry_maxZ.value()) == (-5.0, 20.0)
+
+    laser_af.reference_identity = IDENTITY[:-1] + ("another-crop",)  # a real change after that
+    host._on_laser_af_reference_changed(True)
+    assert (host.entry_minZ.value(), host.entry_maxZ.value()) == (0.0, 0.0)
+    assert host.label_z_range_status.text() == "Laser AF reference changed — Z-range cleared, set it again."
 
 
 @pytest.mark.parametrize(

@@ -8642,8 +8642,9 @@ class WellplateMultiPointWidget(
 
         # Add state tracking for Z parameters
         self.stored_z_params = dict(self.INITIAL_STORED_Z_PARAMS)
-        # The laser AF reference_identity the relative Set Range entries were started, measured or loaded against:
-        # a different identity at signal_reference_changed clears them (an identical reload re-emits it too).
+        # The laser AF reference_identity the relative Set Range entries were started, entered or loaded against
+        # (None: no reference then): a different identity at signal_reference_changed clears them, except that a
+        # range entered without a reference is adopted by the first one (an identical reload re-emits it too).
         self._relative_range_identity = None
 
         # Add state tracking for Time parameters
@@ -9143,6 +9144,8 @@ class WellplateMultiPointWidget(
         self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
         self.checkbox_withReflectionAutofocus.toggled.connect(lambda _c: self._update_laser_af_per_stack_state())
         self.checkbox_withReflectionAutofocus.toggled.connect(self._on_laser_af_toggled)
+        self.entry_minZ.valueChanged.connect(self._remember_relative_range_reference)
+        self.entry_maxZ.valueChanged.connect(self._remember_relative_range_reference)
         laser_af = self._laser_af()
         if laser_af is not None:
             laser_af.signal_reference_changed.connect(self._on_laser_af_reference_changed)
@@ -10200,15 +10203,25 @@ class WellplateMultiPointWidget(
             self._set_z_range_status("")
             self._restart_z_range()
 
+    def _remember_relative_range_reference(self, *_):
+        """A value in a relative entry (typed, stepped, Set or loaded) is relative to the reference loaded now."""
+        if self._relative_mode():
+            self._relative_range_identity = self._laser_af_reference_identity()
+
     def _on_laser_af_reference_changed(self, _has_reference):
-        """Clear the relative range when the laser AF reference it was set against is gone.
+        """Clear the relative range when the laser AF reference it was set against is gone or replaced.
 
         signal_reference_changed is re-emitted on every config reload, even with nothing changed, so compare the
-        reference identity by value rather than clearing on every emit.
+        reference identity by value rather than clearing on every emit. A range entered while no reference existed
+        (typed, or loaded from a file) is adopted by the first reference that appears, without clearing.
         """
         if not self._relative_mode():
             return
-        if self._laser_af_reference_identity() == self._relative_range_identity:
+        identity = self._laser_af_reference_identity()
+        if identity == self._relative_range_identity:
+            return
+        if self._relative_range_identity is None:
+            self._relative_range_identity = identity
             return
         had_range = (self.entry_minZ.value(), self.entry_maxZ.value()) != (0.0, 0.0)
         self._restart_z_range()
