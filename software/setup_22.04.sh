@@ -65,7 +65,8 @@ python3 -m pip install --upgrade pip
 # numpy 2; the numpy<2 pin from #501 (scipy 1.12 wheels built against numpy 1) is no longer needed.
 # apt's python3-pyqtgraph above drags in Ubuntu 22.04's matplotlib 3.5, scipy 1.8 and pyqtgraph 0.12, all
 # built for numpy 1; the floors make pip install numpy 2 builds that shadow them (user site comes first).
-pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy>=2" tifffile "scipy>=1.13" "matplotlib>=3.9" "pyqtgraph>=0.13.4" pyreadline3
+# colorama: pyqtgraph >= 0.13 imports it at import time; apt's python3-pyqtgraph used to bring it in.
+pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy>=2" tifffile "scipy>=1.13" "matplotlib>=3.9" "pyqtgraph>=0.13.4" colorama pyreadline3
 # opencv<5: OpenCV 5 (2026-07) is what pip picks with numpy 2; Squid is tested on the 4.x API.
 pip3 install "opencv-python-headless<5" "opencv-contrib-python-headless<5"
 # mcp<2: mcp 2.0 dropped the decorator API that the MCP bridge (mcp_microscope_server.py) is written against
