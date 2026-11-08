@@ -675,10 +675,6 @@ class AcquisitionGalleryWidget(QWidget):
             self.status_label.setText("Loading the acquisition history…")
         self._scan_executor.submit(self._load_in_background, self._generation, self._running_fraction)
 
-    def refresh(self) -> None:
-        """The pre-history name of reload(), still used by the main window's post-acquisition hook."""
-        self.reload()
-
     def _history_stamp(self):
         stamp = []
         for path in (self._store.path, self._store.path.parent / PREVIEWS_DIR_NAME):

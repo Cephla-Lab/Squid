@@ -112,6 +112,13 @@ from control.custom_multipoint_widget import TemplateMultiPointWidget
 from control.slack_notifier import SlackNotifier, TimepointStats, AcquisitionStats
 from control.widgets_slack import SlackSettingsDialog, load_slack_settings_from_cache
 
+# Acquisition history (the Gallery tab) and the standalone ndviewer_light window
+from concurrent.futures import ThreadPoolExecutor
+from control.acquisition_history_recorder import AcquisitionHistoryRecorder
+from control.ndviewer_launcher import launch_ndviewer_light, resolve_ndviewer_light
+from squid.acquisition_history import HistoryStore, history_dir, normalize_folder
+from squid.version import software_version
+
 
 class MovementUpdater(QObject):
     position_after_move = Signal(squid.abc.Pos)
@@ -603,6 +610,7 @@ class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
     FLUIDICS_TAB_NAME = "Fluidics"
+    GALLERY_PREVIEW_WAIT_MS = 60_000  # how long a finished run's preview waits for its last mosaic overview save
     signal_performance_mode_changed = Signal(bool)
 
     def __init__(
@@ -941,6 +949,7 @@ class HighContentScreeningGui(QMainWindow):
             scan_coordinates=self.scanCoordinates,
             laser_autofocus_controller=self.laserAutofocusController,
         )
+        self._setup_acquisition_history()
 
     def setup_hardware(self):
         self.camera.add_frame_callback(self.streamHandler.get_frame_callback())
@@ -1274,12 +1283,13 @@ class HighContentScreeningGui(QMainWindow):
             # Gallery of the acquisitions saved under the saving folder: one opens in the NDViewer tab, shows
             # in the file browser, or hands its settings back to the multipoint tab it was run from.
             from control.widgets_gallery import AcquisitionGalleryWidget
-            from squid.acquisition_history import HistoryStore, history_dir
 
             self.acquisitionGalleryWidget = AcquisitionGalleryWidget(
-                HistoryStore(history_dir()), import_root_provider=self._acquisition_saving_root
+                self.historyStore, import_root_provider=self._acquisition_saving_root
             )
             self.imageDisplayTabs.addTab(self.acquisitionGalleryWidget, "Gallery")
+            self._set_gallery_open_in_squid(acquiring=False)
+            self._refresh_ndviewer_launcher()
 
             # z plot
             self.zPlotWidget = widgets.SurfacePlotWidget()
@@ -1635,10 +1645,26 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController.ndviewer_notify_zarr_frame.connect(self.ndviewerTab.notify_zarr_frame)
             self.multipointController.ndviewer_end_zarr_acquisition.connect(self.ndviewerTab.end_zarr_acquisition)
 
+        # Acquisition history: the finished run's preview waits for its last mosaic overview save (live-only too).
+        self.multipointController.signal_acquisition_start.connect(self._on_history_acquisition_start)
+        self.multipointController.signal_acquisition_save_target.connect(self._on_history_save_target)
+        self.multipointController.timepoint_finished.connect(self._on_history_timepoint_finished)
+        self.multipointController.acquisition_finished.connect(self._on_history_acquisition_finished)
+        if self.unifiedMosaicWidget is not None:
+            self.unifiedMosaicWidget.signal_view_saved.connect(self._on_history_view_saved)
+
         if self.acquisitionGalleryWidget is not None:
-            self.acquisitionGalleryWidget.signal_open_in_squid.connect(self._open_acquisition_in_ndviewer)
-            self.acquisitionGalleryWidget.signal_load_settings.connect(self._load_acquisition_settings_from_folder)
+            gallery = self.acquisitionGalleryWidget
+            gallery.signal_open_in_squid.connect(self._open_acquisition_in_ndviewer)
+            gallery.signal_open_in_window.connect(self._open_acquisition_in_window)
+            gallery.signal_load_settings.connect(self._load_acquisition_settings_from_folder)
+            gallery.signal_shown.connect(self._refresh_ndviewer_launcher)
+            self.multipointController.signal_acquisition_start.connect(self._on_gallery_acquisition_start)
+            self.multipointController.acquisition_finished.connect(self._on_gallery_acquisition_finished)
+            self.multipointController.signal_acquisition_progress.connect(self._on_gallery_acquisition_progress)
+            self.multipointController.signal_region_progress.connect(self._on_gallery_region_progress)
             self.multipointController.acquisition_finished.connect(self._refresh_gallery_after_acquisition)
+            QTimer.singleShot(0, gallery.offer_initial_import)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
@@ -2020,6 +2046,8 @@ class HighContentScreeningGui(QMainWindow):
             dialog.signal_config_changed.connect(
                 lambda: self.navigationWidget.set_click_to_move(control._def.ENABLE_CLICK_TO_MOVE)
             )
+            # The ndviewer_light location preference applies live: the gallery re-resolves the launcher.
+            dialog.signal_config_changed.connect(self._refresh_ndviewer_launcher)
             # The Z-stack order dropdown preference applies live: the tabs re-read the flag.
             for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget):
                 if tab is not None:
@@ -2103,6 +2131,9 @@ class HighContentScreeningGui(QMainWindow):
             imaging_port=self.qtImagingPort,
             busy_check=fluidics_busy_check,
         )
+        # Acquisition history: a protocol run is one Gallery entry, its imaging rounds nested under it.
+        self.fluidicsProtocolWidget.signal_run_started.connect(self._on_protocol_run_started)
+        self.fluidicsProtocolWidget.signal_run_finished.connect(self.historyRecorder.protocol_finished)
         wire_fluidics(self.fluidicsDisplayTab, self.fluidicsProtocolWidget)
 
     def _confirm_end_fluidics_run(self, action: str) -> bool:
@@ -3070,7 +3101,224 @@ class HighContentScreeningGui(QMainWindow):
         """A finished acquisition appears in the gallery once its last mosaic overview has been written."""
         if self.acquisitionGalleryWidget is None:
             return
-        QTimer.singleShot(2000, self.acquisitionGalleryWidget.refresh)
+        QTimer.singleShot(2000, self.acquisitionGalleryWidget.reload)
+
+    def _setup_acquisition_history(self) -> None:
+        """The history store and the recorder the multipoint controller records every run into (live-only too: runs
+        started over the TCP server are recorded); then close the entries a crashed Squid left running."""
+        self.historyStore = HistoryStore(history_dir())
+        self.historyRecorder = AcquisitionHistoryRecorder(
+            self.historyStore,
+            preview_executor=ThreadPoolExecutor(max_workers=1, thread_name_prefix="history-preview"),
+            software_version=software_version(),
+        )
+        self.multipointController.history_recorder = self.historyRecorder
+        # Per-run preview timing (see _on_history_acquisition_finished).
+        self._history_run: Optional[Tuple[Optional[str], Optional[str]]] = None  # (entry id, acquisition folder)
+        self._history_last_timepoint: Optional[int] = None
+        self._history_saved_paths: set = set()  # normalized mosaic_view dirs saved since the run started
+        self._history_awaited_save: Optional[str] = None  # the last timepoint's mosaic_view dir, once the run ended
+        self._history_preview_made = False
+        self._history_timer: Optional[QTimer] = None
+        self._history_preview_futures: list = []
+        self._history_preview_poll: Optional[QTimer] = None
+        self._gallery_acquisition_progress: Optional[Tuple[int, int, int]] = None  # region, regions, timepoint
+        self._gallery_region_progress: Optional[Tuple[int, int]] = None  # fov, region fovs
+        self._ndviewer_launcher = None  # control.ndviewer_launcher.LauncherResolution once resolved
+        try:
+            closed = self.historyRecorder.reconcile_orphans()
+        except Exception:
+            self.log.exception("Could not close the acquisitions an earlier Squid left running")
+            closed = 0
+        if closed:
+            self.log.info(f"Acquisition history: closed {closed} run(s) left running by a Squid that is gone")
+
+    # Preview timing: the preview is drawn from the last timepoint's mosaic overview, which the save executor may
+    # still be writing when acquisition_finished arrives (or which may never come).
+
+    def _on_history_acquisition_start(self) -> None:
+        if self._history_timer is not None:
+            self._history_timer.stop()
+        # The recorder's started() ran before this signal, so the id is this run's.
+        self._history_run = (self.multipointController.history_entry_id, None)
+        self._history_last_timepoint = None
+        self._history_saved_paths = set()
+        self._history_awaited_save = None
+        self._history_preview_made = False
+
+    def _on_history_save_target(self, save_target) -> None:
+        """The run's folder; the controller emits it right after signal_acquisition_start."""
+        if self._history_run is not None:
+            self._history_run = (self._history_run[0], save_target)
+
+    def _on_history_timepoint_finished(self, time_point: int) -> None:
+        if self._history_run is not None:
+            self._history_last_timepoint = time_point
+
+    def _overview_save_expected(self) -> bool:
+        mosaic = self.unifiedMosaicWidget
+        return (
+            mosaic is not None
+            and mosaic.layers_initialized
+            and bool(control._def.SAVE_DOWNSAMPLED_OVERVIEW or control._def.SAVE_DOWNSAMPLED_WELL_IMAGES)
+            and not self.performance_mode
+            and self._history_last_timepoint is not None
+        )
+
+    def _on_history_acquisition_finished(self) -> None:
+        if self._history_run is None or self._history_preview_made or self._history_awaited_save is not None:
+            return
+        entry_id, folder = self._history_run
+        if entry_id is None or not folder:
+            self._history_run = None
+            return
+        if not self._overview_save_expected():
+            self._make_history_preview(replace=False)
+            return
+        awaited = normalize_folder(
+            os.path.join(folder, f"{self._history_last_timepoint:0{control._def.FILE_ID_PADDING}}", "mosaic_view")
+        )
+        if awaited in self._history_saved_paths:
+            self._make_history_preview(replace=False)
+            return
+        self._history_awaited_save = awaited
+        if self._history_timer is None:
+            self._history_timer = QTimer(self)
+            self._history_timer.setSingleShot(True)
+            self._history_timer.timeout.connect(self._on_history_preview_wait_over)
+        self._history_timer.start(self.GALLERY_PREVIEW_WAIT_MS)
+
+    def _on_history_view_saved(self, path: str) -> None:
+        """A mosaic overview save finished (queued from the save executor's thread)."""
+        if self._history_run is None:
+            return
+        saved = normalize_folder(path)
+        self._history_saved_paths.add(saved)
+        if self._history_awaited_save is None or saved != self._history_awaited_save:
+            return  # not awaited yet, or an earlier timepoint's save finishing late
+        self._history_awaited_save = None
+        if self._history_timer is not None:
+            self._history_timer.stop()
+        # When the wait ran out first, the final overview replaces the provisional preview.
+        self._make_history_preview(replace=self._history_preview_made)
+
+    def _on_history_preview_wait_over(self) -> None:
+        if self._history_awaited_save is None or self._history_preview_made:
+            return
+        self.log.info("The last mosaic overview save has not reported; making the gallery preview without it")
+        self._make_history_preview(replace=False)
+
+    def _make_history_preview(self, *, replace: bool) -> None:
+        if self._history_run is None:
+            return
+        entry_id, folder = self._history_run
+        if entry_id is None or not folder:
+            return
+        self._history_preview_made = True
+        try:
+            future = self.historyRecorder.make_preview(entry_id, folder, replace=replace)
+        except Exception:
+            self.log.exception(f"Could not schedule the gallery preview of {folder}")
+            return
+        if future is None or self.acquisitionGalleryWidget is None:
+            return
+        self._history_preview_futures.append(future)
+        if self._history_preview_poll is None:
+            self._history_preview_poll = QTimer(self)
+            self._history_preview_poll.setInterval(500)
+            self._history_preview_poll.timeout.connect(self._poll_history_previews)
+        self._history_preview_poll.start()
+
+    def _poll_history_previews(self) -> None:
+        """Reload the gallery once a preview job is done (its mtime watcher only runs while the tab is visible)."""
+        done = [f for f in self._history_preview_futures if f.done()]
+        if not done:
+            return
+        self._history_preview_futures = [f for f in self._history_preview_futures if not f.done()]
+        if not self._history_preview_futures and self._history_preview_poll is not None:
+            self._history_preview_poll.stop()
+        if self.acquisitionGalleryWidget is not None:
+            self.acquisitionGalleryWidget.reload()
+
+    # Gallery state during an acquisition
+
+    def _set_gallery_open_in_squid(self, *, acquiring: bool) -> None:
+        if self.acquisitionGalleryWidget is None:
+            return
+        has_viewer = getattr(self, "ndviewerTab", None) is not None
+        if acquiring:
+            available, reason = False, "Wait for the running acquisition to finish"
+        else:
+            available, reason = has_viewer, "The NDViewer tab is off (Settings > Preferences > Views)"
+        self.acquisitionGalleryWidget.set_open_in_squid(available, reason, hidden=not has_viewer)
+
+    def _on_gallery_acquisition_start(self) -> None:
+        self._gallery_acquisition_progress = None
+        self._gallery_region_progress = None
+        self.acquisitionGalleryWidget.set_running_progress(None)
+        self._set_gallery_open_in_squid(acquiring=True)
+        self.acquisitionGalleryWidget.reload()  # the running entry appears
+
+    def _on_gallery_acquisition_finished(self) -> None:
+        self._set_gallery_open_in_squid(acquiring=False)
+        self.acquisitionGalleryWidget.set_running_progress(None)
+
+    def _on_gallery_acquisition_progress(self, current_region: int, num_regions: int, current_time_point: int):
+        self._gallery_acquisition_progress = (current_region, num_regions, current_time_point)
+        if self._gallery_region_progress is not None:  # a new region starts at FOV 0, as the progress bar does
+            self._gallery_region_progress = (0, self._gallery_region_progress[1])
+        self._on_gallery_progress()
+
+    def _on_gallery_region_progress(self, current_fov: int, num_fovs: int) -> None:
+        self._gallery_region_progress = (current_fov, num_fovs)
+        self._on_gallery_progress()
+
+    def _on_gallery_progress(self) -> None:
+        """The running row's fraction done, counted in FOVs as the multipoint tabs' progress bar and ETA count them."""
+        if self.acquisitionGalleryWidget is None or self._gallery_acquisition_progress is None:
+            return
+        current_region, num_regions, current_time_point = self._gallery_acquisition_progress
+        current_fov, num_fovs = self._gallery_region_progress or (0, 1)
+        num_fovs = max(int(num_fovs), 1)
+        num_regions = max(int(num_regions), 1)
+        nt = max(int(self.multipointController.Nt or 1), 1)
+        processed = (current_region - 1) * num_fovs + current_fov + current_time_point * num_regions * num_fovs
+        fraction = processed / (num_regions * num_fovs * nt)
+        self.acquisitionGalleryWidget.set_running_progress(min(max(fraction, 0.0), 1.0))
+
+    # The standalone ndviewer_light window
+
+    def _refresh_ndviewer_launcher(self) -> None:
+        """Find ndviewer_light again (the Preferences location, the PATH, the package, the submodule)."""
+        if self.acquisitionGalleryWidget is None:
+            return
+        try:
+            resolution = resolve_ndviewer_light(control._def.NDVIEWER_LIGHT_COMMAND)
+        except Exception:
+            self.log.exception("Could not look for ndviewer_light")
+            return
+        self._ndviewer_launcher = resolution
+        self.acquisitionGalleryWidget.set_open_in_window(resolution.command is not None, resolution.reason)
+
+    def _open_acquisition_in_window(self, folder: str) -> None:
+        if self._ndviewer_launcher is None:
+            self._refresh_ndviewer_launcher()
+        resolution = self._ndviewer_launcher
+        try:
+            if resolution is None:
+                raise RuntimeError("ndviewer_light could not be looked for")
+            launch_ndviewer_light(resolution, folder)
+        except (RuntimeError, OSError) as e:
+            QMessageBox.warning(self, "Cannot open ndviewer_light", str(e))
+            return
+        self.log.info(f"Opened {folder} in ndviewer_light ({resolution.source}: {resolution.reason})")
+
+    # Fluidics protocol runs
+
+    def _on_protocol_run_started(self, run_dir: str, run_name: str) -> None:
+        resolved = getattr(self.fluidicsProtocolWidget, "_resolved", None)
+        protocol_name = getattr(getattr(resolved, "protocol", None), "name", None) or run_name
+        self.historyRecorder.protocol_started(run_dir, run_name, protocol_name)
 
     def restart_application(self):
         """Restart the application with --skip-init flag.
@@ -3172,7 +3420,15 @@ class HighContentScreeningGui(QMainWindow):
             except Exception:
                 self.log.exception(f"Error closing NDViewer tab during {context}")
 
-        # Stop the gallery's scan and thumbnail threads
+        # Stop the history's preview thread, then the gallery's scan and thumbnail threads
+        if getattr(self, "historyRecorder", None) is not None:
+            try:
+                for timer in (self._history_timer, self._history_preview_poll):
+                    if timer is not None:
+                        timer.stop()
+                self.historyRecorder.shutdown()
+            except Exception:
+                self.log.exception(f"Error shutting down the acquisition history recorder during {context}")
         if self.acquisitionGalleryWidget is not None:
             try:
                 self.acquisitionGalleryWidget.shutdown()

@@ -130,6 +130,7 @@ class UnifiedMosaicWidget(QWidget):
     signal_coordinates_clicked = Signal(float, float)  # x_mm, y_mm (mosaic mode)
     signal_well_fov_clicked = Signal(str, int)  # well_id, fov_index (plate mode)
     signal_clear_viewer = Signal()
+    signal_view_saved = Signal(str)  # target dir, once its save is done (or failed); from the save executor's thread
     signal_layers_initialized = Signal()
     signal_shape_drawn = Signal(list)
     signal_mode_changed = Signal(object)  # DisplayMode
@@ -957,6 +958,8 @@ class UnifiedMosaicWidget(QWidget):
                 yaml.safe_dump(serialize_for_yaml(sidecar), f, sort_keys=False)
         except Exception:
             self._log.exception(f"Mosaic-view save failed for {target_dir}")
+        finally:
+            self.signal_view_saved.emit(target_dir)
 
     def _write_per_well_tiffs(self, target_dir: str, snapshot: dict, res_tag: str) -> None:
         """Plate-mode helper: crop each well's slot from the channel stack and

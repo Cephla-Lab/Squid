@@ -212,3 +212,12 @@ def test_mosaic_tile_update_carries_z_and_time():
     assert (u.z_index, u.time_point) == (3, 2)
     d = MosaicTileUpdate(image=img, x_mm=0, y_mm=0, channel_name="BF")
     assert (d.z_index, d.time_point) == (0, 0)
+
+
+def test_write_save_snapshot_emits_view_saved(mosaic_widget, qtbot, tmp_path):
+    widget, _ = mosaic_widget
+    widget.updateTile(_tile_update(np.full((100, 100), 200, dtype=np.uint8), 10.0, 10.0))
+    target = str(tmp_path / "v")
+    with qtbot.waitSignal(widget.signal_view_saved, timeout=10000) as blocker:
+        widget._dispatch_save(target)
+    assert blocker.args == [target]
