@@ -160,6 +160,7 @@ def _worker(
     w.laser_af_relative_range_um = relative_range
     w._relative_mode = True
     w._anchor_um = None
+    w._actuator_at_um = None
     w._require_first_lock_on = False
     w.z_stack_order = order
     w.deltaZ = 0.002  # 2 µm
@@ -518,11 +519,16 @@ _Z_SETTLE_S = 0.0123  # a stabilization time no other sleep uses
 
 
 def _record_events(w, monkeypatch):
-    """One ordered log of lock-ons, piezo moves, sleeps and frames."""
+    """One ordered log of lock-ons, actuator moves (µm: the piezo, or the stage on a stepper scope), sleeps and
+    frames."""
     monkeypatch.setattr(squid.stage.utils, "z_stabilization_time_s", lambda: _Z_SETTLE_S)
     events = []
-    real_move = w.piezo.move_to
-    w.piezo.move_to = lambda um: (events.append(("move", um)), real_move(um))[1]
+    if w.piezo is not None:
+        real_move = w.piezo.move_to
+        w.piezo.move_to = lambda um: (events.append(("move", um)), real_move(um))[1]
+    else:
+        real_stage_move = w.stage.move_z_to
+        w.stage.move_z_to = lambda mm: (events.append(("move", mm * 1000)), real_stage_move(mm))[1]
     w._sleep = lambda sec: events.append(("sleep", sec))
     af = w.laser_auto_focus_controller
     real_af = af.move_to_target
@@ -750,6 +756,147 @@ def test_z_first_settle_carries_past_an_entirely_skipped_relocked_channel(tmp_pa
     assert len(afs) == 3 and len(sleeps) == 2  # A's first move, C's first move: B had none
     assert afs[0] < sleeps[0] < frames[0]
     assert afs[2] < sleeps[1] < frames[4]
+
+
+# --- One move per target: a target the actuator already holds is not moved to again -------------------------
+
+
+def _moves_and_sleeps(events):
+    return [e for e in events if e[0] in ("move", "sleep")]
+
+
+@pytest.mark.parametrize("piezo_scope", [True, False])
+def test_channels_with_equal_offsets_share_one_move_and_settle_per_plane(tmp_path, monkeypatch, piezo_scope):
+    anchor = 100.0 if piezo_scope else 1000.0
+    w = _worker(tmp_path, piezo_scope=piezo_scope, references=[anchor], offsets={"A": 1.0, "B": 1.0})
+    events = _record_events(w, monkeypatch)
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    planes = [anchor - 1.0 + 2 * k for k in range(4)]
+    assert _planes(w) == _frames([(k, c, z) for k, z in enumerate(planes) for c in ("A", "B")])
+    moves = [e[1] for e in events if e[0] == "move"]
+    assert moves == pytest.approx([anchor] + planes + [anchor])  # the lock-on, one per plane, back to the anchor
+    sleeps = [e[1] for e in events if e[0] == "sleep"]
+    if piezo_scope:  # software trigger: the piezo delay per move, plus the post-lock-on settle once
+        assert sleeps.count(0.02) == 5 and sleeps.count(_Z_SETTLE_S) == 1 and len(sleeps) == 6
+    else:  # a stage move settles the stabilization time
+        assert sleeps == [_Z_SETTLE_S] * 5
+    # Channel B's frame at each plane follows channel A's with no move or settle in between.
+    frames = [i for i, e in enumerate(events) if e == ("frame",)]
+    for a, b in zip(frames[0::2], frames[1::2]):
+        assert b == a + 1
+
+
+@pytest.mark.parametrize("piezo_scope", [True, False])
+def test_channels_with_different_offsets_each_move(tmp_path, monkeypatch, piezo_scope):
+    anchor = 100.0 if piezo_scope else 1000.0
+    w = _worker(tmp_path, piezo_scope=piezo_scope, references=[anchor], offsets={"A": 0.0, "B": 1.0})
+    events = _record_events(w, monkeypatch)
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    expected = [(k, c, anchor - 2.0 + 2 * k + offset) for k in range(4) for c, offset in (("A", 0.0), ("B", 1.0))]
+    assert _planes(w) == _frames(expected)
+    moves = [e[1] for e in events if e[0] == "move"]
+    assert moves == pytest.approx([anchor] + [z for _, _, z in expected] + [anchor])
+
+
+@pytest.mark.parametrize("trigger_mode", [TriggerMode.HARDWARE, TriggerMode.SOFTWARE])
+@pytest.mark.parametrize("piezo_scope", [True, False])
+def test_the_first_frame_after_a_lock_on_settles_even_at_the_anchor(tmp_path, monkeypatch, piezo_scope, trigger_mode):
+    # Range 0..6: plane 0 is the anchor itself, so there is no move to it; the settle still comes first.
+    anchor = 100.0 if piezo_scope else 1000.0
+    w = _worker(tmp_path, piezo_scope=piezo_scope, relative_range=(0.0, 6.0), references=[anchor])
+    w.liveController.trigger_mode = trigger_mode
+    events = _record_events(w, monkeypatch)
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    assert _planes(w)[:2] == _frames([(0, "A", anchor), (0, "B", anchor)])
+    af = events.index(("af",))
+    first_frame = events.index(("frame",))
+    assert events[af + 1 : first_frame] == [("move", pytest.approx(anchor)), ("sleep", _Z_SETTLE_S)]
+
+
+def test_z_first_relocked_stack_starting_at_its_anchor_settles_without_a_move(tmp_path, monkeypatch):
+    # Range 0..2: A images 100, 102 from the first anchor, returns to 100 and re-locks at 103; B's plane 0 is 103.
+    w = _worker(tmp_path, order="Z FIRST", relative_range=(0.0, 2.0), references=[100.0, 103.0])
+    w.laser_af_per_stack = True
+    w.liveController.trigger_mode = TriggerMode.HARDWARE
+    events = _record_events(w, monkeypatch)
+
+    w.acquire_at_position("A1", str(tmp_path), 0)
+
+    assert _planes(w) == _frames([(0, "A", 100.0), (1, "A", 102.0), (0, "B", 103.0), (1, "B", 105.0)])
+    second_af = [i for i, e in enumerate(events) if e == ("af",)][1]
+    frames = [i for i, e in enumerate(events) if e == ("frame",)]
+    assert events[second_af + 1 : frames[2]] == [("move", pytest.approx(103.0)), ("sleep", _Z_SETTLE_S)]
+    assert _moves_and_sleeps(events[frames[2] :]) == [("move", pytest.approx(105.0)), ("move", pytest.approx(103.0))]
+
+
+def test_the_next_time_point_moves_to_the_recorded_anchor_even_where_the_last_fov_ended(tmp_path):
+    # A stepper FOV ends at its anchor (1200 µm); the next time point's z-range move takes the stage to 1000, so
+    # the move back to the recorded anchor, 1200 again, must not be taken for one the stage already holds.
+    w = _worker(tmp_path, piezo_scope=False, references=[1200.0], nt=2)
+    w.acquire_at_position("A1", str(tmp_path), 0)
+    assert w.stage.z_mm == pytest.approx(1.2)
+
+    w.time_point = 1
+    w.initialize_z_stack()
+
+    assert w.stage.moves[-2:] == [("z_to", pytest.approx(1.0)), ("z_to", pytest.approx(1.2))]
+    assert w.stage.z_mm == pytest.approx(1.2)
+
+
+# --- The return to the anchor never hides the error that ended the FOV ---------------------------------------
+
+
+class _PiezoBreaksWhenArmed(_FakePiezo):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.armed = False
+
+    def move_to(self, um):
+        if self.armed:
+            self.moves.append(um)
+            raise RuntimeError("piezo gone")
+        super().move_to(um)
+
+
+def test_a_failed_return_to_the_anchor_does_not_replace_the_error_in_flight(tmp_path):
+    w = _worker(tmp_path, references=[100.0], piezo=_PiezoBreaksWhenArmed())
+
+    def camera_times_out(*args, **kwargs):
+        w.piezo.armed = True  # the return to the anchor will fail too
+        raise TimeoutError("camera frame timed out")
+
+    w.acquire_camera_image = camera_times_out
+
+    with pytest.raises(TimeoutError, match="camera frame timed out"):
+        w.acquire_at_position("A1", str(tmp_path), 0)
+
+    assert w.piezo.moves[-1] == pytest.approx(100.0)  # the return to the anchor was tried
+    errors = [c for c in w._log.error.call_args_list if c.args and "anchor" in str(c.args[0])]
+    assert len(errors) == 1
+    assert "100.000" in str(errors[0].args[0])
+    assert errors[0].kwargs.get("exc_info")
+
+
+def test_a_failed_return_to_the_anchor_raises_when_nothing_else_failed(tmp_path):
+    w = _worker(tmp_path, references=[100.0], piezo=_PiezoBreaksWhenArmed())
+    real = w.acquire_camera_image
+
+    def arm_after_the_last_frame(*args, **kwargs):
+        real(*args, **kwargs)
+        if len(w.frames) == 8:
+            w.piezo.armed = True
+
+    w.acquire_camera_image = arm_after_the_last_frame
+
+    with pytest.raises(RuntimeError, match="piezo gone"):  # Z is in an unknown place: the FOV fails
+        w.acquire_at_position("A1", str(tmp_path), 0)
+    assert len(w.frames) == 8
 
 
 # --- Skip notices: the skipped frames reach the Zarr and OME-TIFF writers ------------------------------------
@@ -1129,3 +1276,22 @@ def test_skips_are_counted_for_the_timepoint_summary(tmp_path):
 
     stats = [c.args[0] for c in w.callbacks.signal_slack_timepoint_notification.call_args_list]
     assert [(s.relative_frames_skipped, s.relative_fovs_with_skips) for s in stats] == [(6, 2), (0, 0)]
+
+
+def test_each_time_point_logs_its_skips_without_slack(tmp_path):
+    # As above, with no Slack notifier: time point 0 skips 6 frames in 2 FOVs, time point 1 none.
+    w = _worker(tmp_path, references=[1.0, 100.0, 299.0, 100.0, 100.0, 100.0], nt=2)
+    _scan(w, [(1.0, 2.0), (1.5, 2.0), (2.0, 2.0)])
+    w._slack_notifier = None
+
+    summaries = []
+    for t in range(2):
+        w.time_point = t
+        w._log.reset_mock()
+        w.run_single_time_point()
+        summaries.append([m for m in _warnings(w) if m.startswith("time point")])
+
+    assert len(summaries[0]) == 1
+    assert "time point 1" in summaries[0][0]
+    assert "6 frame(s)" in summaries[0][0] and "2 FOV(s)" in summaries[0][0]
+    assert summaries[1] == []  # nothing skipped: no summary line

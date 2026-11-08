@@ -68,6 +68,9 @@ RELATIVE_FIRST_FOV_LOCK_ON_FAILED_MESSAGE = (
     "or measure a relative z once."
 )
 
+# A relative frame whose target is within this of where the actuator already is takes no move (and no move settle).
+RELATIVE_SAME_TARGET_TOLERANCE_UM = 1e-4
+
 
 def save_job_classes_for_format(file_saving_option: FileSavingOption) -> List[Type[Job]]:
     """The saving job classes that implement the given file saving format."""
@@ -213,6 +216,10 @@ class MultiPointWorker:
         self.laser_af_relative_range_um = acquisition_parameters.laser_af_relative_range_um
         self._relative_mode = self.laser_af_relative_range_um is not None
         self._anchor_um = None  # the actuator position (µm) the current FOV's planes are relative to
+        # Where the current FOV's lock-on or last relative move left the actuator (µm), None when unknown: outside a
+        # FOV, during a lock-on, after a failed move. The commanded target, not a readback (a stage reads back in
+        # microsteps), so a frame at the same target as the last one (equal channel offsets) takes no move.
+        self._actuator_at_um: Optional[float] = None
         self._require_first_lock_on = False  # set per time point by initialize_z_stack
         self._relative_offsets_um: List[float] = []  # the current FOV's channel offsets, per selected channel
         self._out_of_travel_by_k: Dict[int, List[str]] = {}  # the current FOV's skipped channels per plane
@@ -817,6 +824,13 @@ class MultiPointWorker:
             # finished region scan
             self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
 
+            if self._relative_frames_skipped > 0:
+                # The run summary in the log, with or without Slack (the per-FOV warnings list each frame).
+                self._log.warning(
+                    f"time point {self.time_point + 1}: relative z-stack skipped {self._relative_frames_skipped} "
+                    f"frame(s) outside the travel, not clamped, in {self._relative_fovs_with_skips} FOV(s)"
+                )
+
             # Send Slack timepoint notification via callback (allows main thread to capture screenshot)
             if self._slack_notifier is not None:
                 try:
@@ -874,6 +888,7 @@ class MultiPointWorker:
             record = self.laser_auto_focus_controller.valid_lock_on()
             if record is not None:
                 self._move_actuator_to_um(record.anchor_um)
+                self._actuator_at_um = None  # tracked inside a FOV only: the move to the first FOV may move Z
                 self._anchor_um = record.anchor_um
             self._require_first_lock_on = record is None
 
@@ -1324,11 +1339,13 @@ class MultiPointWorker:
 
         Lock on (Z restored to where it was on any failure); with no valid lock-on record a failed first lock-on
         stops the run. Then every frame is an absolute move to anchor + z_min + k * dz + channel offset; a frame
-        outside the actuator's travel is skipped and reported, never clamped. Z ends at the anchor.
+        outside the actuator's travel is skipped and reported, never clamped. Z ends at the anchor: a failed return
+        raises, unless another error is already ending the FOV (that one propagates, the failed return is logged).
         """
         af_succeeded = self._relative_lock_on(region_id, fov)
         self._out_of_travel_by_k = {}
         self._skipped_frames = []
+        in_flight = None
         try:
             if not af_succeeded and self._require_first_lock_on:
                 self._log.error(RELATIVE_FIRST_FOV_LOCK_ON_FAILED_MESSAGE)
@@ -1354,11 +1371,26 @@ class MultiPointWorker:
             self._report_skipped_frames(region_id, current_path, fov, skipped)
             self._acquire_relative_channel_first(region_id, current_path, fov, targets)
             self._timepoint_fov_count += 1
+        except BaseException as e:
+            in_flight = e
+            raise
         finally:
             if self._skipped_frames:
                 self._relative_fovs_with_skips += 1
             self._warn_skipped_frames(region_id, fov)
-            self._move_actuator_to_um(self._anchor_um)
+            try:
+                self._move_actuator_to_um(self._anchor_um)
+            except Exception:
+                if in_flight is None:
+                    raise  # Z is in an unknown place: the FOV fails
+                # Never replace the error that ended the FOV with the failed return.
+                self._log.error(
+                    f"region '{region_id}' fov {fov}: returning Z to the anchor {self._anchor_um:.3f} µm failed "
+                    f"after {type(in_flight).__name__}: {in_flight}",
+                    exc_info=True,
+                )
+            finally:
+                self._actuator_at_um = None  # outside a FOV the actuator position is not tracked
 
     def _acquire_relative_channel_first(self, region_id, current_path, fov, targets) -> None:
         """For each plane k, every channel whose target at k is inside the travel; one coordinates row per k."""
@@ -1486,6 +1518,7 @@ class MultiPointWorker:
         lock-on and lifts the first-FOV requirement. Counted per FOV, or per stack when channel_name names the
         channel re-locking before its stack.
         """
+        self._actuator_at_um = None  # the AF moves the actuator itself; a failed restore leaves it unknown
         locked = self._laser_af_anchor(region_id, fov, restore_on_failure=True, channel_name=channel_name)
         if channel_name is None:
             if locked:
@@ -1497,6 +1530,7 @@ class MultiPointWorker:
         else:
             self._laser_af_per_stack_failures += 1
         self._anchor_um = self._actuator_position_um()
+        self._actuator_at_um = self._anchor_um
         where = f"region '{region_id}' fov {fov}" + (f" before the '{channel_name}' stack" if channel_name else "")
         if locked:
             self.laser_auto_focus_controller.record_lock_on()
@@ -1568,16 +1602,27 @@ class MultiPointWorker:
         after_lock_on: the move to the first frame after a lock-on (successful or rolled back). It also settles the
         stabilization time on a piezo, in both trigger modes, as prepare_z_stack does after the per-FOV AF; a
         stage move settles that anyway. Later steps of the stack keep the per-mode settle only.
+
+        A target the actuator already holds (_actuator_at_um, within RELATIVE_SAME_TARGET_TOLERANCE_UM: the next
+        channel at the same plane and offset, or a plane at the anchor) takes no move and no move settle; the
+        post-lock-on settle still runs.
         """
+        if self._actuator_at_um is not None and abs(um - self._actuator_at_um) <= RELATIVE_SAME_TARGET_TOLERANCE_UM:
+            if after_lock_on:
+                self._sleep(squid.stage.utils.z_stabilization_time_s())
+            return
+        self._actuator_at_um = None  # unknown until the move succeeds
         if self._actuator_is_piezo():
             self.piezo.move_to(um)
             self.z_piezo_um = um  # only after the move succeeded
+            self._actuator_at_um = um
             if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
             if after_lock_on:
                 self._sleep(squid.stage.utils.z_stabilization_time_s())
         else:
             self.stage.move_z_to(um / 1000)
+            self._actuator_at_um = um
             self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def _report_skipped_frames(self, region_id, current_path, fov, skipped: List[Tuple[int, int]]) -> None:
