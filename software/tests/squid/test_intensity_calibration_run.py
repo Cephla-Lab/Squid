@@ -158,6 +158,7 @@ def _run(
         meter_info=meter.info,
         measured_in="widefield",
         sensor_limit_mw=sensor_limit_mw,
+        software_commit="test",
         settle_s=0.0,
         hold_s=hold_s,
         cancelled=cancelled,
@@ -447,6 +448,25 @@ def test_save_refuses_when_the_channel_changed_since_the_run(repo):
     assert not (session.calibrations_dir() / "405nm_D1.csv").exists()
 
 
+def test_save_refuses_two_channels_that_would_share_a_file(tmp_path):
+    # review 6: two channels on one port at one wavelength are both saved as <λ>nm_<port>.csv; in one Save the second
+    # channel's backup overwrote the first's, and the calibration they replaced was lost
+    (tmp_path / "machine_configs").mkdir()
+    (tmp_path / "machine_configs" / "illumination_channel_config.yaml").write_text(
+        YAML + "  - name: Fluorescence 405 nm Ex twin\n    type: epi_illumination\n    controller_port: D1\n"
+        "    wavelength_nm: 405\n"
+    )
+    session = _session(ConfigRepository(base_path=tmp_path))
+    first = datetime.datetime(2026, 10, 8, 14, 30, 12)
+    [(path, _)] = session.save([_calibrated(session)], now=first)
+    previous = path.read_bytes()
+    twins = [t for t in session.targets() if t.wavelength_nm == 405]
+    results = session.run(twins, measured_in="n/a", sensor_limit_mw=500.0)
+    with pytest.raises(ValueError, match="Fluorescence 405 nm Ex twin"):
+        session.save([r.calibration for r in results.values()], now=first + datetime.timedelta(minutes=1))
+    assert path.read_bytes() == previous and not (path.parent / "backup").exists()
+
+
 class _ClosingFails:
     info = None
 
@@ -488,6 +508,7 @@ class OneShotWatchdog(FakeMicrocontroller):
         self.fed_at = 0.0
         self.unprotected_on = 0
         self.stall_when = None  # a predicate on the last command: the wait for it to complete stalls 6 s
+        self.stall_raises = False  # the stalled wait then raises TimeoutError, as the real one does without an ack
 
     def _fed(self):
         self.fed_at = self.time.clock()
@@ -496,6 +517,8 @@ class OneShotWatchdog(FakeMicrocontroller):
         super().wait_till_operation_is_completed(timeout_limit_s)
         if self.stall_when is not None and self.calls and self.stall_when(self.calls[-1]):
             self.stall(6.0)
+            if self.stall_raises:
+                raise TimeoutError("Current mcu operation timed out after 5 [s]")
 
     def set_watchdog_timeout(self, timeout_s):
         super().set_watchdog_timeout(timeout_s)
@@ -824,6 +847,51 @@ def test_a_stall_while_setting_up_the_test_beam_keeps_it_off(repo):
     assert mcu.calls[-1] == ("start_heartbeat", 2.5)  # the heartbeat is back
 
 
+class _TimesOutOnceWhileArming(OneShotWatchdog):
+    """The controller does not acknowledge the first arming in time: the wait for it raises, as the real one does."""
+
+    def __init__(self, time):
+        super().__init__(time)
+        self.timed_out = False
+
+    def wait_till_operation_is_completed(self, timeout_limit_s=5):
+        super().wait_till_operation_is_completed(timeout_limit_s)
+        if not self.timed_out and self.calls[-1][0] == "set_watchdog_timeout":
+            self.timed_out = True
+            raise TimeoutError("Current mcu operation timed out")
+
+
+def test_a_timeout_while_arming_the_test_beam_gives_the_watchdog_back(repo):
+    # review 6: the test beam armed the watchdog outside its cleanup, so a timeout there left the heartbeat stopped
+    # for good - the one-shot watchdog then fired once and live view ran without it
+    time = FakeTime()
+    mcu = _TimesOutOnceWhileArming(time)
+    session = _owned_session(repo, time, mcu)
+    with pytest.raises(TimeoutError):
+        session.test_beam_on(session.targets()[0], 10.0)
+    assert session.source_state() == (False, 0.0)
+    assert mcu.armed and mcu.calls[-1] == ("start_heartbeat", 2.5)
+    mcu.turn_on_illumination()  # live view, after the failed test beam
+    assert mcu.unprotected_on == 0
+
+
+def test_the_software_commit_is_read_before_the_session_takes_the_watchdog(repo, monkeypatch):
+    # review 6: git ran (timeout 5 s, the watchdog's period) between the sweep and the checks, with nothing sent to
+    # the controller meanwhile; a slow git - cold cache, antivirus - missed the deadline and threw the sweep away
+    time = FakeTime()
+    mcu = OneShotWatchdog(time)
+    session = _owned_session(repo, time, mcu)
+
+    def slow_git():
+        time.sleep(6.0)
+        return "abcd1234"
+
+    monkeypatch.setattr("squid.intensity_calibration_run.software_commit", slow_git)
+    result = session.run([session.targets()[0]], measured_in="n/a", sensor_limit_mw=500.0)["Fluorescence 405 nm Ex"]
+    assert isinstance(result, ChannelResult), result
+    assert result.calibration.software_commit == "abcd1234"
+
+
 def test_save_refuses_when_the_port_was_remapped_since_the_run(repo):
     session = _session(repo)
     calibration = _calibrated(session)
@@ -849,27 +917,39 @@ def _stall_arms(indices):
     return stall_when
 
 
-def test_a_stall_while_handing_the_watchdog_back_arms_it_again(repo):
+@pytest.mark.parametrize("no_ack", [False, True], ids=["late ack", "no ack"])
+@pytest.mark.parametrize("handed_back_by", ["run", "test beam"])
+def test_a_stall_while_handing_the_watchdog_back_arms_it_again(repo, handed_back_by, no_ack):
     # review 5: the hand-back armed the watchdog and discarded the deadline; a 6 s stall in that wait let it fire and
-    # disarm, the heartbeat came back, and a later live-view beam came on unprotected
+    # disarm, the heartbeat came back, and a later live-view beam came on unprotected.
+    # review 7: when no acknowledgement comes the real wait raises TimeoutError, which skipped the re-arming
     time = FakeTime()
     mcu = OneShotWatchdog(time)
     session = _owned_session(repo, time, mcu)
-    mcu.stall_when = _stall_arms({1})  # the channel's arming is fine; the hand-back's first one stalls
-    result = session.run([session.targets()[0]], measured_in="n/a", sensor_limit_mw=500.0)["Fluorescence 405 nm Ex"]
-    assert isinstance(result, ChannelResult)  # the measurement itself is unaffected
+    # the channel's (or test beam's) arming is fine; the hand-back's first one stalls past the watchdog
+    mcu.stall_when, mcu.stall_raises = _stall_arms({1}), no_ack
+    target = session.targets()[0]
+    if handed_back_by == "run":
+        result = session.run([target], measured_in="n/a", sensor_limit_mw=500.0)["Fluorescence 405 nm Ex"]
+        assert isinstance(result, ChannelResult)  # the measurement itself is unaffected
+    else:
+        session.test_beam_on(target, 10.0)
+        session.test_beam_off(target)
     assert mcu.armed and mcu.calls[-1] == ("start_heartbeat", 2.5)
     mcu.turn_on_illumination()  # live view, after the hand-back
     assert mcu.unprotected_on == 0
 
 
-def test_a_watchdog_that_cannot_be_armed_again_fails_the_hand_back_loudly(repo):
+@pytest.mark.parametrize("no_ack", [False, True], ids=["late ack", "no ack"])
+def test_a_watchdog_that_cannot_be_armed_again_fails_the_hand_back_loudly(repo, no_ack):
     time = FakeTime()
     mcu = OneShotWatchdog(time)
     session = _owned_session(repo, time, mcu)
-    mcu.stall_when = _stall_arms(range(1, 100))  # every arming after the channel's stalls past the watchdog
-    with pytest.raises(WatchdogDeadlineMissed, match="live view"):
+    # every arming after the channel's stalls past the watchdog
+    mcu.stall_when, mcu.stall_raises = _stall_arms(range(1, 100)), no_ack
+    with pytest.raises(WatchdogDeadlineMissed, match="restart Squid"):
         session.run([session.targets()[0]], measured_in="n/a", sensor_limit_mw=500.0)
+    assert not mcu.armed
     assert mcu.calls[-1] == ("start_heartbeat", 2.5)  # the heartbeat comes back regardless
 
 

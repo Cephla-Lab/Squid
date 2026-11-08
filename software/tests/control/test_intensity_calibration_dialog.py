@@ -129,6 +129,17 @@ def test_the_run_shows_its_own_readings_and_draws_the_curve_as_it_goes(qtbot, se
     assert live and live[0] > 100  # every reading with the light on, the sweep's 101 levels among them
 
 
+def test_a_cancel_after_the_run_finished_does_not_stop_the_next_run(qtbot, session, answers):
+    # review 6: the cancel flag was cleared when the run's result arrived, but Cancel stays enabled until the thread
+    # ends; a click in between left the flag set, and the next Run stopped before its first channel ("0 of 0")
+    dialog = _dialog(qtbot, session)
+    _run_405_only(qtbot, dialog)
+    session.cancel()  # what that late click leaves behind
+    dialog.button_run.click()
+    qtbot.waitUntil(lambda: dialog.worker is None, timeout=120000)
+    assert isinstance(dialog.results.get("Fluorescence 405 nm Ex"), ChannelResult), dialog.label_result.text()
+
+
 def test_failed_verification_asks_before_saving(qtbot, session, answers):
     dialog = _dialog(qtbot, session)
     _run_405_only(qtbot, dialog)
@@ -219,6 +230,29 @@ def test_test_beam_over_the_sensor_limit_turns_off(qtbot, session, answers):
     assert not dialog.button_test_beam.isChecked() and "above the sensor limit" in dialog.label_result.text()
 
 
+def test_test_beam_needs_a_sensor_limit(qtbot, session, answers):
+    # review 6: a sensor limit of 0 - what Connect leaves when the meter does not report one - switched the test
+    # beam's limit check off; Run refused to start, but the test beam came on
+    dialog = _dialog(qtbot, session)
+    dialog.button_connect.click()
+    dialog.table.selectRow(0)
+    dialog.spin_sensor_limit.setValue(0)
+    dialog.button_test_beam.setChecked(True)
+    assert not dialog.button_test_beam.isChecked() and session.source_state() == (False, 0.0)
+    assert "sensor limit" in dialog.label_result.text()
+
+
+def test_test_beam_turns_off_when_the_sensor_limit_is_cleared(qtbot, session, answers):
+    dialog = _dialog(qtbot, session)
+    dialog.button_connect.click()
+    dialog.table.selectRow(0)
+    dialog.button_test_beam.setChecked(True)
+    dialog.spin_sensor_limit.setValue(0)
+    dialog._update_reading()
+    assert not dialog.button_test_beam.isChecked() and session.source_state() == (False, 0.0)
+    assert "sensor limit" in dialog.label_result.text()
+
+
 def test_software_light_source_has_nothing_to_calibrate(qtbot, repo, answers):
     session = CalibrationSession(get_test_microcontroller(), repo, dac_driven=False)
     dialog = _dialog(qtbot, session)
@@ -258,6 +292,19 @@ def test_a_failed_reading_turns_the_test_beam_off(qtbot, session, answers, error
     dialog._update_reading()
     assert not dialog.button_test_beam.isChecked() and session.source_state() == (False, 0.0)
     assert "Test beam turned off" in dialog.label_result.text()
+
+
+def test_a_failed_watchdog_feed_turns_the_test_beam_off(qtbot, session, answers):
+    # review 6: the reading timer fed the watchdog with no try/except; Qt swallows a timer callback's exception, so a
+    # failed feed went unlogged and the beam stayed on with the watchdog maybe unfed
+    dialog = _dialog(qtbot, session)
+    dialog.button_connect.click()
+    dialog.table.selectRow(0)
+    dialog.button_test_beam.setChecked(True)
+    session.feed_watchdog = MagicMock(side_effect=OSError("serial write failed"))
+    dialog._update_reading()
+    assert not dialog.button_test_beam.isChecked() and session.source_state() == (False, 0.0)
+    assert "serial write failed" in dialog.label_result.text()
 
 
 def test_a_dark_test_beam_says_to_raise_the_level(qtbot, session, answers):

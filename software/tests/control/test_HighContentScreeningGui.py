@@ -6,6 +6,7 @@ import control._def
 
 import control.gui_hcs
 import control.widgets
+from qtpy.QtCore import QCoreApplication, QEvent
 from qtpy.QtWidgets import QMessageBox
 
 import control.microscope
@@ -37,6 +38,23 @@ def test_create_simulated_hcs_with_or_without_piezo(qtbot, confirm_exit_yes):
     scope_without = control.microscope.Microscope.build_from_global_config(True)
     without_piezo = control.gui_hcs.HighContentScreeningGui(microscope=scope_without, is_simulation=True)
     qtbot.add_widget(without_piezo)
+
+
+def test_destroying_the_gui_neither_crashes_nor_leaves_timers_firing_at_deleted_widgets(qtbot, confirm_exit_yes):
+    """Regression: FlexibleMultiPointWidget added one QSpacerItem to several layouts, so the
+    layouts freed it once each (a segfault when Qt ran the window's DeferredDelete), and
+    ImageDisplayWindow's unparented update timer kept firing at the deleted QLabels."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+
+    win.close()
+    win.deleteLater()
+    # Run the pending delete now, rather than whenever a later event loop happens to service it.
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    # The update timer fires every 100 ms; a RuntimeError ("wrapped C/C++ object ... has been
+    # deleted") in its slot is reported by pytest-qt as a failure of this test.
+    qtbot.wait(500)
 
 
 def test_tab_change_to_simple_recording_does_not_raise(qtbot, monkeypatch, confirm_exit_yes):
@@ -333,3 +351,49 @@ def test_there_is_one_utils_menu_with_every_utility(qtbot, monkeypatch, confirm_
     assert len(menus) == 1
     items = [action.text() for action in menus[0].menu().actions()]
     assert items[:3] == ["Stage Utils", "Reset Objective Turret", "Workflow Runner..."]
+
+
+@pytest.mark.parametrize("start_on_piezo", [False, True])
+def test_wellplate_yaml_with_a_piezo_range_reloads_set_range_and_reaches_the_controller(
+    qtbot, monkeypatch, confirm_exit_yes, start_on_piezo
+):
+    from control.acquisition_yaml_loader import AcquisitionYAMLData
+
+    monkeypatch.setattr(control._def, "HAS_OBJECTIVE_PIEZO", True)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    w = win.wellplateMultiPointWidget
+    w.checkbox_usePiezo.setChecked(start_on_piezo)
+
+    w._apply_yaml_settings(
+        AcquisitionYAMLData(
+            widget_type="wellplate", nz=4, delta_z_um=2.0, use_piezo=True, piezo_z_range_um=(20.0, 26.0)
+        )
+    )
+
+    assert w.combobox_z_mode.currentText() == "Set Range"
+    assert (w.entry_minZ.value(), w.entry_maxZ.value(), w.entry_NZ.value()) == (20.0, 26.0, 4)
+    assert w.entry_maxZ.maximum() == scope.addons.piezo_stage.range_um
+    assert not w.checkbox_withReflectionAutofocus.isEnabled()
+
+    w.configure_controller_from_ui()  # what Start runs
+    assert w.multipointController.use_piezo
+    assert tuple(w.multipointController.piezo_z_range_um) == (20.0, 26.0)
+
+
+def test_wellplate_yaml_moving_the_stack_to_the_stepper_gives_the_entries_the_stepper_limits(
+    qtbot, monkeypatch, confirm_exit_yes
+):
+    from control.acquisition_yaml_loader import AcquisitionYAMLData
+
+    monkeypatch.setattr(control._def, "HAS_OBJECTIVE_PIEZO", True)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    w = win.wellplateMultiPointWidget
+    w.checkbox_usePiezo.setChecked(True)
+
+    w._apply_yaml_settings(AcquisitionYAMLData(widget_type="wellplate", nz=4, delta_z_um=2.0, use_piezo=False))
+
+    assert w.entry_minZ.maximum() == control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000

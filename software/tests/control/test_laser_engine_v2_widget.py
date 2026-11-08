@@ -1,12 +1,12 @@
 import pytest
 import yaml
-from qtpy.QtWidgets import QApplication, QComboBox, QMessageBox, QTabWidget
+from qtpy.QtWidgets import QApplication, QMessageBox, QTabWidget
 
 from control._def import ILLUMINATION_CODE
 from control.laser_engine_v2 import LaserEngineV2
 from control.laser_engine_v2_link import EngineLink
 from control.laser_engine_v2_sim import FakeEngine, FakeSource, build_simulated_engine
-from control.laser_engine_v2_widget import SHUTTER_NOTE, LaserEngineV2Widget
+from control.laser_engine_v2_widget import SHUTTER_MODE_HINTS, LaserEngineV2Widget
 
 DF_MAP = {  # a DF machine's illumination port map: one wavelength per engine line
     405: ILLUMINATION_CODE.ILLUMINATION_D1,
@@ -139,8 +139,10 @@ def test_widget_560_box_sets_and_saves_the_laser_power(qtbot):
     saved = []
     engine, widget = _widget(qtbot, saved=saved)
     assert widget.source_box is not None and widget.source_box.title() == "560 nm laser"
-    assert not widget.findChildren(QComboBox)  # no "Shutter with AOM" choice any more
-    assert widget.shutter_note.text() == SHUTTER_NOTE and "safety only" in SHUTTER_NOTE
+    combo = widget.shutter_combo
+    assert [combo.itemText(i) for i in range(combo.count())] == ["On use", "Always open"]
+    assert combo.currentData() == "on_use" and widget.shutter_row.isVisibleTo(widget)  # the default
+    assert widget.shutter_note.text() == SHUTTER_MODE_HINTS["on_use"]
     assert widget.source_limits_label.text() == "200 – 1000 mW"
     spin = widget.power_spin
     assert (spin.minimum(), spin.maximum(), spin.value()) == (200.0, 1000.0, 200.0)  # unset: the minimum
@@ -210,7 +212,13 @@ def test_widget_saves_both_560_settings_to_the_cache(qtbot, cache_file):
     widget.power_spin.setValue(900.0)
     widget.power_set_btn.click()
     widget.idle_off_spin.setValue(45)
-    assert yaml.safe_load(cache_file.read_text()) == {"power_560_mw": 900.0, "idle_off_560_min": 45.0}
+    widget.shutter_combo.setCurrentIndex(widget.shutter_combo.findData("always_open"))
+    assert yaml.safe_load(cache_file.read_text()) == {
+        "power_560_mw": 900.0,
+        "idle_off_560_min": 45.0,
+        "shutter_mode_560": "always_open",
+    }
+    assert real.shutter_mode == "always_open"
     assert real.source_idle_off_s == 45 * 60
     widget.idle_off_spin.setValue(0)  # 24 h
     assert yaml.safe_load(cache_file.read_text())["idle_off_560_min"] == 0.0
@@ -225,9 +233,12 @@ def test_widget_never_saves_a_simulated_engine(qtbot, cache_file):
     widget.power_spin.setValue(900.0)
     widget.power_set_btn.click()
     widget.idle_off_spin.setValue(10)
+    widget.shutter_combo.setCurrentIndex(widget.shutter_combo.findData("always_open"))
     assert sim.source_power_setpoint_mw == 900.0 and sim.source_idle_off_s == 10 * 60  # this session only
+    assert sim.shutter_mode == "always_open"
     assert not cache_file.exists()
-    assert "560 nm idle-off not saved (see the log): this session only" in widget.notice_label.text()
+    assert "560 nm shutter mode not saved (see the log): this session only" in widget.notice_label.text()
+    assert "560 nm idle-off not saved (see the log)" in widget.notice_label.toolTip()
     assert "560 nm laser power not saved (see the log)" in widget.notice_label.toolTip()
     sim.close()
 
@@ -308,4 +319,80 @@ def test_widget_idle_off_applies_a_typed_value_only_when_committed(qtbot):
     assert idle_saved == []
     widget.idle_off_spin.interpretText()  # Enter / focus-out
     assert idle_saved == [120] and engine.source_idle_off_s == 120 * 60
+    engine.close()
+
+
+def test_widget_shutter_mode_applies_at_once_and_is_saved(qtbot):
+    saved = []
+    engine, widget = _widget(qtbot)
+    widget._save_shutter_mode = lambda mode: saved.append(mode) or True
+    engine.wake_up("L3")
+    for _ in range(5):
+        engine.source_step()
+    engine.poll_once()
+    fake = engine.sim_engine
+    assert not fake.shut_open  # On use, nothing images with the 560
+    widget.shutter_combo.setCurrentIndex(widget.shutter_combo.findData("always_open"))
+    assert fake.shut_open and saved == ["always_open"]  # at once, not at the next poll
+    assert widget.shutter_note.text() == SHUTTER_MODE_HINTS["always_open"]
+    widget.shutter_combo.setCurrentIndex(widget.shutter_combo.findData("on_use"))
+    assert not fake.shut_open and saved == ["always_open", "on_use"]
+    engine.close()
+
+
+def test_widget_shutter_mode_refused_goes_back_and_is_not_saved(qtbot, monkeypatch):
+    saved = []
+    engine, widget = _widget(qtbot)
+    widget._save_shutter_mode = lambda mode: saved.append(mode) or True
+
+    def refuse(mode):
+        raise RuntimeError("laser engine connection lost")
+
+    monkeypatch.setattr(engine, "set_shutter_mode", refuse)
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: shown.append(a[2]))
+    widget.shutter_combo.setCurrentIndex(widget.shutter_combo.findData("always_open"))
+    assert shown == ["laser engine connection lost"]
+    assert widget.shutter_combo.currentData() == "on_use" and engine.shutter_mode == "on_use" and saved == []
+    engine.close()
+
+
+def _ready_widget(qtbot):
+    engine, widget = _widget(qtbot)
+    widget._save_shutter_mode = lambda mode: True
+    engine.wake_up("L3")
+    for _ in range(5):
+        engine.source_step()
+    engine.poll_once()  # the tab updates on every status
+    return engine, widget
+
+
+def test_widget_shutter_button_opens_and_closes_by_hand(qtbot):
+    engine, widget = _ready_widget(qtbot)
+    fake, btn = engine.sim_engine, widget.shutter_btn
+    assert btn.isVisibleTo(widget) and btn.isEnabled() and btn.text() == "Open shutter" and not fake.shut_open
+    btn.click()
+    assert fake.shut_open and btn.text() == "Close shutter" and btn.isEnabled()
+    btn.click()
+    assert not fake.shut_open and btn.text() == "Open shutter"
+    engine.close()
+
+
+def test_widget_shutter_button_while_the_560_is_used_or_not_ready_or_always_open(qtbot):
+    engine, widget = _ready_widget(qtbot)
+    fake, btn = engine.sim_engine, widget.shutter_btn
+    btn.click()  # open by hand ...
+    live = engine.use("live", [engine.light_source.channel_mappings[561]])  # ... then live takes over
+    engine.poll_once()
+    assert btn.text() == "Shutter in use" and not btn.isEnabled() and "live" in btn.toolTip() and fake.shut_open
+    live.release()
+    engine.poll_once()
+    assert btn.text() == "Open shutter" and btn.isEnabled() and not fake.shut_open
+    engine.put_to_sleep("L3")
+    engine.poll_once()
+    assert not btn.isEnabled() and "the 560 is not ready" in btn.toolTip()
+    widget.shutter_combo.setCurrentIndex(widget.shutter_combo.findData("always_open"))
+    assert not btn.isVisibleTo(widget)  # the mode keeps it open whenever the 560 is ready
+    widget.shutter_combo.setCurrentIndex(widget.shutter_combo.findData("on_use"))
+    assert btn.isVisibleTo(widget)
     engine.close()

@@ -432,6 +432,7 @@ def calibrate_channel(
     meter_info: PowerMeterInfo,
     measured_in: str,
     sensor_limit_mw: float,
+    software_commit: str,
     settle_s: Optional[float] = None,
     hold_s: float = HOLD_S,
     rest_s: float = REST_BEFORE_CHECKS_S,
@@ -449,7 +450,8 @@ def calibrate_channel(
     `output` follows the output protocol (MicrocontrollerDacOutput, or a laser engine line). Raises
     CalibrationCancelled, SensorLimitExceeded, WatchdogDeadlineMissed, PowerMeterError, CalibrationError or
     LightSourceStopped. However it ends, all illumination is off and the drive at 0 afterwards. `deadline` is the one
-    `output` sends through.
+    `output` sends through. `software_commit` is read by the caller beforehand: git can take seconds, and nothing
+    reaches the watchdog then.
     """
     if meter_info.wavelength_range_nm is not None:
         low, high = meter_info.wavelength_range_nm
@@ -516,7 +518,7 @@ def calibrate_channel(
                 controller_port=target.controller_port,
                 wavelength_nm=target.wavelength_nm,
                 calibrated_at=(now or datetime.datetime.now()).isoformat(timespec="seconds"),
-                software_commit=software_commit(),
+                software_commit=software_commit,
                 meter=meter_info.meter,
                 sensor=meter_info.sensor,
                 factor=factor,
@@ -864,28 +866,30 @@ class CalibrationSession:
         """Give the watchdog back to the background heartbeat, re-armed first: the firmware's watchdog is one-shot
         (it disables itself after turning the light off), so if it fired while this session owned it - the code
         driving the light stopped - it would otherwise stay off for the rest of the session. A heartbeat only feeds
-        it: if the arming's own wait outlasted it, it fired and disarmed again, so it is armed again. The heartbeat
-        comes back however this ends; if the watchdog cannot be armed, the hand-back fails loudly."""
+        it: only an arming the controller acknowledged within its period counts. One whose wait outlasted the period
+        (it fired and disarmed again) or that was never acknowledged (the wait raises TimeoutError) is armed again.
+        The heartbeat comes back however this ends; if the watchdog cannot be armed, the hand-back fails loudly."""
         if self._paused_heartbeat_s is None:
             return
         try:
-            armed = False
+            last_error: Optional[Exception] = None
             for _ in range(WATCHDOG_ARM_ATTEMPTS):
                 try:
                     self._arm_watchdog().check()
-                    armed = True
+                    last_error = None
                     break
-                except WatchdogDeadlineMissed:
-                    _log.warning("the illumination watchdog fired while being armed for the hand-back; arming it again")
+                except Exception as e:  # noqa: BLE001 - any failure leaves the arming unconfirmed: arm it again
+                    last_error = e
+                    _log.warning(f"arming the illumination watchdog for the hand-back failed ({e}); arming it again")
         finally:
             interval, self._paused_heartbeat_s = self._paused_heartbeat_s, None
             self.microcontroller.start_heartbeat(interval_s=interval)
-        if not armed:
+        if last_error is not None:
             raise WatchdogDeadlineMissed(
-                f"the controller's illumination watchdog could not be armed again: {WATCHDOG_ARM_ATTEMPTS} armings each "
-                f"took longer than its {control._def.WATCHDOG_TIMEOUT_S:g} s period, so live view would run without "
-                "it; restart Squid"
-            )
+                f"the controller's illumination watchdog could not be armed again: none of {WATCHDOG_ARM_ATTEMPTS} "
+                f"armings was acknowledged within its {control._def.WATCHDOG_TIMEOUT_S:g} s period (the last: "
+                f"{last_error}), so live view would run without it; restart Squid"
+            ) from last_error
 
     def feed_watchdog(self) -> None:
         """Keep the watchdog alive while this session owns it (the background heartbeat is paused)."""
@@ -910,16 +914,14 @@ class CalibrationSession:
         if target.engine_line is not None:
             self.engine.ready_now(target)  # on the GUI thread: no waiting for a line to warm up
         self._pause_heartbeat()
-        output = self._output_for(target, self._arm_watchdog())
         try:
+            # arming is inside: if it fails, the heartbeat must still come back
+            output = self._output_for(target, self._arm_watchdog())
             output.off()
             output.set_percent(target.ceiling_percent * min(max(percent_of_ceiling, 0.0), 100.0) / 100.0)
             output.on()
         except Exception:
-            try:
-                output.safe_off()
-            finally:
-                self._resume_heartbeat()
+            self.test_beam_off(target)
             raise
 
     def test_beam_off(self, target: ChannelTarget) -> None:
@@ -943,6 +945,7 @@ class CalibrationSession:
         if self.meter is None:
             raise PowerMeterError("Connect a power meter first")
         results: Dict[str, Union[ChannelResult, Exception]] = {}
+        commit = software_commit()  # before the watchdog is ours: git can take seconds
         self._pause_heartbeat()
         try:
             for target in targets:
@@ -966,6 +969,7 @@ class CalibrationSession:
                         meter_info=self.meter.info,
                         measured_in=measured_in,
                         sensor_limit_mw=sensor_limit_mw,
+                        software_commit=commit,
                         settle_s=self.settle_s,
                         hold_s=self.hold_s,
                         rest_s=self.rest_s,
@@ -1002,7 +1006,7 @@ class CalibrationSession:
         self, calibrations: Sequence[IntensityCalibration], now: Optional[datetime.datetime] = None
     ) -> List[Tuple[Path, Optional[Path]]]:
         """Back up, write CSV + PNG, and point each channel's intensity_calibration_file at its file. Refuses, writing
-        nothing, if a channel was renamed, removed or re-ported since the run."""
+        nothing, if a channel was renamed, removed or re-ported since the run, or two would share a file."""
         config = self.config_repo.get_illumination_config(for_edit=True)
         channels = {channel.name: channel for channel in (config.channels if config is not None else [])}
         changed = [
@@ -1017,6 +1021,17 @@ class CalibrationSession:
             raise ValueError(
                 f"changed in the illumination config since the run (renamed, removed, re-ported or remapped): "
                 f"{', '.join(changed)}; run the calibration again"
+            )
+        # A file is named after its port and wavelength: two channels sharing both would stage, publish and back up
+        # onto each other, losing the calibration they replace
+        channels_by_file: Dict[str, List[str]] = {}
+        for c in calibrations:
+            channels_by_file.setdefault(c.file_name, []).append(c.channel)
+        shared = [f"{', '.join(names)} ({name})" for name, names in channels_by_file.items() if len(names) > 1]
+        if shared:
+            raise ValueError(
+                f"these channels drive one port at one wavelength, which has one calibration file: {'; '.join(shared)}; "
+                "run the calibration with only one of them checked"
             )
         if self.engine is not None:
             # the engine can change between the run and Save (another engine connected, a new firmware ceiling)
