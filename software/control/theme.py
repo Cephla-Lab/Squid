@@ -186,6 +186,10 @@ _LENGTHS = {
     "button_width": 12,
 }
 
+# With a QSS border, QGroupBox loses Fusion's title reservation; the title then sits in this top margin.
+# In em so it follows the font: 1.2em puts the first child where Fusion does (Segoe UI 8 at 144 dpi: y 43 both).
+_GROUP_TITLE_BAND = "1.2em"
+
 _ICONS = {"arrow_down.svg": "muted", "arrow_up.svg": "muted", "check.svg": "accent_text", "radio.svg": "accent_text"}
 
 # One rule per line where it fits, grouped by widget family. A new role is one added line.
@@ -210,7 +214,8 @@ QToolTip {{ background: {surface}; color: {text}; border: {hair} solid {border};
 
 /* Cards: only widgets carrying role="card", and group boxes. Never a bare QFrame/QWidget border. */
 QWidget[role="card"] {{ background: {surface}; border: {hair} solid {border}; border-bottom-color: {shadow}; border-radius: {card_radius}; }}
-QGroupBox {{ background: {surface}; border: {hair} solid {border}; border-bottom-color: {shadow}; border-radius: {card_radius}; }}
+QGroupBox {{ background: {surface}; border: {hair} solid {border}; border-bottom-color: {shadow}; border-radius: {card_radius}; margin-top: {group_title_band}; }}
+QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: {card_radius}; padding: 0 {tab_gap}; }}
 
 /* Tabs: segmented pills in a tray */
 QTabWidget::pane {{ background: {surface}; border: {hair} solid {border}; border-radius: {card_radius}; }}
@@ -283,11 +288,7 @@ QFrame[role="group-body"][active="true"] {{ background: {band}; border: {hair} s
 QDockWidget {{ color: {text}; }}
 QDockWidget::title {{ background: {header}; color: {muted}; border: {hair} solid {border}; padding: {tip_pad}; }}
 QSplitter::handle {{ background: {ground}; }}
-
-/* pyqtgraph dock area */
-DockArea {{ background: {ground}; }}
-DockLabel {{ background: {header}; color: {muted}; }}
-Dock > QWidget {{ border-color: {border}; }}
+/* pyqtgraph DockArea/Dock/DockLabel set widget-level stylesheets; the ThemeManager restyles them there. */
 """
 
 # Only emitted with an icon directory: once an indicator or arrow is styled, Qt stops drawing its default.
@@ -353,6 +354,7 @@ def build_stylesheet(tokens: Tokens, scale: float, icon_dir: Optional[Path]) -> 
     values["radio_radius"] = f"{(px(tokens.checkbox_size) + 2 * px(_LENGTHS['hair'])) // 2}px"
     values["spin_arrow"] = f"{px(tokens.checkbox_size) * 3 // 4}px"
     values["disabled_text"] = _mix(tokens.text, tokens.ground, 0.4)
+    values["group_title_band"] = _GROUP_TITLE_BAND
 
     qss = _BASE_QSS.format(**values)
     if icon_dir is not None:

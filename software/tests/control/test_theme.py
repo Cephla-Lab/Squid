@@ -1,6 +1,10 @@
 # tests/control/test_theme.py
 from pathlib import Path
+
+import pytest
 from qtpy.QtGui import QColor, QPalette
+from qtpy.QtWidgets import QGroupBox, QLabel, QStyle, QStyleOptionGroupBox, QVBoxLayout
+
 import control.theme as theme
 
 
@@ -42,6 +46,33 @@ def test_stylesheet_scales_lengths(tmp_path):
     one_and_half = theme.build_stylesheet(theme.LIGHT, 1.5, None)
     assert "border-radius: 4px" in one and "border-radius: 6px" in one_and_half
     assert 'QPushButton[role="primary"]' in one and "#0067c0" in one
+
+
+def test_stylesheet_reserves_a_band_for_group_box_titles():
+    qss = theme.build_stylesheet(theme.LIGHT, 1.0, None)
+    assert "QGroupBox::title" in qss and "subcontrol-origin: margin" in qss
+    assert "margin-top: 1.2em" in qss
+
+
+@pytest.mark.parametrize("tokens", [theme.LIGHT, theme.DARK], ids=["light", "dark"])
+def test_group_box_title_does_not_overlap_first_child(qtbot, qapp, tokens):
+    qapp.setStyleSheet(theme.build_stylesheet(tokens, theme.scale_factor(qapp), None))
+    try:
+        box = QGroupBox("Group Title")
+        qtbot.addWidget(box)
+        layout = QVBoxLayout(box)
+        label = QLabel("First child")
+        layout.addWidget(label)
+        layout.addStretch()
+        box.show()
+        qtbot.waitExposed(box)
+        option = QStyleOptionGroupBox()
+        box.initStyleOption(option)
+        title = box.style().subControlRect(QStyle.CC_GroupBox, option, QStyle.SC_GroupBoxLabel, box)
+        assert label.y() > title.bottom()
+        assert title.x() > 0  # clear of the card's left border
+    finally:
+        qapp.setStyleSheet("")
 
 
 def test_stylesheet_styles_cards_by_role_not_every_frame():
