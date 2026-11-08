@@ -636,11 +636,11 @@ class ZProjectionMode(Enum):
     """Z-projection mode for downsampled view generation.
 
     MIP: Max intensity projection - uses running maximum across all z-levels
-    MIDDLE: Middle layer - uses only the middle z-level (z = NZ // 2)
+    LAST_PLANE: Last plane - each z-plane overwrites the previous one
     """
 
     MIP = "mip"
-    MIDDLE = "middle"
+    LAST_PLANE = "last_plane"
 
     @staticmethod
     def convert_to_enum(option: Union[str, "ZProjectionMode"]) -> "ZProjectionMode":
@@ -650,7 +650,7 @@ class ZProjectionMode(Enum):
         try:
             return ZProjectionMode(option.lower())
         except ValueError:
-            raise ValueError(f"Invalid z-projection mode: '{option}'. Expected 'mip' or 'middle'.")
+            raise ValueError(f"Invalid z-projection mode: '{option}'. Expected 'mip' or 'last_plane'.")
 
 
 class DownsamplingMethod(Enum):
@@ -1164,6 +1164,8 @@ LIVE_ONLY_MODE = False
 # NDViewer integration
 ENABLE_NDVIEWER = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
+# How z-planes combine in the mosaic view (and its saved overview): running max, or last plane wins.
+MOSAIC_Z_PROJECTION = ZProjectionMode.MIP
 
 # Downsampled-view auto-save settings. Each flag independently controls one
 # output of the unified mosaic widget's save path:
@@ -2027,6 +2029,13 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                 try:
                     MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = _views_config.getfloat(
                         "VIEWS", "mosaic_view_target_pixel_size_um"
+                    )
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "mosaic_z_projection"):
+                try:
+                    MOSAIC_Z_PROJECTION = ZProjectionMode.convert_to_enum(
+                        _views_config.get("VIEWS", "mosaic_z_projection")
                     )
                 except ValueError:
                     pass

@@ -429,6 +429,8 @@ class QtMultiPointController(MultiPointController, QObject):
                 well_row=well_row,
                 well_col=well_col,
                 well_origin_mm=self._well_origins_mm.get(region_id),
+                z_index=info.z_index,
+                time_point=info.time_point or 0,
             )
         )
 

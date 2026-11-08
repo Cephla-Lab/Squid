@@ -163,6 +163,8 @@ class MosaicTileUpdate:
     well_row: int = 0
     well_col: int = 0
     well_origin_mm: Optional[Tuple[float, float]] = None
+    z_index: int = 0
+    time_point: int = 0
 
 
 @dataclass
