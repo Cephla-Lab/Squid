@@ -39,6 +39,11 @@ def _default_machine_ini():
     return inis[0] if len(inis) == 1 else None
 
 
+def _same_contents(path_a, path_b):
+    with open(path_a, "rb") as a, open(path_b, "rb") as b:
+        return a.read() == b.read()
+
+
 def _install_machine_ini(ini_path):
     """Make control._def select ini_path for this run. Must run before any `control` import."""
     global _config_state
@@ -47,6 +52,11 @@ def _install_machine_ini(ini_path):
     copied = not os.path.exists(target)
     if copied:
         shutil.copyfile(ini_path, target)
+    elif not _same_contents(target, ini_path):
+        # Loading the file already there would capture a different configuration than the one asked for.
+        raise SystemExit(
+            f"{target} already exists and differs from {ini_path}: move it away or pass it with --machine-ini, then rerun"
+        )
     cache_path = os.path.join(SOFTWARE_DIR, CONFIG_CACHE)
     previous = None
     if os.path.exists(cache_path):
@@ -81,18 +91,29 @@ def _leftovers_of_an_interrupted_run(machine_ini):
     if machine_ini:
         copy = os.path.join(SOFTWARE_DIR, os.path.basename(machine_ini))
         if os.path.exists(copy) and os.path.abspath(copy) != os.path.abspath(machine_ini):
-            with open(copy, "rb") as a, open(machine_ini, "rb") as b:
-                if a.read() == b.read():
-                    print(f"{copy} matches {machine_ini}: if you did not put it there, an interrupted run left it")
+            if _same_contents(copy, machine_ini):
+                print(f"{copy} matches {machine_ini}: if you did not put it there, an interrupted run left it")
     return must_stop
 
 
 def _restore_config():
-    """Undo _install_machine_ini and _set_aside_persisted_gui_state. Safe to call more than once."""
-    global _config_state, _aside_state
+    """Undo _install_machine_ini and _set_aside_persisted_gui_state. Safe to call more than once.
+
+    The ini selection is restored even when putting the GUI state back fails (on Windows os.replace raises
+    PermissionError while another process holds the file): the machine must never be left pointed at the run's ini.
+    """
+    global _aside_state
     aside, _aside_state = _aside_state, None
-    if aside is not None:
-        os.replace(aside[1], aside[0])  # also replaces any file the run wrote
+    try:
+        if aside is not None:
+            os.replace(aside[1], aside[0])  # also replaces any file the run wrote
+    finally:
+        _restore_ini_selection()
+
+
+def _restore_ini_selection():
+    """Remove the ini copy _install_machine_ini made and put cache/config_file_path.txt back as it was."""
+    global _config_state
     state, _config_state = _config_state, None
     if state is None:
         return

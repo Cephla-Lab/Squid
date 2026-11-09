@@ -25,8 +25,9 @@ Tokens (LIGHT / DARK / CLASSIC)          frozen dataclass: colours + geometry in
    ├─ build_palette(tokens)                        QPalette for everything QSS does not reach
    └─ write_theme_icons(tokens, cache_dir)         icon/theme/*.svg recoloured into cache/theme_icons/<theme>/
                         │
+install(app, theme)          module function: creates the one ThemeManager and applies the startup theme
 ThemeManager (one per QApplication, theme.manager())
-   .install / .apply(theme)   palette + font first, then stylesheet, then the pyqtgraph dock patch
+   .apply(theme)              palette + font first, then stylesheet, then the pyqtgraph dock patch
    .current / .is_classic()
    .needs_restart(theme)      True when crossing the Classic <-> skinned boundary
    .tokens() / .color(name) / .row_brush(name)     for colours painted by code
