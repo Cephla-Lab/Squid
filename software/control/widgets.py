@@ -8,7 +8,7 @@ import logging
 import sys
 from functools import partial
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import psutil
 
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from control.core.memory_profiler import MemoryMonitor
+    from control.microscope import StageHomingClaim
 
 import squid.logging
 from control.core.config import ConfigRepository
@@ -25,6 +26,7 @@ from control.core.mosaic_utils import format_well_id
 from control.core.geometry_utils import calculate_well_coverage, default_scan_shape, get_effective_well_size
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
+from control.startup_homing import StageHomingRefused
 from control.channel_sequence import enable_channel_sequence
 import control.utils as utils
 from control.core.coordinate_provenance import (
@@ -63,6 +65,7 @@ from squid.stage.utils import (
     objective_is_retracted,
 )
 from squid.config import CameraPixelFormat
+from squid.intensity_calibration import CALIBRATIONS_DIR_NAME, calibration_status, intensity_tooltip
 
 # set QT_API environment variable
 os.environ["QT_API"] = "pyqt5"
@@ -523,6 +526,7 @@ class NDViewerTab(QWidget):
 
         try:
             self._viewer.start_acquisition(channels, num_z, height, width, fov_labels)
+            self._dataset_path = None  # the viewer now shows the live run, not a folder it was pointed at
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
             self._log.info(
@@ -636,6 +640,7 @@ class NDViewerTab(QWidget):
                 return False
 
             self._viewer.start_zarr_acquisition(fov_paths, channels, num_z, fov_labels, height, width)
+            self._dataset_path = None  # the viewer now shows the live run, not a folder it was pointed at
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
             self._log.info(
@@ -692,6 +697,7 @@ class NDViewerTab(QWidget):
             self._viewer.start_zarr_acquisition_6d(
                 region_paths, channels, num_z, fovs_per_region, height, width, region_labels
             )
+            self._dataset_path = None  # the viewer now shows the live run, not a folder it was pointed at
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
 
@@ -1996,6 +2002,19 @@ class PreferencesDialog(QDialog):
         )
         mosaic_layout.addRow("Save Downsampled Well Images:", self.save_downsampled_checkbox)
 
+        # Z-stack projection (how planes of a z-stack are combined in the mosaic and its saved overview)
+        self.mosaic_z_projection_combo = QComboBox()
+        self.mosaic_z_projection_combo.addItem("Max intensity projection", "mip")
+        self.mosaic_z_projection_combo.addItem("Last plane acquired", "last_plane")
+        self.mosaic_z_projection_combo.setCurrentIndex(
+            max(0, self.mosaic_z_projection_combo.findData(control._def.MOSAIC_Z_PROJECTION.value))
+        )
+        self.mosaic_z_projection_combo.setToolTip(
+            "How the mosaic view and its saved overview combine the planes of a z-stack: "
+            "the running maximum, or whichever plane was acquired last."
+        )
+        mosaic_layout.addRow("Z-stack projection:", self.mosaic_z_projection_combo)
+
         mosaic_group.content.addLayout(mosaic_layout)
         layout.addWidget(mosaic_group)
 
@@ -2011,6 +2030,32 @@ class PreferencesDialog(QDialog):
 
         ndviewer_group.content.addLayout(ndviewer_layout)
         layout.addWidget(ndviewer_group)
+
+        # Gallery section
+        gallery_group = CollapsibleGroupBox("Gallery")
+        gallery_layout = QFormLayout()
+
+        # Record snaps in the acquisition history
+        self.record_snaps_checkbox = QCheckBox()
+        self.record_snaps_checkbox.setChecked(control._def.RECORD_SNAPS_IN_HISTORY)
+        self.record_snaps_checkbox.setToolTip(
+            "Record single snaps from the multipoint tabs in the acquisition history (shown in the Gallery tab)."
+        )
+        gallery_layout.addRow("Record snaps in the acquisition history:", self.record_snaps_checkbox)
+
+        # ndviewer_light location
+        self.ndviewer_light_command_edit = QLineEdit()
+        self.ndviewer_light_command_edit.setText(control._def.NDVIEWER_LIGHT_COMMAND)
+        self.ndviewer_light_command_edit.setPlaceholderText("auto-detect (PATH, installed package, submodule)")
+        self.ndviewer_light_command_edit.setToolTip(
+            "Leave empty to find ndviewer_light automatically (the ndviewer-light command on the PATH, "
+            "the package in Squid's Python, or Squid's submodule). Otherwise an executable, a command line, "
+            "or a folder containing the ndviewer_light package."
+        )
+        gallery_layout.addRow("ndviewer_light location:", self.ndviewer_light_command_edit)
+
+        gallery_group.content.addLayout(gallery_layout)
+        layout.addWidget(gallery_group)
 
         layout.addStretch()
         self.tab_widget.addTab(tab, "Views")
@@ -2480,6 +2525,13 @@ class PreferencesDialog(QDialog):
             "enable_ndviewer",
             "true" if self.enable_ndviewer_checkbox.isChecked() else "false",
         )
+        self.config.set("VIEWS", "mosaic_z_projection", self.mosaic_z_projection_combo.currentData())
+        self.config.set(
+            "VIEWS",
+            "record_snaps_in_history",
+            "true" if self.record_snaps_checkbox.isChecked() else "false",
+        )
+        self.config.set("VIEWS", "ndviewer_light_command", self.ndviewer_light_command_edit.text().strip())
 
         # Hardware Simulation settings (in [SIMULATION] section)
         self._ensure_section("SIMULATION")
@@ -2618,6 +2670,11 @@ class PreferencesDialog(QDialog):
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = self.display_mosaic_view_checkbox.isChecked()
         control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
         control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
+        control._def.MOSAIC_Z_PROJECTION = control._def.ZProjectionMode.convert_to_enum(
+            self.mosaic_z_projection_combo.currentData()
+        )
+        control._def.RECORD_SNAPS_IN_HISTORY = self.record_snaps_checkbox.isChecked()
+        control._def.NDVIEWER_LIGHT_COMMAND = self.ndviewer_light_command_edit.text().strip()
 
         # Prior stage speed and acceleration (the stage already has them: _send_prior_motion_settings)
         if self.prior_speed_spinbox is not None:
@@ -3021,6 +3078,21 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("Enable NDViewer *", str(old_val), str(new_val), True))
 
+        old_val = control._def.MOSAIC_Z_PROJECTION.value
+        new_val = self.mosaic_z_projection_combo.currentData()
+        if old_val != new_val:
+            changes.append(("Z-stack projection", str(old_val), str(new_val), False))
+
+        old_val = control._def.RECORD_SNAPS_IN_HISTORY
+        new_val = self.record_snaps_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Record snaps in history", str(old_val), str(new_val), False))
+
+        old_val = control._def.NDVIEWER_LIGHT_COMMAND
+        new_val = self.ndviewer_light_command_edit.text().strip()
+        if old_val != new_val:
+            changes.append(("ndviewer_light location", str(old_val), str(new_val), False))
+
         # Hardware Simulation settings (require restart)
         old_val = self._get_config_value("SIMULATION", "simulate_camera", "false").lower() == "true"
         new_val = self.sim_camera_checkbox.isChecked()
@@ -3172,6 +3244,20 @@ class PreferencesDialog(QDialog):
             # If save failed, dialog stays open (error already shown)
 
 
+def show_homing_failure(parent, title: str, error: str, still_homing: bool) -> None:
+    """A home that raised (Home stage, Home X/Y). still_homing: its claim is still held, as the stage has not
+    reported that it stopped."""
+    if still_homing:
+        QMessageBox.warning(
+            parent,
+            title,
+            f"Homing did not finish ({error}). The stage still reports motion: motion controls stay locked until it "
+            "stops.",
+        )
+    else:
+        QMessageBox.warning(parent, title, f"Homing failed: {error}")
+
+
 def _queued_slot(receiver: QObject, slot_name: str):
     """A threaded_operation_helper callback that delivers (success, error_msg) to a slot of receiver, on the GUI
     thread: the operation's own thread must not touch widgets, live view or dialogs."""
@@ -3194,6 +3280,7 @@ class StageUtils(QDialog):
     signal_threaded_stage_move_started = Signal()
     signal_loading_position_reached = Signal()
     signal_scanning_position_reached = Signal()
+    signal_home_stage_requested = Signal()  # the Home Stage button: the main window runs it (Microscope.home_stage)
 
     def __init__(self, stage: AbstractStage, live_controller: LiveController, is_wellplate: bool, parent=None):
         super().__init__(parent)
@@ -3212,6 +3299,10 @@ class StageUtils(QDialog):
         # returns to its Z once the lift is back up, or stays retracted.
         self.ask_objective_return = False
         self._was_live = False
+        # Home X / Home Y (set_homing_hooks): why the stage must not home now (or None), and the Microscope's homing
+        # claim for a stopped stage, which pauses live and refuses other motion until the stage reports it stopped.
+        self._homing_blocker: Optional[Callable[[], Optional[str]]] = None
+        self._claim: Optional[Callable[[str], "StageHomingClaim"]] = None
 
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
@@ -3232,6 +3323,11 @@ class StageUtils(QDialog):
         self.btn_home_Z.setDefault(False)
         self.btn_home_Z.setEnabled(HOMING_ENABLED_Z)
 
+        # The full startup homing sequence, finishing at the end-of-homing safe position
+        self.btn_home_stage = QPushButton("Home Stage")
+        self.btn_home_stage.setDefault(False)
+        self.btn_home_stage.setEnabled(control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y)
+
         self.btn_zero_X = QPushButton("Zero X")
         self.btn_zero_X.setDefault(False)
 
@@ -3248,6 +3344,7 @@ class StageUtils(QDialog):
         self.btn_home_X.clicked.connect(self.home_x)
         self.btn_home_Y.clicked.connect(self.home_y)
         self.btn_home_Z.clicked.connect(self.home_z)
+        self.btn_home_stage.clicked.connect(self.signal_home_stage_requested.emit)
         self.btn_zero_X.clicked.connect(self.zero_x)
         self.btn_zero_Y.clicked.connect(self.zero_y)
         self.btn_zero_Z.clicked.connect(self.zero_z)
@@ -3262,6 +3359,7 @@ class StageUtils(QDialog):
         homing_layout.addWidget(self.btn_home_X)
         homing_layout.addWidget(self.btn_home_Y)
         homing_layout.addWidget(self.btn_home_Z)
+        homing_layout.addWidget(self.btn_home_stage)
         homing_group.setLayout(homing_layout)
 
         # Zero section
@@ -3290,35 +3388,79 @@ class StageUtils(QDialog):
 
         self.setLayout(main_layout)
 
+    def set_homing_hooks(
+        self, blocker: Callable[[], Optional[str]], claim: Callable[[str], "StageHomingClaim"]
+    ) -> None:
+        """Home X / Home Y: blocker() returns why the stage must not home now, or None; claim(operation) takes the
+        Microscope's homing claim for the home once the stage reports it stopped, or raises StageHomingRefused."""
+        self._homing_blocker = blocker
+        self._claim = claim
+
     def home_x(self):
         """Home X axis with confirmation dialog."""
-        self._show_confirmation_dialog(x=True, y=False, z=False, theta=False)
+        self._home_xy_axis("x")
 
     def home_y(self):
         """Home Y axis with confirmation dialog."""
-        self._show_confirmation_dialog(x=False, y=True, z=False, theta=False)
+        self._home_xy_axis("y")
 
     def home_z(self):
         """Home Z axis with confirmation dialog."""
-        self._show_confirmation_dialog(x=False, y=False, z=True, theta=False)
+        if self._confirm_homing():
+            self.stage.home(x=False, y=False, z=True, theta=False)
         move_z_axis_to_safety_position(self.stage)
 
-    def _show_confirmation_dialog(self, x: bool, y: bool, z: bool, theta: bool):
-        """Display a confirmation dialog and home the specified axis if confirmed. An X or Y home on a piezo-only
-        system asks at the stop sign instead: the nosepiece has to be lowered by hand first."""
-        if control._def.IS_PIEZO_ONLY and (x or y):
-            confirmed = confirm_nosepiece_lowered(self, decline_text="Cancel")
+    def _home_xy_axis(self, axis: str):
+        """Home X or Y: refused while something else drives the stage; on a piezo-only system the stop sign (lower the
+        nosepiece) replaces the generic confirmation; the home holds the Microscope's homing claim (live paused, other
+        motion refused), released once the stage reports it stopped. A failure is shown, as Home stage shows it."""
+        operation = f"Home {axis.upper()}"
+        if self._homing_refused():
+            return
+        if control._def.IS_PIEZO_ONLY:
+            objective_lowered = confirm_nosepiece_lowered(self, decline_text="Cancel")
+            confirmed = objective_lowered
         else:
-            msg = QMessageBox()
-            msg.setIcon(QMessageBox.Information)
-            msg.setText("Confirm your action")
-            msg.setInformativeText("Click OK to run homing")
-            msg.setWindowTitle("Confirmation")
-            msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-            msg.setDefaultButton(QMessageBox.Cancel)
-            confirmed = msg.exec_() == QMessageBox.Ok
-        if confirmed:
-            self.stage.home(x=x, y=y, z=z, theta=theta)
+            objective_lowered = False
+            confirmed = self._confirm_homing()
+        if not confirmed:
+            return
+        try:
+            # The claim asks the blocker again: something may have started while the confirmation was open.
+            claim = self._claim(operation)
+        except StageHomingRefused as e:
+            self._refuse_homing(e.reason)
+            return
+        error = None
+        try:
+            self.stage.home(x=axis == "x", y=axis == "y", z=False, theta=False, objective_lowered=objective_lowered)
+        except Exception as e:
+            self.log.exception(f"{operation} failed")
+            error = str(e)
+        finally:
+            claim.release_when_stopped()
+        if error is not None:
+            show_homing_failure(self, "Homing", error, still_homing=not claim.released)
+
+    def _homing_refused(self) -> bool:
+        reason = self._homing_blocker()
+        if reason:
+            self._refuse_homing(reason)
+        return bool(reason)
+
+    def _refuse_homing(self, reason: str):
+        QMessageBox.information(self, "Homing", f"Homing refused: {reason}.")
+
+    def _confirm_homing(self) -> bool:
+        """The generic confirmation (systems that lower the objective themselves). Enter is Cancel."""
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Information)
+        msg.setText("Confirm your action")
+        msg.setInformativeText("Click OK to run homing")
+        msg.setWindowTitle("Confirmation")
+        msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Cancel)
+        return msg.exec_() == QMessageBox.Ok
 
     def zero_x(self):
         """Zero X axis position."""
@@ -5242,6 +5384,35 @@ class ProfileWidget(QFrame):
         return self.dropdown_profiles.currentText()
 
 
+class GappedSpinBox(QDoubleSpinBox):
+    """An intensity box for a source that jumps on from nothing (a laser's threshold, an LED driver's input offset): it gives no power between 0 and
+    its lowest, so a value there - typed, dragged or saved - becomes that lowest power, and stepping down from it
+    goes to 0 (off)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._lowest = 0.0
+
+    def set_lowest(self, lowest: float) -> None:
+        self._lowest = max(0.0, float(lowest))
+        self.setValue(self.value())
+
+    def _snapped(self, value: float) -> float:
+        return self._lowest if 0 < value < self._lowest else value
+
+    def setValue(self, value: float) -> None:
+        super().setValue(self._snapped(value))
+
+    def valueFromText(self, text: str) -> float:
+        return self._snapped(super().valueFromText(text))
+
+    def stepBy(self, steps: int) -> None:
+        if steps < 0 and 0 < self.value() <= self._lowest:
+            self.setValue(0.0)
+        else:
+            self.setValue(self.value() + steps * self.singleStep())
+
+
 class CappedSlider(QSlider):
     """Slider whose usable range can be capped below its full range.
 
@@ -5470,7 +5641,7 @@ class LiveControlWidget(QFrame):
         self.slider_illuminationIntensity.setValue(100)
         self.slider_illuminationIntensity.setSingleStep(2)
 
-        self.entry_illuminationIntensity = QDoubleSpinBox()
+        self.entry_illuminationIntensity = GappedSpinBox()
         self.entry_illuminationIntensity.setKeyboardTracking(False)
         self.entry_illuminationIntensity.setMinimum(0)
         self.entry_illuminationIntensity.setMaximum(100)
@@ -5697,6 +5868,12 @@ class LiveControlWidget(QFrame):
                 intensity_cap = self.liveController.get_intensity_cap_percent(self.currentConfiguration)
                 self.slider_illuminationIntensity.set_cap(intensity_cap)
                 self.entry_illuminationIntensity.setMaximum(intensity_cap)
+                # Say in the tooltip what the % means: power (calibrated), DAC output, or the source's own scale
+                description = self.liveController.get_intensity_description(self.currentConfiguration)
+                self.entry_illuminationIntensity.setToolTip(intensity_tooltip(description))
+                # A source that jumps on gives nothing between 0 and its lowest power; the lookup sends a request
+                # there to that power, and the box shows it
+                self.entry_illuminationIntensity.set_lowest(float(description.get("lowest_percent", 0.0)))
                 self.entry_illuminationIntensity.setValue(self.currentConfiguration.illumination_intensity)
                 self.entry_zOffset.setValue(self._safe_z_offset_value(self.currentConfiguration.z_offset_um))
         finally:
@@ -6068,7 +6245,7 @@ class PiezoWidget(QFrame):
     def __init__(self, piezo: PiezoStage, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.piezo = piezo
-        self.piezo_displacement_um = 0.00
+        self.piezo_displacement_um = piezo.position  # after a warm start, where the last session left it
         self.add_components()
 
     def add_components(self):
@@ -6076,7 +6253,7 @@ class PiezoWidget(QFrame):
         self.slider = QSlider(Qt.Horizontal, self)
         self.slider.setMinimum(0)
         self.slider.setMaximum(int(self.piezo.range_um * 100))  # Multiplied by 100 for 0.01 precision
-        self.slider.setValue(int(self.piezo._home_position_um * 100))
+        self.slider.setValue(int(self.piezo_displacement_um * 100))
 
         self.spinBox = QDoubleSpinBox(self)
         self.spinBox.setRange(0.0, self.piezo.range_um)
@@ -6084,7 +6261,7 @@ class PiezoWidget(QFrame):
         self.spinBox.setSingleStep(1)
         self.spinBox.setSuffix(" μm")
         self.spinBox.setKeyboardTracking(False)
-        self.spinBox.setValue(self.piezo._home_position_um)
+        self.spinBox.setValue(self.piezo_displacement_um)
 
         # Row 3: Home Button
         self.home_btn = QPushButton(f" Set to {self.piezo._home_position_um} μm ", self)
@@ -15082,11 +15259,15 @@ class IlluminationChannelConfiguratorDialog(QDialog):
     COL_WAVELENGTH = 3
     COL_MAX_OUTPUT = 4
     COL_CALIBRATION = 5
+    COL_CALIBRATION_STATUS = 6
 
-    def __init__(self, config_repo, parent=None):
+    def __init__(self, config_repo, parent=None, engine_drive=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config_repo = config_repo
+        # wavelength -> the laser engine line it drives (IlluminationController.engine_drive), for the status column;
+        # None: the channels are driven through the controller DAC
+        self._engine_drive = engine_drive
         self.illumination_config = None
         self.setWindowTitle("Illumination Channel Configurator")
         self.setMinimumSize(900, 500)
@@ -15108,9 +15289,17 @@ class IlluminationChannelConfiguratorDialog(QDialog):
 
         # Table for illumination channels
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(
-            ["Name", "Type", "Controller Port", "Wavelength (nm)", "Max Output", "Calibration File"]
+            [
+                "Name",
+                "Type",
+                "Controller Port",
+                "Wavelength (nm)",
+                "Max Output",
+                "Calibration File",
+                "Calibration Status",
+            ]
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -15217,6 +15406,26 @@ class IlluminationChannelConfiguratorDialog(QDialog):
             full_path = self._get_calibration_full_path(channel.intensity_calibration_file)
             calib_item = QTableWidgetItem(full_path)
             self.table.setItem(row, self.COL_CALIBRATION, calib_item)
+
+            # Calibration status (read-only): which file applies and whether it still fits this machine
+            status_item = QTableWidgetItem(self._calibration_status(channel))
+            status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, self.COL_CALIBRATION_STATUS, status_item)
+
+    def _calibration_status(self, channel) -> str:
+        if channel.wavelength_nm is None:
+            return ""
+        engine = self._engine_drive(channel.wavelength_nm) if self._engine_drive is not None else None
+        return calibration_status(
+            self.config_repo.machine_configs_path / CALIBRATIONS_DIR_NAME,
+            channel.intensity_calibration_file,
+            channel.wavelength_nm,
+            control._def.ILLUMINATION_INTENSITY_FACTOR,
+            channel.max_output,
+            controller_port=channel.controller_port,
+            source_code=self.illumination_config.get_source_code(channel),
+            engine=engine,
+        )
 
     def _on_type_changed(self, row, new_type):
         """Handle type change - update wavelength, max output and controller port defaults"""

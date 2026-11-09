@@ -59,6 +59,8 @@ class FluidicsProtocolWidget(QFrame):
     signal_show_fluidics_tab = Signal()
     signal_run_notification = Signal(str)  # Slack-worthy: held / finished
     signal_reagent_rows = Signal(list)  # rows for the Reagents table
+    signal_run_started = Signal(str, str)  # run dir, run name: a runner was created and is starting
+    signal_run_finished = Signal(str, str)  # run dir, the runner's outcome word (finished | stopped | failed)
 
     REFRESH_MS = 500
 
@@ -350,6 +352,7 @@ class FluidicsProtocolWidget(QFrame):
         self.protocol_tab.set_run_locked(True)
         self._set_run_visible(True)
         self.signal_acquisition_started.emit(True)
+        self.signal_run_started.emit(str(runner.run_dir), runner.manifest.run_name)
         runner.start()
 
     def _set_run_visible(self, active: bool) -> None:
@@ -524,6 +527,8 @@ class FluidicsProtocolWidget(QFrame):
         self.protocol_tab.highlight_row(None)
         self.state_label.setText(f"Run {outcome}")
         self.signal_acquisition_started.emit(False)
+        if self.runner is not None:
+            self.signal_run_finished.emit(str(self.runner.run_dir), outcome)
         self.signal_run_notification.emit(f"Fluidics protocol run {outcome} ({self.folder_label.text()})")
         self._set_run_visible(False)
         self._refresh_idle()

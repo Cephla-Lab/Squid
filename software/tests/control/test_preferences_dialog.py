@@ -788,6 +788,56 @@ class TestViewsTab:
         assert control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY is False
         assert control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM == 4.0
 
+    def test_gallery_controls_exist_and_mirror_runtime_defaults(self, preferences_dialog):
+        d = preferences_dialog
+        assert d.mosaic_z_projection_combo.currentData() == control._def.MOSAIC_Z_PROJECTION.value
+        assert d.record_snaps_checkbox.isChecked() is control._def.RECORD_SNAPS_IN_HISTORY
+        assert d.ndviewer_light_command_edit.text() == control._def.NDVIEWER_LIGHT_COMMAND
+
+    def test_gallery_settings_are_written_and_applied(self, preferences_dialog, temp_config_file):
+        d = preferences_dialog
+        originals = (
+            control._def.MOSAIC_Z_PROJECTION,
+            control._def.RECORD_SNAPS_IN_HISTORY,
+            control._def.NDVIEWER_LIGHT_COMMAND,
+        )
+        try:
+            d.mosaic_z_projection_combo.setCurrentIndex(d.mosaic_z_projection_combo.findData("last_plane"))
+            d.record_snaps_checkbox.setChecked(not control._def.RECORD_SNAPS_IN_HISTORY)
+            expected_snaps = d.record_snaps_checkbox.isChecked()
+            d.ndviewer_light_command_edit.setText("  C:/tools/ndviewer_light  ")
+
+            d._apply_settings()
+
+            from configparser import ConfigParser
+
+            saved = ConfigParser()
+            saved.read(temp_config_file)
+            assert saved.get("VIEWS", "mosaic_z_projection") == "last_plane"
+            assert saved.get("VIEWS", "record_snaps_in_history") == ("true" if expected_snaps else "false")
+            assert saved.get("VIEWS", "ndviewer_light_command") == "C:/tools/ndviewer_light"
+
+            assert control._def.MOSAIC_Z_PROJECTION is control._def.ZProjectionMode.LAST_PLANE
+            assert control._def.RECORD_SNAPS_IN_HISTORY is expected_snaps
+            assert control._def.NDVIEWER_LIGHT_COMMAND == "C:/tools/ndviewer_light"
+        finally:
+            (
+                control._def.MOSAIC_Z_PROJECTION,
+                control._def.RECORD_SNAPS_IN_HISTORY,
+                control._def.NDVIEWER_LIGHT_COMMAND,
+            ) = originals
+
+    def test_gallery_changes_do_not_require_restart(self, preferences_dialog):
+        d = preferences_dialog
+        d.mosaic_z_projection_combo.setCurrentIndex(d.mosaic_z_projection_combo.findData("last_plane"))
+        d.record_snaps_checkbox.setChecked(not control._def.RECORD_SNAPS_IN_HISTORY)
+        d.ndviewer_light_command_edit.setText("some/other/location")
+        changes = {c[0]: c for c in d._get_changes()}
+        for label in ("Z-stack projection", "Record snaps in history", "ndviewer_light location"):
+            assert label in changes
+            assert changes[label][3] is False
+        assert changes["Z-stack projection"][2] == "last_plane"
+
 
 # NOTE: This test class was added to verify RAM usage diagnostics via MCP.
 # These tests may be modified or removed if the control._def/config architecture changes.
