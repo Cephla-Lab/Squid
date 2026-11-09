@@ -422,7 +422,11 @@ class MicroscopeAddons:
 
 class LowLevelDrivers:
     @staticmethod
-    def build_from_global_config(simulated: bool = False, skip_init: bool = False) -> "LowLevelDrivers":
+    def build_from_global_config(
+        simulated: bool = False,
+        skip_init: bool = False,
+        confirm_objective_lowered: Optional[Callable[[bool], bool]] = None,
+    ) -> "LowLevelDrivers":
         # Per-component simulation for microcontroller
         mcu_simulated = _should_simulate(simulated, control._def.SIMULATE_MICROCONTROLLER)
 
@@ -433,16 +437,33 @@ class LowLevelDrivers:
             if not mcu_simulated
             else control.microcontroller.get_microcontroller_serial_device(simulated=True)
         )
+        # Piezo-only, when startup will home X and Y: the stop sign comes before the controller is initialized (a cold
+        # start), since INITIALIZE loses the homed frame - declining then leaves the controller as it was, and the
+        # Microscope does not ask again.
+        confirmed = []
+        confirm_cold_start = None
+        if not skip_init and confirm_objective_lowered is not None and startup_needs_objective_prompt():
+
+            def confirm_cold_start() -> bool:
+                lowered = bool(confirm_objective_lowered(True))
+                confirmed.append(lowered)
+                return lowered
+
         # Skip MCU reset/initialize when restarting (hardware already configured)
         micro = control.microcontroller.Microcontroller(
             serial_device=micro_serial_device,
             reset_and_initialize=not skip_init,
+            confirm_cold_start=confirm_cold_start,
         )
 
-        return LowLevelDrivers(microcontroller=micro)
+        drivers = LowLevelDrivers(microcontroller=micro)
+        drivers.startup_homing_confirmed = confirmed == [True]
+        return drivers
 
     def __init__(self, microcontroller: Optional[Microcontroller] = None):
         self.microcontroller: Optional[Microcontroller] = microcontroller
+        # The startup stop sign was already confirmed when the controller was started (see build_from_global_config)
+        self.startup_homing_confirmed = False
 
     def prepare_for_use(self, skip_init: bool = False):
         # Note: Currently no homing operations here, but accepting skip_init for API consistency
@@ -461,7 +482,9 @@ class Microscope:
         skip_init: bool = False,
         confirm_objective_lowered: Optional[Callable[[bool], bool]] = None,
     ) -> "Microscope":
-        low_level_devices = LowLevelDrivers.build_from_global_config(simulated, skip_init=skip_init)
+        low_level_devices = LowLevelDrivers.build_from_global_config(
+            simulated, skip_init=skip_init, confirm_objective_lowered=confirm_objective_lowered
+        )
 
         # Per-component simulation for camera
         camera_simulated = _should_simulate(simulated, control._def.SIMULATE_CAMERA)
@@ -775,6 +798,9 @@ class Microscope:
         changer_moves = control._def.IS_PIEZO_ONLY and self.addons.objective_changer is not None
         if not (stage_homes or changer_moves):
             return False
+        if stage_homes and self.low_level_drivers.startup_homing_confirmed:
+            # Asked before the controller was initialized, about the stage homing (which covers the changer)
+            return True
         if self._confirm_objective_lowered is None:
             self._log.error("Piezo-only: no one to confirm the nosepiece is lowered; closing the hardware")
             self.close()
