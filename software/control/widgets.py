@@ -1311,6 +1311,42 @@ class AcquisitionYAMLMismatchDialog(QDialog):
         layout.addLayout(button_layout)
 
 
+def offer_restart(parent: QWidget, saved_text: str, on_restart: Optional[Callable[[], None]]) -> None:
+    """Ask "Restart Now / Later" after a change that only applies at the next start, and restart on "Now"."""
+    msg = QMessageBox(parent)
+    msg.setWindowTitle("Restart Required")
+    msg.setText(f"{saved_text} This change requires a restart to take effect.")
+    msg.setInformativeText("Would you like to restart now?")
+    msg.setIcon(QMessageBox.Information)
+    restart_btn = msg.addButton("Restart Now", QMessageBox.AcceptRole)
+    msg.addButton("Later", QMessageBox.RejectRole)
+    msg.exec_()
+    if msg.clickedButton() == restart_btn:
+        restart_or_warn(parent, on_restart)
+
+
+def restart_or_warn(parent: QWidget, on_restart: Optional[Callable[[], None]]) -> None:
+    """Call ``on_restart``; if it is missing or fails, tell the operator to restart by hand."""
+    if on_restart:
+        try:
+            on_restart()
+        except Exception as e:
+            logger.exception("Failed to restart application")
+            QMessageBox.warning(
+                parent,
+                "Restart Failed",
+                f"An error occurred while trying to restart the application.\n\n"
+                f"Error: {e}\n\nPlease restart the application manually.",
+            )
+    else:
+        logger.error("No restart callback configured")
+        QMessageBox.warning(
+            parent,
+            "Restart Failed",
+            "Could not trigger automatic restart.\nPlease restart the application manually.",
+        )
+
+
 class PreferencesDialog(QDialog):
     """User-friendly preferences dialog with tabbed interface for common settings."""
 
@@ -3128,37 +3164,11 @@ class PreferencesDialog(QDialog):
 
     def _offer_restart_dialog(self):
         """Show a dialog offering to restart the application now."""
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Restart Required")
-        msg.setText("Settings have been saved. This change requires a restart to take effect.")
-        msg.setInformativeText("Would you like to restart now?")
-        msg.setIcon(QMessageBox.Information)
-        restart_btn = msg.addButton("Restart Now", QMessageBox.AcceptRole)
-        msg.addButton("Later", QMessageBox.RejectRole)
-        msg.exec_()
-        if msg.clickedButton() == restart_btn:
-            self._trigger_restart()
+        offer_restart(self, "Settings have been saved.", self._on_restart)
 
     def _trigger_restart(self):
         """Trigger application restart via callback."""
-        if self._on_restart:
-            try:
-                self._on_restart()
-            except Exception as e:
-                self._log.exception("Failed to restart application")
-                QMessageBox.warning(
-                    self,
-                    "Restart Failed",
-                    f"An error occurred while trying to restart the application.\n\n"
-                    f"Error: {e}\n\nPlease restart the application manually.",
-                )
-        else:
-            self._log.error("No restart callback configured")
-            QMessageBox.warning(
-                self,
-                "Restart Failed",
-                "Could not trigger automatic restart.\nPlease restart the application manually.",
-            )
+        restart_or_warn(self, self._on_restart)
 
     def _save_and_close(self):
         changes = self._get_changes()
@@ -3678,7 +3688,7 @@ class LaserAutofocusSettingWidget(QWidget):
     signal_apply_settings = Signal()
     signal_laser_spot_location = Signal(np.ndarray, float, float)
 
-    def _recolour_background(self, *_):
+    def _recolour_background(self):
         palette = self.palette()
         palette.setColor(self.backgroundRole(), theme.manager().color("row_disabled"))
         self.setPalette(palette)
@@ -3698,7 +3708,6 @@ class LaserAutofocusSettingWidget(QWidget):
 
         # Create and set background color
         self._recolour_background()
-        theme.manager().theme_changed.connect(self._recolour_background)
 
         self.spinboxes = {}
         self.init_ui()
@@ -15755,7 +15764,6 @@ class ControllerPortMappingDialog(QDialog):
         self.setMinimumSize(400, 450)
         self._setup_ui()
         self._load_mappings()
-        theme.manager().theme_changed.connect(self._recolour_rows)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -15790,13 +15798,6 @@ class ControllerPortMappingDialog(QDialog):
         button_layout.addWidget(self.btn_cancel)
 
         layout.addLayout(button_layout)
-
-    def _recolour_rows(self) -> None:
-        """Repaint the read-only port cells for the current theme; the editors are left untouched."""
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item is not None:
-                item.setBackground(theme.manager().row_brush("row_disabled"))
 
     def _load_mappings(self):
         """Load current port mappings into the table"""
@@ -17200,7 +17201,6 @@ class WarningErrorWidget(QWidget):
         self._poll_timer = None
         self._setup_ui()
         self._restyle()
-        theme.manager().theme_changed.connect(self._restyle)
 
     def connect_handler(self, handler: "BufferingHandler"):
         """Connect to a logging handler and start polling for messages.
@@ -17294,7 +17294,7 @@ class WarningErrorWidget(QWidget):
         layout.addWidget(self.btn_dismiss)
         layout.addStretch()  # Push everything to the left
 
-    def _restyle(self, *_):
+    def _restyle(self):
         """Build the pill and dismiss button styles from the current theme's tokens, and repaint the message."""
         t = theme.manager().tokens()
         self.btn_expand.setStyleSheet(

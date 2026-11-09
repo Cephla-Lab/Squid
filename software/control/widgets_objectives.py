@@ -95,7 +95,6 @@ class ObjectivesEditorDialog(QDialog):
         self.setWindowTitle("Objectives")
         self.setMinimumSize(900, 360)
         self._build_ui()
-        theme.manager().theme_changed.connect(self._refresh_highlight)
         try:
             existing = config_repo.get_objectives_config()
             if existing is not None:

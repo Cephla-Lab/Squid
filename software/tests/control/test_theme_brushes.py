@@ -61,40 +61,29 @@ def test_status_widget_tokens_are_readable(t):
         assert theme.contrast_ratio(fg, bg) >= 2.9, (fg, bg)
 
 
-def test_controller_port_rows_repaint_on_switch(qapp, qtbot):
+# The theme is fixed for the process (a change restarts Squid), so widgets read their colours once, when built.
+
+
+def test_controller_port_rows_use_the_theme_brush(qapp, qtbot):
     import control.microscope, control.widgets as widgets
 
-    m = theme.install(qapp, "classic")
+    m = theme.install(qapp, "dark")
     try:
         scope = control.microscope.Microscope.build_from_global_config(True)
-        dlg = widgets.ControllerPortMappingDialog(scope.config_repo)  # as gui_hcs.py:2573 constructs it
+        dlg = widgets.ControllerPortMappingDialog(scope.config_repo)  # as gui_hcs.py constructs it
         qtbot.add_widget(dlg)
-        # an unsaved edit in the editable column must survive the switch (no reload, only a recolour);
-        # column 1 holds a SourceCodeWidget cell widget: set_source_code(int | None) drives a checkbox and
-        # a QSpinBox, get_source_code() returns the int or None
-        editor = dlg.table.cellWidget(0, 1)
-        editor.set_source_code(17)
-        m.apply("dark")
-        qtbot.waitUntil(lambda: dlg.table.item(0, 0).background().color() == QColor("#3a3a3a"))
-        assert dlg.table.cellWidget(0, 1) is editor, "theme switch rebuilt the editor controls"
-        assert editor.get_source_code() == 17
+        assert dlg.table.item(0, 0).background().color() == QColor(theme.DARK.row_disabled)
     finally:
         m.apply("classic")
 
 
-def test_workflow_rows_keep_edits_across_switch(qapp, qtbot):
+def test_workflow_rows_use_the_theme_brush(qapp, qtbot):
     import control.widgets_workflow as ww
 
-    m = theme.install(qapp, "classic")
+    m = theme.install(qapp, "dark")
     try:
         dlg = ww.WorkflowRunnerDialog()  # gui_hcs.openWorkflowRunner passes only parent=
         qtbot.add_widget(dlg)
-        # the dialog loads its default one-row workflow (an Acquisition) in __init__
-        dlg._load_workflow_to_table()
-        # COL_INCLUDE holds a checkbox cell widget (item() is None there); COL_NAME is a populated item
-        dlg.table.item(0, dlg.COL_NAME).setText("edited by test")
-        m.apply("dark")
-        assert dlg.table.item(0, dlg.COL_NAME).text() == "edited by test"
         assert dlg.table.item(0, dlg.COL_NAME).background().color() in (
             QColor(theme.DARK.row_highlight),
             QColor(theme.DARK.input_bg),
@@ -103,36 +92,31 @@ def test_workflow_rows_keep_edits_across_switch(qapp, qtbot):
         m.apply("classic")
 
 
-def test_warning_widget_restyles_on_switch(qapp, qtbot):
+@pytest.mark.parametrize("name, pill", [("classic", "#666"), ("dark", theme.DARK.pill_bg)])
+def test_warning_widget_styles_for_the_theme(qapp, qtbot, name, pill):
     import control.widgets as widgets
 
-    m = theme.install(qapp, "classic")
+    m = theme.install(qapp, name)
     try:
         w = widgets.WarningErrorWidget()
         qtbot.add_widget(w)
-        m.apply("dark")
-        assert theme.DARK.pill_bg in w.btn_expand.styleSheet()
-        m.apply("classic")
-        assert "#666" in w.btn_expand.styleSheet()
+        assert pill in w.btn_expand.styleSheet()
     finally:
         m.apply("classic")
 
 
-def test_laser_autofocus_background_follows_switch(qapp, qtbot):
+@pytest.mark.parametrize("tokens", [theme.CLASSIC, theme.DARK], ids=["classic", "dark"])
+def test_laser_autofocus_background_follows_the_theme(qapp, qtbot, tokens):
     from unittest.mock import MagicMock
     import control.widgets as widgets
 
-    m = theme.install(qapp, "classic")
+    m = theme.install(qapp, "dark" if tokens is theme.DARK else "classic")
     try:
         controller = MagicMock()
         controller.laser_af_properties.pixel_to_um = 1.0
         controller.laser_af_properties.calibration_timestamp = "never"
         w = widgets.LaserAutofocusSettingWidget(MagicMock(), MagicMock(), controller)
         qtbot.add_widget(w)
-        assert w.palette().color(w.backgroundRole()) == QColor(theme.CLASSIC.row_disabled)
-        m.apply("dark")
-        assert w.palette().color(w.backgroundRole()) == QColor(theme.DARK.row_disabled)
-        m.apply("classic")
-        assert w.palette().color(w.backgroundRole()) == QColor(theme.CLASSIC.row_disabled)
+        assert w.palette().color(w.backgroundRole()) == QColor(tokens.row_disabled)
     finally:
         m.apply("classic")

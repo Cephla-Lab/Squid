@@ -2190,27 +2190,15 @@ class HighContentScreeningGui(QMainWindow):
                     "The theme could not be saved to the machine configuration file, so it cannot change at the next start.",
                 )
                 return
-            msg = QMessageBox(self)
-            msg.setWindowTitle("Restart Required")
-            msg.setText("The theme has been saved. This change requires a restart to take effect.")
-            msg.setInformativeText("Would you like to restart now?")
-            msg.setIcon(QMessageBox.Information)
-            restart_btn = msg.addButton("Restart Now", QMessageBox.AcceptRole)
-            msg.addButton("Later", QMessageBox.RejectRole)
-            msg.exec_()
-            if msg.clickedButton() == restart_btn:
-                self.restart_application()
+            widgets.offer_restart(self, "The theme has been saved.", self.restart_application)
             return
-        applied_now = choice != manager.current
-        if applied_now:
-            manager.apply(choice)
+        # Re-picking the active theme: only the saved choice changes (it cancels a pending switch).
         self._refresh_appearance_labels()
         if not saved:
-            what = "The theme was applied for this session but" if applied_now else "The theme"
             QMessageBox.warning(
                 self,
                 "Appearance",
-                f"{what} could not be saved to the machine configuration file. "
+                "The theme could not be saved to the machine configuration file. "
                 f"The next start will use {self._saved_theme.capitalize()}.",
             )
 

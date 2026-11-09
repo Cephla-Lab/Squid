@@ -30,9 +30,8 @@ install(app, theme)          module function: creates the one ThemeManager and a
 ThemeManager (one per QApplication, theme.manager())
    .apply(theme)              palette + font first, then stylesheet, then the pyqtgraph dock patch
    .current / .is_classic()
-   .needs_restart(theme)      True when crossing the Classic <-> skinned boundary
+   .needs_restart(theme)      True for any theme other than the active one: the GUI never switches live
    .tokens() / .color(name) / .row_brush(name)     for colours painted by code
-   .theme_changed  Signal(str)
 ```
 
 Startup (`main_hcs.py`) calls `control.theme.install(app, control.theme.load_theme_choice())` right after `app.setStyle("Fusion")`. Any exception there falls back to Classic so a theme bug can never block the microscope.
@@ -90,7 +89,7 @@ item.setForeground(m.row_brush("row_text_muted"))
 pen = QPen(m.color("danger_text"))
 ```
 
-In Classic the token values are the literals the code used before, so behaviour is unchanged there. If a widget stays open across a live theme switch, connect to `theme.manager().theme_changed` and recolour (see `ControllerPortMappingDialog._recolour_rows` or `WarningErrorWidget._restyle` for the pattern).
+In Classic the token values are the literals the code used before, so behaviour is unchanged there. The theme is fixed for the life of the process (changing it restarts Squid), so read colours when the widget is built; there is no theme-change signal to listen to.
 
 ### 4. What may stay literal
 
@@ -113,7 +112,7 @@ The skin uses Segoe UI 8 pt on Windows (the system UI font elsewhere) and keeps 
 ## Persistence and the Appearance menu
 
 - `load_theme_choice()` reads `control._def.UI_THEME` (parsed from `[GENERAL] ui_theme`; unknown values, including the removed `light`, fall back to `classic`).
-- `save_theme_choice(ini_path, choice)` writes the key through `control.utils.write_ini_atomically`, the same writer the Preferences dialog uses, and returns `False` instead of raising when the ini is missing or read-only.
+- `save_theme_choice(ini_path, choice)` sets only the `ui_theme` line (`control.utils.update_ini_text`, so comments and layout are kept) and writes it through `control.utils.write_ini_atomically`, the same atomic writer the Preferences dialog uses. It returns `False` instead of raising when the ini is missing, unreadable or read-only.
 - The menu (`HighContentScreeningGui._build_appearance_menu`) tracks the **saved** theme separately from the active one. "(after restart)" is shown on whichever entry is saved but not active. Switching between Classic and Dark saves first, then offers "Restart Now / Later". A failed save never changes the saved marker, and the warning says which theme the next start will use.
 
 ## Checking how it looks

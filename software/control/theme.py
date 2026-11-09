@@ -14,7 +14,7 @@ from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Optional
 
-from qtpy.QtCore import QObject, Qt, Signal
+from qtpy.QtCore import QObject, Qt
 from qtpy.QtGui import QBrush, QColor, QFont, QFontDatabase, QPalette
 from qtpy.QtWidgets import QApplication, QWidget
 
@@ -381,8 +381,7 @@ QPushButton[role="primary"] {{ background: {accent}; color: {accent_text}; borde
 QPushButton[role="primary"]:hover {{ background: {primary_hover}; border-color: {primary_hover}; }}
 QPushButton[role="primary"]:pressed {{ background: {primary_pressed}; border-color: {primary_pressed}; }}
 QPushButton[role="primary"]:checked {{ background: {primary_checked}; border-color: {text}; }}
-/* After :checked: a checked button that is also disabled must look disabled */
-QPushButton[role="primary"]:disabled {{ background: {accent_soft}; color: {disabled_text}; border-color: {accent_soft}; }}
+QPushButton[role="primary"]:disabled, QPushButton[role="primary"]:checked:disabled {{ background: {accent_soft}; color: {disabled_text}; border-color: {accent_soft}; }}
 QPushButton[role="action"][on="true"] {{ background: {accent_soft}; border-color: {accent}; }}
 QPushButton[role="action"][on="true"]:disabled {{ background: {ground}; color: {disabled_text}; border-color: {border}; }}
 QPushButton[role="action-bold"] {{ font-weight: bold; }}
@@ -498,12 +497,9 @@ def build_stylesheet(tokens: Tokens, scale: float, icon_dir: Optional[Path]) -> 
 def build_palette(tokens: Tokens) -> QPalette:
     """A QPalette carrying the token colours, so unstyled and custom-painted widgets follow the theme."""
     palette = QPalette()
-    # Fusion draws bevels and separators from Dark, Mid and Midlight: keep them close to Button in both themes.
-    if _relative_luminance(tokens.ground) < 0.2:
-        dark, mid = _mix(tokens.button_bg, "#000000", 0.5), _mix(tokens.button_bg, "#000000", 0.75)
-        midlight = _mix(tokens.button_bg, tokens.tab_selected, 0.5)
-    else:
-        dark, mid, midlight = tokens.input_border_bottom, tokens.button_border, tokens.surface
+    # Fusion draws bevels and separators from Dark, Mid and Midlight: keep them close to Button.
+    dark, mid = _mix(tokens.button_bg, "#000000", 0.5), _mix(tokens.button_bg, "#000000", 0.75)
+    midlight = _mix(tokens.button_bg, tokens.tab_selected, 0.5)
     roles = {
         QPalette.Window: tokens.ground,
         QPalette.WindowText: tokens.text,
@@ -539,8 +535,12 @@ def write_theme_icons(tokens: Tokens, out_dir: Path) -> Optional[Path]:
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
         for name, token in _ICONS.items():
-            svg = (_ICON_TEMPLATE_DIR / name).read_text(encoding="utf-8")
-            (out_dir / name).write_text(svg.replace("currentColor", getattr(tokens, token)), encoding="utf-8")
+            svg = (
+                (_ICON_TEMPLATE_DIR / name).read_text(encoding="utf-8").replace("currentColor", getattr(tokens, token))
+            )
+            target = out_dir / name
+            if not target.is_file() or target.read_text(encoding="utf-8") != svg:  # skip the rewrite every start
+                target.write_text(svg, encoding="utf-8")
     except OSError:
         return None
     return out_dir
@@ -703,9 +703,7 @@ def _install_dock_theme(tokens: Optional[Tokens]) -> None:
 
 
 class ThemeManager(QObject):
-    """Applies Dark or Classic to the application and tells listeners when it changed."""
-
-    theme_changed = Signal(str)
+    """Applies Dark or Classic to the application. The GUI picks one at startup; a change needs a restart."""
 
     def __init__(self, app: QApplication):
         super().__init__()
@@ -732,8 +730,8 @@ class ThemeManager(QObject):
         return self._current == "classic"
 
     def needs_restart(self, new_theme: str) -> bool:
-        """True when switching to ``new_theme`` crosses between Classic and a skinned theme."""
-        return (self._current == "classic") != (new_theme == "classic")
+        """True when ``new_theme`` is not the active theme: the GUI never switches themes live."""
+        return new_theme != self._current
 
     def apply(self, theme: str) -> None:
         if theme not in THEMES:
@@ -768,7 +766,6 @@ class ThemeManager(QObject):
             app.setStyleSheet(sheet)
             _install_dock_theme(tokens)
         self._current = theme
-        self.theme_changed.emit(theme)
 
 
 def install(app: QApplication, theme: str) -> ThemeManager:
@@ -799,75 +796,39 @@ def manager() -> ThemeManager:
 def load_theme_choice() -> str:
     """The theme named by ``[GENERAL] ui_theme``; anything unknown falls back to ``"classic"``."""
     import control._def
-    import squid.logging
 
     raw = control._def.UI_THEME
     choice = str(raw).strip().lower()
     if choice in THEMES:
         return choice
-    squid.logging.get_logger("theme").warning(f"Unknown ui_theme {raw!r}; using 'classic'")
+    _log.warning(f"Unknown ui_theme {raw!r}; using 'classic'")
     return "classic"
 
 
 def save_theme_choice(ini_path: Optional[str], choice: str) -> bool:
-    """Write ``ui_theme = choice`` into ``[GENERAL]`` of ``ini_path``; False if it cannot be written."""
+    """Write ``ui_theme = choice`` into ``[GENERAL]`` of ``ini_path``, keeping every other line and comment;
+    False if it cannot be written."""
     if not ini_path:
         return False
     from configparser import ConfigParser, Error as ConfigParserError
 
-    # The same writer the Preferences dialog uses: the ini is either untouched or fully replaced, keeps its mode,
-    # group and symlink, and a read-only ini is refused.
-    from control.utils import write_ini_atomically
+    # The same atomic writer the Preferences dialog uses: the ini is either untouched or fully replaced, keeps its
+    # mode, group and symlink, and a read-only ini is refused.
+    from control.utils import update_ini_text, write_ini_atomically
 
     try:
         if not Path(ini_path).is_file():
             return False
         text = Path(ini_path).read_text(encoding="utf-8")
-        ConfigParser().read_string(text)  # refuse an ini Squid could not read back
-        write_ini_atomically(_IniText(_with_ui_theme(text, choice)), ini_path)
+        parser = ConfigParser()
+        parser.read_string(text)  # refuse an ini Squid could not read back
+        if not parser.has_section("GENERAL"):
+            text = text + ("" if text.endswith("\n") or not text else "\n") + "\n[GENERAL]\n"
+        new_text, _ = update_ini_text(text, {"ui_theme": choice}, "UI theme (Settings > Appearance)")
+        write_ini_atomically(new_text, ini_path)
         return True
-    except (OSError, UnicodeDecodeError, ConfigParserError):
+    except (OSError, UnicodeDecodeError, ConfigParserError, ValueError):
         return False
-
-
-class _IniText:
-    """Hands write_ini_atomically ready-made ini text in place of a ConfigParser."""
-
-    def __init__(self, text: str):
-        self._text = text
-
-    def write(self, f) -> None:
-        f.write(self._text)
-
-
-def _with_ui_theme(text: str, choice: str) -> str:
-    """``text`` with ``[GENERAL] ui_theme`` set to ``choice``; every other line, comment and blank line kept as is."""
-    import re
-
-    lines = text.splitlines(keepends=True)
-    if lines and not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
-    setting = f"ui_theme = {choice}\n"
-    in_general, general_end = False, None
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            if in_general:
-                break
-            in_general = stripped == "[GENERAL]"
-            if in_general:
-                general_end = i + 1
-            continue
-        if in_general:
-            if re.match(r"\s*ui_theme\s*[=:]", line, re.IGNORECASE):
-                lines[i] = setting
-                return "".join(lines)
-            if stripped:
-                general_end = i + 1
-    if general_end is None:
-        return "".join(lines) + ("\n" if lines else "") + "[GENERAL]\n" + setting
-    lines.insert(general_end, setting)
-    return "".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1021,7 +982,8 @@ def style_group(frame: QWidget, axis: str, part: str, active: bool) -> None:
     if manager().is_classic():
         frame.setStyleSheet(literal)
         return
-    frame.setStyleSheet("")
+    if frame.styleSheet():  # clearing an empty sheet still repolishes the whole subtree
+        frame.setStyleSheet("")
     frame.setProperty("role", "group" if part == "frame" else "group-body")
     frame.setProperty("active", bool(active))
     frame.setProperty("axis", axis)
@@ -1052,7 +1014,8 @@ def set_role(widget: QWidget, role: str, **states: bool) -> None:
     for name in widget.property("_roleStates") or []:
         if name not in states:
             widget.setProperty(name, False)
-    widget.setStyleSheet("")
+    if widget.styleSheet():  # clearing an empty sheet still repolishes the whole subtree
+        widget.setStyleSheet("")
     widget.setProperty("role", role)
     for name, value in states.items():
         widget.setProperty(name, value)
