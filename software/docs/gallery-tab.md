@@ -54,7 +54,7 @@ Settings > Preferences > Views:
 - **Enable NDViewer**: shows the NDViewer tab; governs Open in Squid.
 - **Z-stack projection**: Max intensity projection (default) or Last plane acquired.
 - **Record snaps in the acquisition history**: off by default. When on, Snap acquisitions are recorded (Snap badge and filter) and imported.
-- **ndviewer_light location**: a command or folder used first by Open in window.
+- **ndviewer_light location**: a command or folder used first by Open in window. A command line is split as the system splits one: on Windows the way Windows programs read theirs (double quotes group words; a backslash is literal except before a quote), elsewhere with shell quoting.
 
 ## Where the history lives
 

@@ -137,22 +137,76 @@ def test_def_flags_default():
     assert control._def.NDVIEWER_LIGHT_COMMAND == "" and control._def.RECORD_SNAPS_IN_HISTORY is False
 
 
-def test_windows_command_lines_split_by_double_quotes_only(monkeypatch):
-    """CommandLineToArgvW rules: an apostrophe in a path is not a quote, and a quoted value keeps its content."""
+# (text, what Windows makes of it): the CommandLineToArgvW examples from Microsoft's documentation, the reported cases
+# and the corner rules; on Windows, test_the_windows_splitter_agrees_with_commandlinetoargvw checks them against the
+# real parser.
+WINDOWS_COMMAND_LINES = [
+    # Microsoft's examples, as arguments (the program name itself is taken literally)
+    (r'"a b c" d e', ["a b c", "d", "e"]),
+    (r'x "ab\"c" "\\" d', ["x", 'ab"c', "\\", "d"]),
+    (r'x a\\\b d"e f"g h', ["x", "a\\\\\\b", "de fg", "h"]),
+    (r"x a\\\"b c d", ["x", 'a\\"b', "c", "d"]),
+    (r'x a\\\\"b c" d e', ["x", "a\\\\b c", "d", "e"]),
+    # the reported cases
+    (r"C:\Users\O'Brien\ndviewer-light.exe --flag", [r"C:\Users\O'Brien\ndviewer-light.exe", "--flag"]),
+    (r'viewer.exe --data="C:\a b"', ["viewer.exe", r"--data=C:\a b"]),
+    (r'viewer.exe --data="C:\data\\"', ["viewer.exe", "--data=C:\\data\\"]),
+    # the program name: literal up to the first blank, or up to the closing quote
+    (r'"C:\Program Files\x\" --flag', ["C:\\Program Files\\x\\", "--flag"]),
+    (r'a"b c" d', ['a"b', "c d"]),
+    # two quotes inside a quoted part are one literal quote; empty, tab-separated and unterminated quotes
+    (r'x "a""b" y', ["x", 'a"b y']),
+    (r'x "" y', ["x", "", "y"]),
+    ('x\ty "z\tw"', ["x", "y", "z\tw"]),
+    (r'x "unterminated', ["x", "unterminated"]),
+    ("", []),
+]
+
+
+@pytest.mark.parametrize("text, expected", WINDOWS_COMMAND_LINES)
+def test_windows_command_lines_are_split_as_windows_splits_them(monkeypatch, text, expected):
+    """A location typed into Preferences means what it would mean in a shortcut or the Run dialog."""
     from control.ndviewer_launcher import _split_preference
 
     monkeypatch.setattr(sys, "platform", "win32")
-    assert _split_preference(r"C:\Users\O'Brien\ndviewer-light.exe --flag") == [
-        r"C:\Users\O'Brien\ndviewer-light.exe",
-        "--flag",
-    ]
-    assert _split_preference(r'viewer.exe --data="C:\a b"') == ["viewer.exe", r"--data=C:\a b"]
-    assert _split_preference(r'"C:\Program Files\x\v.exe" path') == [r"C:\Program Files\x\v.exe", "path"]
-    with pytest.raises(ValueError):
-        _split_preference('"unterminated')
+    assert _split_preference(text) == expected
 
 
-def test_an_unparsable_preference_is_ignored_with_a_warning(caplog):
+@pytest.mark.skipif(sys.platform != "win32", reason="compares with Windows' own CommandLineToArgvW")
+def test_the_windows_splitter_agrees_with_commandlinetoargvw():
+    """The table above and a few hundred random mixes of blanks, quotes and backslashes, parsed by Windows itself."""
+    import ctypes
+    import random
+    from ctypes import wintypes
+
+    from control.ndviewer_launcher import _split_windows_command_line
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+
+    def windows_argv(text):
+        count = ctypes.c_int(0)
+        argv = shell32.CommandLineToArgvW(text, ctypes.byref(count))
+        assert argv, ctypes.get_last_error()
+        try:
+            return [argv[i] for i in range(count.value)]
+        finally:
+            kernel32.LocalFree(argv)
+
+    rng = random.Random(806)
+    texts = [text for text, _ in WINDOWS_COMMAND_LINES]
+    texts += ["".join(rng.choice('ab \t"\\') for _ in range(rng.randint(1, 12))) for _ in range(500)]
+    for text in texts:
+        text = text.lstrip(" \t")  # Windows gives leading blanks an empty program name; the splitter drops them
+        if text:  # an empty command line means "this program" to Windows
+            assert _split_windows_command_line(text) == windows_argv(text), repr(text)
+
+
+def test_an_unparsable_preference_is_ignored_with_a_warning(caplog, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")  # the shell's rules; Windows itself accepts an unterminated quote
     res = _resolve('"unterminated')
     assert res.source != "preference"
     assert "Ignoring the ndviewer_light location" in caplog.text

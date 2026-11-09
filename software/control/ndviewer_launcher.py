@@ -56,15 +56,63 @@ def _package_importable() -> bool:
 
 
 def _split_windows_command_line(text: str) -> List[str]:
-    """Split as Windows programs do (CommandLineToArgvW): only double quotes group words and a backslash is an
-    ordinary character, so a path with an apostrophe splits and a quoted value such as --data="C:\a b" keeps its
-    content without the quotes."""
-    lexer = shlex.shlex(text, posix=True)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    lexer.quotes = '"'
-    lexer.escape = ""
-    return list(lexer)
+    r"""Split text the way Windows programs see their command line (CommandLineToArgvW), so a location typed into
+    Preferences means what it would mean in a shortcut or the Run dialog. The program name ends at the first space or
+    tab, or at the closing quote when it starts with one, and is otherwise taken literally. In the arguments a double
+    quote groups words, two quotes inside a quoted part are one literal quote, 2n backslashes before a quote are n
+    backslashes, 2n+1 are n backslashes and a literal quote, and a backslash anywhere else is an ordinary character:
+    --data="C:\data\\" gives --data=C:\data\ and a path with an apostrophe splits only at its blanks. An unterminated
+    quote runs to the end. Blank text gives []. (A pure Python port, so the same code is tested on Linux CI; a test
+    compares it with the real function on Windows.)"""
+    text = text.lstrip(" \t")
+    if not text:
+        return []
+    n = len(text)
+    if text[0] == '"':
+        end = text.find('"', 1)
+        end = n if end < 0 else end
+        args = [text[1:end]]
+        i = end + 1
+    else:
+        i = 0
+        while i < n and text[i] not in " \t":
+            i += 1
+        args = [text[:i]]
+    while True:
+        while i < n and text[i] in " \t":
+            i += 1
+        if i >= n:
+            return args
+        chars: List[str] = []
+        in_quotes = False
+        while i < n:
+            c = text[i]
+            if c == "\\":
+                start = i
+                while i < n and text[i] == "\\":
+                    i += 1
+                count = i - start
+                if i < n and text[i] == '"':
+                    chars.append("\\" * (count // 2))
+                    if count % 2:  # an odd run: the quote is literal
+                        chars.append('"')
+                        i += 1
+                else:
+                    chars.append("\\" * count)
+            elif c == '"':
+                i += 1
+                if in_quotes and i < n and text[i] == '"':  # two quotes inside a quoted part: one literal quote
+                    chars.append('"')
+                    i += 1
+                    in_quotes = False
+                else:
+                    in_quotes = not in_quotes
+            elif c in " \t" and not in_quotes:
+                break
+            else:
+                chars.append(c)
+                i += 1
+        args.append("".join(chars))
 
 
 def _split_preference(preference: str) -> List[str]:
@@ -89,7 +137,7 @@ def _resolve_preference(preference: str, python: str) -> Optional[LauncherResolu
     except ValueError as e:
         _log.warning(f"Ignoring the ndviewer_light location {preference!r} from Preferences: {e}")
         return None
-    if tokens and (os.path.isabs(tokens[0]) is False or os.path.isfile(tokens[0])):
+    if tokens and tokens[0] and (not os.path.isabs(tokens[0]) or os.path.isfile(tokens[0])):
         # A command line such as "uv run ndviewer-light": trust the user's text.
         return LauncherResolution(tokens, "preference", reason)
     return None
