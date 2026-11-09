@@ -12,7 +12,10 @@ Use the real display: the offscreen platform renders no text on this machine.
 
 The GUI run installs the machine ini for the run only, refuses configurations that would drive real hardware
 under --simulation, and never reads or writes the operator's persisted GUI state (acquisition-widget settings,
-camera settings cache, cached stage position), so it can run beside a real Squid instance.
+camera settings cache, cached stage position). It can run beside a running Squid instance (private lock and log
+directory). One shared file is touched: cache/config_file_path.txt points at the capture's ini while
+control._def imports (about a second) and is put back before the GUI starts; do not start or restart Squid in
+that moment, or it would load the capture's configuration.
 """
 
 import argparse
@@ -70,7 +73,12 @@ def _install_machine_ini(ini_path):
     if os.path.exists(cache_path):
         with open(cache_path, "rb") as f:
             previous = f.read()
-    _config_state = {"copied": target if copied else None, "cache_path": cache_path, "previous": previous}
+    _config_state = {
+        "copied": target if copied else None,
+        "cache_path": cache_path,
+        "previous": previous,
+        "selector_restored": False,
+    }
     # _def compares the cached value against the strings of this exact glob expression.
     entries = [p for p in glob.glob("." + "/" + "configuration*.ini") if os.path.basename(p) == name]
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
@@ -78,11 +86,40 @@ def _install_machine_ini(ini_path):
         f.write(entries[0])
 
 
+def _release_selector():
+    """Put cache/config_file_path.txt back as it was. Idempotent.
+
+    The selector is shared with every Squid process on this machine and control._def reads it only at import, so
+    it is released right after that import: a Squid started during the rest of the capture loads the operator's
+    configuration, not the capture's. (The ini copy stays until exit: control._def keeps its path for later reads.)
+    """
+    state = _config_state
+    if state is None or state["selector_restored"]:
+        return
+    if state["previous"] is None:
+        if os.path.exists(state["cache_path"]):
+            os.remove(state["cache_path"])
+    else:
+        with open(state["cache_path"], "wb") as f:
+            f.write(state["previous"])
+    state["selector_restored"] = True
+
+
+def _load_config():
+    """Import control._def (which selects the ini through the selector), release the selector at once, then refuse
+    configurations that would drive real hardware."""
+    try:
+        import control._def  # noqa: F401
+    finally:
+        _release_selector()
+    _refuse_real_hardware()
+
+
 def _refuse_real_hardware():
     """Stop before any Qt or device code runs if the selected configuration would drive real hardware.
 
-    Must run after _install_machine_ini (control._def reads the ini at import) and before the dialog stubs and the
-    private instance lock are installed.
+    Runs from _load_config, after control._def has read the ini and before the dialog stubs and the private
+    instance lock are installed.
     """
     import control._def
 
@@ -130,20 +167,15 @@ def _leftovers_of_an_interrupted_run(machine_ini):
 def _restore_config():
     """Undo _install_machine_ini. Safe to call more than once.
 
-    cache/config_file_path.txt goes back first, so the machine is never left pointed at the run's ini; the ini copy
-    is removed second. The recovery state is kept until both steps have succeeded, so a step that raises (a
-    PermissionError while another process holds the file) can be retried by a later call.
+    The selector goes back first (normally already done by _load_config), so the machine is never left pointed at
+    the run's ini; the ini copy is removed second. The recovery state is kept until both steps have succeeded, so
+    a step that raises (a PermissionError while another process holds the file) can be retried by a later call.
     """
     global _config_state
     state = _config_state
     if state is None:
         return
-    if state["previous"] is None:
-        if os.path.exists(state["cache_path"]):
-            os.remove(state["cache_path"])
-    else:
-        with open(state["cache_path"], "wb") as f:
-            f.write(state["previous"])
+    _release_selector()
     if state["copied"] and os.path.exists(state["copied"]):
         os.remove(state["copied"])
     _config_state = None
@@ -336,7 +368,7 @@ def run_gui(out_dir, theme, font_spec, machine_ini):
     sys.path.insert(0, SOFTWARE_DIR)
     if machine_ini:
         _install_machine_ini(machine_ini)
-    _refuse_real_hardware()
+    _load_config()
     os.environ.setdefault("QT_API", "pyqt5")
     sys.argv = ["main_hcs.py", "--simulation"]
 
