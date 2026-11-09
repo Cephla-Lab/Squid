@@ -600,6 +600,27 @@ def test_validation_failure_reports_failed_to_start_exactly_once():
     assert not mpc.acquisition_in_progress()
 
 
+def test_an_exception_before_the_protected_region_leaves_no_start_under_way(monkeypatch):
+    """Something raising between the refusals and the protected region (here the per-acquisition log) must not leave
+    the controller believing a start is under way: the next refused start is still reported as finished."""
+    scope, tt, mpc = _controller_with_tracker()
+    try:
+
+        def unwritable_log():
+            raise OSError("the log folder is not writable")
+
+        monkeypatch.setattr(mpc, "_start_per_acquisition_log", unwritable_log)
+        with pytest.raises(OSError):
+            mpc.run_acquisition()
+        assert not mpc._another_acquisition_in_progress()
+
+        mpc.validate_acquisition_settings = lambda: False
+        assert mpc.run_acquisition() is False
+        assert tt.finished_count == 1
+    finally:
+        scope.close()
+
+
 def test_focus_map_without_scan_bounds_reports_failed_to_start_and_restores_the_camera():
     scope, tt, mpc = _controller_with_tracker()
     mpc.set_gen_focus_map_flag(True)

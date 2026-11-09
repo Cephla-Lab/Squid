@@ -799,10 +799,6 @@ class MultiPointController:
             self._log.error(f"Acquisition not started: {refusal}")
             self._end_refused_start(acquire_current_fov, run_protocol_info)
             return False
-        # From here to the worker thread this call is "starting": a second start refused meanwhile (Snap Images during
-        # a flexible acquisition) must not report this run's end. Only the call that set the flag clears it.
-        starting_here = not self._starting
-        self._starting = True
         self._start_per_acquisition_log()
 
         # Start memory monitoring for the acquisition (if enabled)
@@ -821,6 +817,11 @@ class MultiPointController:
         own_history_entry_id: Optional[str] = None  # the history entry this call records as started, once it does
         expected_image_count = 0
         self._run_state_writer = squid.acquisition_state.NullRunStateWriter()
+        # From here to the worker thread this call is "starting": a second start refused meanwhile (Snap Images during
+        # a flexible acquisition) must not report this run's end. Only the call that set the flag clears it, in the
+        # finally below, so the flag is set only where that finally is guaranteed to run.
+        starting_here = not self._starting
+        self._starting = True
         try:
             self._log.info("start multipoint")
             self._start_position = self.stage.get_pos()
