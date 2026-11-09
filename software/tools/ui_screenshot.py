@@ -9,6 +9,10 @@ The first form starts the simulated GUI, grabs a fixed set of views to PNG files
 `max_abs_diff=<n> differing_pixels=<m>` for two PNGs and writes DIR/diff.png.
 
 Use the real display: the offscreen platform renders no text on this machine.
+
+The GUI run installs the machine ini for the run only, refuses configurations that would drive real hardware
+under --simulation, and never reads or writes the operator's persisted GUI state (acquisition-widget settings,
+camera settings cache, cached stage position), so it can run beside a real Squid instance.
 """
 
 import argparse
@@ -30,7 +34,10 @@ CONFIG_CACHE = os.path.join("cache", "config_file_path.txt")
 MACHINE_INI_DIR = os.path.join("cache", "ui_screenshot")
 # What _install_machine_ini changed, so _restore_config can undo it. None while nothing is installed.
 _config_state = None
-_aside_state = None  # (original path, set-aside path) of persisted GUI state, or None
+# control._def flags that make Microscope.build_from_global_config construct real hardware even under --simulation
+# (control/microscope.py: the Prior stage has no simulated counterpart). This tool answers the homing prompt and
+# bypasses the single-instance lock, so such a configuration must never reach the GUI.
+HARDWARE_WITHOUT_SIMULATION = ("USE_PRIOR_STAGE",)
 
 
 def _default_machine_ini():
@@ -70,61 +77,71 @@ def _install_machine_ini(ini_path):
         f.write(entries[0])
 
 
-def _set_aside_persisted_gui_state():
-    """Hide the GUI state Squid persists between runs (the acquisition-widget checkboxes), so every capture
-    starts from the widget defaults rather than whatever the last session, test or run left behind."""
-    global _aside_state
-    path = os.path.join(SOFTWARE_DIR, "cache", "multipoint_widget_config.yaml")
-    if os.path.exists(path):
-        _aside_state = (path, path + ".ui_screenshot_aside")
-        os.replace(*_aside_state)
+def _refuse_real_hardware():
+    """Stop before any Qt or device code runs if the selected configuration would drive real hardware.
+
+    Must run after _install_machine_ini (control._def reads the ini at import) and before the dialog stubs and the
+    private instance lock are installed.
+    """
+    import control._def
+
+    live = [name for name in HARDWARE_WITHOUT_SIMULATION if getattr(control._def, name, False)]
+    if live:
+        raise SystemExit(
+            f"the configuration enables {', '.join(live)}, which --simulation does not simulate: this capture would "
+            "initialise and home real hardware. Pass --machine-ini with a configuration that does not enable it."
+        )
+
+
+def _install_private_gui_state():
+    """The capture starts from the widgets' defaults and never writes the operator's persisted GUI state.
+
+    The acquisition-widget settings (cache/multipoint_widget_config.yaml), the camera settings cache and the cached
+    stage position are shared with a real Squid instance that may be running alongside this capture; moving them
+    aside and back would discard whatever that instance saved in the meantime.
+    """
+    import squid.camera.settings_cache
+    import squid.stage.utils
+
+    squid.camera.settings_cache.save_camera_settings = lambda *args, **kwargs: None
+    squid.stage.utils.cache_position = lambda *args, **kwargs: None
+
+    import control.widgets
+
+    control.widgets.WellplateMultiPointWidget.load_multipoint_widget_config_from_cache = lambda self: None
+    control.widgets.WellplateMultiPointWidget.save_multipoint_widget_config_to_cache = lambda self: None
 
 
 def _leftovers_of_an_interrupted_run(machine_ini):
-    """Print a recovery hint for each file an interrupted run left behind; True if the run must not start."""
-    must_stop = False
-    state = os.path.join(SOFTWARE_DIR, "cache", "multipoint_widget_config.yaml")
-    if os.path.exists(state + ".ui_screenshot_aside"):
-        # Setting state aside again would overwrite the saved copy with this session's file.
-        print(f"leftover {state}.ui_screenshot_aside from an interrupted run: move it back to {state}, then rerun")
-        must_stop = True
+    """Print a recovery hint for a file an interrupted run left behind; True if the run must not start."""
     if machine_ini:
         copy = os.path.join(SOFTWARE_DIR, os.path.basename(machine_ini))
         if os.path.exists(copy) and os.path.abspath(copy) != os.path.abspath(machine_ini):
             if _same_contents(copy, machine_ini):
                 print(f"{copy} matches {machine_ini}: if you did not put it there, an interrupted run left it")
-    return must_stop
+    return False
 
 
 def _restore_config():
-    """Undo _install_machine_ini and _set_aside_persisted_gui_state. Safe to call more than once.
+    """Undo _install_machine_ini. Safe to call more than once.
 
-    The ini selection is restored even when putting the GUI state back fails (on Windows os.replace raises
-    PermissionError while another process holds the file): the machine must never be left pointed at the run's ini.
+    cache/config_file_path.txt goes back first, so the machine is never left pointed at the run's ini; the ini copy
+    is removed second. The recovery state is kept until both steps have succeeded, so a step that raises (a
+    PermissionError while another process holds the file) can be retried by a later call.
     """
-    global _aside_state
-    aside, _aside_state = _aside_state, None
-    try:
-        if aside is not None:
-            os.replace(aside[1], aside[0])  # also replaces any file the run wrote
-    finally:
-        _restore_ini_selection()
-
-
-def _restore_ini_selection():
-    """Remove the ini copy _install_machine_ini made and put cache/config_file_path.txt back as it was."""
     global _config_state
-    state, _config_state = _config_state, None
+    state = _config_state
     if state is None:
         return
-    if state["copied"] and os.path.exists(state["copied"]):
-        os.remove(state["copied"])
     if state["previous"] is None:
         if os.path.exists(state["cache_path"]):
             os.remove(state["cache_path"])
     else:
         with open(state["cache_path"], "wb") as f:
             f.write(state["previous"])
+    if state["copied"] and os.path.exists(state["copied"]):
+        os.remove(state["copied"])
+    _config_state = None
 
 
 def _run_exit_code(code):
@@ -312,9 +329,9 @@ def run_gui(out_dir, theme, font_spec, machine_ini):
     os.makedirs(out_dir, exist_ok=True)
     os.chdir(SOFTWARE_DIR)
     sys.path.insert(0, SOFTWARE_DIR)
-    _set_aside_persisted_gui_state()
     if machine_ini:
         _install_machine_ini(machine_ini)
+    _refuse_real_hardware()
     os.environ.setdefault("QT_API", "pyqt5")
     sys.argv = ["main_hcs.py", "--simulation"]
 
@@ -322,6 +339,7 @@ def run_gui(out_dir, theme, font_spec, machine_ini):
     from qtpy.QtWidgets import QApplication
 
     _install_process_hygiene()
+    _install_private_gui_state()
     _install_dialog_stubs()
     _install_private_instance_lock()
     if theme:

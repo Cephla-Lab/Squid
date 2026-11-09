@@ -126,7 +126,7 @@ python tools/ui_screenshot.py --theme classic --out cache/ui_check/classic
 python tools/ui_screenshot.py --compare cache/ui_baseline/classic/01-main-default.png cache/ui_check/classic/01-main-default.png --out cache/ui_check/diff
 ```
 
-It prints the font in use and the measured Controls column width, installs the operator's machine ini only for the run (from `cache/ui_screenshot/*.ini`), uses a private single-instance lock and log directory so it can run beside a real Squid, and exits non-zero if a capture is missing. The offscreen Qt platform renders no text on Windows, so screenshots need a real display; the logic tests do not.
+It prints the font in use and the measured Controls column width, installs the operator's machine ini only for the run (from `cache/ui_screenshot/*.ini`), refuses a configuration that would drive real hardware under `--simulation` (a Prior stage), never reads or writes the operator's persisted GUI state, uses a private single-instance lock and log directory so it can run beside a real Squid, and exits non-zero if a capture is missing. The offscreen Qt platform renders no text on Windows, so screenshots need a real display; the logic tests do not.
 
 ## Tests
 
