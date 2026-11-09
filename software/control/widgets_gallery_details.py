@@ -36,8 +36,7 @@ from control.gallery_previews import (
     array_to_pixmap,
     channel_rgb,
     composite,
-    find_preview_source,
-    load_channel_planes,
+    load_preview_planes,
     load_thumbnail_array,
 )
 from squid.acquisition_history import HistoryEntry
@@ -439,8 +438,7 @@ class GalleryDetailsPane(QWidget):
             self._emit(self._events.loaded, token, "yaml", _read_yaml_text(yaml_folder))
         if planes_folder is not None and token == self._token:
             try:
-                source = find_preview_source(planes_folder)
-                planes = load_channel_planes(source, PREVIEW_SIDE) if source.kind != "none" else {}
+                planes = load_preview_planes(planes_folder, PREVIEW_SIDE)[1]
             except Exception:
                 _log.exception(f"Reading the preview planes of {planes_folder} failed")
                 planes = {}

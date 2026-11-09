@@ -15,6 +15,7 @@ from control.gallery_previews import (
     composite,
     find_preview_source,
     load_channel_planes,
+    load_preview_planes,
     load_thumbnail_array,
     stretch_to_unit,
     write_preview_png,
@@ -275,3 +276,71 @@ def test_channel_names_fall_back_to_the_older_acquisition_channels_file(saving_r
     src = find_preview_source(str(folder))
     assert sorted(src.channels) == ["488 nm", BF]
     assert os.path.basename(src.image_paths["488 nm"]) == "A1_0_0_488_nm.tiff"
+
+
+def test_an_overview_that_does_not_open_gives_way_to_an_earlier_one_and_then_to_the_images(saving_root, tmp_path):
+    """A mosaic save that failed part-way leaves a file the previews cannot open: the preview comes from the previous
+    timepoint's overview, or from the first images."""
+    folder = write_acquisition(saving_root, "exp", nt=2, with_overview=True)
+    (folder / "1" / "mosaic_view" / "mosaic_plate_5um.ome.tiff").write_bytes(b"not a tiff")
+    src = find_preview_source(str(folder))
+    assert src.kind == "overview"
+    assert src.overview_path.endswith(os.path.join("0", "mosaic_view", "mosaic_plate_5um.ome.tiff"))
+    (folder / "0" / "mosaic_view" / "mosaic_plate_5um.ome.tiff").write_bytes(b"not a tiff")
+    assert find_preview_source(str(folder)).kind == "images"
+    assert set(write_preview_png(str(folder), str(tmp_path / "preview.png"))) == {BF, F488}
+
+
+def test_an_overview_whose_pages_do_not_decode_gives_way_to_the_next_source(saving_root, tmp_path):
+    """The file opens (its header is intact) but its image data is damaged, so no plane decodes: the PNG and the
+    details pane fall back to the first images instead of showing nothing."""
+    folder = write_acquisition(saving_root, "exp", nt=1, with_overview=True)
+    overview = folder / "0" / "mosaic_view" / "mosaic_plate_5um.ome.tiff"
+    stack = np.random.default_rng(1).integers(0, 4000, (2, 40, 60), dtype=np.uint16)
+    tifffile.imwrite(overview, stack, metadata={"axes": "CYX"}, compression="zlib")
+    damaged = bytearray(overview.read_bytes())
+    with tifffile.TiffFile(overview) as tif:
+        for page in tif.pages:
+            for offset, count in zip(page.dataoffsets, page.databytecounts):
+                damaged[offset : offset + count] = b"\xff" * count
+    overview.write_bytes(bytes(damaged))
+
+    assert find_preview_source(str(folder)).kind == "overview"  # its header still reads
+    source, planes = load_preview_planes(str(folder), PREVIEW_MAX_SIDE)
+    assert source.kind == "images" and set(planes) == {BF, F488}
+    assert set(write_preview_png(str(folder), str(tmp_path / "preview.png"))) == {BF, F488}
+
+
+def test_a_large_uncompressed_overview_is_sampled_through_a_memory_map(tmp_path, monkeypatch):
+    """A plate-wide overview is never loaded whole: a page that can be memory-mapped is sampled from the file; a
+    compressed one is still read in full, and both give the same picture."""
+    import control.gallery_previews as previews
+
+    reads = []
+    real_asarray = tifffile.TiffPage.asarray
+
+    def spying_asarray(self, *args, **kwargs):
+        reads.append(kwargs.get("out"))
+        return real_asarray(self, *args, **kwargs)
+
+    monkeypatch.setattr(tifffile.TiffPage, "asarray", spying_asarray)
+    ramp = (np.arange(1100) * 54).astype(np.uint16)
+    stack = np.stack([np.tile(ramp, (1100, 1)), np.tile(ramp[:, None], (1, 1100))])  # (2, 1100, 1100)
+    plain = tmp_path / "mosaic_plate_2um.ome.tiff"
+    tifffile.imwrite(plain, stack, metadata={"axes": "CYX"})
+    source = previews.PreviewSource("overview", overview_path=str(plain), channels=["a", "b"])
+
+    planes = load_channel_planes(source, 256)
+
+    assert reads == ["memmap", "memmap"]
+    assert planes["a"].shape == (256, 256) and planes["a"].dtype == np.uint16
+    reference = previews._to_plane(stack[0], 256)
+    assert np.abs(planes["a"].astype(int) - reference.astype(int)).max() < 300  # sampled, then area-averaged
+
+    reads.clear()
+    compressed = tmp_path / "mosaic_plate_2um_zlib.ome.tiff"
+    tifffile.imwrite(compressed, stack, metadata={"axes": "CYX"}, compression="zlib")
+    source = previews.PreviewSource("overview", overview_path=str(compressed), channels=["a", "b"])
+    planes = load_channel_planes(source, 256)
+    assert reads == [None, None]
+    assert np.array_equal(planes["b"], previews._to_plane(stack[1], 256))

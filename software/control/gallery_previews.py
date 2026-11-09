@@ -6,7 +6,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -233,24 +233,25 @@ def _ome_plane_count(path: str) -> int:
     return int(shape[axes.index("C")]) if "C" in axes else 1
 
 
-def find_preview_source(folder: str) -> PreviewSource:
-    """The latest timepoint's mosaic overview if any timepoint has one, else the first FOV of the first timepoint:
-    its channel images, its multi-page TIFF stack, or its OME-TIFF."""
+def _preview_sources(folder: str) -> Iterator[PreviewSource]:
+    """The folder's preview sources, best first: each timepoint's mosaic overview from the latest back (skipping one
+    whose file does not open, as a save that failed part-way leaves it), then the first FOV of the first timepoint as
+    channel images, as a multi-page TIFF stack, or as an OME-TIFF."""
     timepoints = _timepoint_dirs(folder)
     for _, path in reversed(timepoints):
         overview = _overview_in(path)
-        if overview:
-            return PreviewSource("overview", overview_path=overview, channels=_overview_channel_names(overview))
+        if overview and _overview_plane_count(overview):
+            yield PreviewSource("overview", overview_path=overview, channels=_overview_channel_names(overview))
     if timepoints:
         first = timepoints[0][1]
         images = _first_fov_images(first, _acquisition_channel_names(folder))
         if images:
-            return PreviewSource("images", image_paths=images, channels=list(images))
+            yield PreviewSource("images", image_paths=images, channels=list(images))
         stack = _first_fov_file(first, _STACK_NAME)
         if stack:
             pages = _stack_channel_pages(stack)
             if pages:
-                return PreviewSource("stack", stack_path=stack, stack_pages=pages, channels=list(pages))
+                yield PreviewSource("stack", stack_path=stack, stack_pages=pages, channels=list(pages))
     ome_dirs = [os.path.join(folder, "ome_tiff")]
     if timepoints:
         ome_dirs += [os.path.join(timepoints[0][1], "ome_tiff"), timepoints[0][1]]
@@ -262,8 +263,25 @@ def find_preview_source(folder: str) -> PreviewSource:
                 names = _ome_channel_names(ome)
                 if len(names) != count:
                     names = [f"channel {i + 1}" for i in range(count)]
-                return PreviewSource("ome", ome_path=ome, channels=names)
-    return PreviewSource()
+                yield PreviewSource("ome", ome_path=ome, channels=names)
+
+
+def find_preview_source(folder: str) -> PreviewSource:
+    """The best preview source whose file opens: the latest timepoint's mosaic overview if any timepoint has one, else
+    the first FOV of the first timepoint (its channel images, its multi-page TIFF stack, or its OME-TIFF)."""
+    return next(_preview_sources(folder), PreviewSource())
+
+
+def load_preview_planes(folder: str, max_side: int) -> Tuple[PreviewSource, Dict[str, np.ndarray]]:
+    """The first preview source with readable planes, and those planes (as load_channel_planes gives them): an
+    overview whose file opens but whose pages do not decode gives way to the next source. (PreviewSource(), {}) when
+    no source has a readable plane."""
+    for source in _preview_sources(folder):
+        planes = load_channel_planes(source, max_side)
+        if planes:
+            return source, planes
+        _log.warning(f"No readable plane in the {source.kind} preview source of {folder}; trying the next source")
+    return PreviewSource(), {}
 
 
 def _downsample(plane: np.ndarray, max_side: int) -> np.ndarray:
@@ -287,6 +305,20 @@ def _to_plane(array: np.ndarray, max_side: int) -> Optional[np.ndarray]:
     return _downsample(np.ascontiguousarray(array), max_side)
 
 
+def _read_page_plane(page, max_side: int) -> Optional[np.ndarray]:
+    """A TIFF page as a plane no longer than max_side on a side. A page far larger than that which can be memory-mapped
+    (uncompressed and contiguous, as the mosaic writer saves overviews) is sampled every `step` pixels straight from
+    the file first, so a plate-wide overview of several GB is never loaded whole; any other page is read in full."""
+    step = max(1, max(page.shape[:2]) // (2 * max_side))
+    if step > 1 and page.is_memmappable:
+        mapped = page.asarray(out="memmap")
+        try:
+            return _to_plane(np.array(mapped[::step, ::step]), max_side)
+        finally:
+            del mapped
+    return _to_plane(page.asarray(), max_side)
+
+
 def _read_overview_planes(source: PreviewSource, max_side: int) -> Dict[str, np.ndarray]:
     planes: Dict[str, np.ndarray] = {}
     with tifffile.TiffFile(source.overview_path) as tif:
@@ -295,7 +327,7 @@ def _read_overview_planes(source: PreviewSource, max_side: int) -> Dict[str, np.
         for i in range(count):
             name = source.channels[i] if i < len(source.channels) else f"channel {i + 1}"
             try:
-                plane = _to_plane(series.pages[i].asarray(), max_side)
+                plane = _read_page_plane(series.pages[i], max_side)
             except Exception:
                 _log.exception(f"Cannot read plane {i} of {source.overview_path}")
                 continue
@@ -435,10 +467,7 @@ def composite(planes: Dict[str, np.ndarray], visible: Optional[set] = None) -> n
 def write_preview_png(folder: str, out_path: str, max_side: int = PREVIEW_MAX_SIDE) -> Optional[List[str]]:
     """Write the folder's composite preview to out_path; the channel list, or None when there is nothing to show."""
     try:
-        source = find_preview_source(folder)
-        if source.kind == "none":
-            return None
-        planes = load_channel_planes(source, max_side)
+        source, planes = load_preview_planes(folder, max_side)
         if not planes:
             return None
         rgb = composite(planes)
