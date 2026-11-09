@@ -100,7 +100,9 @@ def test_save_theme_choice_adds_the_key_inside_general(tmp_path):
     ini = tmp_path / "configuration_test.ini"
     ini.write_text("[GENERAL]\ncamera_type = Default\n\n[OTHER]\nkey = 1\n")
     assert theme.save_theme_choice(str(ini), "dark") is True
-    assert ini.read_text() == "[GENERAL]\ncamera_type = Default\nui_theme = dark\n\n[OTHER]\nkey = 1\n"
+    assert ini.read_text() == (
+        "[GENERAL]\ncamera_type = Default\n# UI theme (Settings > Appearance)\nui_theme = dark\n\n[OTHER]\nkey = 1\n"
+    )
 
 
 def test_save_theme_choice_refuses_an_unreadable_ini(tmp_path):

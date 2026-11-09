@@ -42,12 +42,6 @@ def test_needs_restart_only_across_classic(mgr):
     assert mgr.needs_restart("dark") and not mgr.needs_restart("classic")
 
 
-def test_theme_changed_is_emitted_with_the_name(qapp, mgr, qtbot):
-    with qtbot.waitSignal(mgr.theme_changed) as blocker:
-        mgr.apply("dark")
-    assert blocker.args == ["dark"]
-
-
 def test_color_and_row_brush_follow_current_theme(mgr):
     mgr.apply("dark")
     assert mgr.color("accent") == QColor("#4cc2ff")

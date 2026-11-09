@@ -268,7 +268,6 @@ class JupyterWidget(QWidget):
         self.jupyter_widget.kernel_manager = self.kernel_manager
         self.jupyter_widget.kernel_client = self.kernel_client
         self._restyle_console()
-        theme.manager().theme_changed.connect(self._restyle_console)
 
         # Layout
         layout = QVBoxLayout()
@@ -278,9 +277,9 @@ class JupyterWidget(QWidget):
         # Emit signal when kernel is ready
         self.kernel_ready.emit()
 
-    def _restyle_console(self, *_):
+    def _restyle_console(self):
         """Dark console colours in Dark; Classic keeps qtconsole's default."""
-        if theme.manager().current == "dark":
+        if not theme.manager().is_classic():
             self.jupyter_widget.set_default_style(colors="linux")
 
     def execute_command(self, command):

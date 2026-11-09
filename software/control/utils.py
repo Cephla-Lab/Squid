@@ -237,8 +237,40 @@ def ensure_directory_exists(raw_string_path: str):
     path.mkdir(parents=True, exist_ok=True)
 
 
+def update_ini_text(text: str, updates: dict, comment: str):
+    """Set `updates` (key -> value) in the [GENERAL] section of an ini file's text, keeping every other line,
+    comment and the file's line endings. An existing key is replaced in place; missing keys are appended to
+    the end of [GENERAL] under `comment`. Returns (new_text, {key: (old_or_None, new)})."""
+    nl = "\r\n" if "\r\n" in text else "\n"
+    lines = text.replace("\r\n", "\n").split("\n")
+    start = next((i for i, l in enumerate(lines) if l.strip().upper() == "[GENERAL]"), None)
+    if start is None:
+        raise ValueError("no [GENERAL] section in the ini")
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip().startswith("[")), len(lines))
+    changes, missing = {}, []
+    for key, value in updates.items():
+        hit = next(
+            (i for i in range(start + 1, end) if lines[i].split("=", 1)[0].strip().lower() == key and "=" in lines[i]),
+            None,
+        )
+        if hit is None:
+            missing.append(key)
+            changes[key] = (None, str(value))
+        else:
+            old = lines[hit].split("=", 1)[1].strip()
+            lines[hit] = f"{key} = {value}"
+            changes[key] = (old, str(value))
+    if missing:
+        insert_at = end
+        while insert_at > start + 1 and lines[insert_at - 1].strip() == "":
+            insert_at -= 1
+        block = [f"# {comment}"] + [f"{k} = {updates[k]}" for k in missing]
+        lines[insert_at:insert_at] = block
+    return nl.join(lines), changes
+
+
 def write_ini_atomically(config, path: str):
-    """Write a ConfigParser to path so that a failed write (a full disk, say) leaves the file as it was, rather than
+    """Write a ConfigParser (or ready-made ini text) to path so that a failed write (a full disk, say) leaves the file as it was, rather than
     emptied or cut off: the text goes to a temp file next to it, which then replaces it. Squid reads the machine ini
     at start-up, so a half-written one stops it starting. A read-only file still raises PermissionError, as writing
     it in place did (replacing it would succeed on Linux)."""
@@ -254,7 +286,10 @@ def write_ini_atomically(config, path: str):
         with f:
             if os.path.exists(path):  # before the fsync below, so it covers these too
                 _give_the_access_of(path, tmp_path)
-            config.write(f)
+            if isinstance(config, str):
+                f.write(config)
+            else:
+                config.write(f)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)

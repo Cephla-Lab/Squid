@@ -298,10 +298,8 @@ class WorkflowRunnerDialog(QDialog):
         self._workflow = Workflow.create_default()
         self._is_running = False
         self._is_paused = False
-        self._highlight_index = -1
         self._setup_ui()
         self._load_workflow_to_table()
-        theme.manager().theme_changed.connect(self._recolour_rows)
 
     def _setup_ui(self):
         self.setWindowTitle("Workflow Runner")
@@ -487,7 +485,7 @@ class WorkflowRunnerDialog(QDialog):
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         item.setBackground(theme.manager().row_brush("row_highlight"))
         if include_foreground:
-            item.setForeground(QBrush(theme.manager().color("row_text_muted")))
+            item.setForeground(theme.manager().row_brush("row_text_muted"))
 
     def _on_include_toggled(self, row: int, checked: bool):
         """Handle include checkbox toggle."""
@@ -729,7 +727,6 @@ class WorkflowRunnerDialog(QDialog):
 
     def highlight_sequence(self, index: int):
         """Highlight the currently running sequence."""
-        self._highlight_index = index
         for row in range(self.table.rowCount()):
             background = self._get_row_background_color(row, is_running=(row == index))
             for col in range(self.table.columnCount()):
@@ -746,16 +743,6 @@ class WorkflowRunnerDialog(QDialog):
         if seq and seq.is_acquisition():
             return mgr.row_brush("row_highlight")
         return mgr.row_brush("input_bg")
-
-    def _recolour_rows(self) -> None:
-        """Repaint row brushes for the current theme without touching cell text or widgets."""
-        self.highlight_sequence(self._highlight_index)
-        muted = QBrush(theme.manager().color("row_text_muted"))
-        for row in range(self.table.rowCount()):
-            for col in range(self.table.columnCount()):
-                item = self.table.item(row, col)
-                if item is not None and item.foreground().style() != Qt.NoBrush:
-                    item.setForeground(muted)
 
     def clear_highlight(self):
         """Clear all row highlights."""

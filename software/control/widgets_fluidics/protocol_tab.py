@@ -10,7 +10,6 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from qtpy.QtCore import QSignalBlocker, Qt, QTimer, Signal
-from qtpy.QtGui import QBrush
 from qtpy.QtWidgets import (
     QDialog,
     QCheckBox,
@@ -130,7 +129,6 @@ class ProtocolTab(QWidget):
 
         self._build_ui()
         self._render()
-        theme.manager().theme_changed.connect(self._recolour_rows)
 
     # ---------- public surface ----------
 
@@ -226,23 +224,6 @@ class ProtocolTab(QWidget):
         if not self._protocol.sequences:
             return "the protocol is empty"
         return None
-
-    def _recolour_rows(self) -> None:
-        """Repaint the invalid/marked row brushes for the current theme without re-rendering the tree."""
-        mgr = theme.manager()
-        for gi in range(self.tree.topLevelItemCount()):
-            group = self.tree.topLevelItem(gi)
-            for ci in range(group.childCount()):
-                child = group.child(ci)
-                index = child.data(0, Qt.UserRole)
-                if index in self._problems:
-                    brush = mgr.row_brush("row_invalid")
-                elif index == self._highlight_row:
-                    brush = mgr.row_brush("row_marked")
-                else:
-                    continue
-                for column in range(7):
-                    child.setBackground(column, brush)
 
     def highlight_row(self, row_index: Optional[int]) -> None:
         self._highlight_row = row_index
