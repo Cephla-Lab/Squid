@@ -1,18 +1,19 @@
-# UI Theme (Light / Dark / Classic)
+# UI Theme (Classic / Dark)
 
 This document describes how the Squid GUI is skinned and, more importantly, the rules new GUI code must follow so it renders correctly in every theme. The design rationale and implementation plan are kept with the team's internal planning documents; this is the working reference.
 
 ## Overview
 
-Squid ships three looks, chosen from **Settings > Appearance** and stored in the machine `.ini` as `[GENERAL] ui_theme`:
+Squid ships two looks, chosen from **Settings > Appearance** and stored in the machine `.ini` as `[GENERAL] ui_theme`:
 
 | Theme | What it is | Switch |
 |---|---|---|
-| `light` (default) | "Soft native" skin: Windows 11 Fluent feel, cards on a soft grey ground, one accent colour | live |
-| `dark` | Same skin on charcoal surfaces, sky-blue accent | live |
-| `classic` | The pre-skin look: Fusion style, default palette, no application stylesheet | after restart |
+| `classic` (default) | The pre-skin look: Fusion style, default palette, no application stylesheet | after restart |
+| `dark` | "Soft native" skin on charcoal surfaces, sky-blue accent | after restart |
 
-Light and Dark are one stylesheet rendered from two token sets. Classic is **not** a third stylesheet: it is the absence of one, plus the exact colour literals the code used before the skin existed. Every theme-aware call site therefore has two behaviours: "apply today's literal" (Classic) or "tag the widget and let the stylesheet decide" (Light/Dark).
+An earlier version also offered a `light` skin. It was removed; an ini that still says `ui_theme = light` falls back to Classic. The `LIGHT` token set remains in `control/theme.py` only as the base that `CLASSIC` is copied from.
+
+Dark is a stylesheet rendered from a token set. Classic is **not** a second stylesheet: it is the absence of one, plus the exact colour literals the code used before the skin existed. Every theme-aware call site therefore has two behaviours: "apply today's literal" (Classic) or "tag the widget and let the stylesheet decide" (Dark).
 
 Everything lives in `control/theme.py`. That module imports only the standard library, qtpy and pyqtgraph, never `control._def` or `squid.*` at module scope, so it can be imported before the configuration system and under either Qt binding.
 
@@ -38,7 +39,7 @@ Startup (`main_hcs.py`) calls `control.theme.install(app, control.theme.load_the
 
 Two details that are easy to break:
 
-- **Order matters in `apply`.** The palette and font are set before the stylesheet. A stylesheet change repolishes every widget against the palette in force at that moment; a palette set afterwards does not reach already-polished widgets (symptom: white text edits and scroll areas after a live Light to Dark switch).
+- **Order matters in `apply`.** The palette and font are set before the stylesheet. A stylesheet change repolishes every widget against the palette in force at that moment; a palette set afterwards does not reach already-polished widgets (symptom: white text edits and scroll areas under Dark).
 - **Classic on a pristine app is a no-op.** `apply("classic")` only undoes what the manager itself did. Calling `setFont`/`setPalette` on an untouched application would override the platform theme's per-class fonts and change Classic's rendering. Classic is verified pixel-identical to the pre-skin baseline; keep it that way.
 
 ## Rules for new GUI code
@@ -58,7 +59,7 @@ theme.set_role(panel, "card")                        # a floating card (sets WA_
 theme.set_role(group_box, "group-plain")             # an untitled QGroupBox without the title band
 ```
 
-`set_role` applies the Classic literal in Classic and, in Light/Dark, clears the widget stylesheet, sets `role` (and any state) as dynamic properties and repolishes. States are independent properties, so a state omitted on a later call is switched off rather than left stale.
+`set_role` applies the Classic literal in Classic and, in Dark, clears the widget stylesheet, sets `role` (and any state) as dynamic properties and repolishes. States are independent properties, so a state omitted on a later call is switched off rather than left stale.
 
 The full role list is `CLASSIC_STYLES` in `control/theme.py`. The common ones:
 
@@ -89,7 +90,7 @@ item.setForeground(m.row_brush("row_text_muted"))
 pen = QPen(m.color("danger_text"))
 ```
 
-In Classic the token values are the literals the code used before, so behaviour is unchanged there. If a widget stays open across a live Light/Dark switch, connect to `theme.manager().theme_changed` and recolour (see `ControllerPortMappingDialog._recolour_rows` or `WarningErrorWidget._restyle` for the pattern).
+In Classic the token values are the literals the code used before, so behaviour is unchanged there. If a widget stays open across a live theme switch, connect to `theme.manager().theme_changed` and recolour (see `ControllerPortMappingDialog._recolour_rows` or `WarningErrorWidget._restyle` for the pattern).
 
 ### 4. What may stay literal
 
@@ -103,17 +104,17 @@ A new meaning needs three edits, and a test enforces the third:
 2. A `[role="<role>"]` rule in `build_stylesheet`, written against tokens (`{accent}`, `{muted}`, ...), never a hex literal.
 3. If the rule needs a colour that no token provides, add the field to `Tokens` and give it a value in all three of `LIGHT`, `DARK` and `CLASSIC`.
 
-`tests/control/test_theme_roles.py::test_every_classic_role_has_a_light_rule` fails when step 2 is missing. `tests/control/test_theme_conversion.py` scans the converted widget files for the old literals and fails if one creeps back; add new widget files to its `SCANNED` tuple when you convert them.
+`tests/control/test_theme_roles.py::test_every_classic_role_has_a_skinned_rule` fails when step 2 is missing. `tests/control/test_theme_conversion.py` scans the converted widget files for the old literals and fails if one creeps back; add new widget files to its `SCANNED` tuple when you convert them.
 
 ### 6. Widths and clipping
 
-The skin uses Segoe UI 8 pt on Windows (the system UI font elsewhere) and keeps Fusion's natural control heights, so the Controls column is within a few percent of its Classic width. Padding is tuned so no label clips at Classic's column width; if you add a wide control, check it in Light with the screenshot tool below rather than widening the column.
+The skin uses Segoe UI 8 pt on Windows (the system UI font elsewhere) and keeps Fusion's natural control heights, so the Controls column is within a few percent of its Classic width. Padding is tuned so no label clips at Classic's column width; if you add a wide control, check it in Dark with the screenshot tool below rather than widening the column.
 
 ## Persistence and the Appearance menu
 
-- `load_theme_choice()` reads `control._def.UI_THEME` (parsed from `[GENERAL] ui_theme`; unknown values fall back to `light`).
+- `load_theme_choice()` reads `control._def.UI_THEME` (parsed from `[GENERAL] ui_theme`; unknown values, including the removed `light`, fall back to `classic`).
 - `save_theme_choice(ini_path, choice)` writes the key through `control.utils.write_ini_atomically`, the same writer the Preferences dialog uses, and returns `False` instead of raising when the ini is missing or read-only.
-- The menu (`HighContentScreeningGui._build_appearance_menu`) tracks the **saved** theme separately from the active one. "(after restart)" is shown on whichever entry is saved but not active. Light and Dark apply live; entering or leaving Classic saves first, then offers "Restart Now / Later". A failed save never changes the saved marker, and the warning says which theme the next start will use.
+- The menu (`HighContentScreeningGui._build_appearance_menu`) tracks the **saved** theme separately from the active one. "(after restart)" is shown on whichever entry is saved but not active. Switching between Classic and Dark saves first, then offers "Restart Now / Later". A failed save never changes the saved marker, and the warning says which theme the next start will use.
 
 ## Checking how it looks
 
@@ -121,7 +122,7 @@ The skin uses Segoe UI 8 pt on Windows (the system UI font elsewhere) and keeps 
 
 ```bash
 cd software
-python tools/ui_screenshot.py --theme light --out cache/ui_check/light
+python tools/ui_screenshot.py --theme dark --out cache/ui_check/dark
 python tools/ui_screenshot.py --theme classic --out cache/ui_check/classic
 python tools/ui_screenshot.py --compare cache/ui_baseline/classic/01-main-default.png cache/ui_check/classic/01-main-default.png --out cache/ui_check/diff
 ```
@@ -135,7 +136,7 @@ It prints the font in use and the measured Controls column width, installs the o
 | `tests/control/test_theme.py` | tokens, contrast ratios, stylesheet and palette generation, icon recolouring |
 | `tests/control/test_theme_manager.py` | apply order, Classic no-op, restart rule, dock patch guard |
 | `tests/control/test_theme_persistence.py` | ini read/write, atomic writer, failure modes |
-| `tests/control/test_theme_roles.py` | `set_role`, states, `style_group`, every role has a Light rule |
+| `tests/control/test_theme_roles.py` | `set_role`, states, `style_group`, every role has a skinned rule |
 | `tests/control/test_theme_conversion.py` | no old literals in converted widget files |
 | `tests/control/test_theme_brushes.py` | row brushes and code-painted colours (GUI, own process) |
 | `tests/control/test_theme_menu.py` | the Appearance menu end to end (GUI, own process) |

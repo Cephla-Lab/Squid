@@ -1,6 +1,6 @@
 """Theme tokens and their rendering to an application stylesheet, a QPalette and recoloured indicator icons.
 
-Light and Dark are the "soft native" skin; Classic is today's look (no stylesheet, default palette) and only
+Dark is the "soft native" skin; Classic is the default look (no stylesheet, default palette) and only
 contributes the literal row colours the code uses today. Every length here is a logical px at 96 dpi; the
 stylesheet scales lengths with ``scale_factor``.
 
@@ -18,7 +18,7 @@ from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtGui import QBrush, QColor, QFont, QFontDatabase, QPalette
 from qtpy.QtWidgets import QApplication, QWidget
 
-THEMES = ("light", "dark", "classic")
+THEMES = ("classic", "dark")
 
 _ICON_TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "icon" / "theme"
 
@@ -99,6 +99,7 @@ class Tokens:
     checkbox_size: int
 
 
+# Not a selectable theme any more: the base set CLASSIC is copied from (and a token set for stylesheet tests).
 LIGHT = Tokens(
     ground="#f3f3f3",
     surface="#fbfbfb",
@@ -377,10 +378,11 @@ QPushButton:pressed {{ background: {ground}; }}
 QPushButton:checked {{ background: {accent_soft}; border-color: {accent}; }}
 QPushButton:disabled {{ background: {ground}; color: {disabled_text}; border-color: {border}; }}
 QPushButton[role="primary"] {{ background: {accent}; color: {accent_text}; border-color: {accent}; }}
-QPushButton[role="primary"]:disabled {{ background: {accent_soft}; color: {disabled_text}; border-color: {accent_soft}; }}
 QPushButton[role="primary"]:hover {{ background: {primary_hover}; border-color: {primary_hover}; }}
 QPushButton[role="primary"]:pressed {{ background: {primary_pressed}; border-color: {primary_pressed}; }}
 QPushButton[role="primary"]:checked {{ background: {primary_checked}; border-color: {text}; }}
+/* After :checked: a checked button that is also disabled must look disabled */
+QPushButton[role="primary"]:disabled {{ background: {accent_soft}; color: {disabled_text}; border-color: {accent_soft}; }}
 QPushButton[role="action"][on="true"] {{ background: {accent_soft}; border-color: {accent}; }}
 QPushButton[role="action"][on="true"]:disabled {{ background: {ground}; color: {disabled_text}; border-color: {border}; }}
 QPushButton[role="action-bold"] {{ font-weight: bold; }}
@@ -579,6 +581,23 @@ def icon_cache_dir(theme: str) -> Path:
     return Path("cache") / "theme_icons" / theme
 
 
+def _guarded(themed, original):
+    """``themed``, falling back to pyqtgraph's ``original`` if it raises.
+
+    The themed methods run whenever a dock is created or restyled, long after ``_install_dock_theme``'s own guard,
+    so a pyqtgraph they do not fit must not raise from a Dock constructor while the GUI is being built.
+    """
+
+    def updateStyle(self):
+        try:
+            themed(self)
+        except Exception:
+            _log.exception("Themed pyqtgraph dock style failed; using pyqtgraph's own")
+            original(self)
+
+    return updateStyle
+
+
 def _dock_label_update_style(tokens: Tokens):
     """A ``DockLabel.updateStyle`` rendering the quiet card header (pyqtgraph 0.14 structure, Dock.py:283-323)."""
 
@@ -666,8 +685,10 @@ def _install_dock_theme(tokens: Optional[Tokens]) -> None:
             dock_module.DockLabel.updateStyle = _dock_originals["label"]
             dock_module.Dock.updateStyle = _dock_originals["dock"]
         else:
-            dock_module.DockLabel.updateStyle = _dock_label_update_style(tokens)
-            dock_module.Dock.updateStyle = _dock_update_style(_dock_originals["dock"], tokens)
+            dock_module.DockLabel.updateStyle = _guarded(_dock_label_update_style(tokens), _dock_originals["label"])
+            dock_module.Dock.updateStyle = _guarded(
+                _dock_update_style(_dock_originals["dock"], tokens), _dock_originals["dock"]
+            )
         for widget in QApplication.allWidgets():
             if isinstance(widget, (dock_module.DockLabel, dock_module.Dock)):
                 widget.updateStyle()
@@ -682,7 +703,7 @@ def _install_dock_theme(tokens: Optional[Tokens]) -> None:
 
 
 class ThemeManager(QObject):
-    """Applies Light, Dark or Classic to the application and tells listeners when it changed."""
+    """Applies Dark or Classic to the application and tells listeners when it changed."""
 
     theme_changed = Signal(str)
 
@@ -699,7 +720,7 @@ class ThemeManager(QObject):
         return self._current
 
     def tokens(self) -> Tokens:
-        return {"light": LIGHT, "dark": DARK}.get(self._current, CLASSIC)
+        return DARK if self._current == "dark" else CLASSIC
 
     def color(self, name: str) -> QColor:
         return QColor(getattr(self.tokens(), name))
@@ -720,7 +741,7 @@ class ThemeManager(QObject):
         app = self._app
         # Palette and font go in before the stylesheet: a stylesheet change repolishes every widget against the
         # palette in force at that moment, and a palette set afterwards does not reach widgets already polished
-        # (a Light text edit or scroll area would stay white under Dark's light text).
+        # (a text edit or scroll area would stay white under Dark's light text).
         if theme == "classic":
             # Only undo what this manager did: setFont/setPalette on a pristine app would override the platform
             # theme's per-class fonts and mark the palette as application-set, changing Classic's rendering.
@@ -733,7 +754,7 @@ class ThemeManager(QObject):
         else:
             # Everything that can fail is built before the application is touched, so a failure leaves the
             # current theme in place.
-            tokens = LIGHT if theme == "light" else DARK
+            tokens = DARK
             icons = write_theme_icons(tokens, icon_cache_dir(theme))
             sheet = build_stylesheet(tokens, scale_factor(app), icons)
             palette = build_palette(tokens)
@@ -776,7 +797,7 @@ def manager() -> ThemeManager:
 
 
 def load_theme_choice() -> str:
-    """The theme named by ``[GENERAL] ui_theme``; anything unknown falls back to ``"light"``."""
+    """The theme named by ``[GENERAL] ui_theme``; anything unknown falls back to ``"classic"``."""
     import control._def
     import squid.logging
 
@@ -784,8 +805,8 @@ def load_theme_choice() -> str:
     choice = str(raw).strip().lower()
     if choice in THEMES:
         return choice
-    squid.logging.get_logger("theme").warning(f"Unknown ui_theme {raw!r}; using 'light'")
-    return "light"
+    squid.logging.get_logger("theme").warning(f"Unknown ui_theme {raw!r}; using 'classic'")
+    return "classic"
 
 
 def save_theme_choice(ini_path: Optional[str], choice: str) -> bool:
@@ -801,15 +822,52 @@ def save_theme_choice(ini_path: Optional[str], choice: str) -> bool:
     try:
         if not Path(ini_path).is_file():
             return False
-        config = ConfigParser()
-        config.read(ini_path)
-        if not config.has_section("GENERAL"):
-            config.add_section("GENERAL")
-        config.set("GENERAL", "ui_theme", choice)
-        write_ini_atomically(config, ini_path)
+        text = Path(ini_path).read_text(encoding="utf-8")
+        ConfigParser().read_string(text)  # refuse an ini Squid could not read back
+        write_ini_atomically(_IniText(_with_ui_theme(text, choice)), ini_path)
         return True
-    except (OSError, ConfigParserError):
+    except (OSError, UnicodeDecodeError, ConfigParserError):
         return False
+
+
+class _IniText:
+    """Hands write_ini_atomically ready-made ini text in place of a ConfigParser."""
+
+    def __init__(self, text: str):
+        self._text = text
+
+    def write(self, f) -> None:
+        f.write(self._text)
+
+
+def _with_ui_theme(text: str, choice: str) -> str:
+    """``text`` with ``[GENERAL] ui_theme`` set to ``choice``; every other line, comment and blank line kept as is."""
+    import re
+
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    setting = f"ui_theme = {choice}\n"
+    in_general, general_end = False, None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if in_general:
+                break
+            in_general = stripped == "[GENERAL]"
+            if in_general:
+                general_end = i + 1
+            continue
+        if in_general:
+            if re.match(r"\s*ui_theme\s*[=:]", line, re.IGNORECASE):
+                lines[i] = setting
+                return "".join(lines)
+            if stripped:
+                general_end = i + 1
+    if general_end is None:
+        return "".join(lines) + ("\n" if lines else "") + "[GENERAL]\n" + setting
+    lines.insert(general_end, setting)
+    return "".join(lines)
 
 
 # ---------------------------------------------------------------------------

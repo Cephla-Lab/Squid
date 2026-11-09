@@ -2147,7 +2147,7 @@ class HighContentScreeningGui(QMainWindow):
             dialog.exec_()
 
     def _build_appearance_menu(self, settings_menu):
-        """Settings > Appearance: Light / Dark / Classic. Classic <-> skinned changes apply after a restart."""
+        """Settings > Appearance: Classic / Dark. Classic <-> Dark changes apply after a restart."""
         # The theme the machine ini asks for. It differs from the active theme after a deferred Classic
         # transition or a failed save, and the menu marks that difference "(after restart)".
         self._saved_theme = theme.load_theme_choice()

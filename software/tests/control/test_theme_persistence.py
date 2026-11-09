@@ -7,9 +7,11 @@ def test_load_theme_choice_normalises_and_falls_back(monkeypatch):
     monkeypatch.setattr(control._def, "UI_THEME", " Dark ")
     assert theme.load_theme_choice() == "dark"
     monkeypatch.setattr(control._def, "UI_THEME", "blue")
-    assert theme.load_theme_choice() == "light"
+    assert theme.load_theme_choice() == "classic"
     monkeypatch.setattr(control._def, "UI_THEME", "")
-    assert theme.load_theme_choice() == "light"
+    assert theme.load_theme_choice() == "classic"
+    monkeypatch.setattr(control._def, "UI_THEME", "light")  # the removed Light skin
+    assert theme.load_theme_choice() == "classic"
 
 
 def test_save_theme_choice_round_trips(tmp_path):
@@ -25,13 +27,13 @@ def test_save_theme_choice_without_ini_returns_false(tmp_path):
     assert theme.save_theme_choice(str(tmp_path / "missing.ini"), "dark") is False
 
 
-def test_default_ui_theme_is_light():
+def test_default_ui_theme_is_classic():
     # The default as written in _def.py: the loaded value follows this rig's ini, which may set ui_theme.
     import re
     from pathlib import Path
 
     source = Path(control._def.__file__).read_text(encoding="utf-8")
-    assert re.search(r'^UI_THEME = "light"', source, re.MULTILINE)
+    assert re.search(r'^UI_THEME = "classic"', source, re.MULTILINE)
     assert theme.load_theme_choice() in theme.THEMES
 
 
@@ -68,17 +70,41 @@ def test_save_theme_choice_goes_through_the_shared_ini_writer(tmp_path, monkeypa
         raise PermissionError("read-only")
 
     monkeypatch.setattr(control.utils, "write_ini_atomically", refuse)
-    assert theme.save_theme_choice(str(ini), "light") is False
+    assert theme.save_theme_choice(str(ini), "classic") is False
     assert "ui_theme = dark" in ini.read_text()
 
 
 def test_save_theme_choice_adds_missing_general_section(tmp_path):
     ini = tmp_path / "configuration_test.ini"
     ini.write_text("[OTHER]\nkey = 1\n")
-    assert theme.save_theme_choice(str(ini), "light") is True
+    assert theme.save_theme_choice(str(ini), "classic") is True
     text = ini.read_text()
-    assert "[GENERAL]" in text and "ui_theme = light" in text and "key = 1" in text
+    assert "[GENERAL]" in text and "ui_theme = classic" in text and "key = 1" in text
 
 
 def test_save_theme_choice_directory_returns_false(tmp_path):
     assert theme.save_theme_choice(str(tmp_path), "dark") is False
+
+
+def test_save_theme_choice_keeps_comments_and_layout(tmp_path):
+    ini = tmp_path / "configuration_test.ini"
+    original = (
+        "# machine notes\n[GENERAL]\n# theme below\nui_theme = dark\n\ncamera_type = Default\n\n[OTHER]\nkey = 1\n"
+    )
+    ini.write_text(original)
+    assert theme.save_theme_choice(str(ini), "classic") is True
+    assert ini.read_text() == original.replace("ui_theme = dark", "ui_theme = classic")
+
+
+def test_save_theme_choice_adds_the_key_inside_general(tmp_path):
+    ini = tmp_path / "configuration_test.ini"
+    ini.write_text("[GENERAL]\ncamera_type = Default\n\n[OTHER]\nkey = 1\n")
+    assert theme.save_theme_choice(str(ini), "dark") is True
+    assert ini.read_text() == "[GENERAL]\ncamera_type = Default\nui_theme = dark\n\n[OTHER]\nkey = 1\n"
+
+
+def test_save_theme_choice_refuses_an_unreadable_ini(tmp_path):
+    ini = tmp_path / "configuration_test.ini"
+    ini.write_text("no section header\n")
+    assert theme.save_theme_choice(str(ini), "dark") is False
+    assert ini.read_text() == "no section header\n"
