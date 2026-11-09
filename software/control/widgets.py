@@ -8490,8 +8490,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
     # ========== Drag-and-Drop for Loading Acquisition YAML ==========
     # Uses AcquisitionYAMLDropMixin for drag-drop handling
     def dropEvent(self, event):
-        if hasattr(self, "_original_stylesheet"):
-            self.setStyleSheet(self._original_stylesheet)
+        theme.set_drop_target_feedback(self, False)
 
         if not event.mimeData().hasUrls():
             event.ignore()

@@ -84,3 +84,27 @@ def test_save_theme_choice_adds_missing_general_section(tmp_path):
 
 def test_save_theme_choice_directory_returns_false(tmp_path):
     assert theme.save_theme_choice(str(tmp_path), "dark") is False
+
+
+def test_save_theme_choice_keeps_comments_and_layout(tmp_path):
+    ini = tmp_path / "configuration_test.ini"
+    original = (
+        "# machine notes\n[GENERAL]\n# theme below\nui_theme = dark\n\ncamera_type = Default\n\n[OTHER]\nkey = 1\n"
+    )
+    ini.write_text(original)
+    assert theme.save_theme_choice(str(ini), "classic") is True
+    assert ini.read_text() == original.replace("ui_theme = dark", "ui_theme = classic")
+
+
+def test_save_theme_choice_adds_the_key_inside_general(tmp_path):
+    ini = tmp_path / "configuration_test.ini"
+    ini.write_text("[GENERAL]\ncamera_type = Default\n\n[OTHER]\nkey = 1\n")
+    assert theme.save_theme_choice(str(ini), "dark") is True
+    assert ini.read_text() == "[GENERAL]\ncamera_type = Default\nui_theme = dark\n\n[OTHER]\nkey = 1\n"
+
+
+def test_save_theme_choice_refuses_an_unreadable_ini(tmp_path):
+    ini = tmp_path / "configuration_test.ini"
+    ini.write_text("no section header\n")
+    assert theme.save_theme_choice(str(ini), "dark") is False
+    assert ini.read_text() == "no section header\n"

@@ -159,3 +159,14 @@ def test_classic_on_a_pristine_app_touches_nothing(qapp, monkeypatch):
     assert calls == []
     assert qapp.font() == font and qapp.palette() == palette and qapp.styleSheet() == sheet
     assert m.is_classic()
+
+
+def test_themed_dock_style_falls_back_to_pyqtgraphs_own():
+    calls = []
+
+    def themed(self):
+        raise AttributeError("dim")  # a pyqtgraph the patch does not fit
+
+    patched = theme._guarded(themed, lambda self: calls.append(self))
+    patched("dock")
+    assert calls == ["dock"]

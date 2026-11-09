@@ -203,3 +203,25 @@ def test_style_group_classic_and_dark(qapp):
         assert f.styleSheet() == "" and f.property("role") == "group" and f.property("active") is False
     finally:
         m.apply("classic")
+
+
+def test_flexible_multipoint_drop_clears_the_dark_highlight(qapp):
+    from unittest.mock import MagicMock
+    import control.widgets as widgets
+
+    m = theme.install(qapp, "dark")
+    try:
+        w = QFrame()
+        theme.set_drop_target_feedback(w, True)
+        event = MagicMock()
+        event.mimeData().hasUrls.return_value = False
+        widgets.FlexibleMultiPointWidget.dropEvent(w, event)
+        assert w.property("dropTarget") is False
+    finally:
+        m.apply("classic")
+
+
+def test_checked_primary_button_still_looks_disabled():
+    # Same specificity, so the later rule wins: :disabled must come after :checked.
+    qss = theme.build_stylesheet(theme.DARK, 1.0, None)
+    assert qss.index('QPushButton[role="primary"]:checked') < qss.index('QPushButton[role="primary"]:disabled')
