@@ -12,7 +12,8 @@ Use the real display: the offscreen platform renders no text on this machine.
 
 The GUI run installs the machine ini for the run only, refuses configurations that would drive real hardware
 under --simulation, and never reads or writes the operator's persisted GUI state (acquisition-widget settings,
-camera settings cache, cached stage position). It can run beside a running Squid instance (private lock and log
+camera settings cache, cached stage position, saved objective and plate format). It can run beside a running
+Squid instance (private lock and log
 directory). One shared file is touched: cache/config_file_path.txt points at the capture's ini while
 control._def imports (about a second) and is put back before the GUI starts; do not start or restart Squid in
 that moment, or it would load the capture's configuration.
@@ -59,6 +60,9 @@ def _install_machine_ini(ini_path):
     """Make control._def select ini_path for this run. Must run before any `control` import."""
     global _config_state
     name = os.path.basename(ini_path)
+    if not (name.startswith("configuration") and name.endswith(".ini")):
+        # control._def only considers software/configuration*.ini; anything else would never be selected.
+        raise SystemExit(f"{ini_path}: the machine ini must be named configuration*.ini for control._def to find it")
     target = os.path.join(SOFTWARE_DIR, name)
     copied = not os.path.exists(target)
     if copied:
@@ -105,12 +109,34 @@ def _release_selector():
     state["selector_restored"] = True
 
 
+# Operator state control._def reads at import with a literal path. The capture must start from the defaults, so
+# these opens answer "no such file" during that import; the files themselves are never moved or written.
+_OPERATOR_STATE_READ_AT_IMPORT = ("cache/objective_and_sample_format.txt",)
+
+
+def _open_without_operator_state(real_open):
+    """An ``open`` that reports the files in _OPERATOR_STATE_READ_AT_IMPORT as missing when opened for reading."""
+
+    def open_(file, mode="r", *args, **kwargs):
+        if isinstance(file, str) and "r" in mode and "+" not in mode:
+            if file.replace("\\", "/") in _OPERATOR_STATE_READ_AT_IMPORT:
+                raise FileNotFoundError(file)
+        return real_open(file, mode, *args, **kwargs)
+
+    return open_
+
+
 def _load_config():
-    """Import control._def (which selects the ini through the selector), release the selector at once, then refuse
-    configurations that would drive real hardware."""
+    """Import control._def (which selects the ini through the selector and reads the operator's saved objective and
+    plate format), release the selector at once, then refuse configurations that would drive real hardware."""
+    import builtins
+
+    real_open = builtins.open
+    builtins.open = _open_without_operator_state(real_open)
     try:
         import control._def  # noqa: F401
     finally:
+        builtins.open = real_open
         _release_selector()
     _refuse_real_hardware()
 
@@ -135,10 +161,11 @@ def _refuse_real_hardware():
 def _install_private_gui_state():
     """The capture starts from the widgets' defaults and never writes the operator's persisted GUI state.
 
-    The acquisition-widget settings (cache/multipoint_widget_config.yaml), the camera settings cache and the cached
-    stage position are shared with a real Squid instance that may be running alongside this capture; moving them
-    aside and back would discard whatever that instance saved in the meantime, and reading them would make the
-    captures depend on the operator's last session. Reads answer "nothing cached", writes do nothing.
+    The acquisition-widget settings (cache/multipoint_widget_config.yaml), the camera settings cache, the cached
+    stage position and the saved objective / plate format are shared with a real Squid instance that may be running
+    alongside this capture; moving them aside and back would discard whatever that instance saved in the meantime,
+    and reading them would make the captures depend on the operator's last session. Reads answer "nothing cached",
+    writes do nothing.
     """
     import squid.camera.settings_cache
     import squid.stage.utils
@@ -152,6 +179,8 @@ def _install_private_gui_state():
 
     control.widgets.WellplateMultiPointWidget.load_multipoint_widget_config_from_cache = lambda self: None
     control.widgets.WellplateMultiPointWidget.save_multipoint_widget_config_to_cache = lambda self: None
+    # The saved objective / plate format is hidden from control._def at import (_load_config); never write it back.
+    control.widgets.SampleSettingsWidget.save_settings = lambda self: None
 
 
 def _leftovers_of_an_interrupted_run(machine_ini):
