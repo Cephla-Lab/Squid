@@ -61,20 +61,14 @@ def test_status_widget_tokens_are_readable(t):
         assert theme.contrast_ratio(fg, bg) >= 2.9, (fg, bg)
 
 
-def test_light_warning_disc_is_the_darker_amber():
-    assert theme.LIGHT.warn_icon_bg == "#ca8a04"
-
-
 def test_controller_port_rows_repaint_on_switch(qapp, qtbot):
     import control.microscope, control.widgets as widgets
 
-    m = theme.install(qapp, "light")
+    m = theme.install(qapp, "classic")
     try:
         scope = control.microscope.Microscope.build_from_global_config(True)
         dlg = widgets.ControllerPortMappingDialog(scope.config_repo)  # as gui_hcs.py:2573 constructs it
         qtbot.add_widget(dlg)
-        item = dlg.table.item(0, 0)
-        assert item.background().color() == QColor("#f3f3f3")
         # an unsaved edit in the editable column must survive the switch (no reload, only a recolour);
         # column 1 holds a SourceCodeWidget cell widget: set_source_code(int | None) drives a checkbox and
         # a QSpinBox, get_source_code() returns the int or None
@@ -91,7 +85,7 @@ def test_controller_port_rows_repaint_on_switch(qapp, qtbot):
 def test_workflow_rows_keep_edits_across_switch(qapp, qtbot):
     import control.widgets_workflow as ww
 
-    m = theme.install(qapp, "light")
+    m = theme.install(qapp, "classic")
     try:
         dlg = ww.WorkflowRunnerDialog()  # gui_hcs.openWorkflowRunner passes only parent=
         qtbot.add_widget(dlg)
@@ -112,7 +106,7 @@ def test_workflow_rows_keep_edits_across_switch(qapp, qtbot):
 def test_warning_widget_restyles_on_switch(qapp, qtbot):
     import control.widgets as widgets
 
-    m = theme.install(qapp, "light")
+    m = theme.install(qapp, "classic")
     try:
         w = widgets.WarningErrorWidget()
         qtbot.add_widget(w)
@@ -128,14 +122,14 @@ def test_laser_autofocus_background_follows_switch(qapp, qtbot):
     from unittest.mock import MagicMock
     import control.widgets as widgets
 
-    m = theme.install(qapp, "light")
+    m = theme.install(qapp, "classic")
     try:
         controller = MagicMock()
         controller.laser_af_properties.pixel_to_um = 1.0
         controller.laser_af_properties.calibration_timestamp = "never"
         w = widgets.LaserAutofocusSettingWidget(MagicMock(), MagicMock(), controller)
         qtbot.add_widget(w)
-        assert w.palette().color(w.backgroundRole()) == QColor(theme.LIGHT.row_disabled)
+        assert w.palette().color(w.backgroundRole()) == QColor(theme.CLASSIC.row_disabled)
         m.apply("dark")
         assert w.palette().color(w.backgroundRole()) == QColor(theme.DARK.row_disabled)
         m.apply("classic")

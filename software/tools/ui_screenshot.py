@@ -1,7 +1,7 @@
 """Screenshots of the Squid main window from `main_hcs.py --simulation`, on the real display.
 
 Usage (from software/):
-    py -3.12 tools/ui_screenshot.py --out DIR [--theme light|dark|classic] [--font "Family:pt"]
+    py -3.12 tools/ui_screenshot.py --out DIR [--theme classic|dark] [--font "Family:pt"]
     py -3.12 tools/ui_screenshot.py --out DIR --compare A.png B.png
 
 The first form starts the simulated GUI, grabs a fixed set of views to PNG files in DIR, prints one line
@@ -438,7 +438,7 @@ def run_gui(out_dir, theme, font_spec, machine_ini):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", required=True, help="directory for PNGs (and diff.png with --compare)")
-    parser.add_argument("--theme", choices=("light", "dark", "classic"), help="sets control._def.UI_THEME")
+    parser.add_argument("--theme", choices=("classic", "dark"), help="sets control._def.UI_THEME")
     parser.add_argument("--font", help='application font override, "Family:pt"')
     parser.add_argument(
         "--machine-ini",

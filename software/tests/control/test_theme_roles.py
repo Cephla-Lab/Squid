@@ -54,8 +54,8 @@ def test_set_role_in_classic_applies_the_literal(qapp):
     assert b.styleSheet() == "background-color: #C2C2FF"
 
 
-def test_set_role_in_light_sets_properties_not_literals(qapp):
-    m = theme.install(qapp, "light")
+def test_set_role_in_dark_sets_properties_not_literals(qapp):
+    m = theme.install(qapp, "dark")
     try:
         b = QPushButton()
         theme.set_role(b, "action", on=True)
@@ -68,7 +68,7 @@ def test_set_role_in_light_sets_properties_not_literals(qapp):
 
 
 def test_set_role_follows_a_switch_made_before_the_widget_existed(qapp):
-    m = theme.install(qapp, "light")
+    m = theme.install(qapp, "classic")
     try:
         m.apply("dark")
         b = QPushButton()
@@ -92,7 +92,7 @@ def test_card_sets_styled_background_only_in_skinned_themes(qapp):
         w = QWidget()
         theme.set_role(w, "card")
         assert w.styleSheet() == "" and not w.testAttribute(Qt.WA_StyledBackground)
-        m.apply("light")
+        m.apply("dark")
         theme.set_role(w, "card")
         assert w.property("role") == "card" and w.testAttribute(Qt.WA_StyledBackground)
     finally:
@@ -100,7 +100,7 @@ def test_card_sets_styled_background_only_in_skinned_themes(qapp):
 
 
 def test_drop_target_property_coexists_with_role(qapp):
-    m = theme.install(qapp, "light")
+    m = theme.install(qapp, "dark")
     try:
         b = QPushButton()
         theme.set_role(b, "action")
@@ -141,7 +141,7 @@ def test_button_state_rules_exist():
 
 
 def test_set_role_switches_off_a_state_left_out_of_a_later_call(qapp):
-    m = theme.install(qapp, "light")
+    m = theme.install(qapp, "dark")
     try:
         b = QPushButton()
         theme.set_role(b, "action", on=True)
@@ -151,8 +151,8 @@ def test_set_role_switches_off_a_state_left_out_of_a_later_call(qapp):
         m.apply("classic")
 
 
-def test_every_classic_role_has_a_light_rule():
-    qss = theme.build_stylesheet(theme.LIGHT, 1.0, None)
+def test_every_classic_role_has_a_skinned_rule():
+    qss = theme.build_stylesheet(theme.DARK, 1.0, None)
     for key in theme.CLASSIC_STYLES:
         if key == "drop-target":  # a format template for *[dropTarget="true"], not a role
             continue
@@ -171,8 +171,8 @@ def test_drop_target_feedback_classic_restores_original_sheet(qapp):
     assert w.styleSheet() == "color: red;"
 
 
-def test_drop_target_feedback_light_sets_property(qapp):
-    m = theme.install(qapp, "light")
+def test_drop_target_feedback_dark_sets_property(qapp):
+    m = theme.install(qapp, "dark")
     try:
         w = QWidget()
         theme.set_drop_target_feedback(w, True)
@@ -192,12 +192,12 @@ def test_group_styles_keep_todays_literals():
     assert g[("xy", "body", False)] == ""
 
 
-def test_style_group_classic_and_light(qapp):
+def test_style_group_classic_and_dark(qapp):
     m = theme.install(qapp, "classic")
     f = QFrame()
     theme.style_group(f, "time", "frame", True)
     assert f.styleSheet() == theme.CLASSIC_GROUP_STYLES[("time", "frame", True)]
-    m.apply("light")
+    m.apply("dark")
     try:
         theme.style_group(f, "time", "frame", False)
         assert f.styleSheet() == "" and f.property("role") == "group" and f.property("active") is False
