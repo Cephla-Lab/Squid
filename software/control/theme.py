@@ -827,7 +827,7 @@ def save_theme_choice(ini_path: Optional[str], choice: str) -> bool:
         new_text, _ = update_ini_text(text, {"ui_theme": choice}, "UI theme (Settings > Appearance)")
         write_ini_atomically(new_text, ini_path)
         return True
-    except (OSError, UnicodeDecodeError, ConfigParserError):
+    except (OSError, UnicodeDecodeError, ConfigParserError, ValueError):
         return False
 
 

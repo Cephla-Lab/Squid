@@ -3,6 +3,7 @@ import enum
 import errno
 import inspect
 import pathlib
+import re
 import sys
 import shutil
 import statistics
@@ -240,26 +241,40 @@ def ensure_directory_exists(raw_string_path: str):
 def update_ini_text(text: str, updates: dict, comment: str):
     """Set `updates` (key -> value) in the [GENERAL] section of an ini file's text, keeping every other line,
     comment and the file's line endings. An existing key is replaced in place; missing keys are appended to
-    the end of [GENERAL] under `comment`. Returns (new_text, {key: (old_or_None, new)})."""
+    the end of [GENERAL] under `comment`. Returns (new_text, {key: (old_or_None, new)}).
+
+    Sections and keys are found the way ConfigParser finds them (which is how Squid reads the file back): the
+    section name is case-sensitive and may be followed by text (``[GENERAL] # note``), and a key may use ``=`` or
+    ``:``. Matching more loosely would edit a line Squid then ignores, or add a duplicate key it refuses to load."""
+    from configparser import ConfigParser
+
     nl = "\r\n" if "\r\n" in text else "\n"
     lines = text.replace("\r\n", "\n").split("\n")
-    start = next((i for i, l in enumerate(lines) if l.strip().upper() == "[GENERAL]"), None)
+
+    def section_of(line):
+        mo = ConfigParser.SECTCRE.match(line.strip())
+        return mo.group("header") if mo else None
+
+    start = next((i for i, l in enumerate(lines) if section_of(l) == "GENERAL"), None)
     if start is None:
         raise ValueError("no [GENERAL] section in the ini")
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip().startswith("[")), len(lines))
+    end = next((i for i in range(start + 1, len(lines)) if section_of(lines[i]) is not None), len(lines))
+    options = {}  # lower-cased key -> (line index, old value), first occurrence wins
+    for i in range(start + 1, end):
+        if lines[i].lstrip().startswith(("#", ";")):
+            continue
+        mo = re.match(r"\s*(?P<key>.*?)\s*[=:]\s*(?P<value>.*)$", lines[i])
+        if mo:
+            options.setdefault(mo.group("key").lower(), (i, mo.group("value").strip()))
     changes, missing = {}, []
     for key, value in updates.items():
-        hit = next(
-            (i for i in range(start + 1, end) if lines[i].split("=", 1)[0].strip().lower() == key and "=" in lines[i]),
-            None,
-        )
-        if hit is None:
-            missing.append(key)
-            changes[key] = (None, str(value))
-        else:
-            old = lines[hit].split("=", 1)[1].strip()
+        if key.lower() in options:
+            hit, old = options[key.lower()]
             lines[hit] = f"{key} = {value}"
             changes[key] = (old, str(value))
+        else:
+            missing.append(key)
+            changes[key] = (None, str(value))
     if missing:
         insert_at = end
         while insert_at > start + 1 and lines[insert_at - 1].strip() == "":

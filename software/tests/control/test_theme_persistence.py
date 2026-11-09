@@ -110,3 +110,35 @@ def test_save_theme_choice_refuses_an_unreadable_ini(tmp_path):
     ini.write_text("no section header\n")
     assert theme.save_theme_choice(str(ini), "dark") is False
     assert ini.read_text() == "no section header\n"
+
+
+def _saved_theme(ini):
+    from configparser import ConfigParser
+
+    parser = ConfigParser()
+    parser.read(ini)  # a duplicate key or section would raise here, as it would at start-up
+    return parser.get("GENERAL", "ui_theme")
+
+
+def test_save_theme_choice_replaces_a_colon_entry(tmp_path):
+    ini = tmp_path / "configuration_test.ini"
+    ini.write_text("[GENERAL]\nui_theme: classic\n")
+    assert theme.save_theme_choice(str(ini), "dark") is True
+    assert ini.read_text() == "[GENERAL]\nui_theme = dark\n"
+    assert _saved_theme(ini) == "dark"
+
+
+def test_save_theme_choice_finds_a_general_header_with_a_comment(tmp_path):
+    ini = tmp_path / "configuration_test.ini"
+    ini.write_text("[GENERAL] # machine settings\nui_theme = classic\n")
+    assert theme.save_theme_choice(str(ini), "dark") is True
+    assert ini.read_text() == "[GENERAL] # machine settings\nui_theme = dark\n"
+    assert _saved_theme(ini) == "dark"
+
+
+def test_save_theme_choice_ignores_a_differently_cased_section(tmp_path):
+    ini = tmp_path / "configuration_test.ini"
+    ini.write_text("[General]\nui_theme = classic\n\n[GENERAL]\nui_theme = classic\n")
+    assert theme.save_theme_choice(str(ini), "dark") is True
+    assert ini.read_text() == "[General]\nui_theme = classic\n\n[GENERAL]\nui_theme = dark\n"
+    assert _saved_theme(ini) == "dark"
