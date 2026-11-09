@@ -9,6 +9,9 @@ def gui(qapp, qtbot, monkeypatch, tmp_path):
     ini.write_text("[GENERAL]\n")
     monkeypatch.setattr(control._def, "CACHED_CONFIG_FILE_PATH", str(ini))
     monkeypatch.setattr(control.gui_hcs, "CACHED_CONFIG_FILE_PATH", str(ini), raising=False)
+    # The menu reads the saved theme from control._def.UI_THEME at build time; pin it so the machine's ini
+    # (which the test process imported) cannot leak a different saved theme into these tests.
+    monkeypatch.setattr(control._def, "UI_THEME", "light")
     # Closing the window at teardown asks "Confirm Exit"; answer yes or teardown crashes offscreen.
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
     theme.install(qapp, "light")
