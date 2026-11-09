@@ -249,6 +249,7 @@ class MultiPointController:
         # Acquisition history (the Gallery): the GUI installs a real recorder; the id is the running run's entry.
         self.history_recorder = NullAcquisitionHistoryRecorder()
         self._history_entry_id: Optional[str] = None
+        self._starting = False  # a run_acquisition call is between its refusals and its worker thread
         self._expected_image_count = 0
         self.use_manual_focus_map = False
         self.base_path = None
@@ -282,16 +283,22 @@ class MultiPointController:
         return self._history_entry_id
 
     def _record_failed_start(
-        self, reason: str, acquire_current_fov: bool, run_protocol_info: Optional[dict], *, own_entry: bool
+        self,
+        reason: str,
+        acquire_current_fov: bool,
+        run_protocol_info: Optional[dict],
+        *,
+        own_entry_id: Optional[str],
     ) -> None:
-        """Record in the acquisition history a start that never launched a worker. With own_entry, this call's own
-        `started` entry is finished as failed and forgotten. A refusal before anything started (own_entry=False)
-        records a failed start of its own: the entry id then held belongs to a run still in progress (a Snap refused
-        by the start blocker while a flexible acquisition runs on a Z-lift system), and is left alone."""
+        """Record in the acquisition history a start that never launched a worker. own_entry_id is the entry this
+        call recorded as started (None when it never got that far): it is finished as failed and forgotten. Without
+        one, a failed start of its own is recorded and the entry id then held is left alone: it belongs to a run still
+        in progress (a Snap refused by the start blocker, or failing before its own entry, while a flexible
+        acquisition runs)."""
         try:
-            if own_entry and self._history_entry_id is not None:
+            if own_entry_id is not None:
                 self.history_recorder.finished(
-                    self._history_entry_id, reason, images=0, expected_images=self._expected_image_count
+                    own_entry_id, reason, images=0, expected_images=self._expected_image_count
                 )
             else:
                 self.history_recorder.failed_start(
@@ -304,8 +311,32 @@ class MultiPointController:
         except Exception:
             self._log.exception("Failed to record the failed acquisition start in the acquisition history")
         finally:
-            if own_entry:
+            if own_entry_id is not None and self._history_entry_id == own_entry_id:
                 self._history_entry_id = None
+
+    def _another_acquisition_in_progress(self) -> bool:
+        """True while a start is between its refusals and its worker thread, or a worker thread is running: a start
+        refused or failing then belongs to a second caller (Snap Images during a flexible acquisition), not to the run
+        in progress."""
+        return self._starting or (self.thread is not None and self.thread.is_alive())
+
+    def _signal_failed_start(self) -> None:
+        """Tell the callers a start went nowhere, so the UI they put into its acquiring state is released. Not while
+        another acquisition is being started or is running: acquisition_finished would end the GUI's acquiring state
+        (and the Gallery's pause) under a run still going, and that run reports its own end."""
+        if self._another_acquisition_in_progress():
+            self._log.warning("A start failed while an acquisition is in progress; that run reports its own end")
+            return
+        try:
+            self.callbacks.signal_acquisition_finished()
+        except Exception:
+            self._log.exception("acquisition_finished callback failed after a failed acquisition start")
+
+    def _end_refused_start(self, acquire_current_fov: bool, run_protocol_info: Optional[dict]) -> None:
+        """Close out a start refused before anything was prepared: record it and tell the callers."""
+        self.last_end_reason = "failed_to_start"
+        self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry_id=None)
+        self._signal_failed_start()
 
     def _start_prewarmed_job_runner(self):
         """Start a job runner subprocess that warms up in the background.
@@ -761,21 +792,17 @@ class MultiPointController:
         self.last_end_reason = None
         self.last_image_count = 0
         if not self.validate_acquisition_settings():
-            # emit acquisition finished signal to re-enable the UI
-            self.last_end_reason = "failed_to_start"
-            self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry=False)
-            self.callbacks.signal_acquisition_finished()
+            self._end_refused_start(acquire_current_fov, run_protocol_info)  # tells the callers, to re-enable the UI
             return False
         refusal = self.start_blocker() if self.start_blocker is not None else None
         if refusal:
             self._log.error(f"Acquisition not started: {refusal}")
-            self.last_end_reason = "failed_to_start"
-            self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry=False)
-            self.callbacks.signal_acquisition_finished()
+            self._end_refused_start(acquire_current_fov, run_protocol_info)
             return False
-        self._expected_image_count = (
-            0  # after the refusals: a refused start must not blank a running acquisition's count
-        )
+        # From here to the worker thread this call is "starting": a second start refused meanwhile (Snap Images during
+        # a flexible acquisition) must not report this run's end. Only the call that set the flag clears it.
+        starting_here = not self._starting
+        self._starting = True
         self._start_per_acquisition_log()
 
         # Start memory monitoring for the acquisition (if enabled)
@@ -791,6 +818,8 @@ class MultiPointController:
 
         thread_started = False
         hardware_prepared = False
+        own_history_entry_id: Optional[str] = None  # the history entry this call records as started, once it does
+        expected_image_count = 0
         self._run_state_writer = squid.acquisition_state.NullRunStateWriter()
         try:
             self._log.info("start multipoint")
@@ -1006,9 +1035,7 @@ class MultiPointController:
                     "channels": len(self.selected_configurations),
                     "z": self.NZ,
                 }
-                self._expected_image_count = (
-                    expected["fovs"] * expected["timepoints"] * expected["z"] * expected["channels"]
-                )
+                expected_image_count = expected["fovs"] * expected["timepoints"] * expected["z"] * expected["channels"]
                 config_path = (getattr(control._def, "CACHED_CONFIG_FILE_PATH", None) or "").strip() or None
                 self._run_state_writer = squid.acquisition_state.RunStateWriter.start(
                     experiment_id=self.experiment_ID,
@@ -1020,9 +1047,11 @@ class MultiPointController:
             except Exception as e:
                 self._log.warning(f"Failed to write acquisition watchdog start state: {e}")
 
-            # Acquisition history (the Gallery): record the run as started. Never breaks the acquisition.
+            # Acquisition history (the Gallery): record the run as started. Never breaks the acquisition. The count and
+            # the entry become this call's only here: a start failing earlier leaves a running acquisition's alone.
+            self._expected_image_count = expected_image_count
             try:
-                self._history_entry_id = self.history_recorder.started(
+                own_history_entry_id = self._history_entry_id = self.history_recorder.started(
                     acquisition_params,
                     experiment_path,
                     snap=acquire_current_fov,
@@ -1072,6 +1101,8 @@ class MultiPointController:
             self.thread.start()
             thread_started = True
         finally:
+            if starting_here:
+                self._starting = False
             if not thread_started:
                 # Acquisition never launched a worker — close out the breadcrumb so the
                 # watchdog doesn't later misread the lingering "running" state as a hang.
@@ -1095,11 +1126,10 @@ class MultiPointController:
                     except Exception:
                         self._log.exception("Failed to restore camera/live state after a failed acquisition start")
                 self.last_end_reason = "failed_to_start"
-                self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry=True)
-                try:
-                    self.callbacks.signal_acquisition_finished()
-                except Exception:
-                    self._log.exception("acquisition_finished callback failed after a failed acquisition start")
+                self._record_failed_start(
+                    self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry_id=own_history_entry_id
+                )
+                self._signal_failed_start()
         return thread_started
 
     def build_params(
