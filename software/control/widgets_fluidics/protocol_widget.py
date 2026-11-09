@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
 )
 
+import control.theme as theme
 import squid.logging
 from control.core.fluidics_protocol import manifest as manifest_io
 from control.core.fluidics_protocol.manifest import reagent_totals
@@ -131,9 +132,10 @@ class FluidicsProtocolWidget(QFrame):
         self.resume_button = QPushButton("Resume unfinished run…")
         self.resume_button.clicked.connect(lambda: self.offer_recovery(startup=False))
         self.hint_label = QLabel("")
-        self.hint_label.setStyleSheet("color: gray;")
+        theme.set_role(self.hint_label, "note-gray")
 
         self.idle_box = QGroupBox()
+        theme.set_role(self.idle_box, "group-plain")
         idle_layout = QVBoxLayout()
         idle_layout.addLayout(name_row)
         idle_layout.addWidget(self.summary_label)
@@ -167,12 +169,13 @@ class FluidicsProtocolWidget(QFrame):
         buttons_row.addWidget(self.abort_run_button)
 
         self.held_box = QGroupBox("Attention")
-        self.held_box.setStyleSheet("QGroupBox { color: #b00020; }")
+        theme.set_role(self.held_box, "alert-group")
         self.held_layout = QVBoxLayout()
         self.held_box.setLayout(self.held_layout)
         self.held_box.hide()
 
         self.running_box = QGroupBox()
+        theme.set_role(self.running_box, "group-plain")
         running_layout = QVBoxLayout()
         running_layout.addWidget(self.state_label)
         running_layout.addWidget(self.round_label)
@@ -434,7 +437,7 @@ class FluidicsProtocolWidget(QFrame):
             if widget is not None:
                 widget.deleteLater()
         headline = QLabel(f"Held at step {hold.step_index + 1} ({hold.kind}): {hold.reason}")
-        headline.setStyleSheet("font-weight: bold; color: #b00020;")
+        theme.set_role(headline, "alert-bold-first")
         self.held_layout.addWidget(headline)
         if hold.message:
             message = QLabel(hold.message)
@@ -482,6 +485,7 @@ class FluidicsProtocolWidget(QFrame):
         end.clicked.connect(end_clicked)
         buttons.addWidget(end)
         holder = QGroupBox()
+        theme.set_role(holder, "group-plain")
         holder.setFlat(True)
         holder.setLayout(buttons)
         self.held_layout.addWidget(holder)

@@ -92,6 +92,7 @@ from scipy.spatial import Delaunay
 import shutil
 from control._def import *
 from control.lighting import LightSourceType
+import control.theme as theme
 from control.widgets_homing import confirm_nosepiece_lowered
 from PIL import Image, ImageDraw, ImageFont
 
@@ -1026,25 +1027,19 @@ class AcquisitionYAMLDropMixin:
                 file_path = url.toLocalFile()
                 if self._is_valid_yaml_drop(file_path):
                     event.accept()
-                    # Visual feedback - dashed border (store original for restore)
-                    if not hasattr(self, "_original_stylesheet"):
-                        self._original_stylesheet = self.styleSheet()
-                    self.setStyleSheet(
-                        self._original_stylesheet + f" {self.__class__.__name__} {{ border: 3px dashed #4a90d9; }}"
-                    )
+                    # Visual feedback - dashed border
+                    theme.set_drop_target_feedback(self, True)
                     return
         event.ignore()
 
     def dragLeaveEvent(self, event):
         """Handle drag leave event."""
-        if hasattr(self, "_original_stylesheet"):
-            self.setStyleSheet(self._original_stylesheet)
+        theme.set_drop_target_feedback(self, False)
         event.accept()
 
     def dropEvent(self, event):
         """Handle drop event for YAML file or folder."""
-        if hasattr(self, "_original_stylesheet"):
-            self.setStyleSheet(self._original_stylesheet)
+        theme.set_drop_target_feedback(self, False)
         paths = [u.toLocalFile() for u in event.mimeData().urls()]
         yaml_paths = [self._resolve_yaml_path(p) for p in paths if self._is_valid_yaml_drop(p)]
         if yaml_paths:
@@ -1291,7 +1286,7 @@ class AcquisitionYAMLMismatchDialog(QDialog):
         # Mismatch details
         message_label = QLabel(validation_result.message)
         message_label.setWordWrap(True)
-        message_label.setStyleSheet("background-color: #fff3cd; padding: 10px; border-radius: 4px;")
+        theme.set_role(message_label, "callout-warning")
         layout.addWidget(message_label)
 
         layout.addSpacing(10)
@@ -1301,7 +1296,7 @@ class AcquisitionYAMLMismatchDialog(QDialog):
             "Please update your hardware settings to match the YAML file, then drag and drop again."
         )
         instruction_label.setWordWrap(True)
-        instruction_label.setStyleSheet("color: #666;")
+        theme.set_role(instruction_label, "note")
         layout.addWidget(instruction_label)
 
         layout.addSpacing(15)
@@ -1504,7 +1499,7 @@ class PreferencesDialog(QDialog):
 
         # Restart warning label
         restart_label = QLabel("Note: Camera settings require software restart to take effect.")
-        restart_label.setStyleSheet("color: #666; font-style: italic;")
+        theme.set_role(restart_label, "hint")
         layout.addRow(restart_label)
 
         # Default Binning Factor
@@ -1674,7 +1669,7 @@ class PreferencesDialog(QDialog):
                 "spot and that images are sharp."
             )
             prior_note.setWordWrap(True)
-            prior_note.setStyleSheet("color: #666; font-style: italic;")
+            theme.set_role(prior_note, "hint")
             prior_layout.addRow(prior_note)
 
             prior_group.content.addLayout(prior_layout)
@@ -1945,7 +1940,7 @@ class PreferencesDialog(QDialog):
 
         # Legend for restart indicator
         legend_label = QLabel("* Requires software restart to take effect")
-        legend_label.setStyleSheet("color: #666; font-style: italic;")
+        theme.set_role(legend_label, "hint")
         layout.addWidget(legend_label)
 
         layout.addStretch()
@@ -2148,7 +2143,7 @@ class PreferencesDialog(QDialog):
 
         # Legend
         legend_label = QLabel("* Requires software restart to take effect")
-        legend_label.setStyleSheet("color: #666; font-style: italic;")
+        theme.set_role(legend_label, "hint")
         layout.addWidget(legend_label)
 
         layout.addStretch()
@@ -2308,7 +2303,7 @@ class PreferencesDialog(QDialog):
         spinbox.setValue(value)
         spinbox.setToolTip(tooltip)
         physical_label = QLabel()
-        physical_label.setStyleSheet("color: #666;")
+        theme.set_role(physical_label, "note")
 
         def show_physical(steps):
             physical_label.setText(f"≈ {steps * physical_per_step:.1f} {unit}" if physical_per_step else "")
@@ -3211,7 +3206,7 @@ class PreferencesDialog(QDialog):
             note_label = QLabel(
                 "Note: Settings marked [restart required] will only take effect after restarting the software."
             )
-            note_label.setStyleSheet("color: #666; font-style: italic;")
+            theme.set_role(note_label, "hint")
             note_label.setWordWrap(True)
             layout.addWidget(note_label)
 
@@ -3343,7 +3338,7 @@ class StageUtils(QDialog):
         self.btn_zero_Z.setDefault(False)
 
         self.btn_load_slide = QPushButton("Move To Loading Position")
-        self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_load_slide, "action")
 
         # Connect buttons to functions
         self.btn_home_X.clicked.connect(self.home_x)
@@ -3542,7 +3537,7 @@ class StageUtils(QDialog):
     def _callback_loading_position_reached(self, success: bool, error_message: str):
         """The move to the loading position ended (on the GUI thread, from _queued_slot)."""
         self.slide_position = "loading"
-        self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
+        theme.set_role(self.btn_load_slide, "action", on=True)
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live and not self.keep_live_off_at_loading:
@@ -3562,7 +3557,7 @@ class StageUtils(QDialog):
             )
             return
         self.slide_position = "scanning"
-        self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_load_slide, "action")
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live:
@@ -3683,6 +3678,11 @@ class LaserAutofocusSettingWidget(QWidget):
     signal_apply_settings = Signal()
     signal_laser_spot_location = Signal(np.ndarray, float, float)
 
+    def _recolour_background(self, *_):
+        palette = self.palette()
+        palette.setColor(self.backgroundRole(), theme.manager().color("row_disabled"))
+        self.setPalette(palette)
+
     def __init__(self, streamHandler, liveController: LiveController, laserAutofocusController, stretch=True):
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -3697,9 +3697,8 @@ class LaserAutofocusSettingWidget(QWidget):
         self.setAutoFillBackground(True)
 
         # Create and set background color
-        palette = self.palette()
-        palette.setColor(self.backgroundRole(), QColor(240, 240, 240))
-        self.setPalette(palette)
+        self._recolour_background()
+        theme.manager().theme_changed.connect(self._recolour_background)
 
         self.spinboxes = {}
         self.init_ui()
@@ -3717,7 +3716,7 @@ class LaserAutofocusSettingWidget(QWidget):
         # Live button
         self.btn_live = QPushButton("Start Live")
         self.btn_live.setCheckable(True)
-        self.btn_live.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_live, "primary")
 
         # Exposure time control
         exposure_layout = QHBoxLayout()
@@ -3815,7 +3814,7 @@ class LaserAutofocusSettingWidget(QWidget):
         initialize_group = QFrame()
         initialize_layout = QVBoxLayout()
         self.initialize_button = QPushButton("Initialize")
-        self.initialize_button.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.initialize_button, "action")
         initialize_layout.addWidget(self.initialize_button)
         initialize_group.setLayout(initialize_layout)
 
@@ -5594,7 +5593,7 @@ class LiveControlWidget(QFrame):
         self.btn_live.setCheckable(True)
         self.btn_live.setChecked(False)
         self.btn_live.setDefault(False)
-        self.btn_live.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_live, "primary")
         self.btn_live.setSizePolicy(sizePolicy)
         self.btn_live.setToolTip("Start/stop continuous live imaging with the current Live Configuration.")
 
@@ -5605,7 +5604,7 @@ class LiveControlWidget(QFrame):
         self.btn_snap = QPushButton("Snap")
         self.btn_snap.setCheckable(False)
         self.btn_snap.setDefault(False)
-        self.btn_snap.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_snap, "action")
         self.btn_snap.setSizePolicy(sizePolicy)
         self.btn_snap.setToolTip("View a single frame with the current Live Configuration, to reduce photobleaching.")
 
@@ -7508,7 +7507,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)  # opt-in
 
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
-        self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_startAcquisition, "primary")
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -8781,7 +8780,8 @@ class WellplateMultiPointWidget(
         self.btn_setSavingDir = QPushButton("Browse")
         self.btn_setSavingDir.setDefault(False)
         self.btn_setSavingDir.setIcon(QIcon("icon/folder.png"))
-        self.btn_setSavingDir.setFixedWidth(btn_width)
+        # Never narrower than its own icon and text (a styled button can need more than the spin box beside it).
+        self.btn_setSavingDir.setFixedWidth(max(btn_width, self.btn_setSavingDir.sizeHint().width()))
 
         self.lineEdit_savingDir = QLineEdit()
         last_path = get_last_used_saving_path()
@@ -8925,7 +8925,7 @@ class WellplateMultiPointWidget(
         self.checkbox_skipSaving.setChecked(False)
 
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
-        self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_startAcquisition, "primary")
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -9457,110 +9457,22 @@ class WellplateMultiPointWidget(
     def update_tab_styles(self):
         """Update tab frame styles based on checkbox states"""
         # Active tab styles (checked) - custom colors for each tab
-        xy_active_style = """
-            QFrame {
-                border: 1px solid #FF8C00;
-                border-radius: 2px;
-            }
-        """
-
-        # Orange background with opaque widget backgrounds to prevent color bleed
-        xy_controls_style = """
-            QFrame {
-                background-color: rgba(255, 140, 0, 0.15);
-            }
-            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
-                background-color: white;
-                color: black;
-            }
-            QFrame QComboBox:disabled, QFrame QSpinBox:disabled, QFrame QDoubleSpinBox:disabled {
-                background-color: palette(button);
-                color: palette(disabled-text);
-            }
-            QFrame QComboBox QAbstractItemView {
-                background-color: white;
-                color: black;
-                selection-background-color: palette(highlight);
-                selection-color: palette(highlighted-text);
-            }
-            QFrame QPushButton {
-                background-color: #FFD9B3;
-            }
-            QFrame QLabel {
-                background-color: transparent;
-            }
-        """
-
-        z_active_style = """
-            QFrame {
-                border: 1px solid palette(highlight);
-                border-radius: 2px;
-            }
-        """
-
-        # Blue background for Z controls with opaque widget backgrounds
-        z_controls_style = """
-            QFrame {
-                background-color: rgba(0, 120, 215, 0.15);
-            }
-            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
-                background-color: white;
-            }
-            QFrame QPushButton {
-                background-color: #C2D9FF;
-            }
-            QFrame QLabel {
-                background-color: transparent;
-            }
-        """
-
-        time_active_style = """
-            QFrame {
-                border: 1px solid #00A000;
-                border-radius: 2px;
-            }
-        """
-
-        # Green background for Time controls with opaque widget backgrounds
-        time_controls_style = """
-            QFrame {
-                background-color: rgba(0, 160, 0, 0.15);
-            }
-            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
-                background-color: white;
-            }
-            QFrame QPushButton {
-                background-color: #C2FFC2;
-            }
-            QFrame QLabel {
-                background-color: transparent;
-            }
-        """
-
-        # Inactive tab style (unchecked) - uses default Qt inactive tab colors
-        inactive_style = """
-            QFrame {
-                border: 1px solid palette(mid);
-                border-radius: 2px;
-            }
-        """
-
         # Apply styles based on checkbox states
-        self.xy_frame.setStyleSheet(xy_active_style if self.checkbox_xy.isChecked() else inactive_style)
+        theme.style_group(self.xy_frame, "xy", "frame", self.checkbox_xy.isChecked())
         if hasattr(self, "xy_controls_frame"):
-            self.xy_controls_frame.setStyleSheet(xy_controls_style if self.checkbox_xy.isChecked() else "")
+            theme.style_group(self.xy_controls_frame, "xy", "body", self.checkbox_xy.isChecked())
         if hasattr(self, "load_coordinates_frame"):
-            self.load_coordinates_frame.setStyleSheet(xy_controls_style if self.checkbox_xy.isChecked() else "")
+            theme.style_group(self.load_coordinates_frame, "xy", "body", self.checkbox_xy.isChecked())
 
-        self.z_frame.setStyleSheet(z_active_style if self.checkbox_z.isChecked() else inactive_style)
+        theme.style_group(self.z_frame, "z", "frame", self.checkbox_z.isChecked())
         if hasattr(self, "z_controls_dz_frame"):
-            self.z_controls_dz_frame.setStyleSheet(z_controls_style if self.checkbox_z.isChecked() else "")
+            theme.style_group(self.z_controls_dz_frame, "z", "body", self.checkbox_z.isChecked())
         if hasattr(self, "z_controls_range_frame"):
-            self.z_controls_range_frame.setStyleSheet(z_controls_style if self.checkbox_z.isChecked() else "")
+            theme.style_group(self.z_controls_range_frame, "z", "body", self.checkbox_z.isChecked())
 
-        self.time_frame.setStyleSheet(time_active_style if self.checkbox_time.isChecked() else inactive_style)
+        theme.style_group(self.time_frame, "time", "frame", self.checkbox_time.isChecked())
         if hasattr(self, "time_controls_frame"):
-            self.time_controls_frame.setStyleSheet(time_controls_style if self.checkbox_time.isChecked() else "")
+            theme.style_group(self.time_controls_frame, "time", "body", self.checkbox_time.isChecked())
 
     def on_xy_toggled(self, checked):
         """Handle XY checkbox toggle"""
@@ -15296,7 +15208,7 @@ class WavelengthWidget(QWidget):
         layout.addWidget(self.spinbox)
 
         self.na_label = QLabel("N/A")
-        self.na_label.setStyleSheet("color: gray;")
+        theme.set_role(self.na_label, "note-gray")
         layout.addWidget(self.na_label)
 
         # Set initial state
@@ -15372,7 +15284,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
             "Only change these settings when necessary."
         )
         warning_label.setWordWrap(True)
-        warning_label.setStyleSheet("color: #CC0000; font-weight: bold;")
+        theme.set_role(warning_label, "danger")
         layout.addWidget(warning_label)
 
         # Table for illumination channels
@@ -15844,6 +15756,7 @@ class ControllerPortMappingDialog(QDialog):
         self.setMinimumSize(400, 450)
         self._setup_ui()
         self._load_mappings()
+        theme.manager().theme_changed.connect(self._recolour_rows)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -15854,7 +15767,7 @@ class ControllerPortMappingDialog(QDialog):
             "USB ports are for LED matrix patterns, D ports are for lasers."
         )
         info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: gray; font-style: italic;")
+        theme.set_role(info_label, "hint-gray")
         layout.addWidget(info_label)
 
         # Table for port mappings
@@ -15879,6 +15792,13 @@ class ControllerPortMappingDialog(QDialog):
 
         layout.addLayout(button_layout)
 
+    def _recolour_rows(self) -> None:
+        """Repaint the read-only port cells for the current theme; the editors are left untouched."""
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None:
+                item.setBackground(theme.manager().row_brush("row_disabled"))
+
     def _load_mappings(self):
         """Load current port mappings into the table"""
         from control.models.illumination_config import IlluminationChannelConfig
@@ -15896,7 +15816,7 @@ class ControllerPortMappingDialog(QDialog):
             # Controller port (read-only)
             port_item = QTableWidgetItem(port)
             port_item.setFlags(port_item.flags() & ~Qt.ItemIsEditable)
-            port_item.setBackground(QColor(240, 240, 240))
+            port_item.setBackground(theme.manager().row_brush("row_disabled"))
             self.table.setItem(row, 0, port_item)
 
             # Source code (editable spinbox with N/A option)
@@ -15964,7 +15884,7 @@ class SourceCodeWidget(QWidget):
         layout.addWidget(self.spinbox)
 
         self.na_label = QLabel("N/A")
-        self.na_label.setStyleSheet("color: gray;")
+        theme.set_role(self.na_label, "note-gray")
         layout.addWidget(self.na_label)
 
         # Set initial state
@@ -16036,15 +15956,14 @@ class RAMMonitorWidget(QWidget):
         self.label_available = self._create_value_label(fm.horizontalAdvance("888.8 GB"))
 
         # Separator and descriptor labels
-        separator_style = "color: #666;"
         self.label_separator1 = QLabel("|")
-        self.label_separator1.setStyleSheet(separator_style)
+        theme.set_role(self.label_separator1, "note")
         self.label_peak_label = QLabel("peak:")
-        self.label_peak_label.setStyleSheet(separator_style)
+        theme.set_role(self.label_peak_label, "note")
         self.label_separator2 = QLabel("|")
-        self.label_separator2.setStyleSheet(separator_style)
+        theme.set_role(self.label_separator2, "note")
         self.label_available_label = QLabel("available:")
-        self.label_available_label.setStyleSheet(separator_style)
+        theme.set_role(self.label_available_label, "note")
 
         layout.addWidget(self.label_icon)
         layout.addWidget(self.label_current)
@@ -16227,10 +16146,10 @@ class BackpressureMonitorWidget(QWidget):
         self.label_bytes = self._create_value_label(fm.horizontalAdvance("8888.8/8888.8 MB"))
 
         self.label_separator = QLabel("|")
-        self.label_separator.setStyleSheet("color: #666;")
+        theme.set_role(self.label_separator, "note")
 
         self.label_throttled = QLabel("")
-        self.label_throttled.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        theme.set_role(self.label_throttled, "danger-soft")
 
         layout.addWidget(self.label_prefix)
         layout.addWidget(self.label_jobs)
@@ -17281,6 +17200,8 @@ class WarningErrorWidget(QWidget):
         self._handler = None
         self._poll_timer = None
         self._setup_ui()
+        self._restyle()
+        theme.manager().theme_changed.connect(self._restyle)
 
     def connect_handler(self, handler: "BufferingHandler"):
         """Connect to a logging handler and start polling for messages.
@@ -17359,12 +17280,6 @@ class WarningErrorWidget(QWidget):
         self.btn_expand.setFixedHeight(18)
         self.btn_expand.setMinimumWidth(32)  # Allow width to grow for longer text
         self.btn_expand.setCursor(Qt.PointingHandCursor)
-        self.btn_expand.setStyleSheet(
-            "QPushButton { background-color: #666; color: white; border-radius: 9px; "
-            "font-size: 11px; font-weight: bold; padding: 0px 6px; }"
-            "QPushButton:hover { background-color: #444; }"
-            "QPushButton:pressed { background-color: #222; }"
-        )
         self.btn_expand.clicked.connect(self._on_expand_clicked)
         self.btn_expand.setVisible(False)
 
@@ -17372,10 +17287,6 @@ class WarningErrorWidget(QWidget):
         self.btn_dismiss = QPushButton("✕")
         self.btn_dismiss.setFixedSize(18, 18)
         self.btn_dismiss.setCursor(Qt.PointingHandCursor)
-        self.btn_dismiss.setStyleSheet(
-            "QPushButton { background: transparent; border: none; color: #888; font-size: 14px; padding: 0px; }"
-            "QPushButton:hover { color: #000; }"
-        )
         self.btn_dismiss.clicked.connect(self.dismiss_current)
 
         layout.addWidget(self.label_icon)
@@ -17383,6 +17294,25 @@ class WarningErrorWidget(QWidget):
         layout.addWidget(self.btn_expand)
         layout.addWidget(self.btn_dismiss)
         layout.addStretch()  # Push everything to the left
+
+    def _restyle(self, *_):
+        """Build the pill and dismiss button styles from the current theme's tokens, and repaint the message."""
+        t = theme.manager().tokens()
+        self.btn_expand.setStyleSheet(
+            f"QPushButton {{ background-color: {t.pill_bg}; color: white; border-radius: 9px; "
+            "font-size: 11px; font-weight: bold; padding: 0px 6px; }"
+            f"QPushButton:hover {{ background-color: {t.pill_hover}; }}"
+            f"QPushButton:pressed {{ background-color: {t.pill_pressed}; }}"
+        )
+        self.btn_dismiss.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: none; color: {t.icon_button_fg}; font-size: 14px; "
+            "padding: 0px; }"
+            f"QPushButton:hover {{ color: {t.icon_button_hover_fg}; }}"
+        )
+        # The popup is transient (it closes when clicked outside): drop an open one rather than leave it stale.
+        self._cleanup_popup()
+        if self._messages:
+            self._update_display()
 
     def _on_expand_clicked(self):
         """Handle expand button click."""
@@ -17401,7 +17331,10 @@ class WarningErrorWidget(QWidget):
         self._cleanup_popup()
 
         self._popup = QFrame(self.window(), Qt.Popup | Qt.FramelessWindowHint)
-        self._popup.setStyleSheet("QFrame { background-color: white; border: 1px solid #aaa; border-radius: 6px; }")
+        t = theme.manager().tokens()
+        self._popup.setStyleSheet(
+            f"QFrame {{ background-color: {t.popup_bg}; border: 1px solid {t.popup_border}; border-radius: 6px; }}"
+        )
 
         popup_layout = QVBoxLayout(self._popup)
         popup_layout.setContentsMargins(0, 0, 0, 0)
@@ -17409,16 +17342,18 @@ class WarningErrorWidget(QWidget):
 
         # Header with title and Clear All button
         header = QWidget()
-        header.setStyleSheet("background-color: #f5f5f5; border-bottom: 1px solid #ddd;")
+        header.setStyleSheet(
+            f"background-color: {t.popup_header_bg}; border-bottom: 1px solid {t.popup_header_border};"
+        )
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(12, 8, 12, 8)
         header_label = QLabel(f"<b>Warnings & Errors</b> ({len(self._messages)})")
         btn_clear = QPushButton("Clear All")
         btn_clear.setCursor(Qt.PointingHandCursor)
         btn_clear.setStyleSheet(
-            "QPushButton { background-color: #e74c3c; color: white; border: none; "
+            f"QPushButton {{ background-color: {t.clear_bg}; color: white; border: none; "
             "border-radius: 4px; padding: 4px 12px; font-weight: bold; }"
-            "QPushButton:hover { background-color: #c0392b; }"
+            f"QPushButton:hover {{ background-color: {t.clear_hover}; }}"
         )
         btn_clear.clicked.connect(self._clear_all_from_popup)
         header_layout.addWidget(header_label)
@@ -17431,10 +17366,10 @@ class WarningErrorWidget(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setStyleSheet("QScrollArea { border: none; background: white; }")
+        scroll.setStyleSheet(f"QScrollArea {{ border: none; background: {t.popup_bg}; }}")
 
         list_widget = QWidget()
-        list_widget.setStyleSheet("background: white;")
+        list_widget.setStyleSheet(f"background: {t.popup_bg};")
         list_layout = QVBoxLayout(list_widget)
         list_layout.setContentsMargins(0, 0, 0, 0)
         list_layout.setSpacing(0)
@@ -17488,10 +17423,11 @@ class WarningErrorWidget(QWidget):
         dt = msg["datetime"]
         msg_id = msg["id"]
 
+        t = theme.manager().tokens()
         item = QWidget()
         is_error = level >= logging.ERROR
-        bg_color = "#fef2f2" if is_error else "#fefce8"
-        item.setStyleSheet(f"background-color: {bg_color}; border-bottom: 1px solid #eee;")
+        bg_color = t.error_bg if is_error else t.warn_bg
+        item.setStyleSheet(f"background-color: {bg_color}; border-bottom: 1px solid {t.popup_row_border};")
 
         layout = QHBoxLayout(item)
         layout.setContentsMargins(12, 8, 12, 8)
@@ -17499,7 +17435,7 @@ class WarningErrorWidget(QWidget):
 
         # Level indicator
         icon_label = QLabel("⬤")
-        icon_color = "#dc2626" if is_error else "#ca8a04"
+        icon_color = t.error_icon_bg if is_error else t.warn_dot
         icon_label.setStyleSheet(f"color: {icon_color}; font-size: 8px;")
         icon_label.setFixedWidth(14)
         icon_label.setAlignment(Qt.AlignCenter)
@@ -17507,16 +17443,16 @@ class WarningErrorWidget(QWidget):
         # Date/Time - show full date and time
         time_str = dt.strftime("%m/%d %H:%M:%S")
         time_label = QLabel(time_str)
-        time_label.setStyleSheet("color: #666; font-size: 11px; font-family: monospace;")
+        time_label.setStyleSheet(f"color: {t.popup_time_fg}; font-size: 11px; font-family: monospace;")
         time_label.setFixedWidth(90)
 
         # Message (allow wrapping)
         core_msg = self._extract_core_message(message)
         if count > 1:
-            core_msg = f"{core_msg} <b style='color: #666;'>(×{count})</b>"
+            core_msg = f"{core_msg} <b style='color: {t.popup_time_fg};'>(×{count})</b>"
         msg_label = QLabel(core_msg)
         msg_label.setWordWrap(True)
-        msg_label.setStyleSheet("font-size: 12px; color: #333;")
+        msg_label.setStyleSheet(f"font-size: 12px; color: {t.popup_msg_fg};")
         msg_label.setTextFormat(Qt.RichText)
         msg_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
@@ -17525,8 +17461,9 @@ class WarningErrorWidget(QWidget):
         btn_dismiss.setFixedSize(20, 20)
         btn_dismiss.setCursor(Qt.PointingHandCursor)
         btn_dismiss.setStyleSheet(
-            "QPushButton { background: #ddd; border: none; color: #666; border-radius: 10px; font-size: 12px; }"
-            "QPushButton:hover { background: #ccc; color: #333; }"
+            f"QPushButton {{ background: {t.dismiss_bg}; border: none; color: {t.dismiss_fg}; border-radius: 10px; "
+            "font-size: 12px; }"
+            f"QPushButton:hover {{ background: {t.dismiss_hover_bg}; color: {t.dismiss_hover_fg}; }}"
         )
         btn_dismiss.clicked.connect(lambda checked, mid=msg_id: self._dismiss_by_id(mid))
 
@@ -17637,19 +17574,22 @@ class WarningErrorWidget(QWidget):
         is_error = level >= logging.ERROR
 
         # Colors
+        t = theme.manager().tokens()
         if is_error:
-            bg_color = "#fef2f2"
-            text_color = "#b91c1c"
+            bg_color = t.error_bg
+            text_color = t.error_fg
             icon_text = "✕"
             icon_style = (
-                "background-color: #dc2626; color: white; font-weight: bold; font-size: 12px; border-radius: 10px;"
+                f"background-color: {t.error_icon_bg}; color: white; font-weight: bold; font-size: 12px; "
+                "border-radius: 10px;"
             )
         else:
-            bg_color = "#fefce8"
-            text_color = "#a16207"
+            bg_color = t.warn_bg
+            text_color = t.warn_fg
             icon_text = "!"
             icon_style = (
-                "background-color: #eab308; color: white; font-weight: bold; font-size: 14px; border-radius: 10px;"
+                f"background-color: {t.warn_icon_bg}; color: white; font-weight: bold; font-size: 14px; "
+                "border-radius: 10px;"
             )
 
         self.setStyleSheet(f"background-color: {bg_color}; border-radius: 4px;")

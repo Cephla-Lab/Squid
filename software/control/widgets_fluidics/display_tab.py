@@ -19,6 +19,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+import control.theme as theme
 import squid.logging
 from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
 from control.widgets_fluidics.protocol_tab import ProtocolTab
@@ -105,7 +106,7 @@ class FluidicsDisplayTab(QWidget):
         self.manual_group = QGroupBox("Manual control")
         manual_layout = QVBoxLayout()
         self._manual_placeholder = QLabel("Initialize the fluidics system to enable manual control.")
-        self._manual_placeholder.setStyleSheet("color: gray;")
+        theme.set_role(self._manual_placeholder, "note-gray")
         manual_layout.addWidget(self._manual_placeholder)
 
         # One-off priming/cleaning as an inline row (no pop-ups), the old widget's fields:

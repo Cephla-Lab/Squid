@@ -72,6 +72,7 @@ from control.startup_homing import (
 from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
 import control._def
 import control.lighting
+import control.theme as theme
 import control.utils
 import control.utils_acquisition
 import control.microscope
@@ -911,6 +912,7 @@ class HighContentScreeningGui(QMainWindow):
         config_action.setMenuRole(QAction.NoRole)
         config_action.triggered.connect(self.openPreferences)
         settings_menu.addAction(config_action)
+        self._build_appearance_menu(settings_menu)
 
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             led_matrix_action = QAction("LED Matrix", self)
@@ -1552,22 +1554,24 @@ class HighContentScreeningGui(QMainWindow):
 
         if control._def.SIMULATED_DISK_IO_ENABLED:
             simulated_io_banner = QLabel("  SIMULATED DISK I/O - Images are encoded but NOT saved to disk  ")
-            simulated_io_banner.setStyleSheet(
-                "background-color: #FF6B6B; color: white; font-weight: bold; padding: 8px;"
-            )
+            theme.set_role(simulated_io_banner, "banner-danger")
             simulated_io_banner.setAlignment(Qt.AlignCenter)
             layout.addWidget(simulated_io_banner)
 
+        theme.set_role(self.profileWidget, "card")
+        theme.set_role(self.liveControlWidget, "card")
         layout.addWidget(self.profileWidget)
         layout.addWidget(self.liveControlWidget)
 
         layout.addWidget(self.cameraTabWidget)
 
         if SHOW_DAC_CONTROL:
+            theme.set_role(self.dacControlWidget, "card")
             layout.addWidget(self.dacControlWidget)
 
         # Create a widget to hold sample settings and navigation viewer
         navigation_section_widget = QWidget()
+        theme.set_role(navigation_section_widget, "card")
         navigation_section_layout = QVBoxLayout()
         navigation_section_layout.setContentsMargins(0, 0, 0, 0)
         navigation_section_layout.setSpacing(0)
@@ -2141,6 +2145,74 @@ class HighContentScreeningGui(QMainWindow):
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             dialog = widgets.LedMatrixSettingsDialog(self.liveController.led_array)
             dialog.exec_()
+
+    def _build_appearance_menu(self, settings_menu):
+        """Settings > Appearance: Light / Dark / Classic. Classic <-> skinned changes apply after a restart."""
+        # The theme the machine ini asks for. It differs from the active theme after a deferred Classic
+        # transition or a failed save, and the menu marks that difference "(after restart)".
+        self._saved_theme = theme.load_theme_choice()
+        self.appearance_actions = {}
+        appearance_menu = settings_menu.addMenu("Appearance")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for name in theme.THEMES:
+            action = QAction(name.capitalize(), self)
+            action.setMenuRole(QAction.NoRole)
+            action.setCheckable(True)
+            group.addAction(action)
+            appearance_menu.addAction(action)
+            action.triggered.connect(lambda _=False, c=name: self._on_theme_chosen(c))
+            self.appearance_actions[name] = action
+        self._appearance_group = group
+        self._refresh_appearance_labels()
+
+    def _refresh_appearance_labels(self):
+        active = theme.manager().current
+        pending = self._saved_theme if self._saved_theme != active else None
+        for name, action in self.appearance_actions.items():
+            action.setText(name.capitalize() + (" (after restart)" if name == pending else ""))
+        self.appearance_actions[pending or active].setChecked(True)
+
+    def _on_theme_chosen(self, choice):
+        manager = theme.manager()
+        if choice == manager.current and choice == self._saved_theme:
+            return  # already active and already saved: nothing to do
+        saved = theme.save_theme_choice(control._def.CACHED_CONFIG_FILE_PATH, choice)
+        if saved:
+            self._saved_theme = choice
+        # A failed save leaves the ini (and so _saved_theme) as it was; the labels keep saying so.
+        if manager.needs_restart(choice):
+            self._refresh_appearance_labels()
+            if not saved:
+                QMessageBox.warning(
+                    self,
+                    "Appearance",
+                    "The theme could not be saved to the machine configuration file, so it cannot change at the next start.",
+                )
+                return
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Restart Required")
+            msg.setText("The theme has been saved. This change requires a restart to take effect.")
+            msg.setInformativeText("Would you like to restart now?")
+            msg.setIcon(QMessageBox.Information)
+            restart_btn = msg.addButton("Restart Now", QMessageBox.AcceptRole)
+            msg.addButton("Later", QMessageBox.RejectRole)
+            msg.exec_()
+            if msg.clickedButton() == restart_btn:
+                self.restart_application()
+            return
+        applied_now = choice != manager.current
+        if applied_now:
+            manager.apply(choice)
+        self._refresh_appearance_labels()
+        if not saved:
+            what = "The theme was applied for this session but" if applied_now else "The theme"
+            QMessageBox.warning(
+                self,
+                "Appearance",
+                f"{what} could not be saved to the machine configuration file. "
+                f"The next start will use {self._saved_theme.capitalize()}.",
+            )
 
     def openPreferences(self):
         if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):

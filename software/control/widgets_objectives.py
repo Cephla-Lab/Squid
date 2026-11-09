@@ -19,6 +19,7 @@ from qtpy.QtWidgets import (
 )
 
 import control._def
+import control.theme as theme
 import control.objectives_config as oc
 from control.atomic_file import NotDurableError
 from control.core.config.repository import ChannelCopyError
@@ -26,7 +27,6 @@ import squid.logging
 
 _COLUMNS = ["Name", "Magnification", "NA", "Tube lens (mm)", "Slot", "Model", "Serial", "Copy settings from"]
 _COL_NAME, _COL_MAG, _COL_NA, _COL_TUBE, _COL_SLOT, _COL_MODEL, _COL_SERIAL, _COL_COPY = range(len(_COLUMNS))
-_CONFLICT = QColor(255, 210, 210)
 
 
 def _number_text(value: Optional[float]) -> str:
@@ -95,6 +95,7 @@ class ObjectivesEditorDialog(QDialog):
         self.setWindowTitle("Objectives")
         self.setMinimumSize(900, 360)
         self._build_ui()
+        theme.manager().theme_changed.connect(self._refresh_highlight)
         try:
             existing = config_repo.get_objectives_config()
             if existing is not None:
@@ -299,7 +300,7 @@ class ObjectivesEditorDialog(QDialog):
         for r in range(self._table.rowCount()):
             item = self._table.item(r, _COL_NAME)
             if item is not None:
-                item.setBackground(_CONFLICT if r in conflicts else QColor(0, 0, 0, 0))
+                item.setBackground(theme.manager().row_brush("row_conflict") if r in conflicts else QColor(0, 0, 0, 0))
 
     # --- actions ---
 

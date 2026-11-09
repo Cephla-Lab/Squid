@@ -1920,6 +1920,8 @@ try:
 except FileNotFoundError:
     CACHED_CONFIG_FILE_PATH = None
 
+UI_THEME = "light"  # [GENERAL] ui_theme: "light", "dark" or "classic"
+
 config_files = glob.glob("." + "/" + "configuration*.ini")
 if config_files:
     if len(config_files) > 1:
