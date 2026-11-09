@@ -34,10 +34,11 @@ CONFIG_CACHE = os.path.join("cache", "config_file_path.txt")
 MACHINE_INI_DIR = os.path.join("cache", "ui_screenshot")
 # What _install_machine_ini changed, so _restore_config can undo it. None while nothing is installed.
 _config_state = None
-# control._def flags that make Microscope.build_from_global_config construct real hardware even under --simulation
-# (control/microscope.py: the Prior stage has no simulated counterpart). This tool answers the homing prompt and
-# bypasses the single-instance lock, so such a configuration must never reach the GUI.
-HARDWARE_WITHOUT_SIMULATION = ("USE_PRIOR_STAGE",)
+# control._def flags that make the Microscope factories construct real hardware even under --simulation
+# (control/microscope.py: the Prior stage and the SCI Microscopy LED array have no simulated counterpart; every
+# other device branch there consults the flag). This tool answers the homing prompt and bypasses the
+# single-instance lock, so such a configuration must never reach the GUI.
+HARDWARE_WITHOUT_SIMULATION = ("USE_PRIOR_STAGE", "SUPPORT_SCIMICROSCOPY_LED_ARRAY")
 
 
 def _default_machine_ini():
