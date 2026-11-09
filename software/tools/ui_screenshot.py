@@ -90,7 +90,8 @@ def _refuse_real_hardware():
     if live:
         raise SystemExit(
             f"the configuration enables {', '.join(live)}, which --simulation does not simulate: this capture would "
-            "initialise and home real hardware. Pass --machine-ini with a configuration that does not enable it."
+            "open and configure real hardware (and home it, for a stage). Pass --machine-ini with a configuration "
+            "that does not enable it."
         )
 
 
@@ -99,12 +100,15 @@ def _install_private_gui_state():
 
     The acquisition-widget settings (cache/multipoint_widget_config.yaml), the camera settings cache and the cached
     stage position are shared with a real Squid instance that may be running alongside this capture; moving them
-    aside and back would discard whatever that instance saved in the meantime.
+    aside and back would discard whatever that instance saved in the meantime, and reading them would make the
+    captures depend on the operator's last session. Reads answer "nothing cached", writes do nothing.
     """
     import squid.camera.settings_cache
     import squid.stage.utils
 
+    squid.camera.settings_cache.load_camera_settings = lambda *args, **kwargs: None
     squid.camera.settings_cache.save_camera_settings = lambda *args, **kwargs: None
+    squid.stage.utils.get_cached_position = lambda *args, **kwargs: None
     squid.stage.utils.cache_position = lambda *args, **kwargs: None
 
     import control.widgets
