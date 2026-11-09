@@ -1,6 +1,6 @@
 # UI Theme (Light / Dark / Classic)
 
-This document describes how the Squid GUI is skinned and, more importantly, the rules new GUI code must follow so it renders correctly in every theme. Design rationale lives in `docs/superpowers/specs/2026-11-08-ui-skin-design.md`; this is the working reference.
+This document describes how the Squid GUI is skinned and, more importantly, the rules new GUI code must follow so it renders correctly in every theme. Design rationale, the implementation plan and the before/after captures live in the AI-docs repo (`Squid/to-do/2026-11-08-ui-skin-design.md` and `-plan.md`); this is the working reference.
 
 ## Overview
 
