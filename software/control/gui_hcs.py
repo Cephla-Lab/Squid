@@ -2032,7 +2032,9 @@ class HighContentScreeningGui(QMainWindow):
 
     def _build_appearance_menu(self, settings_menu):
         """Settings > Appearance: Light / Dark / Classic. Classic <-> skinned changes apply after a restart."""
-        self._pending_theme = None
+        # The theme the machine ini asks for. It differs from the active theme after a deferred Classic
+        # transition or a failed save, and the menu marks that difference "(after restart)".
+        self._saved_theme = theme.load_theme_choice()
         self.appearance_actions = {}
         appearance_menu = settings_menu.addMenu("Appearance")
         group = QActionGroup(self)
@@ -2050,28 +2052,28 @@ class HighContentScreeningGui(QMainWindow):
 
     def _refresh_appearance_labels(self):
         active = theme.manager().current
-        pending = self._pending_theme if self._pending_theme not in (None, active) else None
+        pending = self._saved_theme if self._saved_theme != active else None
         for name, action in self.appearance_actions.items():
             action.setText(name.capitalize() + (" (after restart)" if name == pending else ""))
         self.appearance_actions[pending or active].setChecked(True)
 
     def _on_theme_chosen(self, choice):
         manager = theme.manager()
-        if choice == manager.current and self._pending_theme is None:
-            return
+        if choice == manager.current and choice == self._saved_theme:
+            return  # already active and already saved: nothing to do
         saved = theme.save_theme_choice(control._def.CACHED_CONFIG_FILE_PATH, choice)
+        if saved:
+            self._saved_theme = choice
+        # A failed save leaves the ini (and so _saved_theme) as it was; the labels keep saying so.
         if manager.needs_restart(choice):
+            self._refresh_appearance_labels()
             if not saved:
-                self._pending_theme = None
-                self._refresh_appearance_labels()
                 QMessageBox.warning(
                     self,
                     "Appearance",
                     "The theme could not be saved to the machine configuration file, so it cannot change at the next start.",
                 )
                 return
-            self._pending_theme = choice
-            self._refresh_appearance_labels()
             msg = QMessageBox(self)
             msg.setWindowTitle("Restart Required")
             msg.setText("The theme has been saved. This change requires a restart to take effect.")
@@ -2083,14 +2085,17 @@ class HighContentScreeningGui(QMainWindow):
             if msg.clickedButton() == restart_btn:
                 self.restart_application()
             return
-        manager.apply(choice)
-        self._pending_theme = None
+        applied_now = choice != manager.current
+        if applied_now:
+            manager.apply(choice)
         self._refresh_appearance_labels()
         if not saved:
+            what = "The theme was applied for this session but" if applied_now else "The theme"
             QMessageBox.warning(
                 self,
                 "Appearance",
-                "The theme was applied for this session but could not be saved to the machine configuration file.",
+                f"{what} could not be saved to the machine configuration file. "
+                f"The next start will use {self._saved_theme.capitalize()}.",
             )
 
     def openPreferences(self):

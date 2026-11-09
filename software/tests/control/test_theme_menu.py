@@ -65,9 +65,9 @@ def test_unsaveable_ini_blocks_classic_transition_both_ways(gui, qapp, monkeypat
     assert warned and not prompted
     assert win.appearance_actions["light"].isChecked()
     assert win.appearance_actions["classic"].text() == "Classic"
-    # Classic -> Light: same rule from the other side
+    # Classic -> Light: same rule from the other side (a Classic session whose ini also says classic)
     theme.manager().apply("classic")
-    win._pending_theme = None
+    win._saved_theme = "classic"
     win._refresh_appearance_labels()
     warned.clear()
     win.appearance_actions["light"].trigger()
@@ -99,6 +99,35 @@ def test_picking_the_active_theme_cancels_a_pending_classic(gui, monkeypatch):
     assert "ui_theme = light" in ini.read_text()
     assert win.appearance_actions["classic"].text() == "Classic"
     assert win.appearance_actions["light"].isChecked()
+
+
+def test_failed_cancellation_keeps_the_saved_classic_pending(gui, monkeypatch):
+    win, ini = gui
+    monkeypatch.setattr(QMessageBox, "exec_", lambda self: 0)  # "Later"
+    win.appearance_actions["classic"].trigger()
+    assert "ui_theme = classic" in ini.read_text()
+    # The ini becomes unwritable, then the operator picks Light to cancel the pending Classic.
+    monkeypatch.setattr(control._def, "CACHED_CONFIG_FILE_PATH", None)
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a[2]) or QMessageBox.Ok)
+    win.appearance_actions["light"].trigger()
+    assert warned and "Classic" in warned[0]
+    assert "ui_theme = classic" in ini.read_text()  # the ini still asks for Classic, and the menu must say so
+    assert win.appearance_actions["classic"].text() == "Classic (after restart)"
+    assert win.appearance_actions["classic"].isChecked()
+
+
+def test_session_only_theme_is_saved_when_picked_again(gui, qapp, monkeypatch):
+    win, ini = gui
+    monkeypatch.setattr(control._def, "CACHED_CONFIG_FILE_PATH", None)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: QMessageBox.Ok)
+    win.appearance_actions["dark"].trigger()
+    assert "#202020" in qapp.styleSheet() and "ui_theme" not in ini.read_text()
+    # Write access comes back; picking the already-active Dark again must persist it.
+    monkeypatch.setattr(control._def, "CACHED_CONFIG_FILE_PATH", str(ini))
+    win.appearance_actions["dark"].trigger()
+    assert "ui_theme = dark" in ini.read_text()
+    assert win.appearance_actions["dark"].isChecked() and win.appearance_actions["dark"].text() == "Dark"
 
 
 def test_restart_now_calls_restart_application(gui, monkeypatch):
