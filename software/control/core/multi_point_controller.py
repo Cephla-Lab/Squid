@@ -35,7 +35,7 @@ from control.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
 import squid.acquisition_state
 import squid.logging
-
+from control.acquisition_history_recorder import NullAcquisitionHistoryRecorder
 
 NoOpCallbacks = MultiPointControllerFunctions(
     signal_acquisition_start=lambda *a, **kw: None,
@@ -246,6 +246,11 @@ class MultiPointController:
         self.last_end_reason: Optional[str] = None
         self.last_image_count: int = 0
         self.protocol_info: Optional[dict] = None  # fluidics protocol context for the next run's acquisition.yaml
+        # Acquisition history (the Gallery): the GUI installs a real recorder; the id is the running run's entry.
+        self.history_recorder = NullAcquisitionHistoryRecorder()
+        self._history_entry_id: Optional[str] = None
+        self._starting = False  # a run_acquisition call is between its refusals and its worker thread
+        self._expected_image_count = 0
         self.use_manual_focus_map = False
         self.base_path = None
         self.skip_saving = False
@@ -271,6 +276,67 @@ class MultiPointController:
         self.z_stack_order = control._def.Z_STACK_ORDER
 
         self._start_position: Optional[squid.abc.Pos] = None
+
+    @property
+    def history_entry_id(self) -> Optional[str]:
+        """The acquisition history entry of the running acquisition, or None."""
+        return self._history_entry_id
+
+    def _record_failed_start(
+        self,
+        reason: str,
+        acquire_current_fov: bool,
+        run_protocol_info: Optional[dict],
+        *,
+        own_entry_id: Optional[str],
+    ) -> None:
+        """Record in the acquisition history a start that never launched a worker. own_entry_id is the entry this
+        call recorded as started (None when it never got that far): it is finished as failed and forgotten. Without
+        one, a failed start of its own is recorded and the entry id then held is left alone: it belongs to a run still
+        in progress (a Snap refused by the start blocker, or failing before its own entry, while a flexible
+        acquisition runs)."""
+        try:
+            if own_entry_id is not None:
+                self.history_recorder.finished(
+                    own_entry_id, reason, images=0, expected_images=self._expected_image_count
+                )
+            else:
+                self.history_recorder.failed_start(
+                    os.path.join(self.base_path, self.experiment_ID) if self.experiment_ID else None,
+                    reason,
+                    snap=acquire_current_fov,
+                    skip_saving=self.skip_saving,
+                    protocol=run_protocol_info,
+                )
+        except Exception:
+            self._log.exception("Failed to record the failed acquisition start in the acquisition history")
+        finally:
+            if own_entry_id is not None and self._history_entry_id == own_entry_id:
+                self._history_entry_id = None
+
+    def _another_acquisition_in_progress(self) -> bool:
+        """True while a start is between its refusals and its worker thread, or a worker thread is running: a start
+        refused or failing then belongs to a second caller (Snap Images during a flexible acquisition), not to the run
+        in progress."""
+        return self._starting or (self.thread is not None and self.thread.is_alive())
+
+    def _signal_failed_start(self) -> None:
+        """Tell the callers a start went nowhere, so the UI they put into its acquiring state is released. Not while
+        another acquisition is being started or is running: acquisition_finished would end the GUI's acquiring state
+        (and the Gallery's pause) under a run still going, and that run reports its own end."""
+        if self._another_acquisition_in_progress():
+            self._log.warning("A start failed while an acquisition is in progress; that run reports its own end")
+            return
+        try:
+            self.callbacks.signal_acquisition_finished()
+        except Exception:
+            self._log.exception("acquisition_finished callback failed after a failed acquisition start")
+
+    def _end_refused_start(self, acquire_current_fov: bool, run_protocol_info: Optional[dict]) -> None:
+        """Close out a start refused before anything was prepared: record it and tell the callers."""
+        self.last_end_reason = "failed_to_start"
+        self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry_id=None)
+        self._signal_failed_start()
 
     def _start_prewarmed_job_runner(self):
         """Start a job runner subprocess that warms up in the background.
@@ -730,15 +796,12 @@ class MultiPointController:
         self.last_end_reason = None
         self.last_image_count = 0
         if not self.validate_acquisition_settings():
-            # emit acquisition finished signal to re-enable the UI
-            self.last_end_reason = "failed_to_start"
-            self.callbacks.signal_acquisition_finished()
+            self._end_refused_start(acquire_current_fov, run_protocol_info)  # tells the callers, to re-enable the UI
             return False
         refusal = self.start_blocker() if self.start_blocker is not None else None
         if refusal:
             self._log.error(f"Acquisition not started: {refusal}")
-            self.last_end_reason = "failed_to_start"
-            self.callbacks.signal_acquisition_finished()
+            self._end_refused_start(acquire_current_fov, run_protocol_info)
             return False
         self._start_per_acquisition_log()
 
@@ -755,7 +818,14 @@ class MultiPointController:
 
         thread_started = False
         hardware_prepared = False
+        own_history_entry_id: Optional[str] = None  # the history entry this call records as started, once it does
+        expected_image_count = 0
         self._run_state_writer = squid.acquisition_state.NullRunStateWriter()
+        # From here to the worker thread this call is "starting": a second start refused meanwhile (Snap Images during
+        # a flexible acquisition) must not report this run's end. Only the call that set the flag clears it, in the
+        # finally below, so the flag is set only where that finally is guaranteed to run.
+        starting_here = not self._starting
+        self._starting = True
         try:
             # First in the try: from here every failed start reaches the finally below and reports finished.
             self.callbacks.signal_acquisition_preparing()
@@ -972,6 +1042,7 @@ class MultiPointController:
                     "channels": len(self.selected_configurations),
                     "z": self.NZ,
                 }
+                expected_image_count = expected["fovs"] * expected["timepoints"] * expected["z"] * expected["channels"]
                 config_path = (getattr(control._def, "CACHED_CONFIG_FILE_PATH", None) or "").strip() or None
                 self._run_state_writer = squid.acquisition_state.RunStateWriter.start(
                     experiment_id=self.experiment_ID,
@@ -982,6 +1053,20 @@ class MultiPointController:
                 )
             except Exception as e:
                 self._log.warning(f"Failed to write acquisition watchdog start state: {e}")
+
+            # Acquisition history (the Gallery): record the run as started. Never breaks the acquisition. The count and
+            # the entry become this call's only here: a start failing earlier leaves a running acquisition's alone.
+            self._expected_image_count = expected_image_count
+            try:
+                own_history_entry_id = self._history_entry_id = self.history_recorder.started(
+                    acquisition_params,
+                    experiment_path,
+                    snap=acquire_current_fov,
+                    skip_saving=self.skip_saving,
+                    protocol=run_protocol_info,
+                )
+            except Exception:
+                self._log.exception("Failed to record the acquisition start in the acquisition history")
 
             # Get pre-warmed job runner and its shared backpressure values
             # (starts a new one warming for next acquisition)
@@ -1023,6 +1108,8 @@ class MultiPointController:
             self.thread.start()
             thread_started = True
         finally:
+            if starting_here:
+                self._starting = False
             if not thread_started:
                 # Acquisition never launched a worker — close out the breadcrumb so the
                 # watchdog doesn't later misread the lingering "running" state as a hang.
@@ -1046,10 +1133,10 @@ class MultiPointController:
                     except Exception:
                         self._log.exception("Failed to restore camera/live state after a failed acquisition start")
                 self.last_end_reason = "failed_to_start"
-                try:
-                    self.callbacks.signal_acquisition_finished()
-                except Exception:
-                    self._log.exception("acquisition_finished callback failed after a failed acquisition start")
+                self._record_failed_start(
+                    self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry_id=own_history_entry_id
+                )
+                self._signal_failed_start()
         return thread_started
 
     def build_params(
@@ -1108,6 +1195,17 @@ class MultiPointController:
         worker = self.multiPointWorker
         self.last_end_reason = getattr(worker, "end_reason", None) or "completed"
         self.last_image_count = int(getattr(worker, "image_count", 0) or 0)
+        try:
+            self.history_recorder.finished(
+                self._history_entry_id,
+                self.last_end_reason,
+                images=self.last_image_count,
+                expected_images=self._expected_image_count,
+            )
+        except Exception:
+            self._log.exception("Failed to record the end of the acquisition in the acquisition history")
+        finally:
+            self._history_entry_id = None
         # Each group runs even when the other one fails, and the end of the run is reported either way: otherwise the
         # GUI stays in "acquiring" with no acquisition left to abort (e.g. after the stage stopped answering).
         for restore in (self._restore_software_state_after_acquisition, self._restore_hardware_after_acquisition):

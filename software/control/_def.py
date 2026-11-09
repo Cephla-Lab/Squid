@@ -668,11 +668,11 @@ class ZProjectionMode(Enum):
     """Z-projection mode for downsampled view generation.
 
     MIP: Max intensity projection - uses running maximum across all z-levels
-    MIDDLE: Middle layer - uses only the middle z-level (z = NZ // 2)
+    LAST_PLANE: Last plane - each z-plane overwrites the previous one
     """
 
     MIP = "mip"
-    MIDDLE = "middle"
+    LAST_PLANE = "last_plane"
 
     @staticmethod
     def convert_to_enum(option: Union[str, "ZProjectionMode"]) -> "ZProjectionMode":
@@ -682,7 +682,7 @@ class ZProjectionMode(Enum):
         try:
             return ZProjectionMode(option.lower())
         except ValueError:
-            raise ValueError(f"Invalid z-projection mode: '{option}'. Expected 'mip' or 'middle'.")
+            raise ValueError(f"Invalid z-projection mode: '{option}'. Expected 'mip' or 'last_plane'.")
 
 
 class DownsamplingMethod(Enum):
@@ -1197,7 +1197,13 @@ LIVE_ONLY_MODE = False
 
 # NDViewer integration
 ENABLE_NDVIEWER = False
+# Location of a standalone ndviewer_light (file, folder holding ndviewer_light/, or command line); empty = auto-detect
+NDVIEWER_LIGHT_COMMAND = ""
+# Also record Snap images in the acquisition history
+RECORD_SNAPS_IN_HISTORY = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
+# How z-planes combine in the mosaic view (and its saved overview): running max, or last plane wins.
+MOSAIC_Z_PROJECTION = ZProjectionMode.MIP
 
 # Downsampled-view auto-save settings. Each flag independently controls one
 # output of the unified mosaic widget's save path:
@@ -2145,8 +2151,23 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                     )
                 except ValueError:
                     pass
+            if _views_config.has_option("VIEWS", "mosaic_z_projection"):
+                try:
+                    MOSAIC_Z_PROJECTION = ZProjectionMode.convert_to_enum(
+                        _views_config.get("VIEWS", "mosaic_z_projection")
+                    )
+                except ValueError:
+                    pass
             if _views_config.has_option("VIEWS", "enable_ndviewer"):
                 ENABLE_NDVIEWER = _views_config.get("VIEWS", "enable_ndviewer").lower() in ("true", "1", "yes")
+            if _views_config.has_option("VIEWS", "ndviewer_light_command"):
+                NDVIEWER_LIGHT_COMMAND = _views_config.get("VIEWS", "ndviewer_light_command").strip()
+            if _views_config.has_option("VIEWS", "record_snaps_in_history"):
+                RECORD_SNAPS_IN_HISTORY = _views_config.get("VIEWS", "record_snaps_in_history").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
     except Exception as e:
         log.warning(f"Failed to load Views settings from config: {e}")
 

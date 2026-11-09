@@ -36,6 +36,21 @@ def confirm_exit_yes(monkeypatch):
     monkeypatch.setattr(QMessageBox, "question", confirm_exit)
 
 
+@pytest.fixture(autouse=True)
+def isolated_gallery_state(monkeypatch, tmp_path):
+    """No GUI test writes the real acquisition history or gallery cache, or gets the first-launch import offer."""
+    import control.widgets_gallery
+
+    monkeypatch.setenv("SQUID_ACQUISITION_HISTORY_DIR", str(tmp_path / "history"))
+    marker = tmp_path / "cache" / "gallery_import_offered.txt"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("offered\n")
+    monkeypatch.setattr(control.widgets_gallery, "IMPORT_OFFER_MARKER", str(marker))
+    monkeypatch.setattr(
+        control.widgets_gallery, "LAST_GALLERY_VIEW_CACHE", str(tmp_path / "cache" / "last_gallery_view.yaml")
+    )
+
+
 def test_create_simulated_hcs_with_or_without_piezo(qtbot, confirm_exit_yes):
     # This just tests to make sure we can successfully create a simulated hcs gui with or without
     # the piezo objective.
@@ -1100,3 +1115,353 @@ def test_wellplate_yaml_moving_the_stack_to_the_stepper_gives_the_entries_the_st
     w._apply_yaml_settings(AcquisitionYAMLData(widget_type="wellplate", nz=4, delta_z_um=2.0, use_piezo=False))
 
     assert w.entry_minZ.maximum() == control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
+
+
+def _gallery_row(gallery, entry_id):
+    return next(row for row in gallery.rows() if row.entry.id == entry_id)
+
+
+def test_gallery_is_wired_to_the_history_viewer_and_launcher(qtbot, confirm_exit_yes, monkeypatch, tmp_path):
+    """The Gallery tab shows the history the controller records into; opening an acquisition goes to the NDViewer
+    tab or an ndviewer_light window, loading its settings to the multipoint tab it was run from."""
+    import os
+    import socket
+
+    from qtpy.QtWidgets import QWidget
+
+    from control.ndviewer_launcher import LauncherResolution
+    from squid.acquisition_history import HistoryStore
+    from tests.control.gallery_fixtures import write_acquisition
+
+    monkeypatch.setenv("SQUID_ACQUISITION_HISTORY_DIR", str(tmp_path / "history"))
+    resolutions = [LauncherResolution(["ndviewer-light"], "path", "ndviewer-light on the PATH")]
+    monkeypatch.setattr(control.gui_hcs, "resolve_ndviewer_light", lambda preference="": resolutions[-1])
+    launched = []
+    exit_codes = [None]  # what the launched process's poll() reports when the launch check runs
+
+    class FakeProcess:
+        def poll(self):
+            return exit_codes[-1]
+
+    def fake_launch(resolution, folder, log_path=None):
+        launched.append((resolution, folder, log_path))
+        return FakeProcess()
+
+    monkeypatch.setattr(control.gui_hcs, "launch_ndviewer_light", fake_launch)
+
+    done = write_acquisition(tmp_path, "done_2026-11-07_10-00-00.000000")
+    (tmp_path / "live").mkdir()
+    seed = HistoryStore(tmp_path / "history")
+    seed.append({"type": "started", "id": "done", "kind": "run", "name": "done", "folder": str(done), "at": 1000.0})
+    seed.append({"type": "finished", "id": "done", "outcome": "complete", "fraction_done": 1.0, "at": 1100.0})
+    # Running in another Squid: left alone. Running here in a process that is gone: closed at startup.
+    live = {"type": "started", "id": "live", "kind": "run", "name": "live", "folder": str(tmp_path / "live")}
+    seed.append({**live, "at": 2000.0, "machine": "another-host", "pid": 1})
+    orphan = {"type": "started", "id": "orphan", "kind": "run", "name": "orphan", "folder": str(tmp_path / "orphan")}
+    seed.append({**orphan, "at": 1500.0, "machine": socket.gethostname(), "pid": None})
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    assert (
+        win.multipointController.history_recorder is win.historyRecorder
+        and win.historyStore.path.parent == tmp_path / "history"
+    )
+    assert win.historyStore.entry("orphan").outcome == "failed"  # reconciled at startup
+    assert win.historyStore.entry("live").outcome == "running"
+    gallery = win.acquisitionGalleryWidget
+    assert gallery._store is win.historyStore
+    assert win.imageDisplayTabs.tabText(win.imageDisplayTabs.indexOf(gallery)) == "Gallery"
+    assert win._acquisition_saving_root() == win.multipointController.base_path
+
+    gallery.reload()
+    qtbot.waitUntil(lambda: {r.entry.id for r in gallery.rows()} == {"done", "live", "orphan"}, timeout=10000)
+    assert gallery.select_entry("done")
+    assert gallery.btn_open_in_window.isEnabled()
+
+    # Open in Squid: the NDViewer tab shows the folder and comes to the front.
+    class FakeViewerTab(QWidget):
+        def __init__(self):
+            super().__init__()
+            self.opened = []
+
+        def set_dataset_path(self, path):
+            self.opened.append(path)
+
+    viewer = FakeViewerTab()
+    win.imageDisplayTabs.addTab(viewer, "NDViewer")
+    win.ndviewerTab = viewer
+    gallery.signal_open_in_squid.emit(str(tmp_path))
+    assert viewer.opened == [str(tmp_path)]
+    assert win.imageDisplayTabs.currentWidget() is viewer
+
+    # Open in window: ndviewer_light is launched with the resolved command, its output going to the history
+    # folder's log; a viewer still running after the check is fine, one that exited is reported with its log.
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: warnings.append((args[1], args[2])))
+    win.NDVIEWER_LAUNCH_CHECK_MS = 50
+    log_path = str(tmp_path / "history" / "ndviewer_light.log")
+    gallery.signal_open_in_window.emit(str(done))
+    assert launched == [(resolutions[0], str(done), log_path)]
+    qtbot.wait(300)
+    assert warnings == []
+
+    exit_codes.append(1)
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write("".join(f"noise {i}\n" for i in range(20)) + "ModuleNotFoundError: No module named 'PyQt6'\n")
+    gallery.signal_open_in_window.emit(str(done))
+    qtbot.waitUntil(lambda: len(warnings) == 1, timeout=5000)
+    title, text = warnings[0]
+    assert title == "ndviewer_light exited" and "No module named 'PyQt6'" in text and "noise 5" not in text
+    assert "ndviewer_light exited (code 1)" in gallery.status_label.text()
+    warnings.clear()
+
+    def failing_launch(resolution, folder, log_path=None):
+        raise ValueError("bad command line")
+
+    monkeypatch.setattr(control.gui_hcs, "launch_ndviewer_light", failing_launch)
+    gallery.signal_open_in_window.emit(str(done))
+    assert warnings == [("Cannot open ndviewer_light", "bad command line")]
+    warnings.clear()
+
+    # Launcher unavailable: re-resolved when the tab is shown, the button says why.
+    resolutions.append(LauncherResolution(None, "none", "ndviewer_light is not installed"))
+    gallery.signal_shown.emit()
+    assert not gallery.btn_open_in_window.isEnabled()
+    assert gallery.btn_open_in_window.toolTip() == "ndviewer_light is not installed"
+
+    # During an acquisition the NDViewer tab is busy with the running one.
+    mpc = win.multipointController
+    assert gallery.btn_import.isEnabled() and not win.historyRecorder._busy
+    mpc.signal_acquisition_start.emit()
+    assert not gallery.btn_open_in_squid.isEnabled()
+    assert gallery.btn_open_in_squid.toolTip() == "Wait for the running acquisition to finish"
+    # ... and no import or preview work runs during it.
+    assert not gallery.btn_import.isEnabled()
+    assert gallery.btn_import.toolTip() == "Wait for the running acquisition to finish"
+    assert win.historyRecorder._busy
+    qtbot.waitUntil(lambda: not gallery._loading, timeout=10000)  # the reload the start asked for
+
+    # Progress: region 1 of 2, FOV 2 of 4, one timepoint -> 2 of 8 FOVs.
+    mpc.signal_acquisition_progress.emit(1, 2, 0)
+    mpc.signal_region_progress.emit(2, 4)
+    assert _gallery_row(gallery, "live").status_label == "Running 25%"
+
+    mpc.acquisition_finished.emit()
+    assert gallery.btn_open_in_squid.isEnabled()
+    assert not gallery.btn_open_in_squid.isHidden()
+    assert gallery.btn_import.isEnabled() and not win.historyRecorder._busy
+
+    # Performance mode turns the Gallery tab off like the other display tabs.
+    win.performanceModeToggle.setChecked(True)
+    win.togglePerformanceMode()
+    assert not win.imageDisplayTabs.isTabEnabled(win.imageDisplayTabs.indexOf(gallery))
+    win.performanceModeToggle.setChecked(False)
+    win.togglePerformanceMode()
+    assert win.imageDisplayTabs.isTabEnabled(win.imageDisplayTabs.indexOf(gallery))
+
+    # Load settings: to the multipoint tab the acquisition was run from, not the current one.
+    loaded = {}
+    for name, widget in (("wellplate", win.wellplateMultiPointWidget), ("flexible", win.flexibleMultiPointWidget)):
+
+        def record_load(path, name=name):
+            loaded[name] = path
+            return True
+
+        monkeypatch.setattr(widget, "_load_acquisition_yaml", record_load)
+    flexible = write_acquisition(tmp_path, "flex_2026-11-07_10-00-00.000000", widget_type="flexible")
+    win.recordTabWidget.setCurrentWidget(win.wellplateMultiPointWidget)
+
+    gallery.signal_load_settings.emit(str(flexible))
+
+    assert loaded == {"flexible": os.path.join(str(flexible), "acquisition.yaml")}
+    assert win.recordTabWidget.currentWidget() is win.flexibleMultiPointWidget
+    assert warnings == []
+
+    monkeypatch.setattr(win.multipointController, "acquisition_in_progress", lambda: True)
+    assert win._load_acquisition_settings_from_folder(str(flexible)) is False
+    assert [title for title, _text in warnings] == ["Acquisition Running"]
+    assert len(loaded) == 1
+
+
+def _preview_timing_gui(qtbot, monkeypatch, tmp_path):
+    """A simulated GUI whose recorder records make_preview calls, with an overview save expected and a 500 ms wait;
+    the controller's own history_entry_id reads None (a short run has already cleared it)."""
+    monkeypatch.setenv("SQUID_ACQUISITION_HISTORY_DIR", str(tmp_path / "history"))
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    calls = []
+    monkeypatch.setattr(
+        win.historyRecorder,
+        "make_preview",
+        lambda entry_id, folder, replace=False: calls.append((entry_id, folder, replace)),
+    )
+    win.GALLERY_PREVIEW_WAIT_MS = 500
+    monkeypatch.setattr(control._def, "SAVE_DOWNSAMPLED_OVERVIEW", True)
+    mosaic = win.unifiedMosaicWidget
+    assert mosaic is not None
+    monkeypatch.setattr(mosaic, "layers_initialized", True)
+    monkeypatch.setattr(mosaic, "save_for_timepoint", lambda time_point: None)  # the saves are emitted by hand
+    monkeypatch.setattr(type(win.multipointController), "history_entry_id", property(lambda self: None))
+    return win, calls
+
+
+def test_preview_waits_for_the_final_overview_save(qtbot, confirm_exit_yes, monkeypatch, tmp_path):
+    """The preview is made from the last timepoint's mosaic overview once it is written, or after a timeout (then
+    remade when the overview lands); without an overview to wait for it is made when the acquisition ends."""
+    import os
+
+    win, calls = _preview_timing_gui(qtbot, monkeypatch, tmp_path)
+    mpc = win.multipointController
+    mosaic = win.unifiedMosaicWidget
+
+    def folder(entry_id):
+        return str(tmp_path / f"run_{entry_id}")
+
+    def start(entry_id):
+        mpc.signal_acquisition_start.emit()
+        mpc.signal_acquisition_save_target.emit(folder(entry_id))
+        mpc.signal_history_run_started.emit(entry_id, folder(entry_id))
+
+    def saved(entry_id, time_point):
+        mosaic.signal_view_saved.emit(os.path.join(folder(entry_id), str(time_point), "mosaic_view"))
+
+    # (a) The final save comes after the end; an earlier timepoint's late save is not the one awaited.
+    start("e1")
+    mpc.timepoint_finished.emit(0)
+    mpc.timepoint_finished.emit(1)
+    mpc.acquisition_finished.emit()
+    assert calls == []
+    saved("e1", 0)
+    assert calls == []
+    saved("e1", 1)
+    assert calls == [("e1", folder("e1"), False)]
+    qtbot.wait(700)
+    assert calls == [("e1", folder("e1"), False)]
+
+    # (b) The overview never reports: the preview is made anyway once the wait is over.
+    calls.clear()
+    start("e2")
+    mpc.timepoint_finished.emit(0)
+    mpc.acquisition_finished.emit()
+    assert calls == []
+    qtbot.waitUntil(lambda: calls == [("e2", folder("e2"), False)], timeout=1000)
+    qtbot.wait(800)  # past the second wait too
+    assert calls == [("e2", folder("e2"), False)]
+    saved("e2", 0)  # too late to be waited for
+    assert calls == [("e2", folder("e2"), False)]
+
+    # (c) The overview lands after the timeout: the provisional preview is replaced.
+    calls.clear()
+    start("e3")
+    mpc.timepoint_finished.emit(0)
+    mpc.acquisition_finished.emit()
+    qtbot.waitUntil(lambda: calls == [("e3", folder("e3"), False)], timeout=1000)
+    saved("e3", 0)
+    assert calls == [("e3", folder("e3"), False), ("e3", folder("e3"), True)]
+    saved("e3", 0)
+    assert len(calls) == 2
+
+    # (d) The overview is written before the acquisition ends: the preview is made at the end, without waiting.
+    calls.clear()
+    start("e4")
+    mpc.timepoint_finished.emit(0)
+    saved("e4", 0)
+    assert calls == []
+    mpc.acquisition_finished.emit()
+    assert calls == [("e4", folder("e4"), False)]
+    qtbot.wait(700)
+    assert calls == [("e4", folder("e4"), False)]
+
+    # (e) No overview expected: the preview is made when the acquisition ends.
+    calls.clear()
+    monkeypatch.setattr(mosaic, "layers_initialized", False)
+    start("e5")
+    mpc.timepoint_finished.emit(0)
+    mpc.acquisition_finished.emit()
+    assert calls == [("e5", folder("e5"), False)]
+    qtbot.wait(700)
+    assert calls == [("e5", folder("e5"), False)]
+
+
+def test_a_back_to_back_start_keeps_the_previous_runs_preview(qtbot, confirm_exit_yes, monkeypatch, tmp_path):
+    """Run N still waiting for its last overview save when run N+1 starts gets its preview: on its save (even one
+    landing during run N+1), or on its timeout and then replaced by the late save."""
+    import os
+
+    win, calls = _preview_timing_gui(qtbot, monkeypatch, tmp_path)
+    mpc = win.multipointController
+    mosaic = win.unifiedMosaicWidget
+
+    def run(entry_id):
+        folder = str(tmp_path / f"run_{entry_id}")
+        mpc.signal_acquisition_start.emit()
+        mpc.signal_history_run_started.emit(entry_id, folder)
+        mpc.timepoint_finished.emit(0)
+        return folder
+
+    def saved(folder):
+        mosaic.signal_view_saved.emit(os.path.join(folder, "0", "mosaic_view"))
+
+    # Its save lands while the next run is going.
+    f6 = run("e6")
+    mpc.acquisition_finished.emit()
+    f7 = run("e7")
+    assert calls == []
+    saved(f6)
+    assert calls == [("e6", f6, False)]
+
+    # The next run's own wait is unaffected; its save never comes, so its timeout makes it.
+    mpc.acquisition_finished.emit()
+    f8 = run("e8")
+    qtbot.waitUntil(lambda: ("e7", f7, False) in calls, timeout=1000)
+    # ... and the save landing during the run after it still replaces the provisional picture.
+    saved(f7)
+    assert calls == [("e6", f6, False), ("e7", f7, False), ("e7", f7, True)]
+    mpc.acquisition_finished.emit()
+    saved(f8)
+    assert calls[-1] == ("e8", f8, False) and len(calls) == 4
+
+
+def test_the_preview_uses_the_history_id_captured_at_start(qtbot, confirm_exit_yes, monkeypatch, tmp_path):
+    """A TCP-started run can be over (and the controller's id cleared) before a queued GUI slot runs: the id travels
+    with signal_history_run_started instead."""
+    win, calls = _preview_timing_gui(qtbot, monkeypatch, tmp_path)
+    monkeypatch.setattr(win.unifiedMosaicWidget, "layers_initialized", False)
+    mpc = win.multipointController
+    folder = str(tmp_path / "run_e9")
+    assert mpc.history_entry_id is None
+
+    mpc.signal_history_run_started.emit("e9", folder)
+    mpc.signal_acquisition_start.emit()
+    mpc.timepoint_finished.emit(0)
+    mpc.acquisition_finished.emit()
+
+    assert calls == [("e9", folder, False)]
+
+
+def test_previews_wait_for_the_running_acquisition_and_flush_when_it_ends(
+    qtbot, confirm_exit_yes, monkeypatch, tmp_path
+):
+    """No preview work during a run: the recorder queues requests from acquisition start, and the end of the run
+    submits them, the finished run's own one included."""
+    monkeypatch.setenv("SQUID_ACQUISITION_HISTORY_DIR", str(tmp_path / "history"))
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    submitted = []
+    monkeypatch.setattr(win.historyRecorder, "_submit", lambda entry_id, folder: submitted.append((entry_id, folder)))
+    monkeypatch.setattr(win.unifiedMosaicWidget, "layers_initialized", False)  # no overview save to wait for
+    mpc = win.multipointController
+    folder_a, folder_b = str(tmp_path / "run_a"), str(tmp_path / "run_b")
+
+    mpc.signal_history_run_started.emit("a", folder_a)
+    mpc.signal_acquisition_start.emit()
+    win.historyRecorder.make_preview("b", folder_b)  # e.g. an earlier run's late overview save landing now
+    assert submitted == []
+    mpc.acquisition_finished.emit()
+
+    assert sorted(submitted) == [("a", folder_a), ("b", folder_b)]
