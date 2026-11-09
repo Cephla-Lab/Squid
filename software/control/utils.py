@@ -270,7 +270,10 @@ def update_ini_text(text: str, updates: dict, comment: str):
     for key, value in updates.items():
         if key.lower() in options:
             hit, old = options[key.lower()]
-            lines[hit] = f"{key} = {value}"
+            indent = lines[hit][
+                : len(lines[hit]) - len(lines[hit].lstrip())
+            ]  # an indent change can make it a continuation
+            lines[hit] = f"{indent}{key} = {value}"
             changes[key] = (old, str(value))
         else:
             missing.append(key)
