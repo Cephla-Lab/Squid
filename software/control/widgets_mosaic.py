@@ -125,6 +125,7 @@ class UnifiedMosaicWidget(QWidget):
     signal_layers_initialized = Signal()
     signal_shape_drawn = Signal(list)
     signal_mode_changed = Signal(object)  # DisplayMode
+    signal_open_in_squidxplorer = Signal(str)  # raw acquisition folder to hand to SquidXplorer
 
     def __init__(self, objectiveStore, camera, contrastManager, parent=None):
         super().__init__(parent)
@@ -163,6 +164,9 @@ class UnifiedMosaicWidget(QWidget):
         # never block the GUI. Acquisition path is set at acquisition start.
         self._save_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="UnifiedMosaicSave")
         self._acquisition_save_dir: Optional[str] = None
+        # Gates the "Open in SquidXplorer" button: handing over a folder that is still
+        # being written shows a partial plate, so the button waits for the run to end.
+        self._acquisition_running = False
 
         self.shapes_mm: list = []
         self.shape_layer = None
@@ -228,6 +232,27 @@ class UnifiedMosaicWidget(QWidget):
         self.save_button = QPushButton("Save View")
         self.save_button.clicked.connect(self._on_save_clicked)
         button_layout.addWidget(self.save_button)
+
+        # Plain action button: deliberately NOT checkable and NOT in
+        # _mode_button_group — the group is exclusive, so joining it would
+        # uncheck the active view mode on every click.
+        #
+        # "Open in Xplorer", not "Open in SquidXplorer": inside the main window this
+        # tab is ~954 px wide, of which the four buttons above already claim ~602 px.
+        # The full name needs ~348 px of the ~352 px left, so it elides on a 1920
+        # screen; the short form needs ~263 px and leaves real slack. Full name lives
+        # in the tooltip.
+        self.open_in_squidxplorer_button = QPushButton("Open in Xplorer")
+        self.open_in_squidxplorer_button.setToolTip("Open this acquisition in SquidXplorer")
+        self.open_in_squidxplorer_button.clicked.connect(self._on_open_in_squidxplorer_clicked)
+        button_layout.addWidget(self.open_in_squidxplorer_button)
+        self._update_open_in_squidxplorer_enabled()
+
+        # Pin the short labels to their natural width. Without this the row shares
+        # space by stretch factor, and a long neighbour squeezes "Clear" and
+        # "Save View" until Qt elides them to an unreadable stub.
+        for _button in (self.clear_button, self.save_button, self.open_in_squidxplorer_button):
+            _button.setMinimumWidth(_button.sizeHint().width())
 
         layout.addLayout(button_layout)
         self.setLayout(layout)
@@ -810,6 +835,34 @@ class UnifiedMosaicWidget(QWidget):
         """Called from gui_hcs at acquisition start with the run's output dir.
         Cleared (None) on acquisitions without a known path."""
         self._acquisition_save_dir = experiment_path
+        self._update_open_in_squidxplorer_enabled()
+
+    # --- Open in SquidXplorer ---
+
+    def set_acquisition_running(self, running: bool) -> None:
+        """Called from gui_hcs on acquisition start/finish."""
+        self._acquisition_running = running
+        self._update_open_in_squidxplorer_enabled()
+
+    def _update_open_in_squidxplorer_enabled(self) -> None:
+        """Openable once a run has named its output folder and has stopped writing to it.
+
+        Deliberately not gated on ``layers_initialized``: a RAM-limited run leaves the
+        canvas empty because the tile connections were dropped, and that run's folder is
+        exactly the one worth opening.
+        """
+        self.open_in_squidxplorer_button.setEnabled(bool(self._acquisition_save_dir) and not self._acquisition_running)
+
+    def _on_open_in_squidxplorer_clicked(self) -> None:
+        """Hand this acquisition's folder to gui_hcs, which confirms and launches."""
+        if not self._acquisition_save_dir or not os.path.isdir(self._acquisition_save_dir):
+            QMessageBox.information(
+                self,
+                "Nothing to open",
+                "No acquisition folder is available to open yet.",
+            )
+            return
+        self.signal_open_in_squidxplorer.emit(self._acquisition_save_dir)
 
     def save_for_timepoint(self, time_point: int) -> None:
         """Save the canvas under the worker's per-timepoint folder. The
