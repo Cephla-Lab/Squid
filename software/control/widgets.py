@@ -7056,6 +7056,12 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.btn_startAcquisition.setChecked(False)
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
+        # Writes the acquisition.yaml a run would write (settings + positions) without running.
+        self.btn_saveSettings = QPushButton("Save Settings…")
+        self.btn_saveSettings.setToolTip(
+            "Save these settings and the positions to an acquisition.yaml without acquiring"
+        )
+
         # Add snap images button
         self.btn_snap_images = QPushButton("Snap Images")
         self.btn_snap_images.clicked.connect(self.on_snap_images)
@@ -7205,6 +7211,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
+        button_layout.addWidget(self.btn_saveSettings)
 
         grid_acquisition = QHBoxLayout()
         grid_acquisition.addSpacing(EDGE_SPACING)
@@ -7271,6 +7278,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
+        self.btn_saveSettings.clicked.connect(self._on_save_settings_clicked)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
 
@@ -7616,6 +7624,21 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         No dialogs, no start_new_experiment, no run - the Start button and the fluidics protocol's
         "Apply current settings" share this. Returns None, or a reason nothing further should happen.
         """
+        if self.checkbox_useFocusMap.isChecked():
+            self.focusMapWidget.fit_surface()
+            self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
+        else:
+            self.multipointController.set_focus_map(None)
+
+        self._push_settings_to_controller()
+        return None
+
+    def _push_settings_to_controller(self):
+        """Copy this tab's settings into the multipoint controller (Start and Save Settings both need them).
+
+        Settings only: the scan coordinates and the focus map are left alone, so saving the settings
+        does not disturb them.
+        """
         z_mode = self.combobox_z_mode.currentText()
         if z_mode == Z_MODE_SET_RANGE:
             # Set Z-range (convert from μm to mm)
@@ -7635,12 +7658,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
         self.multipointController.set_z_stacking_config(z_mode_to_stacking_index(z_mode))
 
-        if self.checkbox_useFocusMap.isChecked():
-            self.focusMapWidget.fit_surface()
-            self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
-        else:
-            self.multipointController.set_focus_map(None)
-
         # Set acquisition parameters
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
@@ -7654,7 +7671,45 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
         self.multipointController.set_widget_type("flexible")
         self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
-        return None
+
+    def _on_save_settings_clicked(self):
+        """Save the current settings and positions to a user-chosen acquisition.yaml (nothing is acquired)."""
+        if not self.list_configurations.selectedItems():
+            QMessageBox.warning(self, "Save Settings", "Please select at least one imaging channel")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Flexible Settings", "acquisition.yaml", "YAML Files (*.yaml *.yml)"
+        )
+        if path:
+            self.save_settings(path)
+
+    def save_settings(self, path: str) -> bool:
+        """Write the acquisition.yaml for the current settings to *path*. Returns True on success.
+
+        With no positions in the list the file carries none: a run would add the
+        current stage position, which is not a reusable setting. The positions come
+        from this tab's list, not the scan coordinates it shares with the other
+        multipoint tabs (those only hold this tab's regions while it is visible).
+        """
+        if self.multipointController.acquisition_in_progress():
+            QMessageBox.warning(self, "Save Settings", "An acquisition is running; save once it has finished")
+            return False
+        from control.core.multi_point_utils import ScanPositionInformation
+
+        self._push_settings_to_controller()
+        positions = ScanPositionInformation(
+            scan_region_coords_mm=[[float(v) for v in loc] for loc in self.location_list],
+            scan_region_names=[str(name) for name in self.location_ids],
+            scan_region_fov_coords_mm={},
+        )
+        try:
+            self.multipointController.save_settings_yaml(path, scan_position_information=positions)
+        except Exception as exc:
+            self._log.error(f"Failed to save settings to {path}: {exc}", exc_info=True)
+            QMessageBox.warning(self, "Save Error", f"Failed to save settings:\n{exc}")
+            return False
+        self._log.info(f"Settings saved to {path}")
+        return True
 
     def toggle_acquisition(self, pressed, interactive: bool = True):
         """Start or stop. ``interactive=False`` (an unattended workflow) logs a refusal instead of showing a dialog."""
@@ -8168,6 +8223,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
     def setEnabled_all(self, enabled, exclude_btn_startAcquisition=True):
         self.btn_setSavingDir.setEnabled(enabled)
+        self.btn_saveSettings.setEnabled(enabled)
         self.lineEdit_savingDir.setEnabled(enabled)
         self.lineEdit_experimentID.setEnabled(enabled)
         self.entry_NX.setEnabled(enabled)
@@ -8683,6 +8739,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.btn_startAcquisition.setChecked(False)
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
+        # Writes the acquisition.yaml a run would write (settings + selected wells) without
+        # running: the survey file for the two-magnification workflow, or any reusable settings file.
+        self.btn_saveSettings = QPushButton("Save Settings…")
+        self.btn_saveSettings.setToolTip(
+            "Save these settings and the selected wells to an acquisition.yaml without acquiring"
+        )
+
         self.progress_label = QLabel("Region -/-")
         self.progress_bar = QProgressBar()
         self.eta_label = QLabel("--:--:--")
@@ -8915,6 +8978,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
+        button_layout.addWidget(self.btn_saveSettings)
 
         bottom_right = QHBoxLayout()
         bottom_right.addLayout(options_layout)
@@ -8965,6 +9029,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # Connections
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
+        self.btn_saveSettings.clicked.connect(self._on_save_settings_clicked)
         self.entry_deltaZ.valueChanged.connect(self.set_deltaZ)
         self.entry_NZ.valueChanged.connect(self.multipointController.set_NZ)
         self.entry_dt.valueChanged.connect(self.multipointController.set_deltat)
@@ -10165,6 +10230,25 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.scanCoordinates.sort_coordinates()
 
+        if self.checkbox_useFocusMap.isChecked():
+            # Try to fit the surface; on success set the surface fitter in the controller
+            if self.focusMapWidget.fit_surface():
+                self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
+            else:
+                return "Failed to fit focus surface"
+        else:
+            # If checkbox not checked, set surface fitter to None
+            self.multipointController.set_focus_map(None)
+
+        self._push_settings_to_controller()
+        return None
+
+    def _push_settings_to_controller(self):
+        """Copy this tab's settings into the multipoint controller (Start and Save Settings both need them).
+
+        Settings only: the scan coordinates and the focus map are left alone, so saving the settings
+        does not disturb them.
+        """
         z_mode = self.combobox_z_mode.currentText()
         if z_mode == Z_MODE_SET_RANGE:
             # Set Z-range (convert from μm to mm)
@@ -10187,16 +10271,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
         self.multipointController.set_z_stacking_config(z_mode_to_stacking_index(z_mode))
 
-        if self.checkbox_useFocusMap.isChecked():
-            # Try to fit the surface; on success set the surface fitter in the controller
-            if self.focusMapWidget.fit_surface():
-                self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
-            else:
-                return "Failed to fit focus surface"
-        else:
-            # If checkbox not checked, set surface fitter to None
-            self.multipointController.set_focus_map(None)
-
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
         self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
@@ -10212,7 +10286,39 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.multipointController.set_overlap_percent(self.entry_overlap.value())
         self.multipointController.set_xy_mode(self.combobox_xy_mode.currentText())
         self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
-        return None
+
+    def _on_save_settings_clicked(self):
+        """Save the current settings and selected wells to a user-chosen acquisition.yaml (nothing is acquired)."""
+        if not self.list_configurations.selectedItems():
+            QMessageBox.warning(self, "Save Settings", "Please select at least one imaging channel")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Wellplate Settings", "acquisition.yaml", "YAML Files (*.yaml *.yml)"
+        )
+        if path:
+            self.save_settings(path)
+
+    def save_settings(self, path: str) -> bool:
+        """Write the acquisition.yaml for the current settings to *path*. Returns True on success.
+
+        With XY unchecked the file carries no regions: a run would image wherever the
+        stage happens to be, which is not a reusable setting.
+        """
+        if self.multipointController.acquisition_in_progress():
+            QMessageBox.warning(self, "Save Settings", "An acquisition is running; save once it has finished")
+            return False
+        self._push_settings_to_controller()
+        include_regions = self.checkbox_xy.isChecked()
+        if include_regions:
+            self.scanCoordinates.sort_coordinates()
+        try:
+            self.multipointController.save_settings_yaml(path, include_regions=include_regions)
+        except Exception as exc:
+            self._log.error(f"Failed to save settings to {path}: {exc}", exc_info=True)
+            QMessageBox.warning(self, "Save Error", f"Failed to save settings:\n{exc}")
+            return False
+        self._log.info(f"Settings saved to {path}")
+        return True
 
     def toggle_acquisition(self, pressed, interactive: bool = True):
         """Start or stop. ``interactive=False`` (an unattended workflow) logs a refusal instead of showing a dialog."""

@@ -31,6 +31,7 @@ from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
 import squid.acquisition_state
+import squid.camera.utils
 import squid.logging
 
 
@@ -60,6 +61,8 @@ def _save_acquisition_yaml(
     scan_size_mm: float = 0.0,
     overlap_percent: float = 10.0,
     protocol: Optional[dict] = None,
+    yaml_path: Optional[str] = None,
+    raise_on_error: bool = False,
 ) -> None:
     """Save acquisition parameters to YAML file.
 
@@ -72,6 +75,10 @@ def _save_acquisition_yaml(
         wellplate_format: String like "384 well plate" or None
         scan_size_mm: Scan size in mm (for wellplate mode)
         overlap_percent: FOV overlap percentage
+        yaml_path: Write here instead of <experiment_path>/acquisition.yaml
+            (Save Settings, which runs nothing and has no experiment folder)
+        raise_on_error: re-raise a failed write (a user waiting on Save Settings
+            must hear about it); an acquisition only logs it and carries on
     """
     # Build common sections
     yaml_dict = {
@@ -163,7 +170,7 @@ def _save_acquisition_yaml(
     if protocol:
         yaml_dict["protocol"] = protocol
 
-    yaml_path = os.path.join(experiment_path, "acquisition.yaml")
+    yaml_path = yaml_path or os.path.join(experiment_path, "acquisition.yaml")
     try:
         with open(yaml_path, "w", encoding="utf-8") as f:
             f.write(f"# Acquisition Parameters - {params.experiment_ID}\n\n")
@@ -171,6 +178,8 @@ def _save_acquisition_yaml(
     except (OSError, yaml.YAMLError) as exc:
         _log = squid.logging.get_logger(__name__)
         _log.error("Failed to write acquisition YAML file '%s': %s", yaml_path, exc)
+        if raise_on_error:
+            raise
 
 
 class MultiPointController:
@@ -231,6 +240,7 @@ class MultiPointController:
         self.display_resolution_scaling = control._def.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.use_piezo = control._def.MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
         self.experiment_ID = None
+        self.timestamp_acquisition_started = None  # set per run; read by build_params (Save Settings too)
         # Outcome of the last run_acquisition(): None while in flight; "completed" |
         # "completed_with_errors" | "user_abort" | "error" from the worker, or "failed_to_start" when the
         # run never launched a worker. Read by finished-callback consumers (no payload on the signal).
@@ -833,36 +843,9 @@ class MultiPointController:
                 region_laser_af_offsets=run_region_laser_af_offsets,
             )
 
-            # Gather objective and camera info for YAML
-            current_objective = self.objectiveStore.current_objective
-            objective_dict = self.objectiveStore.objectives_dict.get(current_objective, {})
-            pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
-            objective_info = {
-                "name": current_objective,
-                "magnification": objective_dict.get("magnification"),
-                "NA": objective_dict.get("NA"),
-                "pixel_size_um": pixel_size_um,
-                "camera_binning": list(self.camera.get_binning()) if hasattr(self.camera, "get_binning") else None,
-                "sensor_pixel_size_um": self.camera.get_pixel_size_binned_um(),
-            }
-
-            # Get wellplate format if available
-            wellplate_format = getattr(self.scanCoordinates, "format", None)
-
             # Save acquisition parameters to YAML
             experiment_path = os.path.join(self.base_path, self.experiment_ID)
-            region_shapes = getattr(self.scanCoordinates, "region_shapes", None)
-            _save_acquisition_yaml(
-                acquisition_params,
-                experiment_path,
-                region_shapes,
-                self.widget_type,
-                objective_info,
-                wellplate_format,
-                self.scan_size_mm,
-                self.overlap_percent,
-                protocol=run_protocol_info,
-            )
+            self._write_acquisition_yaml(acquisition_params, experiment_path, protocol=run_protocol_info)
 
             # Acquisition watchdog: drop the "running" breadcrumb (covers GUI + MCP-server runs); the
             # null writer stands in if it cannot be written, so that never breaks the acquisition.
@@ -937,6 +920,72 @@ class MultiPointController:
                 except Exception:
                     self._log.exception("acquisition_finished callback failed after a failed acquisition start")
         return thread_started
+
+    def _objective_info(self) -> dict:
+        """The informational ``objective:`` section of acquisition.yaml."""
+        current_objective = self.objectiveStore.current_objective
+        objective_dict = self.objectiveStore.objectives_dict.get(current_objective, {})
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
+        image_size = squid.camera.utils.image_size_px(self.camera)
+        return {
+            "name": current_objective,
+            "magnification": objective_dict.get("magnification"),
+            "NA": objective_dict.get("NA"),
+            "pixel_size_um": pixel_size_um,
+            "camera_binning": list(self.camera.get_binning()) if hasattr(self.camera, "get_binning") else None,
+            "sensor_pixel_size_um": self.camera.get_pixel_size_binned_um(),
+            # Frame size after the Camera tab's crop; informational (the two-magnification wizard compares it).
+            "image_size_px": list(image_size) if image_size else None,
+        }
+
+    def _write_acquisition_yaml(
+        self,
+        params: AcquisitionParameters,
+        experiment_path: str,
+        yaml_path: Optional[str] = None,
+        protocol: Optional[dict] = None,
+    ) -> None:
+        _save_acquisition_yaml(
+            params,
+            experiment_path,
+            getattr(self.scanCoordinates, "region_shapes", None),
+            self.widget_type,
+            self._objective_info(),
+            getattr(self.scanCoordinates, "format", None),
+            self.scan_size_mm,
+            self.overlap_percent,
+            protocol=protocol,
+            yaml_path=yaml_path,
+            raise_on_error=yaml_path is not None,
+        )
+
+    def save_settings_yaml(
+        self,
+        yaml_path: str,
+        include_regions: bool = True,
+        scan_position_information: Optional[ScanPositionInformation] = None,
+    ) -> None:
+        """Write the current settings and scan regions to *yaml_path* without running anything.
+
+        The file is the one an acquisition would write, so it loads back (drag and
+        drop, the Workflow Runner) the same way. The caller pushes the GUI values
+        into this controller first. ``include_regions=False`` writes no regions;
+        ``scan_position_information`` writes these positions instead of the shared
+        scan coordinates' regions. Raises OSError / yaml.YAMLError on a failed write.
+        """
+        if scan_position_information is None:
+            scan_position_information = (
+                ScanPositionInformation.from_scan_coordinates(self.scanCoordinates)
+                if include_regions
+                else ScanPositionInformation([], [], {})
+            )
+        # Not a run: no experiment id or start time (the last run's would mislead).
+        params = dataclasses.replace(
+            self.build_params(scan_position_information=scan_position_information),
+            experiment_ID=None,
+            acquisition_start_time=None,
+        )
+        self._write_acquisition_yaml(params, os.path.dirname(yaml_path), yaml_path=yaml_path)
 
     def build_params(
         self, scan_position_information: ScanPositionInformation, region_laser_af_offsets: Optional[dict] = None

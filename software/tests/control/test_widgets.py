@@ -2724,7 +2724,7 @@ def _wellplate_ui_fake(fit_ok=True, use_focus_map=False):
 
     focus_map = MagicMock()
     focus_map.fit_surface.return_value = fit_ok
-    return SimpleNamespace(
+    fake = SimpleNamespace(
         checkbox_xy=widget(isChecked=True),
         scanCoordinates=MagicMock(),
         combobox_z_mode=widget(currentText="Set Range"),
@@ -2751,6 +2751,11 @@ def _wellplate_ui_fake(fit_ok=True, use_focus_map=False):
         _log=MagicMock(),
         set_coordinates_to_current_position=MagicMock(),
     )
+    # configure_controller_from_ui() delegates the plain settings to this method.
+    fake._push_settings_to_controller = lambda: control.widgets.WellplateMultiPointWidget._push_settings_to_controller(
+        fake
+    )
+    return fake
 
 
 def test_wellplate_configure_controller_from_ui_pushes_every_setting_without_starting(monkeypatch):

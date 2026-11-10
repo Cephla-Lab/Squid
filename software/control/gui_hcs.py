@@ -2348,21 +2348,7 @@ class HighContentScreeningGui(QMainWindow):
 
     def _camera_image_size(self) -> Optional[Tuple[int, int]]:
         """The camera's frame size after the Camera tab's crop now, or None when it cannot be read."""
-        try:
-            _x, _y, width, height = (int(v) for v in self.camera.get_region_of_interest())
-        except Exception as e:
-            self.log.warning(f"Could not read the camera ROI: {e}")
-            return None
-        try:
-            crop_width, crop_height = self.camera.get_crop_size()
-        except Exception:
-            crop_width = crop_height = None
-        # The software crop is centred and only ever makes the frame smaller.
-        if crop_width:
-            width = min(width, int(crop_width))
-        if crop_height:
-            height = min(height, int(crop_height))
-        return width, height
+        return squid.camera.utils.image_size_px(self.camera)
 
     def _acquisition_widget_for_type(self, widget_type: str):
         """The record tab that runs acquisition.yaml files of *widget_type*, or None."""

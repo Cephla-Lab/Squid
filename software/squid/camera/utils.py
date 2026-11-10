@@ -114,6 +114,29 @@ def get_camera(
         )
 
 
+def image_size_px(camera: AbstractCamera) -> Optional[Tuple[int, int]]:
+    """Width x height of the frames *camera* delivers now, or None when it cannot be read.
+
+    The hardware ROI (the Camera tab's crop, at the current binning) is applied
+    first, then the centred software crop of ``get_crop_size()``, which only ever
+    makes the frame smaller (control.utils.crop_image).
+    """
+    try:
+        _x, _y, width, height = (int(v) for v in camera.get_region_of_interest())
+    except Exception as e:
+        _log.warning(f"Could not read the camera ROI: {e}")
+        return None
+    try:
+        crop_width, crop_height = camera.get_crop_size()
+    except Exception:
+        crop_width = crop_height = None
+    if crop_width:
+        width = min(width, int(crop_width))
+    if crop_height:
+        height = min(height, int(crop_height))
+    return width, height
+
+
 class SimulatedCamera(AbstractCamera):
 
     PIXEL_SIZE_UM = 3.76
