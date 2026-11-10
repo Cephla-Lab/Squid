@@ -863,6 +863,10 @@ def _dtype_range(dtype):
 class ImageDisplayWindow(QMainWindow):
     image_click_coordinates = Signal(int, int, int, int)
     signal_z_um_delta = Signal(float)
+    # ROI selector bounds as (x, y, width, height) in pixels of the displayed frame. The frame may
+    # itself be a camera crop, so a consumer that wants sensor coordinates has to add the offset
+    # the frame was captured at.
+    signal_roi_bounds_changed = Signal(int, int, int, int)
 
     # Line colors, in the order lines are added; the first matches the original single-line profiler
     LINE_PROFILE_COLORS = ("y", "c", "m", "g", (255, 128, 0), (100, 150, 255))
@@ -920,6 +924,14 @@ class ImageDisplayWindow(QMainWindow):
         )
         self.overexposure_item: Optional[pg.ImageItem] = None
         self._overexposure_source = None  # (frame id, saturation) the current mask was computed from
+
+        # Laser AF spot overlay state, created lazily by _ensure_spot_overlay_items on the first
+        # set_spot_overlay call. Only the focus camera view ever draws these.
+        self.spot_candidates_item = None  # every spot the detector found in frame
+        self.spot_selected_item = None  # the one the configured spot detection mode picked
+        self.spot_reference_line = None  # x_reference, i.e. the focus plane
+        self.spot_rejected_item = None  # blobs the cc_* filters turned away
+        self.spot_reject_label_item = None  # what turned the closest of them away
 
         # Create main layout
         layout = QVBoxLayout()
@@ -1066,8 +1078,12 @@ class ImageDisplayWindow(QMainWindow):
         self.roi_size = (500, 500)
         self.ROI = pg.ROI(self.roi_pos, self.roi_size, scaleSnap=True, translateSnap=True)
         self.ROI.setZValue(10)
-        self.ROI.addScaleHandle((0, 0), (1, 1))
-        self.ROI.addScaleHandle((1, 1), (0, 0))
+        # Handles on the lower-left / upper-right diagonal, because that is the diagonal the laser
+        # AF spot travels along as focus changes: framing the crop means dragging the two corners
+        # the spot runs between, and handles on the other diagonal have to be fought across it.
+        # The view is y-inverted, so ROI-local y=0 is the top edge.
+        self.ROI.addScaleHandle((0, 1), (1, 0))  # lower-left, scaling about the upper-right
+        self.ROI.addScaleHandle((1, 0), (0, 1))  # upper-right, scaling about the lower-left
         self.graphics_widget.view.addItem(self.ROI)
         self.ROI.hide()
         self.ROI.sigRegionChanged.connect(self.update_ROI)
@@ -1810,33 +1826,149 @@ class ImageDisplayWindow(QMainWindow):
             self.update_line_profile()
 
     def mark_spot(self, image: np.ndarray, x: float, y: float):
-        """Mark the detected laserspot location on the image.
+        """Show `image` and mark one detected spot on it.
 
-        Args:
-            image: Image to mark
-            x: x-coordinate of the spot
-            y: y-coordinate of the spot
-
-        Returns:
-            Image with marked spot
+        The marker is a graphics item over the image rather than pixels drawn into it. Painting
+        it in would mean converting to 3-channel BGR, which silently defeats both the false-color
+        LUT and auto-level -- and it would survive only until the next live frame overwrote it.
         """
-        # Draw a green crosshair at the specified x,y coordinates
-        crosshair_size = 10  # Size of crosshair lines in pixels
-        crosshair_color = (0, 255, 0)  # Green in BGR format
-        crosshair_thickness = 1
-        x = int(round(x))
-        y = int(round(y))
+        self.display_image(image)
+        self.set_spot_overlay(selected=(x, y))
 
-        # Convert grayscale to BGR
-        marked_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    # Overlay colors are deliberately the ones LaserAFSweepWidget plots with, so a candidate has
+    # the same color on the image as it does on the sweep plot.
+    _SPOT_CANDIDATE_BRUSH = (150, 150, 150, 180)
+    _SPOT_SELECTED_BRUSH = (0, 140, 255, 220)
+    # The failure color. It recolors `selected` on a failure that still picked a spot -- latent
+    # since the displacement window was retired, but kept because `failed` is derived from
+    # failure_reason at the call site and stays correct on its own. It is also what the rejected
+    # blobs are drawn in, which is the same statement: this is what the detector would not use.
+    _SPOT_FAILED_BRUSH = (255, 60, 60, 230)
 
-        # Draw horizontal line
-        cv2.line(marked_image, (x - crosshair_size, y), (x + crosshair_size, y), crosshair_color, crosshair_thickness)
+    def _ensure_spot_overlay_items(self):
+        """Create the spot overlay items on first use. Idempotent.
 
-        # Draw vertical line
-        cv2.line(marked_image, (x, y - crosshair_size), (x, y + crosshair_size), crosshair_color, crosshair_thickness)
+        Built lazily for the same reason as the crosshair: a window that never shows an overlay
+        pays nothing for it.
+        """
+        if self.spot_candidates_item is not None:
+            return
 
-        self.display_image(marked_image)
+        self.spot_candidates_item = pg.ScatterPlotItem(
+            size=14, pen=pg.mkPen(self._SPOT_CANDIDATE_BRUSH, width=1), brush=None, symbol="o"
+        )
+        self.spot_selected_item = pg.ScatterPlotItem(
+            size=18, pen=pg.mkPen(self._SPOT_SELECTED_BRUSH, width=2), brush=None, symbol="+"
+        )
+        self.spot_reference_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("g", style=Qt.DashLine))
+        self.spot_rejected_item = pg.ScatterPlotItem(
+            size=14, pen=pg.mkPen(self._SPOT_FAILED_BRUSH, width=1), brush=None, symbol="x"
+        )
+        # One label, for the reject closest to passing -- not one per blob. Every other item here
+        # is created once and driven by setData; a pool of text items rebuilt per frame would be
+        # churn at the overlay's rate for something only the nearest miss needs said about it.
+        self.spot_reject_label_item = pg.TextItem(color=self._SPOT_FAILED_BRUSH, anchor=(0, 1))
+
+        view = self._active_view()
+        for item in (
+            self.spot_reference_line,
+            self.spot_candidates_item,
+            self.spot_selected_item,
+            self.spot_rejected_item,
+            self.spot_reject_label_item,
+        ):
+            if item.zValue() == 0:
+                item.setZValue(21)  # above the crosshair (20) and the ROI (10)
+            # A ScatterPlotItem accepts a left-click that lands on one of its points, which would
+            # swallow it before the view saw it -- and clicks on this view start a stage move, a
+            # line-profiler line, or a crop drag. Taking no buttons at all keeps the overlay
+            # purely something to look at.
+            item.setAcceptedMouseButtons(Qt.NoButton)
+            item.setAcceptHoverEvents(False)
+            item.hide()
+            # ignoreBounds so turning the overlay on never changes the current zoom.
+            view.addItem(item, ignoreBounds=True)
+
+    def set_spot_overlay(
+        self, candidates=None, selected=None, reference_x=None, failed=False, rejects=None, reject_label=None
+    ):
+        """Draw what the laser AF detector made of the frame currently on display.
+
+        Coordinates are pixels of the displayed frame. The ImageItem sits at the origin with no
+        transform, so those are view coordinates directly -- the same assumption
+        start_roi_selection relies on. The caller must therefore pass results measured on the
+        frame it displayed, not on some other crop of the sensor.
+
+        candidates: sequence of (x, y) for every spot in frame; selected: the (x, y) the
+        configured mode picked, or None; reference_x: the focus plane, omitted when no reference
+        has been set; failed: draw the selection in the failure color.
+
+        rejects: sequence of (x, y) for blobs the cc_* filters turned away, and reject_label an
+        (x, y, text) naming what turned the nearest one away. Drawing the rejects is the point:
+        knowing a setting is too tight is far easier to act on when you can see the thing it
+        excluded sitting where the spot ought to be.
+        """
+        self._ensure_spot_overlay_items()
+
+        candidates = list(candidates or [])
+        if candidates:
+            self.spot_candidates_item.setData([float(c[0]) for c in candidates], [float(c[1]) for c in candidates])
+            self.spot_candidates_item.show()
+        else:
+            self.spot_candidates_item.setData([], [])
+            self.spot_candidates_item.hide()
+
+        if selected is not None:
+            color = self._SPOT_FAILED_BRUSH if failed else self._SPOT_SELECTED_BRUSH
+            self.spot_selected_item.setPen(pg.mkPen(color, width=2))
+            self.spot_selected_item.setData([float(selected[0])], [float(selected[1])])
+            self.spot_selected_item.show()
+        else:
+            self.spot_selected_item.setData([], [])
+            self.spot_selected_item.hide()
+
+        if reference_x is not None:
+            self.spot_reference_line.setPos(float(reference_x))
+            self.spot_reference_line.show()
+        else:
+            self.spot_reference_line.hide()
+
+        rejects = list(rejects or [])
+        if rejects:
+            self.spot_rejected_item.setData([float(r[0]) for r in rejects], [float(r[1]) for r in rejects])
+            self.spot_rejected_item.show()
+        else:
+            self.spot_rejected_item.setData([], [])
+            self.spot_rejected_item.hide()
+
+        if reject_label is not None:
+            x, y, text = float(reject_label[0]), float(reject_label[1]), str(reject_label[2])
+            # Anchor away from the nearer edge. A label anchored left on a blob at the right edge
+            # renders outside the view and is simply invisible -- and the spot leaving frame to one
+            # side is precisely when a reject appears there.
+            width = self.graphics_widget.img.image.shape[1] if self.graphics_widget.img.image is not None else 0
+            self.spot_reject_label_item.setAnchor((1, 1) if width and x > width / 2 else (0, 1))
+            self.spot_reject_label_item.setText(text)
+            self.spot_reject_label_item.setPos(x, y)
+            self.spot_reject_label_item.show()
+        else:
+            self.spot_reject_label_item.hide()
+
+    def clear_spot_overlay(self):
+        """Hide every overlay item. Safe before any overlay has been drawn."""
+        if self.spot_candidates_item is None:
+            return
+        self.spot_candidates_item.setData([], [])
+        self.spot_selected_item.setData([], [])
+        self.spot_rejected_item.setData([], [])
+        for item in (
+            self.spot_candidates_item,
+            self.spot_selected_item,
+            self.spot_reference_line,
+            self.spot_rejected_item,
+            self.spot_reject_label_item,
+        ):
+            item.hide()
 
     def update_contrast_limits(self):
         if self.show_LUT and self.contrastManager and self.contrastManager.acquisition_dtype:
@@ -1846,11 +1978,62 @@ class ImageDisplayWindow(QMainWindow):
     def update_ROI(self):
         self.roi_pos = self.ROI.pos()
         self.roi_size = self.ROI.size()
+        self.signal_roi_bounds_changed.emit(
+            int(self.roi_pos[0]), int(self.roi_pos[1]), int(self.roi_size[0]), int(self.roi_size[1])
+        )
 
     def show_ROI_selector(self):
         self.ROI.show()
 
     def hide_ROI_selector(self):
+        self.ROI.hide()
+
+    # Starting size of the drag-a-box selector, in pixels of the displayed frame. A fixed size
+    # rather than a fraction of the frame: as a fraction it opened at half the sensor after Reset
+    # to Full Sensor, which is nowhere near any crop worth applying, so every use began by
+    # dragging it far smaller. Clamped to the frame below, so it still behaves on a small crop.
+    DEFAULT_ROI_SELECTION_SIZE = 1000
+
+    def start_roi_selection(self, x=None, y=None, width=None, height=None):
+        """Show the ROI selector, confined to the displayed image.
+
+        Without bounds the selector can be dragged off the frame entirely, and its constructor
+        default sits at (500, 500) which is outside a small crop -- so a caller that just calls
+        show_ROI_selector() on a narrow frame gets an invisible box. This places it somewhere
+        usable and stops it leaving the image.
+
+        x/y/width/height are in pixels of the displayed frame; omitted values default to a
+        DEFAULT_ROI_SELECTION_SIZE box in the middle of the image.
+        """
+        image = self.graphics_widget.img.image
+        if image is None:
+            self._log.warning("Cannot start ROI selection before an image has been displayed.")
+            return False
+
+        image_height, image_width = image.shape[:2]
+        if width is None:
+            width = self.DEFAULT_ROI_SELECTION_SIZE
+        if height is None:
+            height = self.DEFAULT_ROI_SELECTION_SIZE
+        width = int(max(1, min(width, image_width)))
+        height = int(max(1, min(height, image_height)))
+        if x is None:
+            x = (image_width - width) // 2
+        if y is None:
+            y = (image_height - height) // 2
+        x = int(max(0, min(x, image_width - width)))
+        y = int(max(0, min(y, image_height - height)))
+
+        # The ImageItem sits at the origin with no transform, so view coordinates are array
+        # indices and the image rect is the bound directly.
+        self.ROI.maxBounds = QRectF(0, 0, image_width, image_height)
+        self.ROI.setPos((x, y), finish=False)
+        self.ROI.setSize((width, height), finish=False)
+        self.ROI.show()
+        self.update_ROI()
+        return True
+
+    def stop_roi_selection(self):
         self.ROI.hide()
 
     def get_roi(self):
@@ -1872,6 +2055,43 @@ class ImageDisplayWindow(QMainWindow):
     def set_autolevel(self, enabled):
         self.autoLevels = enabled
         self._log.info("set autolevel to " + str(enabled))
+
+    # Colormaps offered for false-color display, in the order they are presented. Perceptually
+    # uniform maps only -- on a jet-style map an intensity ramp reads as banded, which would
+    # invent structure in a laser spot that is not there. "Grayscale" is the None entry.
+    FALSE_COLOR_LUTS = ("Grayscale", "inferno", "viridis", "turbo", "magma")
+
+    def set_false_color_lut(self, name: Optional[str]):
+        """Apply a false-color lookup table to the displayed image.
+
+        A dim spot on a black background is nearly invisible when the display maps 0..255 to
+        black..white and the spot only reaches, say, 30. A colormap gives the low end its own
+        hue, so the same pixels read as coloured rather than almost-black. Pair it with
+        set_autolevel for the biggest gain: the colormap redistributes contrast, autolevel is
+        what creates contrast to redistribute.
+
+        name of None or "Grayscale" restores the default monochrome mapping.
+        """
+        if name is None or name == "Grayscale":
+            self.graphics_widget.img.setLookupTable(None)
+            self._log.info("set false color LUT to grayscale")
+            return
+
+        try:
+            colormap = pg.colormap.get(name)
+        except Exception:
+            self._log.exception(f"Unknown colormap {name!r}; leaving the display unchanged.")
+            return
+
+        self.graphics_widget.img.setLookupTable(colormap.getLookupTable(nPts=256))
+        # In show_LUT mode the histogram widget owns the gradient, so keep it in step or the
+        # legend beside the image would describe a different mapping than the image uses.
+        if self.show_LUT:
+            try:
+                self.LUTWidget.gradient.setColorMap(colormap)
+            except Exception:
+                self._log.debug("Could not sync the histogram gradient to the colormap", exc_info=True)
+        self._log.info(f"set false color LUT to {name}")
 
 
 class NavigationViewer(QFrame):
