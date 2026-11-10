@@ -257,7 +257,7 @@ def recipe_warnings(
     if recipe.xy_offset_mm is None:
         warnings.append("No XY offset between the objectives; only right if they are parcentric to within a field")
     if _widget_type(template) == "record_zstack":
-        # A Record + Z-Stack template: the settings below are applied unattended at every ring.
+        # A Time at XY template: the settings below are applied unattended at every ring.
         autofocus = _autofocus(template)
         if autofocus.get("use_focus_map"):
             if recipe.carry_z:

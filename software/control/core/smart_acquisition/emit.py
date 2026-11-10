@@ -274,8 +274,8 @@ def build_acquisition_dict(
 
     * A wellplate/flexible template becomes a *flexible* acquisition with one
       position per target (``nx = ny = 1``, see the module docstring).
-    * A ``record_zstack`` template (the Record + Z-Stack tab) keeps its recording
-      and z-stack settings, focus setting and time series, and
+    * A ``record_zstack`` template (the Time at XY tab) keeps its channel table
+      (Zi/R/Zf rows), z planes, record slices, focus row and time series, and
       lists the targets as explicit ``wellplate_scan.regions`` for that tab's
       "Load Coordinates" mode. Each region carries both ``center_mm`` and a
       one-element ``fovs`` list so the per-target z (when carried) reaches the

@@ -1,0 +1,124 @@
+# Time at XY Acquisition Parameters - beads_timecourse
+
+acquisition:
+  experiment_id: beads_timecourse
+  start_time: '2026-09-18 10:42:07'
+  widget_type: record_zstack
+  xy_mode: Select Wells
+objective:
+  name: 20x
+  magnification: 20.0
+  pixel_size_um: 0.376
+  camera_binning:
+  - 2
+  - 2
+time_series:
+  nt: 6
+  delta_t_s: 600.0
+autofocus:
+  laser_af: true
+  contrast_af: false
+  use_focus_map: false
+channels:
+- channel:
+    name: Fluorescence 488 nm Ex
+    enabled: true
+    display_color: '#1FFF00'
+    camera: null
+    camera_settings:
+      exposure_time_ms: 15.0
+      gain_mode: 10.0
+      pixel_format: null
+    filter_wheel: null
+    filter_position: 1
+    z_offset_um: 0.0
+    illumination_settings:
+      illumination_channel: Fluorescence 488 nm Ex
+      intensity: 30.0
+    confocal_hardware_settings: null
+    confocal_override: null
+  fps: 50.0
+  duration_s: 10.0
+  zi: true
+  r: true
+  zf: true
+  camera:
+    binning: 2
+    crop_width: 1024
+    crop_height: 1024
+    pixel_format: MONO8
+    pixel_size_um: 0.376
+- channel:
+    name: Fluorescence 561 nm Ex
+    enabled: true
+    display_color: '#FFCF00'
+    camera: null
+    camera_settings:
+      exposure_time_ms: 40.0
+      gain_mode: 10.0
+      pixel_format: null
+    filter_wheel: null
+    filter_position: 1
+    z_offset_um: 0.0
+    illumination_settings:
+      illumination_channel: Fluorescence 561 nm Ex
+      intensity: 45.0
+    confocal_hardware_settings: null
+    confocal_override: null
+  fps: 20.0
+  duration_s: 5.0
+  zi: false
+  r: true
+  zf: false
+- channel:
+    name: BF LED matrix full
+    enabled: true
+    display_color: '#FFFFFF'
+    camera: null
+    camera_settings:
+      exposure_time_ms: 20.0
+      gain_mode: 10.0
+      pixel_format: null
+    filter_wheel: null
+    filter_position: 1
+    z_offset_um: 0.0
+    illumination_settings:
+      illumination_channel: BF LED matrix full
+      intensity: 5.0
+    confocal_hardware_settings: null
+    confocal_override: null
+  fps: 10.0
+  duration_s: 1.0
+  zi: true
+  r: false
+  zf: true
+record_slices:
+  roles:
+  - bottom
+  - mid
+  - top
+  indices:
+  - 2
+z_stack:
+  mode: Relative
+  dz_um: 1.5
+  nz: 9
+  z_range_um: 12.0
+  z_min_mm: 0.0
+  z_max_mm: 0.0
+wellplate_scan:
+  scan_size_mm: 0.5
+  overlap_percent: 10.0
+  regions:
+  - name: B2
+    center_mm:
+    - 10.0
+    - 12.0
+    - 1.5
+    shape: Square
+  - name: B3
+    center_mm:
+    - 19.0
+    - 12.0
+    - 1.5
+    shape: Square

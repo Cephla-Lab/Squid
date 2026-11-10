@@ -1111,7 +1111,7 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
 _ACQUISITION_WIDGET_TYPE_DISPLAY_NAMES = {
     "wellplate": "Wellplate Multipoint",
     "flexible": "Flexible Multipoint",
-    "record_zstack": "Record + Z-Stack",
+    "record_zstack": "Time at XY",
 }
 
 
@@ -6015,6 +6015,49 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_width.blockSignals(False)
 
         self.signal_binning_changed.emit()
+
+    def refresh_from_camera(self):
+        """Re-read binning, pixel format and ROI from the camera without writing them back.
+
+        For code that changes the camera directly (the Time at XY per-channel settings),
+        so these controls don't go on showing a stale value.
+        """
+        controls = (
+            self.dropdown_binning,
+            self.dropdown_pixelFormat,
+            self.entry_ROI_offset_x,
+            self.entry_ROI_offset_y,
+            self.entry_ROI_width,
+            self.entry_ROI_height,
+        )
+        shown_binning = self.dropdown_binning.currentText()
+        for control_ in controls:
+            control_.blockSignals(True)
+        try:
+            binning = self.camera.get_binning()
+            self.dropdown_binning.setCurrentText(f"{binning[0]}x{binning[1]}")
+            pixel_format = self.camera.get_pixel_format()
+            if pixel_format is not None:
+                self.dropdown_pixelFormat.setCurrentText(pixel_format.name)
+            x_max, y_max = self.camera.get_resolution()
+            x_offset, y_offset, width, height = self.camera.get_region_of_interest()
+            for spin, maximum, value in (
+                (self.entry_ROI_offset_x, x_max, x_offset),
+                (self.entry_ROI_offset_y, y_max, y_offset),
+                (self.entry_ROI_width, x_max, width),
+                (self.entry_ROI_height, y_max, height),
+            ):
+                spin.setMaximum(maximum)
+                spin.setValue(value)
+        except Exception as exc:
+            self._log.warning(f"Could not refresh the camera settings: {exc}")
+        finally:
+            for control_ in controls:
+                control_.blockSignals(False)
+        # Listeners recompute pixel size and redraw the FOV; nothing to do when the camera was
+        # put back exactly as these controls already showed it (the normal end of a run).
+        if self.dropdown_binning.currentText() != shown_binning:
+            self.signal_binning_changed.emit()
 
     def update_blacklevel(self, blacklevel):
         try:
@@ -19456,60 +19499,6 @@ def _set_header_not_bold(header: QHeaderView) -> None:
     header.setFont(font)
 
 
-def _make_channel_settings_table(rows: int) -> QTableWidget:
-    """A Channel | Exp (ms) | Gain | Illum (%) | actions table for the Record + Z-Stack tab."""
-    table = QTableWidget(rows, 5)
-    table.setHorizontalHeaderLabels(["Channel", "Exp (ms)", "Gain", "Illum (%)", ""])
-    hdr = table.horizontalHeader()
-    hdr.setSectionResizeMode(0, QHeaderView.Stretch)
-    for column in range(1, 5):
-        hdr.setSectionResizeMode(column, QHeaderView.ResizeToContents)
-    _set_header_not_bold(hdr)
-    table.setSelectionBehavior(QAbstractItemView.SelectRows)
-    # Force the 5 columns to fit (Channel truncates via Stretch) instead of
-    # showing a horizontal scrollbar. No fixed width: the panel's actual
-    # available width varies with which other tab last drove the main
-    # window's width, so the table fills whatever space it's given rather
-    # than gambling on a specific pixel value.
-    table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    table.setMinimumWidth(300)
-    return table
-
-
-def _add_channel_settings_spinboxes(
-    table: QTableWidget,
-    row: int,
-    exposure: float,
-    gain: float,
-    illumination: float,
-) -> Tuple[QDoubleSpinBox, QDoubleSpinBox, QDoubleSpinBox]:
-    """Put the exposure, gain and illumination editors in columns 1-3 of *row* and return them."""
-    exp_spin = QDoubleSpinBox()
-    exp_spin.setDecimals(1)
-    # 0.1 ms: the smallest value one decimal can show. A smaller minimum rounds to 0.0 at one decimal,
-    # and a 0 ms exposure is rejected by the camera mid-run (ToupTek: "The parameter is incorrect").
-    exp_spin.setRange(0.1, 60000)
-    exp_spin.setValue(exposure)
-    exp_spin.setSuffix(" ms")
-
-    gain_spin = QDoubleSpinBox()
-    gain_spin.setRange(0.0, 100.0)
-    gain_spin.setValue(gain)
-    gain_spin.setDecimals(2)
-
-    illum_spin = QDoubleSpinBox()
-    illum_spin.setRange(0.0, 100.0)
-    illum_spin.setValue(illumination)
-    illum_spin.setSuffix(" %")
-    illum_spin.setDecimals(1)
-
-    spinboxes = (exp_spin, gain_spin, illum_spin)
-    for column, spinbox in enumerate(spinboxes, start=1):
-        spinbox.setKeyboardTracking(False)
-        table.setCellWidget(row, column, spinbox)
-    return spinboxes
-
-
 _TAB_INACTIVE_STYLE = """
     QFrame {
         border: 1px solid palette(mid);
@@ -19548,8 +19537,284 @@ def _tab_controls_style(background_rgb: str) -> str:
     """
 
 
+# The "Time at XY" tab (widget_type record_zstack): shared z-mode labels and record-plane presets.
+from control.core.zstack_modes import Z_MODE_FROM_BOTTOM, Z_MODE_RELATIVE, Z_MODE_SET_RANGE, Z_MODES, relative_stack_Nz
+from control.core.record_zstack_controller import SLICE_ROLES
+
+
+class RecordSlicesDialog(QDialog):
+    """Pick which planes of the shared z stack the recordings visit.
+
+    One row per plane (Bottom first), with its label, its position and a
+    checkbox.  ``selected_indices()`` returns the checked plane indices.
+    """
+
+    def __init__(self, labels: List[str], positions: List[str], selected, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Record planes")
+        layout = QVBoxLayout(self)
+        hint = QLabel("Tick the planes to record (every R channel records each ticked plane).")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.table = QTableWidget(len(labels), 3)
+        self.table.setHorizontalHeaderLabels(["Z", "Position", "Record"])
+        _set_header_not_bold(self.table.horizontalHeader())
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        selected = set(selected)
+        for row, (label, position) in enumerate(zip(labels, positions)):
+            self.table.setItem(row, 0, QTableWidgetItem(label))
+            self.table.setItem(row, 1, QTableWidgetItem(position))
+            container = QWidget()
+            hbox = QHBoxLayout(container)
+            hbox.setContentsMargins(0, 0, 0, 0)
+            hbox.setAlignment(Qt.AlignCenter)
+            box = QCheckBox()
+            box.setChecked(row in selected)
+            hbox.addWidget(box)
+            self.table.setCellWidget(row, 2, container)
+        self.table.resizeRowsToContents()
+        layout.addWidget(self.table)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        # Size from the content (the app font is large): show up to 12 rows
+        # without scrolling, and make every column visible without a
+        # horizontal scrollbar.
+        fm = self.table.fontMetrics()
+        row_h = self.table.rowHeight(0) if labels else fm.height() + 12
+        hdr_h = hdr.sizeHint().height()
+        frame = 2 * self.table.frameWidth()
+        visible_rows = max(1, min(len(labels), 12))
+        self.table.setMinimumHeight(hdr_h + visible_rows * row_h + frame)
+        self.table.setColumnWidth(0, fm.horizontalAdvance("Mid−12·dz") + 24)
+        self.table.resizeColumnToContents(1)
+        self.table.resizeColumnToContents(2)
+        scrollbar_w = self.style().pixelMetric(QStyle.PM_ScrollBarExtent) + 4
+        width = sum(self.table.columnWidth(c) for c in range(3)) + frame + scrollbar_w
+        self.table.setMinimumWidth(width)
+        self.adjustSize()
+
+    def _checkbox(self, row: int) -> Optional[QCheckBox]:
+        cell = self.table.cellWidget(row, 2)
+        return cell.findChild(QCheckBox) if cell is not None else None
+
+    def set_checked(self, row: int, checked: bool) -> None:
+        box = self._checkbox(row)
+        if box is not None:
+            box.setChecked(bool(checked))
+
+    def selected_indices(self) -> set:
+        out = set()
+        for row in range(self.table.rowCount()):
+            box = self._checkbox(row)
+            if box is not None and box.isChecked():
+                out.add(row)
+        return out
+
+
+class CameraGeometryDialog(QDialog):
+    """Edit one Time at XY row's binning, centred crop and pixel format.
+
+    "Current" leaves a setting to whatever the camera is set to when the run starts.
+    """
+
+    CURRENT = "Current"
+
+    def __init__(self, camera, geometry, channel_name: str = "", parent=None):
+        from control.core import camera_geometry as cg
+
+        super().__init__(parent)
+        self._cg = cg
+        self._camera = camera
+        self.setWindowTitle(f"Camera settings: {channel_name}" if channel_name else "Camera settings")
+
+        form = QFormLayout()
+        self.combo_binning = QComboBox()
+        self.combo_binning.addItem(self.CURRENT, None)
+        for b in cg.binning_option_values(camera) if camera is not None else [1]:
+            self.combo_binning.addItem(f"{b}x{b}", b)
+        form.addRow("Binning", self.combo_binning)
+
+        self.checkbox_crop = QCheckBox("Crop (centred)")
+        self.spin_crop_w = QSpinBox()
+        self.spin_crop_h = QSpinBox()
+        for spin in (self.spin_crop_w, self.spin_crop_h):
+            spin.setSingleStep(cg.ROI_INTERVAL)
+            spin.setRange(cg.ROI_INTERVAL * 2, 100000)
+            spin.setKeyboardTracking(False)
+        crop_row = QHBoxLayout()
+        crop_row.addWidget(self.checkbox_crop)
+        crop_row.addWidget(QLabel("W"))
+        crop_row.addWidget(self.spin_crop_w)
+        crop_row.addWidget(QLabel("H"))
+        crop_row.addWidget(self.spin_crop_h)
+        form.addRow("Crop", crop_row)
+        self.label_sensor = QLabel()
+        form.addRow("", self.label_sensor)
+
+        self.combo_format = QComboBox()
+        self.combo_format.addItem(self.CURRENT, None)
+        for name in cg.available_pixel_format_names(camera) if camera is not None else cg.FALLBACK_PIXEL_FORMATS:
+            self.combo_format.addItem(name, name)
+        form.addRow("Pixel format", self.combo_format)
+
+        note = QLabel(
+            "Channels with different camera settings are acquired one after another and saved "
+            "separately; they can't be overlaid."
+        )
+        note.setWordWrap(True)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.btn_from_camera = buttons.addButton("Use camera now", QDialogButtonBox.ResetRole)
+        self.btn_from_camera.setToolTip("Copy the Camera tab's current binning, crop and pixel format")
+        self.btn_from_camera.setEnabled(camera is not None)
+        self.btn_all_current = buttons.addButton("All current", QDialogButtonBox.ResetRole)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self.btn_from_camera.clicked.connect(self._fill_from_camera)
+        self.btn_all_current.clicked.connect(lambda: self.set_geometry(cg.CameraGeometry()))
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(note)
+        layout.addWidget(buttons)
+
+        self.combo_binning.currentIndexChanged.connect(self._update_crop_limits)
+        self.checkbox_crop.toggled.connect(self._update_crop_enabled)
+        self.set_geometry(geometry)
+
+    def _selected_binning(self) -> int:
+        b = self.combo_binning.currentData()
+        if b is not None:
+            return int(b)
+        try:
+            return int(self._camera.get_binning()[0])
+        except Exception:
+            return 1
+
+    def _update_crop_limits(self) -> None:
+        if self._camera is None:
+            self.label_sensor.setText("")
+            return
+        binning = self._selected_binning()
+        try:
+            sensor_w, sensor_h = self._cg.sensor_size_at(self._camera, binning)
+        except Exception:
+            self.label_sensor.setText("")
+            return
+        self.spin_crop_w.setMaximum(sensor_w)
+        self.spin_crop_h.setMaximum(sensor_h)
+        self.label_sensor.setText(f"Full sensor at {binning}x{binning}: {sensor_w} × {sensor_h} px")
+
+    def _update_crop_enabled(self) -> None:
+        on = self.checkbox_crop.isChecked()
+        self.spin_crop_w.setEnabled(on)
+        self.spin_crop_h.setEnabled(on)
+
+    def _fill_from_camera(self) -> None:
+        cam = self._camera
+        binning = int(cam.get_binning()[0])
+        _, _, roi_w, roi_h = cam.get_region_of_interest()
+        sensor_w, sensor_h = cam.get_resolution()
+        cropped = (roi_w, roi_h) != (sensor_w, sensor_h)
+        pf = cam.get_pixel_format()
+        self.set_geometry(
+            self._cg.CameraGeometry(
+                binning=binning,
+                crop_w=int(roi_w) if cropped else None,
+                crop_h=int(roi_h) if cropped else None,
+                pixel_format=pf.name if pf is not None else None,
+            )
+        )
+
+    def set_geometry(self, geometry) -> None:
+        index = self.combo_binning.findData(geometry.binning) if geometry.binning is not None else 0
+        self.combo_binning.setCurrentIndex(max(0, index))
+        self._update_crop_limits()
+        self.checkbox_crop.setChecked(geometry.crop_w is not None)
+        if geometry.crop_w is not None:
+            self.spin_crop_w.setValue(geometry.crop_w)
+            self.spin_crop_h.setValue(geometry.crop_h)
+        elif self._camera is not None:
+            sensor_w, sensor_h = self._cg.sensor_size_at(self._camera, self._selected_binning())
+            self.spin_crop_w.setValue(sensor_w)
+            self.spin_crop_h.setValue(sensor_h)
+        self._update_crop_enabled()
+        if geometry.pixel_format is not None and self.combo_format.findData(geometry.pixel_format) < 0:
+            self.combo_format.addItem(geometry.pixel_format, geometry.pixel_format)
+        index = self.combo_format.findData(geometry.pixel_format) if geometry.pixel_format is not None else 0
+        self.combo_format.setCurrentIndex(max(0, index))
+
+    def geometry(self):
+        crop = self.checkbox_crop.isChecked()
+        interval = self._cg.ROI_INTERVAL
+        return self._cg.CameraGeometry(
+            binning=self.combo_binning.currentData(),
+            crop_w=utils.truncate_to_interval(self.spin_crop_w.value(), interval) if crop else None,
+            crop_h=utils.truncate_to_interval(self.spin_crop_h.value(), interval) if crop else None,
+            pixel_format=self.combo_format.currentData(),
+        )
+
+
+class CameraGeometryButton(QPushButton):
+    """Table cell holding a row's CameraGeometry; shows a short summary and opens the editor."""
+
+    geometry_changed = Signal()
+
+    def __init__(self, geometry=None, camera_fn=None, channel_name: str = "", parent=None):
+        from control.core.camera_geometry import CameraGeometry
+
+        super().__init__(parent)
+        self._camera_fn = camera_fn or (lambda: None)
+        self._channel_name = channel_name
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.setFlat(True)
+        self.clicked.connect(self._edit)
+        self.set_geometry(geometry or CameraGeometry())
+
+    @property
+    def geometry(self):
+        return self._geometry
+
+    def set_geometry(self, geometry) -> None:
+        from control.core.camera_geometry import describe, short_label
+
+        self._geometry = geometry
+        self.setText(short_label(geometry))
+        self.setToolTip(
+            "Camera settings for this channel: "
+            + (describe(geometry) if not geometry.is_inherit else "all current (the Camera tab's)")
+            + "\nClick to change."
+        )
+        self.geometry_changed.emit()
+
+    def _edit(self) -> None:
+        dialog = CameraGeometryDialog(self._camera_fn(), self._geometry, self._channel_name, self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.set_geometry(dialog.geometry())
+
+
 class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
-    """Single-column 'Record + Z-Stack' acquisition tab.
+    """Single-column 'Time at XY' acquisition tab.
+
+    One channel table drives everything that happens at each FOV: per row the
+    channel's exposure/gain/illumination, the FPS/duration of its timelapse
+    recording, and three flags -- Zi (initial z-stack before recording), R
+    (record a timelapse), Zf (final z-stack after recording).  One z block
+    (From Bottom / Set Range / Relative, as on the Wellplate/Flexible Multipoint
+    tabs) defines the planes for all three phases; a Record row (Bottom / Mid /
+    Top / Select...) picks which of those planes the recordings visit.  Laser AF,
+    Contrast AF and the Focus Map are offered as on the multipoint tabs.
 
     Construction pattern mirrors WellplateMultiPointWidget:
       - sections stacked vertically in a scroll area
@@ -19558,6 +19823,43 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     """
 
     signal_acquisition_started = Signal(bool)  # True = started, False = finished
+
+    # Channel table columns.
+    COL_NAME, COL_EXP, COL_GAIN, COL_ILLUM, COL_CAM, COL_FPS, COL_DUR, COL_ZI, COL_R, COL_ZF, COL_ACTIONS = range(11)
+    _COLUMN_HEADERS = ["Channel", "Exp", "Gain", "Ill%", "Cam", "FPS", "Dur", "Zi", "R", "Zf", ""]
+    _COLUMN_TOOLTIPS = {
+        COL_EXP: "Exposure (ms)",
+        COL_GAIN: "Analog gain",
+        COL_ILLUM: "Illumination intensity (%)",
+        COL_CAM: (
+            "Camera binning / centred crop / pixel format for this channel (— = the Camera tab's).\n"
+            "Channels with different settings are acquired one after another and saved separately."
+        ),
+        COL_FPS: "Recording frame rate (fps)",
+        COL_DUR: "Recording duration (s)",
+        COL_ZI: "Include in the initial z-stack (before recording)",
+        COL_R: "Record a timelapse with this channel",
+        COL_ZF: "Include in the final z-stack (after recording)",
+    }
+    # Widest value each fixed column must show; widths come from the font metrics
+    # (see _column_widths) so they track the app font.  The Channel column
+    # stretches to whatever is left.
+    _COLUMN_SAMPLES = {
+        COL_EXP: "60000.0",
+        COL_GAIN: "100.00",
+        COL_ILLUM: "100.0",
+        COL_CAM: "2×2 1024² M8",
+        COL_FPS: "1000",
+        COL_DUR: "3600",
+        COL_ZI: "",
+        COL_R: "",
+        COL_ZF: "",
+        COL_ACTIONS: "✕",
+    }
+    # Rows shown before the table starts scrolling.
+    _TABLE_MAX_VISIBLE_ROWS = 5
+    # Free-run frame-rate test length: long enough to catch a stalling stream.
+    FRAME_RATE_TEST_DURATION_S = 5.0
 
     def __init__(
         self,
@@ -19570,12 +19872,21 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         well_selection_widget=None,
         tab_widget=None,
         laser_autofocus_controller=None,
+        focus_map_widget=None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.setAcceptDrops(True)  # Enable drag-and-drop for loading acquisition YAML
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.focus_map_widget = focus_map_widget
+        # Record-plane selection: preset roles (by name, so they follow Nz) plus
+        # explicit extra plane indices from the Select... dialog.
+        self._slice_roles = set(SLICE_ROLES)
+        self._slice_indices = set()
+        self._syncing_slices = False
+        self._fps_test_running = False
+        self._fps_test_channel: Optional[str] = None
         self.stage = stage
         self.navigationViewer = navigationViewer
         self.recordZStackController = recordZStackController
@@ -19588,16 +19899,11 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         self._add_components()
 
-    @property
-    def _zstack_channel_names(self) -> List[str]:
-        """Channel names currently in the Z-Stack table (column 0), in row order.
-
-        Derived from the table itself so there is a single source of truth —
-        add/remove row operations only touch the table.
-        """
-        table = self.zstack_channel_table
-        items = (table.item(row, 0) for row in range(table.rowCount()))
-        return [item.text() for item in items if item is not None]
+        # The Qt controller wrapper re-emits the frame-rate test result on the GUI
+        # thread; a bare controller (tests) calls the handler directly instead.
+        signal = getattr(recordZStackController, "frame_rate_test_finished", None)
+        if signal is not None and hasattr(signal, "connect"):
+            signal.connect(self._on_frame_rate_test_finished)
 
     # ---------------------------------------------------------------------- build UI
 
@@ -19637,17 +19943,15 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         layout.addWidget(_section_divider())
         layout.addWidget(self._build_wells_fov_group())
         layout.addWidget(_section_divider())
-        layout.addWidget(self._build_recording_group())
+        layout.addWidget(self._build_channels_group())
         layout.addWidget(_section_divider())
         layout.addWidget(self._build_zstack_group())
         layout.addWidget(_section_divider())
         layout.addWidget(self._build_start_group())
         layout.addStretch(1)
 
-        # Gray out Start Acquisition when neither phase is enabled, instead of
-        # only catching it via validate()'s error dialog after the click.
-        self.checkbox_recording.toggled.connect(lambda _checked: self._update_start_button_enabled())
-        self.checkbox_zstack.toggled.connect(lambda _checked: self._update_start_button_enabled())
+        # Gray out Start Acquisition until at least one row has Zi/R/Zf ticked,
+        # instead of only catching it via validate()'s error dialog after the click.
         self._update_start_button_enabled()
 
         scroll.setWidget(inner)
@@ -19712,6 +20016,13 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             return lbl
 
+        # First-column labels share a width so the first field of each row
+        # aligns. Font-relative (this app scales its font) and sized for the
+        # widest of them, so neither label can be clipped the way a hand-tuned
+        # pixel width was.
+        fm = self.fontMetrics()
+        first_label_w = max(fm.horizontalAdvance(text) for text in ("Overlap:", "Nt:")) + 4
+
         # --- XY / Time tabs row: mirrors WellplateMultiPointWidget's XY/Z/Time
         # tabs (checkbox + combo in a frame that highlights when active). Z is
         # skipped here since the "Z-Stack phase" group below already covers
@@ -19748,15 +20059,40 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         time_frame_layout.addWidget(self.checkbox_time)
         time_frame_layout.addStretch()
 
-        self.checkbox_laser_af = QCheckBox("Laser AF")
-        self.checkbox_laser_af.setChecked(False)
-
         tabs_row = QHBoxLayout()
         tabs_row.setSpacing(4)
         tabs_row.addWidget(self.xy_frame, 2)
         tabs_row.addWidget(self.time_frame, 1)
-        tabs_row.addWidget(self.checkbox_laser_af)
         vbox.addLayout(tabs_row)
+
+        # Focus row: the same three options as the multipoint tabs.  Laser AF
+        # takes precedence over contrast AF when both are ticked (worker rule);
+        # the focus map pre-positions z at each FOV before either runs.
+        self.checkbox_withAutofocus = QCheckBox("Contrast AF")
+        self.checkbox_withAutofocus.setChecked(False)
+        self.checkbox_withAutofocus.setToolTip(
+            "Contrast autofocus at every position. Runs only with Nz = 1 or Relative mode; "
+            "Laser AF takes precedence when both are ticked."
+        )
+        self.checkbox_laser_af = QCheckBox("Laser AF")
+        self.checkbox_laser_af.setChecked(False)
+        self.checkbox_laser_af.setToolTip("Laser reflection autofocus to the captured reference at every position.")
+        self.checkbox_useFocusMap = QCheckBox("Use Focus Map")
+        self.checkbox_useFocusMap.setChecked(False)
+        self.checkbox_useFocusMap.setToolTip(
+            "Move to the z of the fitted focus surface (Focus Map tab) at every position before the "
+            "reference is established."
+        )
+        self.checkbox_useFocusMap.toggled.connect(self._on_use_focus_map_toggled)
+
+        af_row = QHBoxLayout()
+        af_row.setSpacing(8)
+        af_row.addWidget(_pair_label("Focus:"))
+        af_row.addWidget(self.checkbox_withAutofocus)
+        af_row.addWidget(self.checkbox_laser_af)
+        af_row.addWidget(self.checkbox_useFocusMap)
+        af_row.addStretch(1)
+        vbox.addLayout(af_row)
 
         # Row 1: FOV overlap + Region shape + Region size (hidden when XY unchecked)
         self.xy_controls_frame = QFrame()
@@ -19765,18 +20101,22 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         row1.setSpacing(4)
 
         overlap_label = _pair_label("Overlap:")
+        overlap_label.setFixedWidth(first_label_w)
         row1.addWidget(overlap_label)
         self.entry_overlap = QDoubleSpinBox()
         self.entry_overlap.setRange(-1000, 99)
         self.entry_overlap.setValue(10)
         self.entry_overlap.setSuffix(" %")
         self.entry_overlap.setKeyboardTracking(False)
+        self._fit_width(self.entry_overlap, "-1000 %")
         row1.addWidget(self.entry_overlap)
 
         row1.addSpacing(pair_gap)
         row1.addWidget(_pair_label("Shape:"))
         self.combobox_shape = QComboBox()
         self.combobox_shape.addItems(["Square", "Circle", "Rectangle"])
+        # Sized to its widest option ("Rectangle") plus the arrow.
+        self.combobox_shape.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         row1.addWidget(self.combobox_shape)
 
         row1.addSpacing(pair_gap)
@@ -19787,6 +20127,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_scan_size.setSuffix(" mm")
         self.entry_scan_size.setDecimals(2)
         self.entry_scan_size.setKeyboardTracking(False)
+        self._fit_width(self.entry_scan_size, "100.00 mm")
         row1.addWidget(self.entry_scan_size)
 
         row1.addStretch(1)
@@ -19799,11 +20140,13 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         row2.setSpacing(4)
 
         nt_label = _pair_label("Nt:")
+        nt_label.setFixedWidth(first_label_w)
         row2.addWidget(nt_label)
         self.entry_Nt = QSpinBox()
         self.entry_Nt.setMinimum(1)
         self.entry_Nt.setMaximum(5000)
         self.entry_Nt.setValue(1)
+        self._fit_width(self.entry_Nt, "5000")
         row2.addWidget(self.entry_Nt)
 
         row2.addSpacing(pair_gap)
@@ -19813,26 +20156,18 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_dt.setValue(0)
         self.entry_dt.setSuffix(" s")
         self.entry_dt.setKeyboardTracking(False)
+        self._fit_width(self.entry_dt, "86400 s")
         row2.addWidget(self.entry_dt)
 
         row2.addStretch(1)
         vbox.addWidget(self.time_controls_frame)
 
-        # Consistent widths so the label+field pairs of the XY and Time rows line
-        # up, taken from the widgets' own size hints (the font in use) the way
-        # WellplateMultiPointWidget sizes its entries.
-        fields = (self.entry_overlap, self.entry_scan_size, self.entry_Nt, self.entry_dt)
-        field_w = max(field.sizeHint().width() for field in fields)
-        for field in fields:
-            field.setFixedWidth(field_w)
-        first_label_w = max(overlap_label.sizeHint().width(), nt_label.sizeHint().width())
-        overlap_label.setFixedWidth(first_label_w)
-        nt_label.setFixedWidth(first_label_w)
-
-        # Wire FOV-grid signals
-        self.entry_overlap.valueChanged.connect(self._update_scan_regions)
-        self.entry_scan_size.valueChanged.connect(self._update_scan_regions)
-        self.combobox_shape.currentIndexChanged.connect(self._update_scan_regions)
+        # Wire FOV-grid signals.  Through lambdas: connected directly, the signal's value (the new
+        # overlap, size or index) would arrive as _update_scan_regions' selection_only argument and
+        # the wells already tiled would keep their old grid.
+        self.entry_overlap.valueChanged.connect(lambda _value: self._update_scan_regions())
+        self.entry_scan_size.valueChanged.connect(lambda _value: self._update_scan_regions())
+        self.combobox_shape.currentIndexChanged.connect(lambda _index: self._update_scan_regions())
 
         # Wire XY/Time toggle behavior and initialize their visibility/styling.
         self._stored_time_params = None
@@ -19921,265 +20256,220 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.time_frame.setStyleSheet(_tab_active_style("#00A000") if time_on else _TAB_INACTIVE_STYLE)
         self.time_controls_frame.setStyleSheet(_tab_controls_style("0, 160, 0") if time_on else "")
 
-    def _build_recording_group(self) -> QFrame:
-        # Plain QFrame (no border/title chrome), matching the rest of the app's
-        # convention (e.g. WellplateMultiPointWidget) rather than a QGroupBox —
-        # a checkable QGroupBox still renders a visible box under the Fusion
-        # style even when flat. The checkbox is a standalone header widget so
-        # collapsing its content doesn't require any QGroupBox-specific behavior.
+    def _build_channels_group(self) -> QFrame:
+        # Plain QFrame + plain label header (no QGroupBox: a group box still
+        # renders a visible box under the Fusion style even when flat; the
+        # header keeps the regular weight the other acquisition tabs use).
         grp = QFrame()
-        outer_vbox = QVBoxLayout(grp)
-        outer_vbox.setContentsMargins(4, 2, 4, 2)
-        outer_vbox.setSpacing(4)
-
-        self.checkbox_recording = QCheckBox("Recording phase")
-        self.checkbox_recording.setChecked(True)
-        header_font = self.checkbox_recording.font()
-        header_font.setBold(True)
-        self.checkbox_recording.setFont(header_font)
-        outer_vbox.addWidget(self.checkbox_recording)
-
-        # No margins here — outer_vbox already applies the frame-level
-        # (4, 2, 4, 2) margin; adding another would double-indent this
-        # content relative to the checkbox header above it.
-        vbox = QVBoxLayout()
-        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox = QVBoxLayout(grp)
+        vbox.setContentsMargins(4, 2, 4, 2)
         vbox.setSpacing(4)
-        outer_vbox.addLayout(vbox)
-        self._recording_content_vbox = vbox
+        vbox.addWidget(QLabel("Channels"))
 
-        # Row 0: single-row channel table (Channel | Exp (ms) | Gain | Illum (%) | ↻)
-        self.recording_channel_table = _make_channel_settings_table(rows=1)
-        self.recording_channel_table.verticalHeader().setVisible(False)
+        # Channel | Exp | Gain | Ill% | Cam | FPS | Dur | Zi | R | Zf | ✕
+        self.channel_table = QTableWidget(0, len(self._COLUMN_HEADERS))
+        self.channel_table.setHorizontalHeaderLabels(self._COLUMN_HEADERS)
+        for col, tip in self._COLUMN_TOOLTIPS.items():
+            item = self.channel_table.horizontalHeaderItem(col)
+            if item is not None:
+                item.setToolTip(tip)
+        hdr = self.channel_table.horizontalHeader()
+        # Un-bold first: a font change can reset the header's section metrics,
+        # which would undo the widths applied below.
+        _set_header_not_bold(hdr)
+        widths = self._column_widths()
+        # The header's default minimum section size is font-derived and larger
+        # than the narrow flag columns need; lower it before fixing the widths.
+        hdr.setMinimumSectionSize(min(widths.values()))
+        hdr.setSectionResizeMode(self.COL_NAME, QHeaderView.Stretch)
+        for col, width in widths.items():
+            hdr.setSectionResizeMode(col, QHeaderView.Fixed)
+            self.channel_table.setColumnWidth(col, width)
+        self.channel_table.verticalHeader().setVisible(False)
+        self.channel_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        # Force the columns to fit (Channel truncates via Stretch) instead of
+        # showing a horizontal scrollbar. No fixed width: the panel's actual
+        # available width varies with which other tab last drove the main
+        # window's width, so the table fills whatever space it's given.
+        self.channel_table.setMinimumWidth(300)
+        self.channel_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.channel_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._fit_table_height()
+        vbox.addWidget(self.channel_table)
 
-        # Col 0: channel combo. Let it shrink within the Stretch column instead of
-        # demanding its full text width (otherwise the long channel name forces the
-        # column wide and pushes Exp/Gain/Illum behind a horizontal scrollbar).
-        self._recording_ch_combo = QComboBox()
-        self._populate_channel_combo(self._recording_ch_combo)
-        self._recording_ch_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self._recording_ch_combo.setMinimumContentsLength(6)
-        self._recording_ch_combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self.recording_channel_table.setCellWidget(0, 0, self._recording_ch_combo)
+        # Add-channel row: capped combo with "+ Add" right after, then a
+        # trailing stretch so the row doesn't span the full panel width.
+        add_row = QHBoxLayout()
+        add_row.setContentsMargins(0, 0, 0, 0)
+        add_row.setSpacing(4)
+        self.combobox_add_channel = QComboBox()
+        self._populate_channel_combo(self.combobox_add_channel)
+        self.combobox_add_channel.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.combobox_add_channel.setMaximumWidth(320)
+        add_row.addWidget(self.combobox_add_channel)
+        self.btn_add_channel = QPushButton("+ Add")
+        self._fit_width(self.btn_add_channel, "+ Add", extra=24)
+        self.btn_add_channel.clicked.connect(self._on_add_channel_clicked)
+        add_row.addWidget(self.btn_add_channel)
 
-        # Cols 1-3: exposure, gain, illumination
-        self._recording_exp_spin, self._recording_gain_spin, self._recording_illum_spin = (
-            _add_channel_settings_spinboxes(self.recording_channel_table, 0, 50.0, 0.0, 50.0)
+        # Test FR: run the camera free-run at its maximum rate for the selected
+        # channel's exposure/gain (illumination off) and show what it delivers.
+        self.btn_test_fps = QPushButton("Test FR")
+        self._fit_width(self.btn_test_fps, "Test FR", extra=24)
+        self.btn_test_fps.setToolTip(
+            f"Run the camera free-run at the highest rate it allows for the selected channel's exposure "
+            f"and gain and the current crop/binning, with illumination off, for "
+            f"{self.FRAME_RATE_TEST_DURATION_S:g} s, and show the delivered frame rate. "
+            "If the channel is in the table, its FPS is set to the result."
         )
-
-        # Col 4: ↻ refresh-from-channel-config button
-        self.btn_copy_from_live = QPushButton("↻")
-        self.btn_copy_from_live.setToolTip("Refresh exposure/gain/illumination from this channel's current settings")
-        self.btn_copy_from_live.setMaximumWidth(28)
-        self.btn_copy_from_live.clicked.connect(self._copy_recording_from_live)
-        self.recording_channel_table.setCellWidget(0, 4, self.btn_copy_from_live)
-
-        # Seed the row from the selected channel's own configured settings
-        # (not the hardcoded defaults above) whenever the selection changes,
-        # including the initial population.
-        self._recording_ch_combo.currentIndexChanged.connect(self._on_recording_channel_changed)
-        self._on_recording_channel_changed(self._recording_ch_combo.currentIndex())
-
-        # Size the table to exactly fit the header + single row, now that the
-        # cell widgets (which are taller than plain text) are in place — doing
-        # this before the widgets were added left a fixed height too tall,
-        # showing empty space below the row. The padding is the table's own
-        # top+bottom frame border (not a guessed constant), so it stays
-        # correct if the frame style changes.
-        self.recording_channel_table.resizeRowsToContents()
-        self.recording_channel_table.setFixedHeight(
-            self.recording_channel_table.horizontalHeader().height()
-            + self.recording_channel_table.rowHeight(0)
-            + 2 * self.recording_channel_table.frameWidth()
+        self.btn_test_fps.clicked.connect(self._on_test_fps_clicked)
+        add_row.addWidget(self.btn_test_fps)
+        self.label_fps_result = QLabel("")
+        self.label_fps_result.setFrameShape(QFrame.StyledPanel)
+        self.label_fps_result.setMinimumWidth(
+            self.label_fps_result.fontMetrics().horizontalAdvance("999.9 fps (min 999.9 over 5.0 s)") + 16
         )
-
-        vbox.addWidget(self.recording_channel_table)
-
-        # Row 1 (fixed): FPS + Duration.
-        # Nz/dz/offset reflow dynamically: they append to row 1 (after
-        # Duration) whenever at most 2 of them are visible, but move down to
-        # their own row 2 together when all 3 are visible at once (Nz>1 AND
-        # Laser AF on) — that's too many fields for one row. See
-        # _rebuild_recording_rows, called from _update_recording_planes_ui
-        # whenever Nz or Laser AF change; it also sets the widths, from the
-        # widgets' own size hints (the font in use).
-        self.fps_row = QHBoxLayout()
-        self.fps_row.setSpacing(4)
-
-        label_fps = QLabel("FPS:")
-        self.fps_row.addWidget(label_fps)
-        self.entry_fps = QDoubleSpinBox()
-        self.entry_fps.setRange(1, 1000)
-        self.entry_fps.setDecimals(0)
-        self.entry_fps.setValue(10.0)
-        self.entry_fps.setKeyboardTracking(False)
-        self.fps_row.addWidget(self.entry_fps)
-
-        label_dur = QLabel("Dur:")
-        self.fps_row.addWidget(label_dur)
-        self.entry_duration = QDoubleSpinBox()
-        self.entry_duration.setRange(1, 3600)
-        self.entry_duration.setDecimals(0)
-        self.entry_duration.setValue(1.0)
-        self.entry_duration.setSuffix(" s")
-        self.entry_duration.setKeyboardTracking(False)
-        self.fps_row.addWidget(self.entry_duration)
-
-        # Fixed prefix length (FPS label/spin, spacing, Dur label/spin) that
-        # _rebuild_recording_rows must never remove.
-        self._fps_row_fixed_count = self.fps_row.count()
-        vbox.addLayout(self.fps_row)
-
-        self.z_row = QHBoxLayout()
-        self.z_row.setSpacing(4)
-        vbox.addLayout(self.z_row)
-
-        # Movable widgets — not added to either row here; _rebuild_recording_rows
-        # (called once at the end of this method, and again on every Nz/Laser-AF
-        # change) places them AND sets their widths (compact normally, matched
-        # to FPS/Dur only when on row 2).
-        self.label_recording_Nz = QLabel("Nz:")
-        self.entry_recording_Nz = QSpinBox()
-        self.entry_recording_Nz.setRange(1, 100)
-        self.entry_recording_Nz.setValue(1)
-        self.entry_recording_Nz.setKeyboardTracking(False)
-        self.entry_recording_Nz.setToolTip("Number of recording planes per FOV")
-
-        self.label_recording_dz = QLabel("dz:")
-        self.entry_recording_dz = QDoubleSpinBox()
-        self.entry_recording_dz.setRange(0.05, 100.0)
-        self.entry_recording_dz.setDecimals(1)
-        self.entry_recording_dz.setSingleStep(0.5)
-        self.entry_recording_dz.setValue(1.0)
-        self.entry_recording_dz.setSuffix(" µm")
-        self.entry_recording_dz.setKeyboardTracking(False)
-        self.entry_recording_dz.setToolTip("Plane spacing (shown when Nz > 1)")
-
-        self.label_recording_bottom_z = QLabel("Z offset:")
-        self.entry_recording_bottom_z = QDoubleSpinBox()
-        self.entry_recording_bottom_z.setRange(-500.0, 500.0)
-        self.entry_recording_bottom_z.setDecimals(1)
-        self.entry_recording_bottom_z.setSingleStep(0.5)
-        self.entry_recording_bottom_z.setValue(0.0)
-        self.entry_recording_bottom_z.setSuffix(" µm")
-        self.entry_recording_bottom_z.setKeyboardTracking(False)
-        self.entry_recording_bottom_z.setToolTip("Bottom plane offset relative to the Z reference")
-
-        # Column pairs for _rebuild_recording_rows: Nz sits under FPS and dz
-        # under Dur when they get a row of their own.
-        self._recording_columns = (
-            ((label_fps, self.entry_fps), (self.label_recording_Nz, self.entry_recording_Nz)),
-            ((label_dur, self.entry_duration), (self.label_recording_dz, self.entry_recording_dz)),
-        )
-
-        # Wire up dz visibility (Nz), Z-offset visibility (Laser AF — the
-        # offset is relative to the AF reference plane), the offset caption
-        # (Nz), and the row reflow (both).
-        self.entry_recording_Nz.valueChanged.connect(self._update_recording_planes_ui)
-        self.checkbox_laser_af.toggled.connect(self._update_recording_planes_ui)
-        self._update_recording_planes_ui()
-
-        # Collapse the whole phase's fields when unchecked (Qt's checkable
-        # QGroupBox only grays them out; a plain QCheckBox has no built-in
-        # equivalent, so this is done explicitly).
-        self.checkbox_recording.toggled.connect(lambda checked: _set_layout_widgets_visible(vbox, checked))
-        _set_layout_widgets_visible(vbox, self.checkbox_recording.isChecked())
+        add_row.addWidget(self.label_fps_result)
+        add_row.addStretch(1)
+        vbox.addLayout(add_row)
 
         return grp
 
     def _build_zstack_group(self) -> QFrame:
-        # Plain QFrame + standalone checkbox header — see _build_recording_group.
+        # One z block for every phase (Zi stack, recordings, Zf stack); a
+        # self-contained copy of the Flexible Multipoint pattern (same labels,
+        # same derived-Nz rules) plus the Record row choosing which planes the
+        # recordings visit.
         grp = QFrame()
-        outer_vbox = QVBoxLayout(grp)
-        outer_vbox.setContentsMargins(4, 2, 4, 2)
-        outer_vbox.setSpacing(4)
+        vbox = QVBoxLayout(grp)
+        vbox.setContentsMargins(4, 2, 4, 2)
+        vbox.setSpacing(4)
+        vbox.addWidget(QLabel("Z planes (Zi / R / Zf)"))
 
-        self.checkbox_zstack = QCheckBox("Z-Stack phase")
-        self.checkbox_zstack.setChecked(False)
-        header_font = self.checkbox_zstack.font()
-        header_font.setBold(True)
-        self.checkbox_zstack.setFont(header_font)
-        outer_vbox.addWidget(self.checkbox_zstack)
+        # Row 1: Mode | dz | Nz
+        row1 = QHBoxLayout()
+        row1.setSpacing(4)
+        row1.addWidget(QLabel("Mode:"))
+        self.combobox_z_mode = QComboBox()
+        self.combobox_z_mode.addItems(Z_MODES)
+        self.combobox_z_mode.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        row1.addWidget(self.combobox_z_mode)
 
-        # No margins here — see the matching comment in _build_recording_group.
-        layout = QGridLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        outer_vbox.addLayout(layout)
-        self._zstack_content_layout = layout
+        row1.addWidget(QLabel("dz:"))
+        self.entry_deltaZ = QDoubleSpinBox()
+        self.entry_deltaZ.setRange(0.001, 1000.0)
+        self.entry_deltaZ.setDecimals(3)
+        self.entry_deltaZ.setSingleStep(0.1)
+        self.entry_deltaZ.setValue(1.0)
+        self.entry_deltaZ.setSuffix(" µm")
+        self.entry_deltaZ.setKeyboardTracking(False)
+        self._fit_width(self.entry_deltaZ, "1000.000 µm")
+        row1.addWidget(self.entry_deltaZ)
 
-        # Row 0: Z-min | Z-max | Step | Computed planes on one row
-        self.entry_zmin = QDoubleSpinBox()
-        self.entry_zmin.setRange(-5000, 5000)
-        self.entry_zmin.setValue(-3.0)
-        self.entry_zmin.setSuffix(" μm")
-        self.entry_zmin.setDecimals(1)
-        self.entry_zmin.setSingleStep(0.5)
-        self.entry_zmin.setKeyboardTracking(False)
-        layout.addWidget(QLabel("Z-min:"), 0, 0)
-        layout.addWidget(self.entry_zmin, 0, 1)
+        row1.addWidget(QLabel("Nz:"))
+        self.entry_NZ = QSpinBox()
+        self.entry_NZ.setRange(1, 2000)
+        self.entry_NZ.setValue(1)
+        self.entry_NZ.setKeyboardTracking(False)
+        self._fit_width(self.entry_NZ, "2000")
+        row1.addWidget(self.entry_NZ)
+        row1.addStretch(1)
+        vbox.addLayout(row1)
 
-        self.entry_zmax = QDoubleSpinBox()
-        self.entry_zmax.setRange(-5000, 5000)
-        self.entry_zmax.setValue(3.0)
-        self.entry_zmax.setSuffix(" μm")
-        self.entry_zmax.setDecimals(1)
-        self.entry_zmax.setSingleStep(0.5)
-        self.entry_zmax.setKeyboardTracking(False)
-        layout.addWidget(QLabel("Z-max:"), 0, 2)
-        layout.addWidget(self.entry_zmax, 0, 3)
+        # Row 2a (Relative only): Range + achieved half-range
+        self.relative_frame = QFrame()
+        row2a = QHBoxLayout(self.relative_frame)
+        row2a.setContentsMargins(0, 0, 0, 0)
+        row2a.setSpacing(4)
+        self.label_zRange = QLabel("Range:")
+        row2a.addWidget(self.label_zRange)
+        self.entry_zRange = QDoubleSpinBox()
+        self.entry_zRange.setRange(0.1, 2000.0)
+        self.entry_zRange.setDecimals(3)
+        self.entry_zRange.setSingleStep(0.5)
+        self.entry_zRange.setValue(4.0)
+        self.entry_zRange.setSuffix(" µm")
+        self.entry_zRange.setKeyboardTracking(False)
+        self._fit_width(self.entry_zRange, "2000.000 µm")
+        self.entry_zRange.setToolTip("Total range centred on the reference plane; Nz is derived (odd)")
+        row2a.addWidget(self.entry_zRange)
+        self.label_actual_range = QLabel("")
+        row2a.addWidget(self.label_actual_range)
+        row2a.addStretch(1)
+        vbox.addWidget(self.relative_frame)
 
-        self.entry_step = QDoubleSpinBox()
-        self.entry_step.setRange(0.001, 1000)
-        self.entry_step.setValue(1.0)
-        self.entry_step.setSuffix(" μm")
-        self.entry_step.setDecimals(2)
-        self.entry_step.setSingleStep(0.1)
-        self.entry_step.setKeyboardTracking(False)
-        layout.addWidget(QLabel("Step:"), 0, 4)
-        layout.addWidget(self.entry_step, 0, 5)
+        # Row 2b (Set Range only): absolute Z-min / Z-max with "Set" capture buttons
+        self.z_range_frame = QFrame()
+        row2b = QHBoxLayout(self.z_range_frame)
+        row2b.setContentsMargins(0, 0, 0, 0)
+        row2b.setSpacing(4)
+        self.set_minZ_button = QPushButton("Set")
+        self._fit_width(self.set_minZ_button, "Set", extra=20)
+        self.set_minZ_button.setToolTip("Use the current stage Z as Z-min")
+        self.set_minZ_button.clicked.connect(self.set_z_min)
+        row2b.addWidget(self.set_minZ_button)
+        row2b.addWidget(QLabel("Z-min:"))
+        self.entry_minZ = QDoubleSpinBox()
+        self.entry_minZ.setKeyboardTracking(False)
+        self.entry_minZ.setMinimum(control._def.SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
+        self.entry_minZ.setMaximum(control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
+        self.entry_minZ.setSingleStep(1)
+        self.entry_minZ.setDecimals(1)
+        self.entry_minZ.setSuffix(" μm")
+        row2b.addWidget(self.entry_minZ)
+        self.set_maxZ_button = QPushButton("Set")
+        self._fit_width(self.set_maxZ_button, "Set", extra=20)
+        self.set_maxZ_button.setToolTip("Use the current stage Z as Z-max")
+        self.set_maxZ_button.clicked.connect(self.set_z_max)
+        row2b.addWidget(self.set_maxZ_button)
+        row2b.addWidget(QLabel("Z-max:"))
+        self.entry_maxZ = QDoubleSpinBox()
+        self.entry_maxZ.setKeyboardTracking(False)
+        self.entry_maxZ.setMinimum(control._def.SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
+        self.entry_maxZ.setMaximum(control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
+        self.entry_maxZ.setSingleStep(1)
+        self.entry_maxZ.setDecimals(1)
+        self.entry_maxZ.setSuffix(" μm")
+        row2b.addWidget(self.entry_maxZ)
+        row2b.addStretch(1)
+        vbox.addWidget(self.z_range_frame)
+        self._seed_z_min_max_from_stage()
 
-        self.label_zstack_planes = QLabel("-- planes")
-        layout.addWidget(self.label_zstack_planes, 0, 6)
-        # Stretch column so the row left-packs
-        layout.setColumnStretch(7, 1)
+        # Row 3: which of the planes the recordings visit.  Bottom / Mid / Top
+        # toggle the preset planes; Select... lists every plane of the current
+        # range with a checkbox and shows as checked while extra planes are
+        # selected.  One set of planes is the source of truth for both.
+        row3 = QHBoxLayout()
+        row3.setSpacing(4)
+        row3.addWidget(QLabel("Record:"))
+        self.btn_slice_bottom = QPushButton("Bottom")
+        self.btn_slice_mid = QPushButton("Mid")
+        self.btn_slice_top = QPushButton("Top")
+        for role, btn in (("bottom", self.btn_slice_bottom), ("mid", self.btn_slice_mid), ("top", self.btn_slice_top)):
+            btn.setCheckable(True)
+            btn.setToolTip(f"Record the {role} plane of the z range")
+            btn.toggled.connect(lambda checked, r=role: self._on_slice_role_toggled(r, checked))
+            row3.addWidget(btn)
+        self.btn_slice_select = QPushButton("Select…")
+        self.btn_slice_select.setCheckable(True)
+        self.btn_slice_select.setToolTip("Pick any planes of the z range to record")
+        self.btn_slice_select.clicked.connect(self._open_slice_dialog)
+        row3.addWidget(self.btn_slice_select)
+        self.label_slice_summary = QLabel("")
+        row3.addWidget(self.label_slice_summary)
+        row3.addStretch(1)
+        vbox.addLayout(row3)
 
-        # Row 1: Z-stack channel table (rows added via _add_zstack_channel_row)
-        # Columns: Channel | Exposure (ms) | Gain | Illumination (%) | Actions
-        self.zstack_channel_table = _make_channel_settings_table(rows=0)
-        self.zstack_channel_table.setMinimumHeight(80)
-        self.zstack_channel_table.setMaximumHeight(200)
-        self.zstack_channel_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        # Span into the stretch column (7) too, so the table fills the full
-        # group width instead of stopping at the Z-min/Z-max/Step row's
-        # narrower natural width.
-        layout.addWidget(self.zstack_channel_table, 1, 0, 1, 8)
-
-        # Row 2: Add channel dropdown + button (capped combo with "+ Add" right after,
-        # then a trailing stretch so the row doesn't span the full panel width)
-        add_row = QHBoxLayout()
-        add_row.setContentsMargins(0, 0, 0, 0)
-        add_row.setSpacing(4)
-        self.combobox_zstack_add_channel = QComboBox()
-        self._populate_channel_combo(self.combobox_zstack_add_channel)
-        self.combobox_zstack_add_channel.setMaximumWidth(170)
-        add_row.addWidget(self.combobox_zstack_add_channel)
-        self.btn_zstack_add_channel = QPushButton("+ Add")
-        self.btn_zstack_add_channel.setMaximumWidth(60)
-        self.btn_zstack_add_channel.clicked.connect(self._on_zstack_add_channel_clicked)
-        add_row.addWidget(self.btn_zstack_add_channel)
-        add_row.addStretch(1)
-        layout.addLayout(add_row, 2, 0, 1, 7)
-
-        # Wire up live plane count update
-        self.entry_zmin.valueChanged.connect(self._update_zstack_planes_label)
-        self.entry_zmax.valueChanged.connect(self._update_zstack_planes_label)
-        self.entry_step.valueChanged.connect(self._update_zstack_planes_label)
-        self._update_zstack_planes_label()
-
-        # Collapse the whole phase's fields when unchecked (see _build_recording_group).
-        self.checkbox_zstack.toggled.connect(lambda checked: _set_layout_widgets_visible(layout, checked))
-        _set_layout_widgets_visible(layout, self.checkbox_zstack.isChecked())
+        # One handler recomputes Nz for whichever mode is active (no
+        # connect/disconnect dance on mode change); the Record row follows Nz.
+        self.entry_deltaZ.valueChanged.connect(self._recompute_z_nz)
+        self.entry_zRange.valueChanged.connect(self._recompute_z_nz)
+        self.entry_minZ.valueChanged.connect(self._on_z_min_changed)
+        self.entry_maxZ.valueChanged.connect(self._on_z_max_changed)
+        self.entry_NZ.valueChanged.connect(lambda _v: self._sync_slice_buttons())
+        self.combobox_z_mode.currentTextChanged.connect(self._on_z_mode_changed)
+        self._apply_z_mode_ui(self.combobox_z_mode.currentText())
+        self._sync_slice_buttons()
 
         return grp
 
@@ -20191,9 +20481,8 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         layout.setSpacing(4)
 
         # Save/Load full settings (reusable across acquisitions, unlike the
-        # per-run acquisition_channels.yaml audit snapshot). Save Settings writes
-        # an acquisition.yaml without acquiring: the follow-up template for the
-        # smart-ring workflow, or any reusable settings file.
+        # per-run acquisition_channels.yaml audit snapshot): the follow-up
+        # template for the smart-ring workflow, or any reusable settings file.
         self.settings_buttons_frame = QFrame()
         settings_row = QHBoxLayout(self.settings_buttons_frame)
         settings_row.setContentsMargins(0, 0, 0, 0)
@@ -20216,10 +20505,13 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         return grp
 
     def _update_start_button_enabled(self) -> None:
-        """Gray out Start Acquisition when neither phase is enabled — mirrors
-        validate()'s "At least one phase (Recording or Z-Stack) must be
-        enabled" check, so this common case doesn't need a click + error dialog."""
-        self.btn_startAcquisition.setEnabled(self.checkbox_recording.isChecked() or self.checkbox_zstack.isChecked())
+        """Gray out Start Acquisition until at least one row has Zi, R or Zf ticked —
+        mirrors validate()'s "Add at least one channel and tick Zi, R, or Zf." check,
+        so this common case doesn't need a click + error dialog."""
+        btn = getattr(self, "btn_startAcquisition", None)
+        if btn is None:
+            return
+        btn.setEnabled(self._any_row_active() and not self._fps_test_running)
 
     # ---------------------------------------------------------------------- helpers
 
@@ -20269,55 +20561,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             return ch.exposure_time, ch.analog_gain, ch.illumination_intensity
         return 50.0, 0.0, 50.0
 
-    def _on_recording_channel_changed(self, index: int) -> None:
-        """Reseed the recording row's exposure/gain/illum from the newly selected channel."""
-        name = self._recording_ch_combo.currentText()
-        if not name:
-            return
-        self._set_recording_row_values(*self._channel_settings(name))
-
-    def _set_recording_row_values(self, exposure: float, gain: float, illumination: float) -> None:
-        self._recording_exp_spin.setValue(exposure)
-        self._recording_gain_spin.setValue(gain)
-        self._recording_illum_spin.setValue(illumination)
-
-    # ---------------------------------------------------------------------- recording table accessors
-
-    def _recording_channel_name(self) -> Optional[str]:
-        """Return the selected channel name from the recording row, or None if empty."""
-        if self._recording_ch_combo.count() == 0:
-            return None
-        return self._recording_ch_combo.currentText() or None
-
-    def _camera_fps_limit_note(self, requested_fps: float, duration_s: float) -> Optional[str]:
-        """Text for the confirmation dialog when the camera cannot reach requested_fps at the
-        recording exposure in its current binning / ROI, else None.  Unknown (no camera, or a
-        camera that cannot estimate) means no note."""
-        from control.core.record_zstack_controller import frame_count, resolve_effective_fps
-
-        camera = self.liveController.camera
-        exposure_ms = self._recording_exposure()
-        # Same resolution the controller applies before the run starts.
-        achievable = resolve_effective_fps(camera, requested_fps, exposure_ms)
-        if requested_fps <= achievable * 1.01:
-            return None
-        frames = max(1, frame_count(achievable, duration_s))
-        return (
-            f"Camera limit: at {exposure_ms:g} ms exposure in the current binning/ROI the camera can "
-            f"deliver at most {achievable:.1f} fps, not {requested_fps:g}.\n"
-            f"The recording will be made at {achievable:.1f} fps ({frames} frames for {duration_s:g} s) "
-            f"and the file metadata will record that rate."
-        )
-
-    def _recording_exposure(self) -> float:
-        return self._recording_exp_spin.value()
-
-    def _recording_gain(self) -> float:
-        return self._recording_gain_spin.value()
-
-    def _recording_illumination(self) -> float:
-        return self._recording_illum_spin.value()
-
     def _browse_saving_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Saving Directory", self.lineEdit_savingDir.text())
         if path:
@@ -20330,7 +20573,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         from control.core.record_zstack_controller import _build_objective_info, _save_record_zstack_yaml
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Record/Z-Stack Settings", "acquisition.yaml", "YAML Files (*.yaml *.yml)"
+            self, "Save Time at XY Settings", "acquisition.yaml", "YAML Files (*.yaml *.yml)"
         )
         if not path:
             return
@@ -20346,219 +20589,615 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
     def _on_load_settings_clicked(self) -> None:
         """Load full settings from a user-chosen YAML file via the same path as drag-and-drop."""
-        path, _ = QFileDialog.getOpenFileName(self, "Load Record/Z-Stack Settings", "", "YAML Files (*.yaml *.yml)")
+        path, _ = QFileDialog.getOpenFileName(self, "Load Time at XY Settings", "", "YAML Files (*.yaml *.yml)")
         if path:
             self._load_acquisition_yaml(path)
 
-    def _update_zstack_planes_label(self) -> None:
-        from control.core.record_zstack_controller import zstack_plane_count
+    # ---------------------------------------------------------------------- channel table
 
-        try:
-            n = zstack_plane_count(self.entry_zmin.value(), self.entry_zmax.value(), self.entry_step.value())
-            self.label_zstack_planes.setText(f"{n} planes")
-        except Exception:
-            self.label_zstack_planes.setText("-- planes")
+    @staticmethod
+    def _fit_width(widget, sample: str, extra: int = 40) -> None:
+        """Fix *widget*'s width to fit *sample* text plus spin buttons/frame.
 
-    def _update_recording_planes_ui(self) -> None:
-        """Toggle dz visibility (hidden entirely when Nz == 1 — user requirement),
-        show the Z-offset field only when Laser AF is enabled (the offset is
-        relative to the AF reference plane; without AF the user positions Z
-        directly), switch the offset caption between single- and multi-plane
-        wording, and reflow Nz/dz/offset between row 1 and row 2.
-
-        While the Recording phase is unchecked its section is collapsed and every
-        field in it stays hidden; expanding the section shows the fields placed in
-        its rows here."""
-        expanded = self.checkbox_recording.isChecked()
-        multi = self.entry_recording_Nz.value() > 1
-        self.label_recording_dz.setVisible(multi and expanded)
-        self.entry_recording_dz.setVisible(multi and expanded)
-        use_af = self.checkbox_laser_af.isChecked()
-        self.label_recording_bottom_z.setVisible(use_af and expanded)
-        self.entry_recording_bottom_z.setVisible(use_af and expanded)
-        self.label_recording_bottom_z.setText("Bottom Z offset:" if multi else "Z offset:")
-        self.entry_recording_bottom_z.setToolTip(
-            "Bottom plane offset relative to the Z reference" if multi else "Offset relative to the Z reference"
-        )
-        self._rebuild_recording_rows(multi, use_af)
-
-    def _rebuild_recording_rows(self, multi: bool, use_af: bool) -> None:
-        """Reflow Nz/dz/offset between fps_row (FPS/Duration's row) and their
-        own z_row.
-
-        At most 2 of {Nz, dz, offset} are ever shown together unless both
-        Nz > 1 and Laser AF are on — in that 3-item case they move to z_row
-        as a group instead of overcrowding fps_row. Widgets are detached and
-        re-added (not just hidden) so an inactive row takes no vertical
-        space at all, rather than an empty-but-present row.
+        Font-relative (this app scales its font), so the fields never truncate
+        their widest value the way hand-tuned pixel widths did; never narrower
+        than the widget's own size hint, which Qt derives from the same font.
         """
+        widget.setFixedWidth(max(widget.fontMetrics().horizontalAdvance(sample) + extra, widget.sizeHint().width()))
 
-        def _clear(layout: QHBoxLayout) -> None:
-            while layout.count():
-                item = layout.takeAt(0)
-                if item.widget() is None:  # spacing/stretch item, not a widget
-                    del item
+    def _column_widths(self) -> dict:
+        """Fixed widths of the non-stretch table columns, from the font metrics.
 
-        while self.fps_row.count() > self._fps_row_fixed_count:
-            item = self.fps_row.takeAt(self.fps_row.count() - 1)
-            if item.widget() is None:
-                del item
-        _clear(self.z_row)
+        Each column fits both its header label and its widest value (the flag
+        columns fit a checkbox indicator), with a little breathing room.
+        """
+        fm = self.channel_table.fontMetrics()
+        indicator = self.style().pixelMetric(QStyle.PM_IndicatorWidth) + 12
+        widths = {}
+        for col, sample in self._COLUMN_SAMPLES.items():
+            header = self._COLUMN_HEADERS[col]
+            need = max(fm.horizontalAdvance(header), fm.horizontalAdvance(sample), indicator)
+            widths[col] = need + 14
+        return widths
 
-        use_second_row = multi and use_af
-        target = self.z_row if use_second_row else self.fps_row
+    def _fit_table_height(self) -> None:
+        """Size the table to its rows (up to _TABLE_MAX_VISIBLE_ROWS, then it scrolls).
 
-        # Each widget's own hint normally; when Nz/dz sit below FPS/Dur on
-        # row 2, each column takes the wider of its two hints so the rows
-        # align (sized that way unconditionally, the common single-row case
-        # carried dead space for an alignment it isn't doing).
-        for top_pair, bottom_pair in self._recording_columns:
-            for top, bottom in zip(top_pair, bottom_pair):
-                hints = (top.sizeHint().width(), bottom.sizeHint().width())
-                top.setFixedWidth(max(hints) if use_second_row else hints[0])
-                bottom.setFixedWidth(max(hints) if use_second_row else hints[1])
+        The cell widgets make rows much taller than plain text, and the tab
+        lives in a scroll area with a trailing stretch, so an unsized table
+        collapses to a sliver showing a cut-off first row.
+        """
+        table = self.channel_table
+        table.resizeRowsToContents()
+        n = table.rowCount()
+        row_h = table.rowHeight(0) if n else table.verticalHeader().defaultSectionSize()
+        visible = max(1, min(n, self._TABLE_MAX_VISIBLE_ROWS))
+        height = table.horizontalHeader().sizeHint().height() + visible * row_h + 2 * table.frameWidth()
+        table.setFixedHeight(height)
 
-        target.addWidget(self.label_recording_Nz)
-        target.addWidget(self.entry_recording_Nz)
+    @property
+    def _channel_row_names(self) -> List[str]:
+        """Channel names currently in the table (column 0), in row order.
 
-        if multi:
-            target.addWidget(self.label_recording_dz)
-            target.addWidget(self.entry_recording_dz)
+        Derived from the table itself so there is a single source of truth —
+        add/remove row operations only touch the table.
+        """
+        table = self.channel_table
+        items = (table.item(row, self.COL_NAME) for row in range(table.rowCount()))
+        return [item.text() for item in items if item is not None]
 
-        if use_af:
-            target.addWidget(self.label_recording_bottom_z)
-            target.addWidget(self.entry_recording_bottom_z)
+    def _find_row(self, name: str) -> Optional[int]:
+        for row in range(self.channel_table.rowCount()):
+            item = self.channel_table.item(row, self.COL_NAME)
+            if item is not None and item.text() == name:
+                return row
+        return None
 
-        target.addStretch(1)
-        if use_second_row:
-            # fps_row didn't receive the movable widgets in this mode, but it
-            # still needs its own trailing stretch — otherwise Qt has nothing
-            # to absorb the row's leftover width and stretches FPS/Duration's
-            # label-to-spinbox gap apart instead.
-            self.fps_row.addStretch(1)
+    @staticmethod
+    def _make_cell_checkbox(checked: bool) -> QWidget:
+        """A centred QCheckBox in a container widget (the pattern used by
+        AcquisitionChannelConfiguratorDialog's Enabled column)."""
+        container = QWidget()
+        hbox = QHBoxLayout(container)
+        hbox.setContentsMargins(0, 0, 0, 0)
+        hbox.setAlignment(Qt.AlignCenter)
+        checkbox = QCheckBox()
+        checkbox.setChecked(bool(checked))
+        hbox.addWidget(checkbox)
+        return container
 
-    def _add_zstack_channel_row(
-        self, name: str, exposure: float = 50.0, gain: float = 0.0, illumination: float = 50.0
+    def _row_checkbox(self, row: int, col: int) -> Optional[QCheckBox]:
+        cell = self.channel_table.cellWidget(row, col)
+        return cell.findChild(QCheckBox) if cell is not None else None
+
+    @staticmethod
+    def _make_cell_spinbox(lo: float, hi: float, value: float, decimals: int) -> QDoubleSpinBox:
+        """Compact table spinbox: no suffix (units live in the header), no
+        step buttons (the columns are too narrow for them), and a horizontally
+        ignorable size so it fits its fixed-width column."""
+        spin = QDoubleSpinBox()
+        spin.setRange(lo, hi)
+        spin.setDecimals(decimals)
+        spin.setValue(value)
+        spin.setKeyboardTracking(False)
+        spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        spin.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        return spin
+
+    def _add_channel_row(
+        self,
+        name: str,
+        exposure: float = 50.0,
+        gain: float = 0.0,
+        illumination: float = 50.0,
+        *,
+        fps: float = 10.0,
+        duration_s: float = 1.0,
+        zi: bool = False,
+        r: bool = True,
+        zf: bool = False,
+        geometry=None,
     ) -> None:
-        """Add a channel row to the Z-Stack channel table.
+        """Append a channel row.  New rows default to R only, at the Camera tab's settings.
 
-        Each row contains: channel name (read-only) | exposure spinbox | gain spinbox |
-        illumination spinbox | ⟳ Live button + ✕ remove button.
         Skips silently if ``name`` is already present (dedup guard).
         """
-        if name in self._zstack_channel_names:
+        if name in self._channel_row_names:
             return
-        row = self.zstack_channel_table.rowCount()
-        self.zstack_channel_table.insertRow(row)
+        table = self.channel_table
+        row = table.rowCount()
+        table.insertRow(row)
 
         # Col 0: channel name (read-only). Tooltip shows the full name since
         # the Stretch column truncates long names visually.
         item = QTableWidgetItem(name)
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         item.setToolTip(name)
-        self.zstack_channel_table.setItem(row, 0, item)
+        table.setItem(row, self.COL_NAME, item)
 
-        # Cols 1-3: exposure, gain, illumination
-        _add_channel_settings_spinboxes(self.zstack_channel_table, row, exposure, gain, illumination)
+        # 0.1 ms: the smallest value one decimal can show. A smaller minimum rounds to 0.0 at one decimal,
+        # and a 0 ms exposure is rejected by the camera mid-run (ToupTek: "The parameter is incorrect").
+        table.setCellWidget(row, self.COL_EXP, self._make_cell_spinbox(0.1, 60000, exposure, 1))
+        table.setCellWidget(row, self.COL_GAIN, self._make_cell_spinbox(0.0, 100.0, gain, 2))
+        table.setCellWidget(row, self.COL_ILLUM, self._make_cell_spinbox(0.0, 100.0, illumination, 1))
+        table.setCellWidget(row, self.COL_CAM, CameraGeometryButton(geometry, self._get_camera_for_binning_check, name))
+        table.setCellWidget(row, self.COL_FPS, self._make_cell_spinbox(1, 1000, fps, 0))
+        table.setCellWidget(row, self.COL_DUR, self._make_cell_spinbox(1, 3600, duration_s, 0))
 
-        # Col 4: action buttons (⟳ Live + ✕)
-        btn_container = QWidget()
-        btn_layout = QHBoxLayout(btn_container)
-        btn_layout.setContentsMargins(1, 1, 1, 1)
-        btn_layout.setSpacing(2)
-
-        btn_live = QPushButton("⟳")
-        btn_live.setToolTip(f"Refresh exposure/gain/illumination from '{name}'s current settings")
-        btn_live.setMaximumWidth(28)
-        btn_live.clicked.connect(lambda checked=False, n=name: self._copy_zstack_row_from_live(n))
-        btn_layout.addWidget(btn_live)
+        for col, checked in ((self.COL_ZI, zi), (self.COL_R, r), (self.COL_ZF, zf)):
+            cell = self._make_cell_checkbox(checked)
+            table.setCellWidget(row, col, cell)
+            cell.findChild(QCheckBox).toggled.connect(lambda _checked, n=name: self._on_row_flags_changed(n))
 
         btn_remove = QPushButton("✕")
-        btn_remove.setToolTip(f"Remove '{name}' from z-stack channels")
-        btn_remove.setMaximumWidth(28)
-        btn_remove.clicked.connect(lambda checked=False, n=name: self._remove_zstack_channel_row(n))
-        btn_layout.addWidget(btn_remove)
+        btn_remove.setToolTip("Remove this channel")
+        btn_remove.setMaximumWidth(26)
+        btn_remove.clicked.connect(lambda _checked=False, n=name: self._remove_channel_row(n))
+        table.setCellWidget(row, self.COL_ACTIONS, btn_remove)
 
-        self.zstack_channel_table.setCellWidget(row, 4, btn_container)
+        self._fit_table_height()
+        self._on_row_flags_changed(name)
 
-    def _find_zstack_row(self, name: str) -> Optional[int]:
-        """Row index of channel *name* in the Z-Stack table, or None if it is not there."""
-        for row in range(self.zstack_channel_table.rowCount()):
-            item = self.zstack_channel_table.item(row, 0)
-            if item is not None and item.text() == name:
-                return row
-        return None
-
-    def _zstack_row_spinboxes(self, row: int):
-        """The (exposure, gain, illumination) editors of *row* (see _add_zstack_channel_row)."""
-        return tuple(self.zstack_channel_table.cellWidget(row, column) for column in (1, 2, 3))
-
-    def _remove_zstack_channel_row(self, name: str) -> None:
-        """Remove the row for *name* from the table. No-op if *name* is not present."""
-        row = self._find_zstack_row(name)
+    def _remove_channel_row(self, name: str) -> None:
+        row = self._find_row(name)
         if row is not None:
-            self.zstack_channel_table.removeRow(row)
+            self.channel_table.removeRow(row)
+        self._fit_table_height()
+        self._update_start_button_enabled()
 
-    def _set_zstack_row_values(self, name: str, exposure: float, gain: float, illumination: float) -> None:
-        """Set inline editor values for the z-stack row identified by *name*.
-
-        Used by ⟳ Live button and by tests.  No-op if *name* is not present.
-        """
-        row = self._find_zstack_row(name)
+    def _on_row_flags_changed(self, name: str) -> None:
+        """FPS/Dur only matter for a recording: grey them out while R is unticked."""
+        row = self._find_row(name)
         if row is None:
             return
-        for spinbox, value in zip(self._zstack_row_spinboxes(row), (exposure, gain, illumination)):
-            spinbox.setValue(value)
+        r_box = self._row_checkbox(row, self.COL_R)
+        recording = bool(r_box.isChecked()) if r_box is not None else False
+        for col in (self.COL_FPS, self.COL_DUR):
+            cell = self.channel_table.cellWidget(row, col)
+            if cell is not None:
+                cell.setEnabled(recording)
+        self._update_start_button_enabled()
 
-    def _get_zstack_row_values(self, name: str):
-        """Return (exposure, gain, illumination) for the z-stack row identified by *name*.
+    def _any_row_active(self) -> bool:
+        for row in range(self.channel_table.rowCount()):
+            for col in (self.COL_ZI, self.COL_R, self.COL_ZF):
+                box = self._row_checkbox(row, col)
+                if box is not None and box.isChecked():
+                    return True
+        return False
 
-        Returns (50.0, 0.0, 50.0) as defaults if the row is not found (logs a warning).
-        """
-        row = self._find_zstack_row(name)
+    def _get_row_values(self, name: str) -> dict:
+        """Current editor values of row *name* as a dict (exposure, gain,
+        illumination, fps, duration_s, zi, r, zf, geometry).  Missing rows/cells
+        fall back to the row defaults with a warning."""
+        from control.core.camera_geometry import CameraGeometry
+
+        row = self._find_row(name)
+        values = dict(
+            exposure=50.0,
+            gain=0.0,
+            illumination=50.0,
+            fps=10.0,
+            duration_s=1.0,
+            zi=False,
+            r=False,
+            zf=False,
+            geometry=CameraGeometry(),
+        )
         if row is None:
-            self._log.warning(f"_get_zstack_row_values: row '{name}' not found; returning defaults")
-            return 50.0, 0.0, 50.0
-        return tuple(spinbox.value() for spinbox in self._zstack_row_spinboxes(row))
+            self._log.warning(f"_get_row_values: channel row {name!r} not found; using defaults")
+            return values
+        for key, col in (
+            ("exposure", self.COL_EXP),
+            ("gain", self.COL_GAIN),
+            ("illumination", self.COL_ILLUM),
+            ("fps", self.COL_FPS),
+            ("duration_s", self.COL_DUR),
+        ):
+            spin = self.channel_table.cellWidget(row, col)
+            if spin is not None:
+                values[key] = spin.value()
+        for key, col in (("zi", self.COL_ZI), ("r", self.COL_R), ("zf", self.COL_ZF)):
+            box = self._row_checkbox(row, col)
+            if box is not None:
+                values[key] = bool(box.isChecked())
+        cam = self.channel_table.cellWidget(row, self.COL_CAM)
+        if cam is not None:
+            values["geometry"] = cam.geometry
+        return values
 
-    def _copy_recording_from_live(self) -> None:
-        """Refresh the recording row's exposure/gain/illumination from its own
-        selected channel's current settings.
-
-        Was previously pulling from liveController.currentConfiguration (whatever
-        channel happens to be active in the Live tab), which silently switched the
-        row's channel selection whenever it differed from the row's own channel.
-
-        Uses _find_channel() rather than _channel_settings() so a lookup miss
-        (e.g. the objective changed elsewhere and this channel no longer
-        exists) leaves the row untouched instead of silently resetting it to
-        _channel_settings()'s hardcoded (50, 0, 50) fallback.
-        """
-        name = self._recording_ch_combo.currentText()
-        if not name:
+    def _set_row_values(self, name: str, **kwargs) -> None:
+        """Set any of exposure/gain/illumination/fps/duration_s/zi/r/zf/geometry on row *name*."""
+        row = self._find_row(name)
+        if row is None:
             return
-        ch = self._find_channel(name)
-        if ch is None:
-            self._log.warning(f"Copy-from-Live: channel {name!r} not found; leaving recording row unchanged")
-            return
-        self._set_recording_row_values(ch.exposure_time, ch.analog_gain, ch.illumination_intensity)
+        spins = {
+            "exposure": self.COL_EXP,
+            "gain": self.COL_GAIN,
+            "illumination": self.COL_ILLUM,
+            "fps": self.COL_FPS,
+            "duration_s": self.COL_DUR,
+        }
+        boxes = {"zi": self.COL_ZI, "r": self.COL_R, "zf": self.COL_ZF}
+        for key, value in kwargs.items():
+            if value is None:
+                continue
+            if key in spins:
+                spin = self.channel_table.cellWidget(row, spins[key])
+                if spin is not None:
+                    spin.setValue(value)
+            elif key in boxes:
+                box = self._row_checkbox(row, boxes[key])
+                if box is not None:
+                    box.setChecked(bool(value))
+            elif key == "geometry":
+                cam = self.channel_table.cellWidget(row, self.COL_CAM)
+                if cam is not None:
+                    cam.set_geometry(value)
+            else:
+                raise KeyError(f"unknown row field {key!r}")
 
-    def _copy_zstack_row_from_live(self, name: str) -> None:
-        """Refresh z-stack row *name*'s exposure/gain/illumination from *name*'s
-        own current settings (see _copy_recording_from_live for why this uses
-        _find_channel() instead of _channel_settings())."""
-        ch = self._find_channel(name)
-        if ch is None:
-            self._log.warning(f"Copy-from-Live for z-stack row {name!r}: channel not found; leaving row unchanged")
-            return
-        self._set_zstack_row_values(name, ch.exposure_time, ch.analog_gain, ch.illumination_intensity)
-
-    def _on_zstack_add_channel_clicked(self) -> None:
-        """Add the currently selected channel in the add-channel combo to the z-stack table."""
-        name = self.combobox_zstack_add_channel.currentText()
+    def _on_add_channel_clicked(self) -> None:
+        """Add the channel selected in the add-channel combo, seeded from its own config."""
+        name = self.combobox_add_channel.currentText()
         if name:
             exposure, gain, illum = self._channel_settings(name)
-            self._add_zstack_channel_row(name, exposure, gain, illum)
+            self._add_channel_row(name, exposure, gain, illum)
+
+    # ---------------------------------------------------------------------- frame-rate test
+
+    def _on_test_fps_clicked(self) -> None:
+        """Measure the free-run rate for the channel picked in the add-channel combo."""
+        if self.recordZStackController.acquisition_in_progress():
+            QMessageBox.warning(self, "Busy", "An acquisition is running; try the frame-rate test afterwards.")
+            return
+        name = self.combobox_add_channel.currentText()
+        if not name:
+            QMessageBox.warning(self, "No channel", "Pick a channel in the dropdown first.")
+            return
+        channel = self._make_channel_base(name)
+        geometry = None
+        if self._find_row(name) is not None:
+            # The row's edited settings are what a recording would use.
+            values = self._get_row_values(name)
+            channel.exposure_time = values["exposure"]
+            channel.analog_gain = values["gain"]
+            channel.illumination_intensity = values["illumination"]
+            geometry = values["geometry"]
+
+        signal = getattr(self.recordZStackController, "frame_rate_test_finished", None)
+        on_finished = (
+            signal.emit if signal is not None and hasattr(signal, "emit") else self._on_frame_rate_test_finished
+        )
+        self._fps_test_running = True
+        self._fps_test_channel = name
+        self.btn_test_fps.setEnabled(False)
+        self.label_fps_result.setText("testing…")
+        self.label_fps_result.setToolTip("")
+        self._update_start_button_enabled()
+        try:
+            self.recordZStackController.run_frame_rate_test(
+                channel, self.FRAME_RATE_TEST_DURATION_S, on_finished=on_finished, geometry=geometry
+            )
+        except Exception as exc:
+            self._log.error(f"frame-rate test could not start: {exc}", exc_info=True)
+            self._fps_test_running = False
+            self.btn_test_fps.setEnabled(True)
+            self.label_fps_result.setText("")
+            self._update_start_button_enabled()
+            QMessageBox.warning(self, "Frame-rate test", str(exc))
+
+    def _on_frame_rate_test_finished(self, result) -> None:
+        """Show the measured rate and, when the channel is in the table, adopt it as the row's FPS."""
+        self._fps_test_running = False
+        self.btn_test_fps.setEnabled(True)
+        self._update_start_button_enabled()
+        try:
+            self.label_fps_result.setText(result.summary())
+            self.label_fps_result.setToolTip(result.detail())
+        except Exception as exc:
+            self._log.warning(f"unexpected frame-rate test result {result!r}: {exc}")
+            return
+        name = getattr(result, "channel_name", None) or self._fps_test_channel
+        if getattr(result, "error", None) or result.mean_fps < 1.0 or not name:
+            return
+        if self._find_row(name) is not None:
+            self._set_row_values(name, fps=math.floor(result.mean_fps))
+
+    def _camera_fps_limit_notes(self) -> List[str]:
+        """One text per R row whose requested fps the camera cannot reach at the row's exposure in
+        its current binning / ROI (for the confirmation dialog).  Unknown (no camera, or a camera
+        that cannot estimate) means no note; so does a row that pins its own camera settings,
+        whose limit is only known once the camera is in them (the worker resolves it then)."""
+        from control.core.record_zstack_controller import frame_count, resolve_effective_fps
+
+        camera = self._get_camera_for_binning_check()
+        notes = []
+        for plan in self._collect_channel_plans():
+            if not plan.r or not plan.geometry.is_inherit:
+                continue
+            exposure_ms = plan.channel.exposure_time
+            # Same resolution the controller applies before the run starts.
+            achievable = resolve_effective_fps(camera, plan.fps, exposure_ms)
+            if plan.fps <= achievable * 1.01:
+                continue
+            frames = max(1, frame_count(achievable, plan.duration_s))
+            notes.append(
+                f"Camera limit ({plan.name}): at {exposure_ms:g} ms exposure in the current binning/ROI the "
+                f"camera can deliver at most {achievable:.1f} fps, not {plan.fps:g}.\n"
+                f"The recording will be made at {achievable:.1f} fps ({frames} frames for {plan.duration_s:g} s) "
+                f"and the file metadata will record that rate."
+            )
+        return notes
+
+    def _make_channel_base(self, name: str):
+        """Return a deep copy of the named channel from liveController, or a bare-bones fallback."""
+        from control.models.acquisition_config import AcquisitionChannel, CameraSettings, IlluminationSettings
+
+        ch = self._find_channel(name)
+        if ch is not None:
+            # Return a copy so inline-editor mutations don't corrupt the source
+            return ch.model_copy(deep=True)
+        # The fallback has no illumination-source mapping, so the acquisition
+        # would run dark — warn loudly so the cause is diagnosable.
+        self._log.warning(
+            f"channel {name!r} not found for objective "
+            f"{self.objectiveStore.current_objective!r}; "
+            f"using a bare fallback with no illumination mapping (images may be dark)"
+        )
+        return AcquisitionChannel(
+            name=name,
+            camera_settings=CameraSettings(exposure_time_ms=50.0, gain_mode=0.0),
+            illumination_settings=IlluminationSettings(intensity=50.0),
+        )
+
+    def _collect_channel_plans(self) -> list:
+        """Read every table row into a ChannelPlan (used by validate() and build_parameters()
+        alike, so the two can never disagree about what the table says)."""
+        from control.core.record_zstack_controller import ChannelPlan
+
+        plans = []
+        for name in self._channel_row_names:
+            v = self._get_row_values(name)
+            ch = self._make_channel_base(name)
+            ch.exposure_time = v["exposure"]
+            ch.analog_gain = v["gain"]
+            ch.illumination_intensity = v["illumination"]
+            plans.append(
+                ChannelPlan(
+                    channel=ch,
+                    fps=v["fps"],
+                    duration_s=v["duration_s"],
+                    zi=v["zi"],
+                    r=v["r"],
+                    zf=v["zf"],
+                    geometry=v["geometry"],
+                )
+            )
+        return plans
+
+    # ---------------------------------------------------------------------- z mode block
+
+    def _on_z_mode_changed(self, mode: str) -> None:
+        self._apply_z_mode_ui(mode)
+        self._log.debug(f"Z mode changed to: {mode}")
+
+    def _apply_z_mode_ui(self, mode: Optional[str] = None) -> None:
+        """Bring every z control into the state the given z mode requires.
+
+        Set Range: absolute Z-min/Z-max are shown, Nz is derived, and both
+        autofocus options are forced off and disabled (an absolute range has no
+        reference plane) — the same rule as the multipoint tabs.  Relative: the
+        range entry is shown and Nz is derived (odd).  From Bottom: Nz is editable.
+        """
+        if mode is None:
+            mode = self.combobox_z_mode.currentText()
+        is_set_range = mode == Z_MODE_SET_RANGE
+        is_relative = mode == Z_MODE_RELATIVE
+        self.z_range_frame.setVisible(is_set_range)
+        self.relative_frame.setVisible(is_relative)
+        self.entry_NZ.setEnabled(mode == Z_MODE_FROM_BOTTOM)
+        for box in (self.checkbox_laser_af, self.checkbox_withAutofocus):
+            if is_set_range:
+                box.setChecked(False)
+            box.setEnabled(not is_set_range)
+        if is_set_range:
+            self._seed_z_min_max_from_stage()
+        self._recompute_z_nz()
+
+    def _seed_z_min_max_from_stage(self) -> None:
+        """Reseed Z-min/Z-max to the current stage z (mirrors toggle_z_range_controls)."""
+        try:
+            z_um = float(self.stage.get_pos().z_mm) * 1000.0
+        except Exception as exc:
+            self._log.warning(f"could not read stage z to seed Z-min/Z-max: {exc}")
+            return
+        for entry in (self.entry_minZ, self.entry_maxZ):
+            entry.blockSignals(True)
+            entry.setValue(z_um)
+            entry.blockSignals(False)
+
+    def _recompute_z_nz(self) -> None:
+        """Derive Nz from the active mode's inputs (Relative: odd count over the
+        range; Set Range: planes across Z-min..Z-max).  From Bottom leaves the
+        user's Nz alone."""
+        from control.core.record_zstack_controller import set_range_plane_count
+
+        mode = self.combobox_z_mode.currentText()
+        dz = self.entry_deltaZ.value()
+        if mode == Z_MODE_RELATIVE:
+            nz = relative_stack_Nz(self.entry_zRange.value(), dz)
+            self.entry_NZ.setValue(nz)
+            self.label_actual_range.setText(f"(± {(nz - 1) * dz / 2:.2f} μm)")
+        elif mode == Z_MODE_SET_RANGE:
+            try:
+                nz = set_range_plane_count(self.entry_minZ.value(), self.entry_maxZ.value(), dz)
+            except ValueError:
+                nz = 1
+            self.entry_NZ.setValue(nz)
+
+    def _on_z_min_changed(self, value: float) -> None:
+        # Keep min <= max (mirrors the multipoint tabs' update_z_min/update_z_max).
+        if value > self.entry_maxZ.value():
+            self.entry_maxZ.blockSignals(True)
+            self.entry_maxZ.setValue(value)
+            self.entry_maxZ.blockSignals(False)
+        self._recompute_z_nz()
+
+    def _on_z_max_changed(self, value: float) -> None:
+        if value < self.entry_minZ.value():
+            self.entry_minZ.blockSignals(True)
+            self.entry_minZ.setValue(value)
+            self.entry_minZ.blockSignals(False)
+        self._recompute_z_nz()
+
+    def set_z_min(self) -> None:
+        """Capture the current stage z as Z-min."""
+        self.entry_minZ.setValue(float(self.stage.get_pos().z_mm) * 1000.0)
+
+    def set_z_max(self) -> None:
+        """Capture the current stage z as Z-max."""
+        self.entry_maxZ.setValue(float(self.stage.get_pos().z_mm) * 1000.0)
+
+    def _zstack_plan(self):
+        from control.core.record_zstack_controller import ZStackPlan
+
+        return ZStackPlan(
+            mode=self.combobox_z_mode.currentText(),
+            dz_um=self.entry_deltaZ.value(),
+            nz=self.entry_NZ.value(),
+            z_range_um=self.entry_zRange.value(),
+            z_min_mm=self.entry_minZ.value() / 1000.0,
+            z_max_mm=self.entry_maxZ.value() / 1000.0,
+        )
+
+    def _plane_count(self) -> int:
+        """Planes in the current z range (entry_NZ is derived for Relative / Set Range)."""
+        return max(1, int(self.entry_NZ.value()))
+
+    # ---------------------------------------------------------------------- record planes
+
+    def _record_slice_selection(self):
+        from control.core.record_zstack_controller import RecordSliceSelection
+
+        return RecordSliceSelection(roles=sorted(self._slice_roles), indices=sorted(self._slice_indices))
+
+    def _on_slice_role_toggled(self, role: str, checked: bool) -> None:
+        if self._syncing_slices:
+            return
+        if checked:
+            self._slice_roles.add(role)
+        else:
+            self._slice_roles.discard(role)
+        self._sync_slice_buttons()
+
+    def _sync_slice_buttons(self) -> None:
+        """Reflect the selected planes in the buttons and the summary label.
+
+        Explicit indices outside the current range are dropped, and one that
+        now coincides with a preset plane is folded into that preset, so the
+        buttons always say exactly what will be recorded.
+        """
+        from control.core.record_zstack_controller import slice_role_indices
+
+        nz = self._plane_count()
+        role_index = slice_role_indices(nz)
+        index_role = {i: r for r, i in role_index.items()}
+        kept = set()
+        for i in self._slice_indices:
+            if not 0 <= i < nz:
+                continue
+            if i in index_role:
+                self._slice_roles.add(index_role[i])
+            else:
+                kept.add(i)
+        self._slice_indices = kept
+        resolved = self._record_slice_selection().resolve(nz)
+
+        self._syncing_slices = True
+        try:
+            for role, btn in (
+                ("bottom", self.btn_slice_bottom),
+                ("mid", self.btn_slice_mid),
+                ("top", self.btn_slice_top),
+            ):
+                btn.setChecked(role in self._slice_roles)
+            self.btn_slice_select.setChecked(bool(self._slice_indices))
+        finally:
+            self._syncing_slices = False
+        self.label_slice_summary.setText(f"{len(resolved)} of {nz} plane{'s' if nz != 1 else ''}")
+        self._update_start_button_enabled()
+
+    def _open_slice_dialog(self) -> None:
+        """Select…: list every plane of the current range with a checkbox."""
+        from control.core.record_zstack_controller import (
+            slice_label,
+            slice_role_indices,
+            zstack_offsets_for_mode,
+        )
+
+        plan = self._zstack_plan()
+        nz = self._plane_count()
+        try:
+            z_ref_mm = float(self.stage.get_pos().z_mm)
+        except Exception:
+            z_ref_mm = 0.0
+        try:
+            offsets = zstack_offsets_for_mode(plan, z_ref_mm)
+        except ValueError:
+            offsets = [i * plan.dz_um for i in range(nz)]
+        nz = len(offsets)
+        labels = [slice_label(i, nz) for i in range(nz)]
+        if plan.mode == Z_MODE_SET_RANGE:
+            positions = [f"{z_ref_mm + off / 1000.0:.4f} mm" for off in offsets]
+        else:
+            positions = [f"{off:+.2f} µm rel. reference" for off in offsets]
+        selected = set(self._record_slice_selection().resolve(nz))
+
+        dialog = RecordSlicesDialog(labels, positions, selected, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            self._apply_slice_choice(dialog.selected_indices(), nz)
+        self._sync_slice_buttons()
+
+    def _apply_slice_choice(self, chosen, nz: int) -> None:
+        """Map a set of chosen plane indices onto preset roles + explicit extras."""
+        from control.core.record_zstack_controller import slice_role_indices
+
+        chosen = {int(i) for i in chosen if 0 <= int(i) < nz}
+        role_index = slice_role_indices(nz)
+        self._slice_roles = {role for role, i in role_index.items() if i in chosen}
+        self._slice_indices = {i for i in chosen if i not in role_index.values()}
+
+    # ---------------------------------------------------------------------- focus options
+
+    def _on_use_focus_map_toggled(self, checked: bool) -> None:
+        widget = self.focus_map_widget
+        if widget is not None and hasattr(widget, "setEnabled"):
+            try:
+                widget.setEnabled(bool(checked))
+            except Exception as exc:
+                self._log.warning(f"could not toggle the focus map widget: {exc}")
+
+    def _focus_map_available(self) -> bool:
+        """True when a focus map widget is attached and has points (or a fitted surface)."""
+        widget = self.focus_map_widget
+        if widget is None:
+            return False
+        focus_map = getattr(widget, "focusMap", None)
+        if getattr(focus_map, "is_fitted", False):
+            return True
+        return bool(getattr(widget, "focus_points", None))
+
+    def _focus_map_offsets(self) -> dict:
+        widget = self.focus_map_widget
+        getter = getattr(widget, "get_offsets_for_acquisition", None) if widget is not None else None
+        if not callable(getter):
+            return {}
+        try:
+            return dict(getter(self.checkbox_laser_af.isChecked()) or {})
+        except Exception as exc:
+            self._log.warning(f"could not read per-region laser AF offsets from the focus map: {exc}")
+            return {}
 
     def _get_selected_well_count(self) -> int:
         """Return the number of currently selected wells.
@@ -20637,27 +21276,27 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
     def _apply_yaml_settings(self, yaml_data) -> None:
         """Apply parsed RecordZStackYAMLData to widget controls."""
-        from control.models.acquisition_config import AcquisitionChannel
+        from control.core.record_zstack_controller import ChannelPlan
+
+        # Parse every row before anything is changed: a malformed channel raises here, and
+        # AcquisitionYAMLDropMixin._load_acquisition_yaml turns that into its "Load Error"
+        # (a dialog, or a refused load for an unattended workflow) with the tab untouched,
+        # rather than an acquisition that quietly runs without that channel.
+        plans = [ChannelPlan.from_yaml_dict(row_data) for row_data in yaml_data.channels or []]
 
         widgets_to_block = [
             self.entry_Nt,
             self.entry_dt,
             self.checkbox_time,
             self.checkbox_laser_af,
-            self.checkbox_recording,
-            self._recording_ch_combo,
-            self._recording_exp_spin,
-            self._recording_gain_spin,
-            self._recording_illum_spin,
-            self.entry_fps,
-            self.entry_duration,
-            self.entry_recording_Nz,
-            self.entry_recording_bottom_z,
-            self.entry_recording_dz,
-            self.checkbox_zstack,
-            self.entry_zmin,
-            self.entry_zmax,
-            self.entry_step,
+            self.checkbox_withAutofocus,
+            self.checkbox_useFocusMap,
+            self.combobox_z_mode,
+            self.entry_deltaZ,
+            self.entry_NZ,
+            self.entry_zRange,
+            self.entry_minZ,
+            self.entry_maxZ,
             self.combobox_xy_mode,
             self.checkbox_xy,
             self.entry_overlap,
@@ -20667,40 +21306,65 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             widget.blockSignals(True)
 
         try:
+            if getattr(yaml_data, "legacy_schema", False):
+                self._log.info(
+                    "loaded a pre-table Record + Z-Stack acquisition.yaml; the recording became an R row and "
+                    "the z-stack a Zf stack — review the table and re-save to update the file"
+                )
+                for note in getattr(yaml_data, "legacy_notes", None) or []:
+                    self._log.warning(f"pre-table acquisition.yaml: {note}")
+
             self.checkbox_time.setChecked(yaml_data.nt > 1)
             self.entry_Nt.setValue(yaml_data.nt)
             self.entry_dt.setValue(yaml_data.delta_t_s)
-            self.checkbox_laser_af.setChecked(yaml_data.laser_af)
 
-            self.checkbox_recording.setChecked(yaml_data.recording_enabled)
-            if yaml_data.recording_channel:
-                ch = AcquisitionChannel.model_validate(yaml_data.recording_channel)
-                idx = self._recording_ch_combo.findText(ch.name)
-                if idx >= 0:
-                    self._recording_ch_combo.setCurrentIndex(idx)
-                    self._recording_exp_spin.setValue(ch.exposure_time)
-                    self._recording_gain_spin.setValue(ch.analog_gain)
-                    self._recording_illum_spin.setValue(ch.illumination_intensity)
-                else:
+            # Channel table: replace every row with the file's rows, skipping
+            # channels the current objective/profile doesn't offer.
+            for name in list(self._channel_row_names):
+                self._remove_channel_row(name)
+            for plan in plans:
+                if self.combobox_add_channel.findText(plan.name) < 0:
                     self._log.warning(
-                        f"_apply_yaml_settings: recording channel {ch.name!r} not found in current "
-                        "objective's channels; keeping existing recording row settings"
+                        f"_apply_yaml_settings: channel {plan.name!r} not found in current objective's channels; "
+                        "skipping that row"
                     )
-            self.entry_fps.setValue(yaml_data.fps)
-            self.entry_duration.setValue(yaml_data.duration_s)
-            self.entry_recording_Nz.setValue(yaml_data.recording_nz)
-            self.entry_recording_dz.setValue(yaml_data.recording_dz_um)
-            self.entry_recording_bottom_z.setValue(yaml_data.recording_bottom_z_offset_um)
+                    continue
+                self._add_channel_row(
+                    plan.name,
+                    plan.channel.exposure_time,
+                    plan.channel.analog_gain,
+                    plan.channel.illumination_intensity,
+                    fps=plan.fps,
+                    duration_s=plan.duration_s,
+                    zi=plan.zi,
+                    r=plan.r,
+                    zf=plan.zf,
+                    geometry=plan.geometry,
+                )
 
-            self.checkbox_zstack.setChecked(yaml_data.zstack_enabled)
-            for name in list(self._zstack_channel_names):
-                self._remove_zstack_channel_row(name)
-            for ch_data in yaml_data.zstack_channels:
-                ch = AcquisitionChannel.model_validate(ch_data)
-                self._add_zstack_channel_row(ch.name, ch.exposure_time, ch.analog_gain, ch.illumination_intensity)
-            self.entry_zmin.setValue(yaml_data.z_min_um)
-            self.entry_zmax.setValue(yaml_data.z_max_um)
-            self.entry_step.setValue(yaml_data.z_step_um)
+            self._slice_roles = {r for r in (getattr(yaml_data, "record_slice_roles", None) or []) if r in SLICE_ROLES}
+            self._slice_indices = {int(i) for i in (getattr(yaml_data, "record_slice_indices", None) or [])}
+
+            # Z block: apply the mode first (Set Range reseeds Z-min/Z-max from
+            # the stage), then overwrite the geometry with the file's values.
+            mode = yaml_data.z_mode if yaml_data.z_mode in Z_MODES else Z_MODE_FROM_BOTTOM
+            if mode != yaml_data.z_mode:
+                self._log.warning(f"_apply_yaml_settings: unknown z mode {yaml_data.z_mode!r}; using {mode!r}")
+            self.combobox_z_mode.setCurrentText(mode)
+            self._apply_z_mode_ui(mode)
+            self.entry_deltaZ.setValue(yaml_data.z_dz_um)
+            self.entry_zRange.setValue(yaml_data.z_range_um)
+            self.entry_minZ.setValue(yaml_data.z_min_mm * 1000.0)
+            self.entry_maxZ.setValue(yaml_data.z_max_mm * 1000.0)
+            if mode == Z_MODE_FROM_BOTTOM:
+                self.entry_NZ.setValue(yaml_data.z_nz)
+
+            # Autofocus after the z mode: Set Range forces both off and keeps them disabled.
+            self.checkbox_laser_af.setChecked(bool(yaml_data.laser_af) and mode != Z_MODE_SET_RANGE)
+            self.checkbox_withAutofocus.setChecked(
+                bool(getattr(yaml_data, "contrast_af", False)) and mode != Z_MODE_SET_RANGE
+            )
+            self.checkbox_useFocusMap.setChecked(bool(getattr(yaml_data, "use_focus_map", False)))
 
             self._loaded_positions = []
             if yaml_data.xy_mode == RECORD_XY_LOAD_COORDINATES:
@@ -20720,8 +21384,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         finally:
             for widget in widgets_to_block:
                 widget.blockSignals(False)
-            # The mode combo's signal was blocked, so _on_xy_mode_changed did not refresh the label.
-            self._update_loaded_positions_label()
             # checkbox_time's toggled signal was blocked above, so the normal
             # _on_time_toggled-driven visibility refresh didn't fire. Set the
             # frame's visibility directly rather than calling _on_time_toggled
@@ -20740,27 +21402,19 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.xy_controls_frame.setVisible(
                 self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Select Wells"
             )
-            # checkbox_recording's/checkbox_zstack's toggled signals were blocked
-            # above too, so the collapse-when-unchecked visibility sync in
-            # _build_recording_group/_build_zstack_group didn't fire either.
-            _set_layout_widgets_visible(self._recording_content_vbox, self.checkbox_recording.isChecked())
-            _set_layout_widgets_visible(self._zstack_content_layout, self.checkbox_zstack.isChecked())
-            self._update_start_button_enabled()
+            self._update_loaded_positions_label()
             # _update_tab_styles() only refreshes stylesheets on
             # xy_frame/xy_controls_frame/time_frame/time_controls_frame based on
             # the current checkbox states — it has no interaction with Nt/dt or
             # _stored_time_params, so (unlike _on_time_toggled) it's safe to call
-            # directly here. Without it, the Time tab's border/background stays
-            # in its stale "inactive" styling even after the checkbox/frame
-            # visibility above are updated to reflect the loaded YAML.
+            # directly here.
             self._update_tab_styles()
-            # entry_recording_Nz's valueChanged and checkbox_laser_af's toggled
-            # signals were both blocked above too, so the normal
-            # _update_recording_planes_ui-driven dz/bottom-Z visibility refresh
-            # didn't fire. Unlike _on_time_toggled, _update_recording_planes_ui
-            # has no stored-state side effects, so it's safe to call directly.
-            self._update_recording_planes_ui()
-            self._update_zstack_planes_label()
+            # checkbox_useFocusMap's toggled signal was blocked above, so mirror
+            # its handler; the z-block's derived Nz and the Record row follow.
+            self._on_use_focus_map_toggled(self.checkbox_useFocusMap.isChecked())
+            self._recompute_z_nz()
+            self._sync_slice_buttons()
+            self._update_start_button_enabled()
             self._update_scan_regions()
 
     def _laser_af_has_reference(self) -> bool:
@@ -20782,6 +21436,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         at the live stage position), so it's treated as always having its one
         implicit "well" satisfied.
         """
+        from control.core.camera_geometry import validate_rows
         from control.core.record_zstack_controller import validate_record_zstack_params
 
         mode = self.combobox_xy_mode.currentText()
@@ -20796,25 +21451,25 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             selected_well_count = len(self._loaded_positions)
         else:
             selected_well_count = self._get_selected_well_count()
-        return validate_record_zstack_params(
+        plans = self._collect_channel_plans()
+        error = validate_record_zstack_params(
             base_path=self.lineEdit_savingDir.text().strip(),
             selected_well_count=selected_well_count,
-            recording_enabled=self.checkbox_recording.isChecked(),
-            fps=self.entry_fps.value(),
-            duration_s=self.entry_duration.value(),
-            recording_channel_name=self._recording_channel_name(),
-            zstack_enabled=self.checkbox_zstack.isChecked(),
-            z_min=self.entry_zmin.value(),
-            z_max=self.entry_zmax.value(),
-            step=self.entry_step.value(),
-            zstack_channel_names=list(self._zstack_channel_names),
+            channels=plans,
+            zstack=self._zstack_plan(),
+            record_slices=self._record_slice_selection(),
             use_laser_af=self.checkbox_laser_af.isChecked(),
+            use_contrast_af=self.checkbox_withAutofocus.isChecked(),
             laser_af_has_reference=self._laser_af_has_reference(),
-            recording_nz=self.entry_recording_Nz.value(),
-            recording_dz_um=self.entry_recording_dz.value(),
-            recording_exposure_ms=self._recording_exposure(),
-            zstack_exposures_ms={name: self._get_zstack_row_values(name)[0] for name in self._zstack_channel_names},
+            use_focus_map=self.checkbox_useFocusMap.isChecked(),
+            focus_map_ready=self._focus_map_available(),
         )
+        if error is None:
+            try:
+                error = validate_rows(plans, self._get_camera_for_binning_check())
+            except Exception as exc:
+                self._log.warning(f"could not check the per-channel camera settings: {exc}")
+        return error
 
     def _loaded_positions_outside_limits(self) -> list:
         """Names of loaded positions the scan coordinates would refuse (outside the software XY limits)."""
@@ -20839,71 +21494,21 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         entered, not the defaults from the channel config.
         """
         from control.core.record_zstack_controller import RecordZStackAcquisitionParameters
-        from control.models.acquisition_config import AcquisitionChannel, CameraSettings, IlluminationSettings
 
-        def _make_channel_base(name: str) -> AcquisitionChannel:
-            """Return a copy of the named channel from liveController, or a bare-bones fallback."""
-            ch = self._find_channel(name)
-            if ch is not None:
-                # Return a copy so inline-editor mutations don't corrupt the source
-                return ch.model_copy(deep=True)
-            # The fallback has no illumination-source mapping, so the acquisition
-            # would run dark — warn loudly so the cause is diagnosable.
-            self._log.warning(
-                f"channel {name!r} not found for objective "
-                f"{self.objectiveStore.current_objective!r}; "
-                f"using a bare fallback with no illumination mapping (images may be dark)"
-            )
-            return AcquisitionChannel(
-                name=name,
-                camera_settings=CameraSettings(exposure_time_ms=50.0, gain_mode=0.0),
-                illumination_settings=IlluminationSettings(intensity=50.0),
-            )
-
-        # Build recording channel from the single-row recording table
-        recording_channel = None
-        if self.checkbox_recording.isChecked():
-            rec_name = self._recording_channel_name()
-            if rec_name:
-                ch = _make_channel_base(rec_name)
-                ch.exposure_time = self._recording_exposure()
-                ch.analog_gain = self._recording_gain()
-                ch.illumination_intensity = self._recording_illumination()
-                recording_channel = ch
-
-        # Build z-stack channels from per-row inline editors
-        zstack_channels = []
-        if self.checkbox_zstack.isChecked():
-            for name in self._zstack_channel_names:
-                ch = _make_channel_base(name)
-                exposure, gain, illum = self._get_zstack_row_values(name)
-                ch.exposure_time = exposure
-                ch.analog_gain = gain
-                ch.illumination_intensity = illum
-                zstack_channels.append(ch)
-
+        use_focus_map = self.checkbox_useFocusMap.isChecked() and self.focus_map_widget is not None
         return RecordZStackAcquisitionParameters(
             base_path=self.lineEdit_savingDir.text().strip(),
             experiment_id=self.lineEdit_experimentID.text().strip() or "record_zstack",
             Nt=self.entry_Nt.value(),
             dt_s=self.entry_dt.value(),
             use_laser_af=self.checkbox_laser_af.isChecked(),
-            recording_enabled=self.checkbox_recording.isChecked(),
-            recording_channel=recording_channel,
-            fps=self.entry_fps.value(),
-            duration_s=self.entry_duration.value(),
-            # The Z-offset field is hidden without Laser AF (no AF reference
-            # plane to offset from) — a hidden value must not silently apply.
-            recording_bottom_z_offset_um=(
-                self.entry_recording_bottom_z.value() if self.checkbox_laser_af.isChecked() else 0.0
-            ),
-            recording_Nz=self.entry_recording_Nz.value(),
-            recording_dz_um=self.entry_recording_dz.value(),
-            zstack_enabled=self.checkbox_zstack.isChecked(),
-            zstack_channels=zstack_channels,
-            z_min_um=self.entry_zmin.value(),
-            z_max_um=self.entry_zmax.value(),
-            z_step_um=self.entry_step.value(),
+            use_contrast_af=self.checkbox_withAutofocus.isChecked(),
+            use_focus_map=use_focus_map,
+            focus_map=getattr(self.focus_map_widget, "focusMap", None) if use_focus_map else None,
+            region_laser_af_offsets=self._focus_map_offsets() if use_focus_map else {},
+            channels=self._collect_channel_plans(),
+            zstack=self._zstack_plan(),
+            record_slices=self._record_slice_selection(),
             xy_mode=self.combobox_xy_mode.currentText(),
             scan_size_mm=self.entry_scan_size.value(),
             overlap_percent=self.entry_overlap.value(),
@@ -20914,12 +21519,11 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         On start (pressed=True):
           - validate(); show QMessageBox.warning and un-check button on failure.
-          - if Recording is enabled, show a QMessageBox.question confirming the
-            plane-count/Z-range/per-FOV-duration summary; un-check button and
-            abort if the user answers No.
+          - show a QMessageBox.question confirming the per-FOV plan (Zi / R / Zf
+            summary); un-check button and abort if the user answers No.
           - with ``interactive=False`` (an unattended workflow) no dialog is
-            shown: a validation failure is logged and the button un-checked, and
-            the recording summary is logged instead of confirmed.
+            shown: a validation or focus-map failure is logged and the button
+            un-checked, and the per-FOV plan is logged instead of confirmed.
           - emit signal_acquisition_started(True) so gui_hcs can lock down the UI.
           - call recordZStackController.run_acquisition(self.build_parameters()).
 
@@ -20947,56 +21551,53 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 if interactive:
                     QMessageBox.warning(self, "Invalid Parameters", error)
                 else:
-                    self._log.error(f"Record + Z-Stack: invalid parameters: {error}")
+                    self._log.error(f"Time at XY: invalid parameters: {error}")
                 return
 
-            params = self.build_parameters()
-
-            # One last look at the recording plane summary before starting.
-            if params.recording_enabled:
-                from control.core.record_zstack_controller import recording_plane_offsets_um
-
-                nz = params.recording_Nz
-                per_fov_s = nz * params.duration_s
-                # Derive the summary from the same helper the worker records with,
-                # so the confirmed range can never diverge from the planes visited.
-                offsets = recording_plane_offsets_um(params.recording_bottom_z_offset_um, nz, params.recording_dz_um)
-                if nz > 1:
-                    summary = (
-                        f"{nz} planes: {offsets[0]:+.1f} … {offsets[-1]:+.1f} µm rel. reference"
-                        f" — {per_fov_s:.1f} s/FOV"
-                    )
-                else:
-                    summary = f"1 plane @ {offsets[0]:+.1f} µm — {per_fov_s:.1f} s/FOV"
-                # Tell the user up front when the camera cannot deliver the requested
-                # fps for the recording exposure in the current binning / ROI: the
-                # worker records at the achievable rate and stamps that rate into the
-                # store's metadata (time_increment_s, effective_fps), so the number
-                # they typed is not the number they get.
-                limit_note = self._camera_fps_limit_note(params.fps, params.duration_s)
-                text = f"Recording: {summary}"
-                if limit_note:
-                    text += f"\n\n{limit_note}"
-                    self._log.warning(limit_note.replace("\n", " "))
-                if not interactive:
-                    self._log.info(text.replace("\n", " "))
-                elif (
-                    QMessageBox.question(
-                        self,
-                        "Confirm Recording",
-                        f"{text}\n\nStart acquisition?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.Yes,
-                    )
-                    != QMessageBox.Yes
-                ):
+            # Fit the focus surface now (the Wellplate rule): a failed fit must
+            # stop the start, not surface as an interpolation error mid-run.
+            if self.checkbox_useFocusMap.isChecked() and self.focus_map_widget is not None:
+                if not self.focus_map_widget.fit_surface():
                     self.btn_startAcquisition.setChecked(False)
+                    if interactive:
+                        QMessageBox.warning(self, "Warning", "Failed to fit focus surface")
+                    else:
+                        self._log.error("Time at XY: failed to fit the focus surface; not starting")
                     return
 
-            # Refresh the per-well FOV grid before starting so the scan regions
-            # reflect the current overlap/shape/region-size settings.
+            # One last look at the per-FOV plan before starting.  Derived from
+            # the same helpers the worker acquires with, so the confirmed plan
+            # can never diverge from what is acquired.
+            from control.core.record_zstack_controller import describe_per_fov_plan
+
+            summary = describe_per_fov_plan(self.build_parameters())
+            # Tell the user up front when the camera cannot deliver a row's requested
+            # fps at its exposure in the current binning / ROI: the worker records at
+            # the achievable rate and stamps that rate into the store's metadata
+            # (time_increment_s, effective_fps), so the number they typed is not the
+            # number they get.
+            for limit_note in self._camera_fps_limit_notes():
+                summary += f"\n\n{limit_note}"
+                self._log.warning(limit_note.replace("\n", " "))
+            if interactive:
+                reply = QMessageBox.question(
+                    self,
+                    "Confirm Acquisition",
+                    f"Per FOV:\n{summary}\n\nStart acquisition?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if reply != QMessageBox.Yes:
+                    self.btn_startAcquisition.setChecked(False)
+                    return
+            else:
+                self._log.info("Time at XY per-FOV plan: " + summary.replace("\n", " | "))
+
+            # Refresh the per-well FOV grid before building parameters so the
+            # scan regions reflect the current overlap/shape/region-size settings.
             self._update_scan_regions()
 
+            params = self.build_parameters()
             # Lock the UI before the worker thread can possibly finish (see docstring).
             self.signal_acquisition_started.emit(True)
             try:
@@ -21036,19 +21637,18 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self._update_scan_regions(selection_only=True)
 
     def refresh_channel_list(self) -> None:
-        """Repopulate the channel combos from liveController.
+        """Repopulate the add-channel combo and prune stale rows after a channel-set change.
 
         Channel sets are per-objective (and per-profile): after an objective or
         profile change, stale names would silently fall back to a bare-bones
         channel with no illumination source and acquire dark images.  Mirrors
-        WellplateMultiPointWidget.refresh_channel_list.  The previous recording
-        selection is kept when it still exists; z-stack rows whose channel no
-        longer exists are removed.
+        WellplateMultiPointWidget.refresh_channel_list.  Rows whose channel
+        still exists keep their edited values.
         """
         # Fetch FIRST and bail out on failure or an empty result: clearing the
-        # combos before a failed fetch would leave them empty and the stale-row
-        # pruning below would then wipe every configured z-stack row (with the
-        # user's per-row exposure/gain/illumination edits) on a transient error.
+        # combo before a failed fetch would leave it empty and the stale-row
+        # pruning below would then wipe every configured row (with the user's
+        # per-row edits) on a transient error.
         try:
             channels = self.liveController.get_channels(self.objectiveStore.current_objective)
         except Exception as exc:
@@ -21061,30 +21661,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             return
         names = [ch.name for ch in channels]
 
-        # Repopulating transiently selects other channels (clear() then
-        # addItems() auto-selects index 0), firing currentIndexChanged along
-        # the way and reseeding the exposure/gain/illum spinboxes from their
-        # base config. Block signals so only a genuine selection change (the
-        # previous channel no longer being available) triggers a reseed —
-        # otherwise the user's manually edited values would be silently lost
-        # even though the selected channel is unchanged from their perspective.
-        prev_recording = self._recording_channel_name()
-        self._recording_ch_combo.blockSignals(True)
-        self._populate_channel_combo(self._recording_ch_combo, names=names)
-        channel_changed = True
-        if prev_recording and prev_recording in names:
-            self._recording_ch_combo.setCurrentIndex(names.index(prev_recording))
-            channel_changed = False
-        elif prev_recording:
-            self._log.warning(
-                f"recording channel {prev_recording!r} is not available for the current "
-                f"objective/profile; selection changed to {names[0]!r} — review the recording "
-                f"exposure/gain/illumination before starting an acquisition"
-            )
-        self._recording_ch_combo.blockSignals(False)
-        if channel_changed:
-            self._on_recording_channel_changed(self._recording_ch_combo.currentIndex())
-        self._populate_channel_combo(self.combobox_zstack_add_channel, names=names)
-        for name in [n for n in self._zstack_channel_names if n not in names]:
-            self._log.info(f"removing z-stack channel row {name!r}: not available for the current objective")
-            self._remove_zstack_channel_row(name)
+        self._populate_channel_combo(self.combobox_add_channel, names=names)
+        for name in [n for n in self._channel_row_names if n not in names]:
+            self._log.info(f"removing channel row {name!r}: not available for the current objective")
+            self._remove_channel_row(name)

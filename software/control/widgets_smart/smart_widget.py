@@ -2,7 +2,7 @@
 
 All the work happens in the Qt-free ``control.core.smart_acquisition`` package;
 this widget only collects parameters, runs the analysis off the GUI thread, and
-hands the result to the acquisition tab the template belongs to: Record + Z-Stack
+hands the result to the acquisition tab the template belongs to: Time at XY
 (Load Coordinates) for a ``record_zstack`` template, Flexible Multipoint for
 anything else.
 """
@@ -211,11 +211,11 @@ class SmartAcquisitionWidget(QFrame):
             "Any existing acquisition.yaml. The new run takes its coordinates from the\n"
             "analysis above and everything else -- channels, exposure, z planes,\n"
             "autofocus, recording -- from this file. Its widget type picks the tab the\n"
-            "targets are sent to: a Record + Z-Stack file goes to Record + Z-Stack (Load\n"
+            "targets are sent to: a Time at XY file goes to Time at XY (Load\n"
             "Coordinates), a wellplate or flexible file to Flexible Multipoint.\n\n"
             "To make one: set up the acquisition you want in a multipoint tab or in\n"
-            "Record + Z-Stack (XY = Current Position, the recording and z-stack\n"
-            "settings, Laser AF, Nt/dt), run it once, and use the\n"
+            "Time at XY (XY = Current Position, one channel row per channel with\n"
+            "Zi/R/Zf, z planes, Laser AF, Nt/dt), run it once, and use the\n"
             "acquisition.yaml it writes. Defaults to the survey's own."
         )
         self.btn_browse_template = QPushButton("Browse...")
@@ -546,7 +546,7 @@ class SmartAcquisitionWidget(QFrame):
         """``(widget_type, widget, tab name)`` the current template's targets are sent to.
 
         The template decides (``emit.template_widget_type``): a ``record_zstack``
-        file runs in Record + Z-Stack's Load Coordinates mode, everything else in
+        file runs in Time at XY's Load Coordinates mode, everything else in
         Flexible Multipoint. A blank or unreadable path counts as flexible.
         """
         path = self.lineedit_template.text().strip()
@@ -557,7 +557,7 @@ class SmartAcquisitionWidget(QFrame):
             except Exception:
                 widget_type = "flexible"
         if widget_type == "record_zstack":
-            return widget_type, self.recordZStackWidget, "Record + Z-Stack"
+            return widget_type, self.recordZStackWidget, "Time at XY"
         return "flexible", self.flexibleMultiPointWidget, "Flexible Multipoint"
 
     def _update_send_button(self, *_args):
@@ -565,8 +565,8 @@ class SmartAcquisitionWidget(QFrame):
         self.btn_send.setText(f"Send to {name}")
         self.btn_send.setToolTip(
             f"Write the acquisition and load it into the {name} tab.\n"
-            "The template's widget type picks the tab: a Record + Z-Stack acquisition.yaml\n"
-            "goes to Record + Z-Stack (Load Coordinates), anything else to Flexible Multipoint."
+            "The template's widget type picks the tab: a Time at XY acquisition.yaml\n"
+            "goes to Time at XY (Load Coordinates), anything else to Flexible Multipoint."
         )
 
     def _send_to_acquisition_tab(self):

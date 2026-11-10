@@ -1,0 +1,70 @@
+# Record/Z-Stack Acquisition Parameters - legacy_planes
+
+acquisition:
+  experiment_id: legacy_planes
+  start_time: '2026-11-10 13:37:36'
+  widget_type: record_zstack
+  xy_mode: Load Coordinates
+objective:
+  name: 20x
+  magnification: 20.0
+  pixel_size_um: 0.376
+  camera_binning:
+  - 2
+  - 2
+time_series:
+  nt: 1
+  delta_t_s: 0.0
+autofocus:
+  laser_af: true
+recording:
+  enabled: true
+  channel:
+    name: BF LED matrix full
+    enabled: true
+    display_color: '#FFFFFF'
+    camera: null
+    camera_settings:
+      exposure_time_ms: 20.0
+      gain_mode: 10.0
+      pixel_format: null
+    filter_wheel: null
+    filter_position: 1
+    z_offset_um: 0.0
+    illumination_settings:
+      illumination_channel: BF LED matrix full
+      intensity: 5.0
+    confocal_hardware_settings: null
+    confocal_override: null
+  fps: 10.0
+  effective_fps: 10.0
+  duration_s: 2.0
+  bottom_z_offset_um: -2.0
+  nz: 3
+  dz_um: 2.0
+z_stack:
+  enabled: false
+  channels: []
+  z_min_um: -3.0
+  z_max_um: 3.0
+  z_step_um: 1.0
+wellplate_scan:
+  regions:
+  - name: target_0
+    center_mm:
+    - 10.0
+    - 12.0
+    - 1.5
+    shape: Manual
+    fovs:
+    - - 10.0
+      - 12.0
+      - 1.5
+  - name: target_1
+    center_mm:
+    - 11.0
+    - 12.5
+    shape: Manual
+    fovs:
+    - - 11.0
+      - 12.5

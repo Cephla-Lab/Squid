@@ -624,6 +624,8 @@ class QtRecordZStackController(RecordZStackController, QObject):
 
     acquisition_finished = Signal()
     image_to_display = Signal(np.ndarray)
+    # Emitted from the frame-rate test thread; Qt's auto connection queues it onto the GUI thread.
+    frame_rate_test_finished = Signal(object)
 
     def __init__(
         self,
@@ -632,6 +634,7 @@ class QtRecordZStackController(RecordZStackController, QObject):
         laser_autofocus_controller,
         objective_store,
         scan_coordinates,
+        autofocus_controller=None,
     ):
         display_fps = float(control._def.RECORD_ZSTACK_DISPLAY_FPS)
         preview_on = display_fps > 0
@@ -656,6 +659,7 @@ class QtRecordZStackController(RecordZStackController, QObject):
             callbacks=callbacks,
             display_frame_fn=self._emit_display_frame if preview_on else None,
             display_fps=display_fps,
+            autofocus_controller=autofocus_controller,
         )
         QObject.__init__(self)
 
@@ -1063,6 +1067,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.laserAutofocusController,
                 self.objectiveStore,
                 self.scanCoordinates,
+                autofocus_controller=self.autofocusController,
             )
 
     def setup_hardware(self):
@@ -1305,8 +1310,15 @@ class HighContentScreeningGui(QMainWindow):
                 well_selection_widget=self.wellSelectionWidget,
                 tab_widget=self.recordTabWidget,
                 laser_autofocus_controller=self.laserAutofocusController,
+                focus_map_widget=self.focusMapWidget,
             )
             self.recordZStackController.acquisition_finished.connect(self.recordZStackWidget.acquisition_is_finished)
+            if self.cameraSettingWidget is not None:
+                # Per-channel camera settings change the camera directly; show the restored values.
+                self.recordZStackController.acquisition_finished.connect(self.cameraSettingWidget.refresh_from_camera)
+                self.recordZStackController.frame_rate_test_finished.connect(
+                    lambda _result: self.cameraSettingWidget.refresh_from_camera()
+                )
 
         if self.fluidics is not None:
             self._setup_fluidics_widgets()
@@ -1518,7 +1530,7 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_TRACKING:
             self.recordTabWidget.addTab(self.trackingControlWidget, "Tracking")
         if ENABLE_RECORDING:
-            self.recordTabWidget.addTab(self.recordZStackWidget, "Record + Z-Stack")
+            self.recordTabWidget.addTab(self.recordZStackWidget, "Time at XY")
         if self.smartAcquisitionWidget is not None:
             self.recordTabWidget.addTab(self.smartAcquisitionWidget, "Smart Acquisition")
         self.recordTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.recordTabWidget))
@@ -1874,7 +1886,7 @@ class HighContentScreeningGui(QMainWindow):
             self.profileWidget.signal_profile_changed.connect(self.recordZStackWidget.refresh_channel_list)
             # Well clicks rebuild this tab's FOV grid (wellplate's handler
             # early-returns when its own tab is not current, so without this the
-            # selector gives no coverage feedback on the Record + Z-Stack tab).
+            # selector gives no coverage feedback on the Time at XY tab).
             self.wellSelectionWidget.signal_wellSelected.connect(self.recordZStackWidget.on_well_selection_changed)
 
         self.profileWidget.signal_profile_changed.connect(
@@ -2655,7 +2667,7 @@ class HighContentScreeningGui(QMainWindow):
     def _get_actual_acquisition_path(self) -> str:
         """Get the actual acquisition path (base_path + experiment_ID with timestamp).
 
-        The Record + Z-Stack tab has its own controller, so the answer depends on
+        The Time at XY tab has its own controller, so the answer depends on
         which tab the workflow last started an acquisition in.
         """
         if self._workflow_used_record_tab():
@@ -2770,7 +2782,7 @@ class HighContentScreeningGui(QMainWindow):
             self.workflowRunner.signal_script_output.connect(self._on_script_output)
             # Connect acquisition finished signal (permanent connection)
             self.multipointController.acquisition_finished.connect(self.workflowRunner.on_acquisition_finished)
-            # The Record + Z-Stack tab has its own controller and its own signal.
+            # The Time at XY tab has its own controller and its own signal.
             if getattr(self, "recordZStackController", None) is not None:
                 self.recordZStackController.acquisition_finished.connect(self.workflowRunner.on_acquisition_finished)
 
@@ -3317,7 +3329,7 @@ class HighContentScreeningGui(QMainWindow):
             if ENABLE_WELLPLATE_MULTIPOINT
             else False
         )
-        # Record + Z-Stack selects wells like Wellplate Multipoint, so it needs the
+        # Time at XY selects wells like Wellplate Multipoint, so it needs the
         # well selector too (its validation rejects acquisitions with no wells).
         is_record_zstack_acquisition = (
             (index == self.recordTabWidget.indexOf(self.recordZStackWidget))
@@ -3477,7 +3489,7 @@ class HighContentScreeningGui(QMainWindow):
 
     def _tab_uses_well_selector(self, index) -> bool:
         """True if the record tab at ``index`` drives acquisitions from the well
-        selector (Wellplate Multipoint and Record + Z-Stack): both onTabChanged
+        selector (Wellplate Multipoint and Time at XY): both onTabChanged
         and toggleAcquisitionStart must agree on this, or the selector is hidden
         and never restored after an acquisition on one of these tabs."""
         is_wellplate = (

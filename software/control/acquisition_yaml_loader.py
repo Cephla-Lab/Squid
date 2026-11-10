@@ -3,6 +3,7 @@ Utilities for parsing and validating acquisition YAML files.
 """
 
 import csv
+import math
 import os
 import yaml
 
@@ -64,7 +65,7 @@ class AcquisitionYAMLData:
 
 @dataclass
 class RecordZStackYAMLData:
-    """Parsed record/z-stack acquisition YAML data structure."""
+    """Parsed "Time at XY" (widget_type record_zstack) acquisition YAML data structure."""
 
     widget_type: str  # "record_zstack"
     xy_mode: str = "Select Wells"
@@ -76,25 +77,34 @@ class RecordZStackYAMLData:
     delta_t_s: float = 0.0
 
     laser_af: bool = False
+    contrast_af: bool = False
+    use_focus_map: bool = False
 
-    recording_enabled: bool = False
-    recording_channel: Optional[Dict] = None
-    fps: float = 10.0
-    effective_fps: Optional[float] = None  # informational: the rate the saved run was made at
-    duration_s: float = 1.0
-    recording_bottom_z_offset_um: float = 0.0
-    recording_nz: int = 1
-    recording_dz_um: float = 1.0
+    # Channel table rows: [{channel: {...}, fps, duration_s, zi, r, zf, camera?}, ...]
+    channels: List[Dict] = field(default_factory=list)
 
-    zstack_enabled: bool = False
-    zstack_channels: List[Dict] = field(default_factory=list)
-    z_min_um: float = -3.0
-    z_max_um: float = 3.0
-    z_step_um: float = 1.0
+    # Which of the shared z planes the recordings visit (preset roles + explicit indices)
+    record_slice_roles: List[str] = field(default_factory=lambda: ["bottom", "mid", "top"])
+    record_slice_indices: List[int] = field(default_factory=list)
+
+    # Shared z-stack geometry (mode labels: control.core.zstack_modes.Z_MODES)
+    z_mode: str = "From Bottom"
+    z_dz_um: float = 1.0
+    z_nz: int = 1
+    z_range_um: float = 4.0
+    z_min_mm: float = 0.0
+    z_max_mm: float = 0.0
 
     scan_size_mm: Optional[float] = None
     overlap_percent: float = 10.0
     wellplate_regions: Optional[List[Dict]] = None
+
+    # True when the file used the pre-table schema (recording/z_stack phases)
+    # and was converted; the widget logs it so the user knows to re-save.
+    legacy_schema: bool = False
+    # What the conversion could not carry over exactly (empty when the converted
+    # acquisition visits the same planes with the same settings as the old one).
+    legacy_notes: List[str] = field(default_factory=list)
 
 
 def _parse_camera_binning(obj: dict) -> Optional[Tuple[int, int]]:
@@ -104,13 +114,211 @@ def _parse_camera_binning(obj: dict) -> Optional[Tuple[int, int]]:
     return None
 
 
+_LEGACY_Z_TOLERANCE_UM = 1e-6
+
+
+def _legacy_stack_plan(z_min: float, z_max: float, step: float, notes: List[str]) -> Tuple[Dict, List[float]]:
+    """The z plan for a pre-table z range (µm, relative to the reference plane) and its plane offsets.
+
+    The old stack visited z_min, z_min + step, ... up to z_max.  It is reproduced exactly as
+    Relative when it has a plane on the reference and is symmetric about it, and as From
+    Bottom when it starts on the reference.  Anything else has no equivalent (the table's z
+    block has no bottom offset): a roughly centred range becomes Relative and the rest From
+    Bottom, with a note saying how the planes moved.
+    """
+    count = int(math.floor((z_max - z_min) / step + 1e-9)) + 1
+    plan: Dict = {"z_dz_um": step, "z_nz": 1, "z_range_um": 4.0, "z_min_mm": 0.0, "z_max_mm": 0.0}
+    top = z_min + (count - 1) * step
+    if count >= 3 and count % 2 == 1 and abs(z_min + top) <= _LEGACY_Z_TOLERANCE_UM:
+        plan["z_mode"] = "Relative"
+        plan["z_range_um"] = top - z_min
+        nz = count
+    elif abs(z_min) <= _LEGACY_Z_TOLERANCE_UM:
+        plan["z_mode"] = "From Bottom"
+        plan["z_nz"] = nz = count
+    elif count > 1 and abs(z_min + z_max) <= step / 2:
+        from control.core.zstack_modes import relative_stack_Nz
+
+        plan["z_mode"] = "Relative"
+        plan["z_range_um"] = z_max - z_min
+        nz = relative_stack_Nz(z_max - z_min, step)
+        notes.append(
+            f"z-stack {z_min:g}..{z_max:g} µm in {step:g} µm steps has no plane on the reference; loaded as a "
+            f"Relative stack of {nz} planes (±{(nz - 1) * step / 2:g} µm), so the planes are not the same"
+        )
+    else:
+        plan["z_mode"] = "From Bottom"
+        plan["z_nz"] = nz = count
+        notes.append(
+            f"z-stack {z_min:g}..{z_max:g} µm is not centred on the reference; loaded as From Bottom with "
+            f"{count} planes starting AT the reference (the {z_min:g} µm bottom offset is dropped)"
+        )
+    base = -((nz - 1) // 2) * step if plan["z_mode"] == "Relative" else 0.0
+    return plan, [base + i * step for i in range(nz)]
+
+
+def _legacy_recording_plan(bottom: float, nz: int, dz: float, notes: List[str]) -> Tuple[Dict, List[float], List[int]]:
+    """A z plan that contains the pre-table recording planes (bottom + j*dz), and their indices in it.
+
+    Used when the old file had no z-stack, so the plan only has to place the recordings:
+    planes the recordings do not visit are never acquired.
+    """
+    plan: Dict = {"z_mode": "From Bottom", "z_dz_um": dz, "z_nz": nz, "z_range_um": 4.0, "z_min_mm": 0.0}
+    plan["z_max_mm"] = 0.0
+    tol = _LEGACY_Z_TOLERANCE_UM
+    if abs(bottom) <= tol:
+        return plan, [j * dz for j in range(nz)], list(range(nz))
+    if nz == 1:
+        # One plane off the reference: a two-plane From Bottom stack (record Top) when it is
+        # above, a three-plane Relative stack (record Bottom) when it is below.
+        plan["z_dz_um"] = abs(bottom)
+        if bottom > 0:
+            plan["z_nz"] = 2
+            return plan, [0.0, bottom], [1]
+        plan["z_mode"] = "Relative"
+        plan["z_range_um"] = 2 * abs(bottom)
+        plan["z_nz"] = 3
+        return plan, [bottom, 0.0, -bottom], [0]
+    steps = bottom / dz if dz > 0 else float("nan")
+    k = int(round(steps)) if steps == steps else 0
+    if dz > 0 and abs(steps - k) * dz <= tol:
+        if k > 0:
+            plan["z_nz"] = k + nz
+            return plan, [i * dz for i in range(k + nz)], [k + j for j in range(nz)]
+        # The planes straddle or lie below the reference: a Relative stack wide enough for both ends.
+        below = -k
+        half = max(below, nz - 1 - below, 1)
+        plan["z_mode"] = "Relative"
+        plan["z_range_um"] = 2 * half * dz
+        plan["z_nz"] = 2 * half + 1
+        return plan, [(i - half) * dz for i in range(2 * half + 1)], [half - below + j for j in range(nz)]
+    notes.append(
+        f"recording planes start {bottom:g} µm from the reference, which is not a whole number of {dz:g} µm "
+        f"steps; loaded as From Bottom with {nz} planes starting AT the reference (the offset is dropped)"
+    )
+    return plan, [j * dz for j in range(nz)], list(range(nz))
+
+
+def _convert_legacy_record_zstack(recording: dict, z_stack: dict) -> Tuple[List[Dict], Dict, Dict, List[str]]:
+    """Map the pre-table ``recording:``/``z_stack:`` sections onto channel rows, a z plan and record planes.
+
+    Returns ``(rows, z_plan, record_slices, notes)``.  The old tab ran (optional) recording then
+    (optional) z-stack per FOV, so the old z-stack becomes the *final* stack (zf) and the old
+    recording channel a recording row (r); a phase that was switched off keeps its rows, unticked,
+    so the settings are not lost.  A channel present in both merges into one row (the recording
+    copy's exposure/gain/illumination win, as the old snapshot dedupe did).
+
+    The old tab had two independent z definitions, both relative to the reference plane: the
+    recording planes (bottom offset, nz, dz) and the z-stack range (z_min, z_max, step).  The
+    table has one z block for every phase plus a choice of which of its planes are recorded, so:
+    with a z-stack, the block reproduces the stack and each recording plane is mapped to the stack
+    plane nearest to it; without one, the block is built to contain the recording planes.  Set
+    Range is never chosen because the old values were not absolute.  ``notes`` lists everything
+    that could not be carried over exactly; it is empty when the converted acquisition visits the
+    same planes as the old one.  ``effective_fps`` is informational and is resolved again per run.
+    """
+    notes: List[str] = []
+    rows: List[Dict] = []
+    by_name: Dict[str, Dict] = {}
+
+    rec_channel = recording.get("channel")
+    rec_on = bool(recording.get("enabled", False)) and bool(rec_channel)
+    if rec_channel:
+        row = {
+            "channel": rec_channel,
+            "fps": recording.get("fps", 10.0),
+            "duration_s": recording.get("duration_s", 1.0),
+            "zi": False,
+            "r": rec_on,
+            "zf": False,
+        }
+        rows.append(row)
+        if isinstance(rec_channel, dict) and rec_channel.get("name"):
+            by_name[rec_channel["name"]] = row
+
+    stack_channels = z_stack.get("channels", []) or []
+    stack_on = bool(z_stack.get("enabled", False)) and bool(stack_channels)
+    for ch in stack_channels:
+        name = ch.get("name") if isinstance(ch, dict) else None
+        if name and name in by_name:
+            by_name[name]["zf"] = by_name[name]["zf"] or stack_on
+            if stack_on and by_name[name]["channel"] != ch:
+                notes.append(
+                    f"channel {name!r} was in both phases with different settings; merged into one row "
+                    "(the recording exposure/gain/illumination are kept for the z-stack too)"
+                )
+            continue
+        row = {"channel": ch, "fps": 10.0, "duration_s": 1.0, "zi": False, "r": False, "zf": stack_on}
+        rows.append(row)
+        if name:
+            by_name[name] = row
+
+    z_min = float(z_stack.get("z_min_um", -3.0))
+    z_max = float(z_stack.get("z_max_um", 3.0))
+    step = float(z_stack.get("z_step_um", 1.0))
+    bottom = float(recording.get("bottom_z_offset_um", 0.0) or 0.0)
+    rec_nz = max(1, int(recording.get("nz", 1) or 1))
+    rec_dz = float(recording.get("dz_um", 1.0) or 1.0)
+    rec_offsets = [bottom + j * rec_dz for j in range(rec_nz)]
+
+    z_plan: Dict = {"z_mode": "From Bottom", "z_dz_um": 1.0, "z_nz": 1, "z_range_um": 4.0}
+    z_plan.update({"z_min_mm": 0.0, "z_max_mm": 0.0})
+    recorded: Optional[List[int]] = None  # None = the tab's default (Bottom / Mid / Top)
+    if stack_on and step > 0 and z_max >= z_min:
+        z_plan, offsets = _legacy_stack_plan(z_min, z_max, step, notes)
+        if rec_on:
+            recorded = sorted({min(range(len(offsets)), key=lambda i: abs(offsets[i] - off)) for off in rec_offsets})
+            moved = [
+                f"{off:+g} -> {offsets[min(range(len(offsets)), key=lambda i: abs(offsets[i] - off))]:+g}"
+                for off in rec_offsets
+                if min(abs(o - off) for o in offsets) > _LEGACY_Z_TOLERANCE_UM
+            ]
+            if moved or len(recorded) != len(rec_offsets):
+                notes.append(
+                    "the recording planes are not planes of the z-stack; each is recorded at the nearest "
+                    f"stack plane instead (µm from the reference: {', '.join(moved) or 'planes merged'})"
+                )
+    elif rec_on:
+        z_plan, offsets, recorded = _legacy_recording_plan(bottom, rec_nz, rec_dz, notes)
+    elif any(k in z_stack for k in ("z_min_um", "z_max_um", "z_step_um")) and step > 0 and z_max >= z_min:
+        # Nothing is acquired from this file as it stands; keep the z range for when a row is ticked.
+        z_plan, offsets = _legacy_stack_plan(z_min, z_max, step, [])
+
+    if recorded is None:
+        slices = {"roles": ["bottom", "mid", "top"], "indices": []}
+    else:
+        nz = len(offsets)
+        role_index = {"bottom": 0, "mid": (nz - 1) // 2, "top": nz - 1}
+        slices = {
+            "roles": [role for role, i in role_index.items() if i in recorded],
+            "indices": [i for i in recorded if i not in role_index.values()],
+        }
+    return rows, z_plan, slices, notes
+
+
 def _parse_record_zstack_yaml_data(data: dict, acq: dict) -> RecordZStackYAMLData:
     obj = data.get("objective", {})
     time_series = data.get("time_series", {})
     autofocus = data.get("autofocus", {})
-    recording = data.get("recording", {})
-    z_stack = data.get("z_stack", {})
+    recording = data.get("recording", {}) or {}
+    z_stack = data.get("z_stack", {}) or {}
     wellplate_scan = data.get("wellplate_scan", {})
+
+    legacy = "channels" not in data
+    legacy_notes: List[str] = []
+    if legacy:
+        channels, z_plan, record_slices, legacy_notes = _convert_legacy_record_zstack(recording, z_stack)
+    else:
+        channels = list(data.get("channels", []) or [])
+        record_slices = data.get("record_slices", {}) or {}
+        z_plan = {
+            "z_mode": z_stack.get("mode", "From Bottom"),
+            "z_dz_um": z_stack.get("dz_um", 1.0),
+            "z_nz": z_stack.get("nz", 1),
+            "z_range_um": z_stack.get("z_range_um", 4.0),
+            "z_min_mm": z_stack.get("z_min_mm", 0.0),
+            "z_max_mm": z_stack.get("z_max_mm", 0.0),
+        }
 
     return RecordZStackYAMLData(
         widget_type="record_zstack",
@@ -120,22 +328,22 @@ def _parse_record_zstack_yaml_data(data: dict, acq: dict) -> RecordZStackYAMLDat
         nt=time_series.get("nt", 1),
         delta_t_s=time_series.get("delta_t_s", 0.0),
         laser_af=autofocus.get("laser_af", False),
-        recording_enabled=recording.get("enabled", False),
-        recording_channel=recording.get("channel"),
-        fps=recording.get("fps", 10.0),
-        effective_fps=recording.get("effective_fps"),
-        duration_s=recording.get("duration_s", 1.0),
-        recording_bottom_z_offset_um=recording.get("bottom_z_offset_um", 0.0),
-        recording_nz=recording.get("nz", 1),
-        recording_dz_um=recording.get("dz_um", 1.0),
-        zstack_enabled=z_stack.get("enabled", False),
-        zstack_channels=z_stack.get("channels", []),
-        z_min_um=z_stack.get("z_min_um", -3.0),
-        z_max_um=z_stack.get("z_max_um", 3.0),
-        z_step_um=z_stack.get("z_step_um", 1.0),
+        contrast_af=autofocus.get("contrast_af", False),
+        use_focus_map=autofocus.get("use_focus_map", False),
+        channels=channels,
+        record_slice_roles=list(record_slices.get("roles", ["bottom", "mid", "top"]) or []),
+        record_slice_indices=[int(i) for i in (record_slices.get("indices", []) or [])],
+        z_mode=z_plan["z_mode"],
+        z_dz_um=z_plan["z_dz_um"],
+        z_nz=z_plan["z_nz"],
+        z_range_um=z_plan["z_range_um"],
+        z_min_mm=z_plan["z_min_mm"],
+        z_max_mm=z_plan["z_max_mm"],
         scan_size_mm=wellplate_scan.get("scan_size_mm"),
         overlap_percent=wellplate_scan.get("overlap_percent", 10.0),
         wellplate_regions=wellplate_scan.get("regions"),
+        legacy_schema=legacy,
+        legacy_notes=legacy_notes,
     )
 
 

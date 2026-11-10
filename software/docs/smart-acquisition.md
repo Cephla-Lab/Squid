@@ -13,15 +13,18 @@ ring individually at 20x. But nothing in the pipeline is specific to rings —
 the detector is one implementation of an analyzer contract that any other
 measurement (focus, SNR, confluence, a segmentation model) can implement.
 
-> **On the `4dcell` branch.** This feature was ported from the 4DCell portable build, where the follow-up
-> tab is called **Time at XY**. Here that tab is upstream's **Record + Z-Stack**: wherever this page says
-> Time at XY, read Record + Z-Stack. It has the same **Load Coordinates** mode and **Save Settings…**
-> button, and a `record_zstack` template sends the targets there. What differs is the tab's own
-> settings: one recording channel (FPS, Dur, planes) and a z-stack channel list with Z-min / Z-max /
-> step, rather than a channel table with Zi / R / Zf columns, a z-mode selector, Use Focus Map, or
-> per-channel **Cam** settings. Passages about those do not apply. Per ring the run does: laser AF
-> (started from the carried survey z + dz), the recording, then the z-stack, Nt times.
-> Surveys must be saved as TIFF or OME-TIFF; Zarr surveys are not read.
+> **On the `4dcell` branch.** This feature and the **Time at XY** tab were ported from the 4DCell
+> portable build. The tab, its `acquisition.yaml` and its output folders are the same as in that
+> build. What still differs:
+>
+> - Surveys must be saved as TIFF or OME-TIFF; Zarr surveys are not read.
+> - dz on the Time at XY tab starts at 1 µm rather than at the objective's Nyquist step.
+> - A z-stack software trigger that produces no frame aborts the run; it is not re-sent once.
+> - An `acquisition.yaml` saved by the earlier Record + Z-Stack tab (a `recording:` block and a
+>   `z_stack:` block with `z_min_um` / `z_max_um` / `z_step_um`) still loads: the recording becomes an
+>   R row, the z-stack a Zf stack, and the z block is chosen to visit the same planes. The log lists
+>   anything that could not be kept exactly (a stack that neither starts on nor is centred on the
+>   reference plane has no equivalent, because the z block has no bottom offset).
 
 ## The pipeline
 

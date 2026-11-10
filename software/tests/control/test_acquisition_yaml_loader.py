@@ -2,6 +2,8 @@
 Unit tests for control/acquisition_yaml_loader.py
 """
 
+from pathlib import Path
+
 import pytest
 
 from control.acquisition_yaml_loader import (
@@ -270,90 +272,82 @@ channels:
         assert result.channel_names == ["Valid Channel", "Another Valid"]
 
 
+RECORD_ZSTACK_FIXTURES = Path(__file__).parent.parent / "files" / "record_zstack"
+
+
+def _legacy(recording=None, z_stack=None):
+    """Convert pre-table recording / z_stack sections; returns (rows, plan offsets, recorded offsets, notes)."""
+    from control.acquisition_yaml_loader import _convert_legacy_record_zstack
+    from control.core.record_zstack_controller import (
+        RecordSliceSelection,
+        ZStackPlan,
+        recording_offsets_for_plan,
+        zstack_offsets_for_mode,
+    )
+
+    rows, z, slices, notes = _convert_legacy_record_zstack(recording or {}, z_stack or {})
+    plan = ZStackPlan(mode=z["z_mode"], dz_um=z["z_dz_um"], nz=z["z_nz"], z_range_um=z["z_range_um"])
+    selection = RecordSliceSelection.from_yaml_dict(slices)
+    recorded = [offset for _index, offset in recording_offsets_for_plan(plan, selection, 0.0)]
+    return rows, zstack_offsets_for_mode(plan, 0.0), recorded, notes
+
+
+def _rec(**fields):
+    return {"enabled": True, "channel": {"name": "BF"}, "fps": 20.0, "duration_s": 2.0, **fields}
+
+
+def _stack(z_min, z_max, step, names=("488",), enabled=True):
+    channels = [{"name": n} for n in names]
+    return {"enabled": enabled, "channels": channels, "z_min_um": z_min, "z_max_um": z_max, "z_step_um": step}
+
+
 class TestParseRecordZstackYAML:
-    """Tests for parse_acquisition_yaml with widget_type: record_zstack."""
+    """Tests for parse_acquisition_yaml with widget_type: record_zstack (the Time at XY tab)."""
 
-    def test_parse_record_zstack_yaml_select_wells(self, tmp_path):
-        yaml_content = """
-acquisition:
-  widget_type: record_zstack
-  xy_mode: Select Wells
-objective:
-  name: 20x
-  camera_binning:
-    - 1
-    - 1
-time_series:
-  nt: 3
-  delta_t_s: 5.0
-autofocus:
-  laser_af: true
-recording:
-  enabled: true
-  channel:
-    name: BF LED matrix full
-  fps: 15.0
-  duration_s: 2.0
-  bottom_z_offset_um: 1.5
-  nz: 3
-  dz_um: 0.8
-z_stack:
-  enabled: true
-  channels:
-    - name: Fluorescence 488 nm Ex
-  z_min_um: -2.0
-  z_max_um: 2.0
-  z_step_um: 0.5
-wellplate_scan:
-  scan_size_mm: 1.2
-  overlap_percent: 12.0
-  regions:
-    - name: A1
-      center_mm: [1.0, 2.0, 0.1]
-      shape: Square
-"""
-        yaml_file = tmp_path / "test_record.yaml"
-        yaml_file.write_text(yaml_content)
-
-        result = parse_acquisition_yaml(str(yaml_file))
+    def test_parse_time_at_xy_schema(self):
+        """A file as Spencer's build saves it: every field of his _save_record_zstack_yaml."""
+        result = parse_acquisition_yaml(str(RECORD_ZSTACK_FIXTURES / "spencer_time_at_xy.yaml"))
 
         assert result.widget_type == "record_zstack"
+        assert result.legacy_schema is False and result.legacy_notes == []
         assert result.xy_mode == "Select Wells"
         assert result.objective_name == "20x"
-        assert result.camera_binning == (1, 1)
-        assert result.nt == 3
-        assert result.delta_t_s == 5.0
-        assert result.laser_af is True
-        assert result.recording_enabled is True
-        assert result.recording_channel == {"name": "BF LED matrix full"}
-        assert result.fps == 15.0
-        assert result.duration_s == 2.0
-        assert result.recording_bottom_z_offset_um == 1.5
-        assert result.recording_nz == 3
-        assert result.recording_dz_um == 0.8
-        assert result.zstack_enabled is True
-        assert result.zstack_channels == [{"name": "Fluorescence 488 nm Ex"}]
-        assert result.z_min_um == -2.0
-        assert result.z_max_um == 2.0
-        assert result.z_step_um == 0.5
-        assert result.scan_size_mm == 1.2
-        assert result.overlap_percent == 12.0
-        assert result.wellplate_regions == [{"name": "A1", "center_mm": [1.0, 2.0, 0.1], "shape": "Square"}]
+        assert result.camera_binning == (2, 2)
+        assert (result.nt, result.delta_t_s) == (6, 600.0)
+        assert (result.laser_af, result.contrast_af, result.use_focus_map) == (True, False, False)
+        assert [row["channel"]["name"] for row in result.channels] == [
+            "Fluorescence 488 nm Ex",
+            "Fluorescence 561 nm Ex",
+            "BF LED matrix full",
+        ]
+        first = result.channels[0]
+        assert (first["fps"], first["duration_s"], first["zi"], first["r"], first["zf"]) == (
+            50.0,
+            10.0,
+            True,
+            True,
+            True,
+        )
+        assert first["camera"]["binning"] == 2 and first["camera"]["pixel_format"] == "MONO8"
+        assert "camera" not in result.channels[1]
+        assert (result.record_slice_roles, result.record_slice_indices) == (["bottom", "mid", "top"], [2])
+        assert (result.z_mode, result.z_dz_um, result.z_nz, result.z_range_um) == ("Relative", 1.5, 9, 12.0)
+        assert (result.z_min_mm, result.z_max_mm) == (0.0, 0.0)
+        assert (result.scan_size_mm, result.overlap_percent) == (0.5, 10.0)
+        assert [r["name"] for r in result.wellplate_regions] == ["B2", "B3"]
 
     def test_parse_record_zstack_yaml_minimal_defaults(self, tmp_path):
-        yaml_content = """
-acquisition:
-  widget_type: record_zstack
-"""
         yaml_file = tmp_path / "test_minimal_record.yaml"
-        yaml_file.write_text(yaml_content)
+        yaml_file.write_text("acquisition:\n  widget_type: record_zstack\nchannels: []\n")
 
         result = parse_acquisition_yaml(str(yaml_file))
 
         assert result.widget_type == "record_zstack"
-        assert result.recording_enabled is False
-        assert result.recording_channel is None
-        assert result.zstack_channels == []
+        assert result.legacy_schema is False
+        assert result.channels == []
+        assert (result.z_mode, result.z_dz_um, result.z_nz) == ("From Bottom", 1.0, 1)
+        assert (result.record_slice_roles, result.record_slice_indices) == (["bottom", "mid", "top"], [])
+        assert (result.laser_af, result.contrast_af, result.use_focus_map) == (False, False, False)
         assert result.wellplate_regions is None
 
     def test_validate_hardware_accepts_record_zstack_yaml_data(self, tmp_path):
@@ -371,6 +365,135 @@ objective:
 
         validation = validate_hardware(result, current_objective="20x", current_binning=(1, 1))
         assert validation.is_valid is True
+
+    # ---- files written by the tab this one replaces (recording: / z_stack: phases)
+
+    def test_legacy_file_with_both_phases(self):
+        """Written by the previous tab's own code: recording at the reference, then a -3..+3 µm stack."""
+        result = parse_acquisition_yaml(str(RECORD_ZSTACK_FIXTURES / "legacy_4dcell_recording_and_zstack.yaml"))
+
+        assert result.legacy_schema is True
+        assert result.legacy_notes == []  # the converted acquisition is the same acquisition
+        assert [(r["channel"]["name"], r["zi"], r["r"], r["zf"]) for r in result.channels] == [
+            ("BF LED matrix full", False, True, False),
+            ("DF LED matrix", False, False, True),
+            ("Fluorescence 405 nm Ex", False, False, True),
+        ]
+        rec = result.channels[0]
+        assert (rec["fps"], rec["duration_s"]) == (30.0, 5.0)  # the requested rate; effective_fps is per run
+        assert rec["channel"]["camera_settings"]["exposure_time_ms"] == 20.0
+        assert (result.z_mode, result.z_dz_um, result.z_range_um) == ("Relative", 1.0, 6.0)
+        assert (result.record_slice_roles, result.record_slice_indices) == (["mid"], [])
+        assert (result.nt, result.delta_t_s, result.laser_af) == (3, 60.0, False)
+        assert (result.contrast_af, result.use_focus_map) == (False, False)
+        assert (result.xy_mode, result.scan_size_mm, result.overlap_percent) == ("Select Wells", 0.5, 15.0)
+        assert [r["name"] for r in result.wellplate_regions] == ["B2", "B3"]
+
+    def test_legacy_file_with_a_multi_plane_recording_and_loaded_coordinates(self):
+        result = parse_acquisition_yaml(str(RECORD_ZSTACK_FIXTURES / "legacy_4dcell_multiplane_recording.yaml"))
+
+        assert result.legacy_schema is True and result.legacy_notes == []
+        assert [(r["channel"]["name"], r["r"], r["zf"]) for r in result.channels] == [
+            ("BF LED matrix full", True, False)
+        ]
+        # planes at -2 / 0 / +2 µm: a Relative stack of three planes, all recorded
+        assert (result.z_mode, result.z_dz_um, result.z_range_um) == ("Relative", 2.0, 4.0)
+        assert (result.record_slice_roles, result.record_slice_indices) == (["bottom", "mid", "top"], [])
+        assert result.laser_af is True
+        assert result.xy_mode == "Load Coordinates"
+        assert [r["fovs"] for r in result.wellplate_regions] == [[[10.0, 12.0, 1.5]], [[11.0, 12.5]]]
+
+    def test_legacy_without_any_section_keeps_the_defaults(self, tmp_path):
+        yaml_file = tmp_path / "bare.yaml"
+        yaml_file.write_text("acquisition:\n  widget_type: record_zstack\n")
+        result = parse_acquisition_yaml(str(yaml_file))
+        assert result.legacy_schema is True and result.channels == []
+        assert (result.z_mode, result.z_nz) == ("From Bottom", 1)
+
+    @pytest.mark.parametrize(
+        "bottom, nz, dz, planes, recorded",
+        [
+            (0.0, 1, 1.0, [0.0], [0.0]),
+            (0.0, 3, 2.0, [0.0, 2.0, 4.0], [0.0, 2.0, 4.0]),
+            (5.0, 1, 1.0, [0.0, 5.0], [5.0]),  # one plane above the reference: record Top of two
+            (-1.5, 1, 1.0, [-1.5, 0.0, 1.5], [-1.5]),  # one plane below: record Bottom of a Relative stack
+            (4.0, 2, 2.0, [0.0, 2.0, 4.0, 6.0], [4.0, 6.0]),
+            (-2.0, 3, 2.0, [-2.0, 0.0, 2.0], [-2.0, 0.0, 2.0]),
+            (-6.0, 2, 2.0, [-6.0, -4.0, -2.0, 0.0, 2.0, 4.0, 6.0], [-6.0, -4.0]),
+            (-2.0, 5, 2.0, [-6.0, -4.0, -2.0, 0.0, 2.0, 4.0, 6.0], [-2.0, 0.0, 2.0, 4.0, 6.0]),
+        ],
+    )
+    def test_legacy_recording_only_keeps_its_planes(self, bottom, nz, dz, planes, recorded):
+        """Without a z-stack the z block only has to place the recordings; unrecorded planes are never visited."""
+        rows, offsets, rec_offsets, notes = _legacy(_rec(bottom_z_offset_um=bottom, nz=nz, dz_um=dz))
+        assert [(r["channel"]["name"], r["fps"], r["duration_s"], r["r"]) for r in rows] == [("BF", 20.0, 2.0, True)]
+        assert offsets == pytest.approx(planes)
+        assert rec_offsets == pytest.approx(recorded)
+        assert notes == []
+
+    def test_legacy_recording_planes_off_the_dz_grid_are_reported(self):
+        rows, offsets, rec_offsets, notes = _legacy(_rec(bottom_z_offset_um=-1.0, nz=3, dz_um=2.0))
+        assert rec_offsets == pytest.approx([0.0, 2.0, 4.0])
+        assert len(notes) == 1 and "offset is dropped" in notes[0]
+
+    @pytest.mark.parametrize(
+        "z_min, z_max, step, planes",
+        [
+            (-3.0, 3.0, 1.0, [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0]),
+            (-3.0, 3.5, 1.0, [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0]),  # the old stack stopped at +3 too
+            (0.0, 5.0, 2.0, [0.0, 2.0, 4.0]),
+            (0.0, 0.0, 1.0, [0.0]),
+        ],
+    )
+    def test_legacy_zstack_only_keeps_its_planes(self, z_min, z_max, step, planes):
+        rows, offsets, _rec_offsets, notes = _legacy(None, _stack(z_min, z_max, step, names=("488", "561")))
+        assert [(r["channel"]["name"], r["zi"], r["r"], r["zf"]) for r in rows] == [
+            ("488", False, False, True),
+            ("561", False, False, True),
+        ]
+        assert offsets == pytest.approx(planes)
+        assert notes == []
+
+    @pytest.mark.parametrize(
+        "z_min, z_max, step, planes, fragment",
+        [
+            (-2.0, 8.0, 2.0, [0.0, 2.0, 4.0, 6.0, 8.0, 10.0], "bottom offset is dropped"),
+            (-2.5, 2.5, 1.0, [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0], "no plane on the reference"),
+        ],
+    )
+    def test_legacy_zstack_ranges_without_an_equivalent_are_reported(self, z_min, z_max, step, planes, fragment):
+        """The table's z block has no bottom offset, so these stacks move; the note says how."""
+        _rows, offsets, _rec_offsets, notes = _legacy(None, _stack(z_min, z_max, step))
+        assert offsets == pytest.approx(planes)
+        assert len(notes) == 1 and fragment in notes[0]
+
+    def test_legacy_recording_planes_are_mapped_onto_the_stack(self):
+        # planes at -2 and +2 are planes of a -4..+4 / 2 µm stack: exact
+        _rows, offsets, rec_offsets, notes = _legacy(_rec(bottom_z_offset_um=-2.0, nz=2, dz_um=4.0), _stack(-4, 4, 2))
+        assert offsets == pytest.approx([-4.0, -2.0, 0.0, 2.0, 4.0])
+        assert rec_offsets == pytest.approx([-2.0, 2.0]) and notes == []
+        # planes at 1.5 / 2.3 / 3.1 are not planes of a -2..+2 / 0.5 µm stack: nearest planes, reported
+        _rows, _offsets, rec_offsets, notes = _legacy(_rec(bottom_z_offset_um=1.5, nz=3, dz_um=0.8), _stack(-2, 2, 0.5))
+        assert rec_offsets == pytest.approx([1.5, 2.0])
+        assert len(notes) == 1 and "nearest" in notes[0] and "+3.1 -> +2" in notes[0]
+
+    def test_legacy_disabled_phases_keep_their_rows_unticked(self):
+        rows, _offsets, _recorded, notes = _legacy(_rec(enabled=False), _stack(-1, 1, 1, enabled=False))
+        assert [(r["channel"]["name"], r["zi"], r["r"], r["zf"]) for r in rows] == [
+            ("BF", False, False, False),
+            ("488", False, False, False),
+        ]
+        assert notes == []
+
+    def test_legacy_channel_in_both_phases_becomes_one_row(self):
+        recording = _rec()
+        recording["channel"] = {"name": "488", "camera_settings": {"exposure_time_ms": 5.0}}
+        z_stack = _stack(-1, 1, 1)
+        z_stack["channels"] = [{"name": "488", "camera_settings": {"exposure_time_ms": 50.0}}, {"name": "561"}]
+        rows, _offsets, _recorded, notes = _legacy(recording, z_stack)
+        assert [(r["channel"]["name"], r["r"], r["zf"]) for r in rows] == [("488", True, True), ("561", False, True)]
+        assert rows[0]["channel"]["camera_settings"]["exposure_time_ms"] == 5.0  # the recording copy wins
+        assert len(notes) == 1 and "different settings" in notes[0]
 
 
 class TestValidateHardware:

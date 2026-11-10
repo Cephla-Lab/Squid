@@ -1,34 +1,30 @@
-"""Tests for RecordZStackMultiPointWidget (Tasks E1 + E2).
+"""Tests for RecordZStackMultiPointWidget, the "Time at XY" tab.
 
-Covers: widget skeleton, validation, inline editors, Copy-from-Live, computed labels.
+The tab is one channel table (per row: exposure / gain / illumination, camera
+settings, FPS / duration, and the Zi / R / Zf flags), one z block shared by
+every phase, a record-plane picker and a focus row.  The business rules live in
+``control.core.record_zstack_controller`` (covered without Qt in
+``tests/core/test_record_zstack_model.py``); these tests check that the widget
+reads and writes its controls correctly and delegates to those rules.
 
-Two test layers:
-1. Pure validation helper (validate_record_zstack_params) — no Qt needed.
-2. Full widget instantiation using qtbot (pytest-qt manages QApplication).
-
-The validation rules are extracted into a pure helper so they can be tested
-without any Qt machinery. The widget tests verify that the widget reads its
-fields correctly and delegates to the same rules.
-
-NOTE on testability (as required by the task brief):
-The validation logic lives in validate_record_zstack_params() in
-record_zstack_controller.py so that all constraint rules can be exercised
-without instantiating QWidget (the widget's validate() delegates to it).
-Creating a QApplication manually via PyQt5.QtWidgets.QApplication
-aborts because pytest-qt (loaded by napari's conftest) creates a PyQt6
-QApplication before the test body runs.  Using qtbot solves this — it is
-available in the test suite and is the pattern used by all other widget tests
-in tests/control/.
+The widget is built on lightweight stubs with qtbot (pytest-qt manages the
+QApplication).  ``_make_stub_controller`` and ``simulated_widget_deps`` are also
+imported by ``tests/test_record_zstack_load_coordinates.py``.
 """
 
-import sys
-from typing import List, Optional
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from qtpy.QtWidgets import QMessageBox
 
-from control.core.record_zstack_controller import validate_record_zstack_params as _validate_record_zstack_params
+from control.core.camera_geometry import CameraGeometry
+from control.core.record_zstack_controller import FrameRateTestResult
+
+BF = "BF LED matrix full"
+FL = "Fluorescence 488 nm Ex"
+FIXTURES = Path(__file__).parent / "files" / "record_zstack"
 
 
 # ---------------------------------------------------------------------------
@@ -36,133 +32,22 @@ from control.core.record_zstack_controller import validate_record_zstack_params 
 # ---------------------------------------------------------------------------
 
 
-def _make_channel(name: str = "BF LED matrix full"):
+def _make_channel(name: str = BF, exposure: float = 50.0, gain: float = 0.0, intensity: float = 50.0):
     """Return a minimal AcquisitionChannel with the given name."""
     from control.models.acquisition_config import AcquisitionChannel, CameraSettings, IlluminationSettings
 
     return AcquisitionChannel(
         name=name,
-        camera_settings=CameraSettings(exposure_time_ms=50.0, gain_mode=0.0),
-        illumination_settings=IlluminationSettings(intensity=50.0),
+        camera_settings=CameraSettings(exposure_time_ms=exposure, gain_mode=gain),
+        illumination_settings=IlluminationSettings(intensity=intensity),
     )
-
-
-def _base_params(**overrides):
-    """Return a dict of valid _validate_record_zstack_params kwargs, with optional overrides."""
-    defaults = dict(
-        base_path="/tmp/test",
-        selected_well_count=1,
-        recording_enabled=False,
-        fps=10.0,
-        duration_s=1.0,
-        recording_channel_name="BF LED matrix full",
-        zstack_enabled=True,
-        z_min=-3.0,
-        z_max=3.0,
-        step=1.0,
-        zstack_channel_names=["BF LED matrix full"],
-        use_laser_af=False,
-        laser_af_has_reference=False,
-    )
-    defaults.update(overrides)
-    return defaults
-
-
-# ---------------------------------------------------------------------------
-# Pure-function validation tests (no Qt required)
-# ---------------------------------------------------------------------------
-
-
-def test_validate_helper_no_base_path():
-    params = _base_params(base_path="")
-    assert _validate_record_zstack_params(**params) is not None
-
-
-def test_validate_helper_no_wells():
-    params = _base_params(selected_well_count=0)
-    assert _validate_record_zstack_params(**params) is not None
-
-
-def test_validate_helper_no_phases_enabled():
-    params = _base_params(recording_enabled=False, zstack_enabled=False)
-    assert _validate_record_zstack_params(**params) is not None
-
-
-def test_validate_helper_bad_zstack_range():
-    params = _base_params(z_min=3.0, z_max=-3.0)
-    assert _validate_record_zstack_params(**params) is not None
-
-
-def test_validate_helper_bad_zstack_step():
-    params = _base_params(step=0.0)
-    assert _validate_record_zstack_params(**params) is not None
-
-
-def test_validate_helper_zstack_no_channels():
-    params = _base_params(zstack_channel_names=[])
-    assert _validate_record_zstack_params(**params) is not None
-
-
-def test_validate_helper_recording_no_channel():
-    params = _base_params(recording_enabled=True, recording_channel_name=None, zstack_enabled=False)
-    assert _validate_record_zstack_params(**params) is not None
-
-
-def test_validate_helper_recording_bad_fps():
-    params = _base_params(recording_enabled=True, fps=0.0, zstack_enabled=False)
-    assert _validate_record_zstack_params(**params) is not None
-
-
-def test_validate_helper_laser_af_no_reference():
-    params = _base_params(use_laser_af=True, laser_af_has_reference=False)
-    assert _validate_record_zstack_params(**params) is not None
-
-
-def test_validate_helper_laser_af_with_reference():
-    params = _base_params(use_laser_af=True, laser_af_has_reference=True)
-    assert _validate_record_zstack_params(**params) is None
-
-
-def test_validate_helper_valid_zstack_only():
-    params = _base_params()
-    assert _validate_record_zstack_params(**params) is None
-
-
-def test_validate_helper_valid_recording_only():
-    params = _base_params(
-        recording_enabled=True,
-        fps=10.0,
-        duration_s=1.0,
-        recording_channel_name="BF LED matrix full",
-        zstack_enabled=False,
-    )
-    assert _validate_record_zstack_params(**params) is None
-
-
-def test_validate_helper_valid_both_phases():
-    params = _base_params(
-        recording_enabled=True,
-        fps=10.0,
-        duration_s=1.0,
-        recording_channel_name="BF LED matrix full",
-        zstack_enabled=True,
-    )
-    assert _validate_record_zstack_params(**params) is None
-
-
-# ---------------------------------------------------------------------------
-# Widget-level fixtures
-# ---------------------------------------------------------------------------
 
 
 def _make_stub_live_controller():
     """Stub liveController whose get_channels() returns two fake AcquisitionChannels."""
     ctrl = MagicMock()
-    ctrl.get_channels.return_value = [
-        _make_channel("BF LED matrix full"),
-        _make_channel("Fluorescence 488 nm Ex"),
-    ]
-    ctrl.currentConfiguration = _make_channel("BF LED matrix full")
+    ctrl.get_channels.return_value = [_make_channel(BF), _make_channel(FL)]
+    ctrl.currentConfiguration = _make_channel(BF)
     return ctrl
 
 
@@ -181,6 +66,18 @@ def _make_stub_scan_coordinates():
     return sc
 
 
+def _make_stub_controller():
+    """Stub RecordZStackController that records calls and reports not-in-progress.
+
+    It has no frame_rate_test_finished signal (like the bare, Qt-free controller), so the widget
+    hands the frame-rate test its own handler instead of a signal's emit.
+    """
+    ctrl = MagicMock()
+    ctrl.acquisition_in_progress.return_value = False
+    ctrl.frame_rate_test_finished = None
+    return ctrl
+
+
 @pytest.fixture
 def simulated_widget_deps(tmp_path):
     """Provide lightweight stub dependencies for RecordZStackMultiPointWidget."""
@@ -190,7 +87,7 @@ def simulated_widget_deps(tmp_path):
     return dict(
         stage=stage,
         navigationViewer=MagicMock(),
-        recordZStackController=MagicMock(),
+        recordZStackController=_make_stub_controller(),
         liveController=_make_stub_live_controller(),
         objectiveStore=_make_stub_objective_store(),
         scanCoordinates=_make_stub_scan_coordinates(),
@@ -199,2272 +96,1207 @@ def simulated_widget_deps(tmp_path):
     )
 
 
-# ---------------------------------------------------------------------------
-# Widget-level tests — use qtbot (pytest-qt) for QApplication management.
-# ---------------------------------------------------------------------------
-
-
-def test_validate_rejects_bad_zstack_and_builds_params(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    # Must set base path so validation can reach the z-stack checks
-    w.lineEdit_savingDir.setText("/tmp/test")
-
-    w.checkbox_zstack.setChecked(True)
-    w.entry_zmin.setValue(3.0)
-    w.entry_zmax.setValue(-3.0)  # invalid: max < min
-    assert w.validate() is not None  # returns an error string
-
-    w.entry_zmin.setValue(-3.0)
-    w.entry_zmax.setValue(3.0)
-    w.entry_step.setValue(1.0)
-    # Add one z-stack channel row so the phase is valid
-    w._add_zstack_channel_row(w.liveController.get_channels(w.objectiveStore.current_objective)[0].name)
-    assert w.validate() is None
-
-    params = w.build_parameters()
-    assert params.zstack_enabled and len(params.zstack_channels) == 1
-
-
-def test_validate_requires_base_path(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("")
-    w.checkbox_zstack.setChecked(True)
-    w.entry_zmin.setValue(-3.0)
-    w.entry_zmax.setValue(3.0)
-    w.entry_step.setValue(1.0)
-    w._add_zstack_channel_row("BF LED matrix full")
-    assert w.validate() is not None
-
-
-def test_validate_requires_phase_enabled(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test")
-    w.checkbox_zstack.setChecked(False)
-    w.checkbox_recording.setChecked(False)
-    assert w.validate() is not None
-
-
-def test_build_parameters_recording_phase(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test")
-    w.lineEdit_experimentID.setText("my_exp")
-    w.checkbox_recording.setChecked(True)
-    w.entry_fps.setValue(20.0)
-    w.entry_duration.setValue(5.0)
-    w.checkbox_zstack.setChecked(False)
-
-    params = w.build_parameters()
-    assert params.recording_enabled is True
-    assert params.fps == pytest.approx(20.0)
-    assert params.duration_s == pytest.approx(5.0)
-    assert params.experiment_id == "my_exp"
-    assert params.zstack_enabled is False
-    assert params.recording_channel is not None
-
-
-def test_build_parameters_includes_xy_mode_and_scan_settings(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test")
-    w.combobox_xy_mode.setCurrentText("Current Position")
-    w.entry_scan_size.setValue(1.5)
-    w.entry_overlap.setValue(12.0)
-
-    params = w.build_parameters()
-    assert params.xy_mode == "Current Position"
-    assert params.scan_size_mm == pytest.approx(1.5)
-    assert params.overlap_percent == pytest.approx(12.0)
-
-
-def test_add_zstack_channel_row_deduplicates(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w._add_zstack_channel_row("BF LED matrix full")
-    w._add_zstack_channel_row("BF LED matrix full")  # duplicate
-    # Both the internal list AND the table must stay at 1 entry after dedup.
-    assert w._zstack_channel_names.count("BF LED matrix full") == 1
-    assert w.zstack_channel_table.rowCount() == 1
-
-
-def test_zstack_channel_row_tooltip_shows_full_name(qtbot, simulated_widget_deps):
-    """The Channel column truncates long names visually (narrow Stretch column),
-    so the full name must be available as a tooltip on hover."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w._add_zstack_channel_row("Fluorescence 488 nm Ex")
-
-    item = w.zstack_channel_table.item(0, 0)
-    assert item.toolTip() == "Fluorescence 488 nm Ex"
-
-
-def test_validate_helper_recording_bad_duration():
-    params = _base_params(recording_enabled=True, duration_s=0.0, zstack_enabled=False)
-    assert _validate_record_zstack_params(**params) is not None
-
-
-# ---------------------------------------------------------------------------
-# E2: Copy-from-Live, dynamic z-stack rows, computed labels
-# ---------------------------------------------------------------------------
-
-
-def _make_live_channel(name: str, exposure: float, gain: float, intensity: float):
-    """Return an AcquisitionChannel stub with specific settings."""
-    from control.models.acquisition_config import AcquisitionChannel, CameraSettings, IlluminationSettings
-
-    return AcquisitionChannel(
-        name=name,
-        camera_settings=CameraSettings(exposure_time_ms=exposure, gain_mode=gain),
-        illumination_settings=IlluminationSettings(intensity=intensity),
-    )
-
-
-def test_copy_from_live_uses_selected_channels_own_settings(qtbot, simulated_widget_deps):
-    """Bug fix: the (Recording) button must refresh from the recording row's own
-    selected channel, not whatever channel currently happens to be active in the
-    Live tab (currentConfiguration) — clicking it must not switch the row's
-    channel selection either."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    simulated_widget_deps["liveController"].get_channels.return_value = [
-        _make_live_channel("BF LED matrix full", exposure=50.0, gain=0.0, intensity=50.0),
-        _make_live_channel("Fluorescence 488 nm Ex", exposure=33.0, gain=2.5, intensity=75.0),
-    ]
-    # Live tab is showing a *different* channel than the one selected in the
-    # recording row below — currentConfiguration must be ignored entirely.
-    simulated_widget_deps["liveController"].currentConfiguration = _make_live_channel(
-        "BF LED matrix full", exposure=999.0, gain=99.0, intensity=99.0
-    )
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.checkbox_recording.setChecked(True)
-    w._recording_ch_combo.setCurrentText("Fluorescence 488 nm Ex")
-    # Selecting the channel above already auto-seeds these same values via
-    # _on_recording_channel_changed; overwrite them so the assertions below
-    # can only pass if the button click itself re-applies them.
-    w._recording_exp_spin.setValue(1.0)
-    w._recording_gain_spin.setValue(1.0)
-    w._recording_illum_spin.setValue(1.0)
-    w.btn_copy_from_live.click()
-
-    # Channel selection must be unchanged.
-    assert w._recording_channel_name() == "Fluorescence 488 nm Ex"
-    # Spinboxes must reflect that channel's own settings, not currentConfiguration's.
-    assert w._recording_exposure() == pytest.approx(33.0)
-    assert w._recording_gain() == pytest.approx(2.5)
-    assert w._recording_illumination() == pytest.approx(75.0)
-
-
-def test_copy_zstack_row_from_live_uses_that_channels_own_settings(qtbot, simulated_widget_deps):
-    """Same bug fix as test_copy_from_live_uses_selected_channels_own_settings,
-    for the per-row z-stack '⟳' button: it must use the row's own channel
-    (name), not whatever channel currently happens to be active in the Live tab."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    simulated_widget_deps["liveController"].get_channels.return_value = [
-        _make_live_channel("BF LED matrix full", exposure=50.0, gain=0.0, intensity=50.0),
-        _make_live_channel("Fluorescence 488 nm Ex", exposure=33.0, gain=2.5, intensity=75.0),
-    ]
-    simulated_widget_deps["liveController"].currentConfiguration = _make_live_channel(
-        "BF LED matrix full", exposure=999.0, gain=99.0, intensity=99.0
-    )
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.checkbox_zstack.setChecked(True)
-    w._add_zstack_channel_row("Fluorescence 488 nm Ex")
-    w._copy_zstack_row_from_live("Fluorescence 488 nm Ex")
-
-    assert w._get_zstack_row_values("Fluorescence 488 nm Ex") == pytest.approx((33.0, 2.5, 75.0))
-
-
-def test_copy_from_live_leaves_row_unchanged_when_channel_not_found(qtbot, simulated_widget_deps, caplog):
-    """Bug fix: if the recording row's selected channel is no longer present in
-    liveController.get_channels() (e.g. the objective changed elsewhere and the
-    combo wasn't refreshed), the refresh button must leave the row's values
-    untouched and warn, rather than silently resetting them to
-    _channel_settings()'s hardcoded (50, 0, 50) fallback."""
-    import logging
-
-    from control.widgets import RecordZStackMultiPointWidget
-
-    simulated_widget_deps["liveController"].get_channels.return_value = [
-        _make_live_channel("BF LED matrix full", exposure=50.0, gain=0.0, intensity=50.0),
-        _make_live_channel("Fluorescence 488 nm Ex", exposure=33.0, gain=2.5, intensity=75.0),
-    ]
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.checkbox_recording.setChecked(True)
-    w._recording_ch_combo.setCurrentText("Fluorescence 488 nm Ex")
-    w._recording_exp_spin.setValue(12.0)
-    w._recording_gain_spin.setValue(3.0)
-    w._recording_illum_spin.setValue(20.0)
-
-    # Simulate the channel disappearing from the current objective's list
-    # without the (stale) combo selection being refreshed.
-    simulated_widget_deps["liveController"].get_channels.return_value = [
-        _make_live_channel("BF LED matrix full", exposure=50.0, gain=0.0, intensity=50.0),
-    ]
-
-    with caplog.at_level(logging.WARNING):
-        w.btn_copy_from_live.click()
-
-    assert w._recording_exposure() == pytest.approx(12.0)
-    assert w._recording_gain() == pytest.approx(3.0)
-    assert w._recording_illumination() == pytest.approx(20.0)
-    assert any("not found" in rec.message for rec in caplog.records)
-
-
-def test_add_remove_zstack_channel_row_syncs_list_and_table(qtbot, simulated_widget_deps):
-    """_add_zstack_channel_row and _remove_zstack_channel_row keep list+table in sync."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    assert w.zstack_channel_table.rowCount() == 0
-    assert len(w._zstack_channel_names) == 0
-
-    w._add_zstack_channel_row("BF LED matrix full")
-    assert w.zstack_channel_table.rowCount() == 1
-    assert len(w._zstack_channel_names) == 1
-
-    w._add_zstack_channel_row("Fluorescence 488 nm Ex")
-    assert w.zstack_channel_table.rowCount() == 2
-    assert len(w._zstack_channel_names) == 2
-
-    w._remove_zstack_channel_row("BF LED matrix full")
-    assert w.zstack_channel_table.rowCount() == 1
-    assert len(w._zstack_channel_names) == 1
-    assert "BF LED matrix full" not in w._zstack_channel_names
-    assert "Fluorescence 488 nm Ex" in w._zstack_channel_names
-
-
-def test_computed_plane_label_updates_on_spinbox_change(qtbot, simulated_widget_deps):
-    """label_zstack_planes updates to '→ N planes' when zmin/zmax/step change."""
-    from control.core.record_zstack_controller import zstack_plane_count
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.entry_zmin.setValue(-2.0)
-    w.entry_zmax.setValue(2.0)
-    w.entry_step.setValue(1.0)
-    expected = zstack_plane_count(-2.0, 2.0, 1.0)  # 5
-    assert str(expected) in w.label_zstack_planes.text()
-
-
-def test_computed_plane_label_degrades_gracefully_on_invalid_range(qtbot, simulated_widget_deps):
-    """label_zstack_planes shows '—' or '--' when z_max < z_min (invalid range)."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.entry_zmin.setValue(3.0)
-    w.entry_zmax.setValue(-3.0)  # invalid: max < min
-    # Label should show a placeholder, not crash
-    text = w.label_zstack_planes.text()
-    assert text == "-- planes"
-
-
-def test_build_parameters_uses_inline_editor_values(qtbot, simulated_widget_deps):
-    """build_parameters() reflects recording table row values, not just channel name lookup."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test")
-    w.checkbox_recording.setChecked(True)
-    w.checkbox_zstack.setChecked(False)
-
-    # Set values via the table's spinbox cell widgets
-    w._recording_exp_spin.setValue(99.0)
-    w._recording_gain_spin.setValue(1.5)
-    w._recording_illum_spin.setValue(60.0)
-
-    params = w.build_parameters()
-    assert params.recording_channel is not None
-    assert params.recording_channel.exposure_time == pytest.approx(99.0)
-    assert params.recording_channel.analog_gain == pytest.approx(1.5)
-    assert params.recording_channel.illumination_intensity == pytest.approx(60.0)
-
-
-def test_zstack_row_inline_editors_reflected_in_build_parameters(qtbot, simulated_widget_deps):
-    """Z-stack row inline editor values are used when build_parameters() is called."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test")
-    w.checkbox_zstack.setChecked(True)
-    w.checkbox_recording.setChecked(False)
-    w.entry_zmin.setValue(-1.0)
-    w.entry_zmax.setValue(1.0)
-    w.entry_step.setValue(1.0)
-
-    w._add_zstack_channel_row("BF LED matrix full")
-    # Set inline editor values for the row
-    w._set_zstack_row_values("BF LED matrix full", exposure=77.0, gain=3.0, illumination=45.0)
-
-    params = w.build_parameters()
-    assert len(params.zstack_channels) == 1
-    ch = params.zstack_channels[0]
-    assert ch.exposure_time == pytest.approx(77.0)
-    assert ch.analog_gain == pytest.approx(3.0)
-    assert ch.illumination_intensity == pytest.approx(45.0)
-
-
-# ---------------------------------------------------------------------------
-# E3: Start/Stop handoff to RecordZStackController
-# ---------------------------------------------------------------------------
-
-
-def _make_stub_controller():
-    """Stub RecordZStackController that records calls and reports not-in-progress."""
-    ctrl = MagicMock()
-    ctrl.acquisition_in_progress.return_value = False
-    return ctrl
-
-
-def _make_valid_widget(qtbot, deps):
-    """Return a widget pre-configured for a valid z-stack-only acquisition."""
+def _widget(qtbot, deps):
     from control.widgets import RecordZStackMultiPointWidget
 
     w = RecordZStackMultiPointWidget(**deps)
     qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test_e3")
-    w.checkbox_zstack.setChecked(True)
-    w.checkbox_recording.setChecked(False)
-    w.entry_zmin.setValue(-2.0)
-    w.entry_zmax.setValue(2.0)
-    w.entry_step.setValue(1.0)
-    w._add_zstack_channel_row("BF LED matrix full")
     return w
 
 
-def test_toggle_acquisition_start_valid_calls_run_acquisition(qtbot, simulated_widget_deps):
-    """Clicking Start with valid params calls run_acquisition() exactly once."""
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    w = _make_valid_widget(qtbot, simulated_widget_deps)
-
-    # Simulate pressing the Start button (checked=True)
-    w.toggle_acquisition(True)
-
-    ctrl.run_acquisition.assert_called_once()
-
-
-def test_toggle_acquisition_start_valid_pushes_params_to_controller(qtbot, simulated_widget_deps):
-    """Clicking Start with valid params calls run_acquisition(params) with correct values."""
-    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters
-
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    w = _make_valid_widget(qtbot, simulated_widget_deps)
-    w.toggle_acquisition(True)
-
-    # run_acquisition should be called once with a RecordZStackAcquisitionParameters object
-    ctrl.run_acquisition.assert_called_once()
-    call_args = ctrl.run_acquisition.call_args
-    params = call_args.args[0] if call_args.args else call_args.kwargs.get("params")
-    assert isinstance(params, RecordZStackAcquisitionParameters)
-    assert params.base_path == "/tmp/test_e3"
-    assert params.zstack_enabled is True
-    assert params.recording_enabled is False
-    assert params.z_min_um == pytest.approx(-2.0)
-    assert params.z_max_um == pytest.approx(2.0)
-    assert params.z_step_um == pytest.approx(1.0)
-
-
-def test_toggle_acquisition_start_invalid_no_phase_does_not_call_run(qtbot, simulated_widget_deps):
-    """Clicking Start with both phases disabled does NOT call run_acquisition()."""
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test_e3")
-    w.checkbox_zstack.setChecked(False)
-    w.checkbox_recording.setChecked(False)
-
-    with patch("control.widgets.QMessageBox.warning") as mock_warn:
-        w.toggle_acquisition(True)
-
-    ctrl.run_acquisition.assert_not_called()
-    mock_warn.assert_called_once()
-    # Button must be un-checked after a failed start
-    assert not w.btn_startAcquisition.isChecked()
-
-
-def test_toggle_acquisition_start_invalid_bad_zrange_shows_warning(qtbot, simulated_widget_deps):
-    """Clicking Start with z_max <= z_min pops a warning and does not start."""
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test_e3")
-    w.checkbox_zstack.setChecked(True)
-    w.entry_zmin.setValue(3.0)
-    w.entry_zmax.setValue(-3.0)  # invalid: max < min
-    w.entry_step.setValue(1.0)
-    w._add_zstack_channel_row("BF LED matrix full")
-
-    warning_args = []
-    with patch("control.widgets.QMessageBox.warning", side_effect=lambda *a: warning_args.append(a)):
-        w.toggle_acquisition(True)
-
-    ctrl.run_acquisition.assert_not_called()
-    assert len(warning_args) == 1
-    assert not w.btn_startAcquisition.isChecked()
-
-
-def test_toggle_acquisition_stop_calls_request_abort(qtbot, simulated_widget_deps):
-    """Un-pressing the Start button (pressed=False) calls request_abort()."""
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    w = _make_valid_widget(qtbot, simulated_widget_deps)
-
-    # Simulate pressing stop (unchecked)
-    w.toggle_acquisition(False)
-
-    ctrl.request_abort.assert_called_once()
-    ctrl.run_acquisition.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Confirmation dialog: recording plane summary shown before Start proceeds
-# ---------------------------------------------------------------------------
-
-
-def _make_valid_recording_widget(qtbot, deps, *, laser_af=False):
-    """Return a widget pre-configured for a valid recording-only acquisition.
-
-    Recording is enabled, Z-Stack is disabled. If laser_af is True, a stub
-    laser_autofocus_controller reporting a reference plane is wired in and
-    checkbox_laser_af is checked (needed for validate() to pass when Laser AF
-    is on) -- the caller is then free to set entry_recording_bottom_z.
-    """
-    from control.widgets import RecordZStackMultiPointWidget
-
-    deps = dict(deps)
-    if laser_af:
-        laser_ctrl = MagicMock()
-        laser_ctrl.laser_af_properties.has_reference = True
-        deps["laser_autofocus_controller"] = laser_ctrl
-
-    w = RecordZStackMultiPointWidget(**deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test_confirm")
-    w.checkbox_zstack.setChecked(False)
-    w.checkbox_recording.setChecked(True)
-    if laser_af:
-        w.checkbox_laser_af.setChecked(True)
+def _make_valid_widget(qtbot, deps, *, zi=False, r=False, zf=True):
+    """A widget with a base path and one BF row (a final z-stack only, unless flags say otherwise)."""
+    w = _widget(qtbot, deps)
+    w.lineEdit_savingDir.setText("/tmp/test_time_at_xy")
+    w._add_channel_row(BF, zi=zi, r=r, zf=zf)
     return w
 
 
-def test_toggle_acquisition_confirm_single_plane_summary_and_yes_proceeds(qtbot, simulated_widget_deps):
-    """Nz == 1: the confirmation dialog shows the single-plane summary and
-    answering Yes lets the acquisition start."""
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    w = _make_valid_recording_widget(qtbot, simulated_widget_deps, laser_af=True)
-    w.entry_recording_Nz.setValue(1)
-    w.entry_recording_bottom_z.setValue(-1.5)
-    w.entry_duration.setValue(2.0)
-
-    expected = f"1 plane @ {-1.5:+.1f} µm — {1 * 2.0:.1f} s/FOV"
-
-    captured = {}
+def _answer(reply, captured=None):
+    """A QMessageBox.question stand-in that records what was asked and answers *reply*."""
 
     def fake_question(parent, title, text, *args, **kwargs):
-        captured["title"] = title
-        captured["text"] = text
-        return QMessageBox.Yes
+        if captured is not None:
+            captured.update(title=title, text=text)
+        return reply
 
-    with patch("control.widgets.QMessageBox.question", side_effect=fake_question):
-        w.toggle_acquisition(True)
+    return patch("control.widgets.QMessageBox.question", side_effect=fake_question)
 
-    assert expected in captured["text"]
-    ctrl.run_acquisition.assert_called_once()
 
-
-def test_toggle_acquisition_confirm_multi_plane_summary_and_yes_proceeds(qtbot, simulated_widget_deps):
-    """Nz > 1: the confirmation dialog shows the multi-plane summary with the
-    correct computed top (bottom + (nz - 1) * dz) and answering Yes proceeds."""
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    w = _make_valid_recording_widget(qtbot, simulated_widget_deps, laser_af=True)
-    w.entry_recording_Nz.setValue(4)
-    w.entry_recording_bottom_z.setValue(-3.0)
-    w.entry_recording_dz.setValue(2.0)
-    # entry_duration has 0 decimals (whole seconds only) -- use a value that
-    # can't be affected by rounding.
-    w.entry_duration.setValue(3.0)
-
-    nz, bottom, dz, duration = 4, -3.0, 2.0, 3.0
-    top = bottom + (nz - 1) * dz
-    per_fov_s = nz * duration
-    expected = f"{nz} planes: {bottom:+.1f} … {top:+.1f} µm rel. reference — {per_fov_s:.1f} s/FOV"
-
-    captured = {}
-
-    def fake_question(parent, title, text, *args, **kwargs):
-        captured["text"] = text
-        return QMessageBox.Yes
-
-    with patch("control.widgets.QMessageBox.question", side_effect=fake_question):
-        w.toggle_acquisition(True)
-
-    assert expected in captured["text"]
-    ctrl.run_acquisition.assert_called_once()
-
-
-def test_toggle_acquisition_confirm_uses_zero_offset_when_laser_af_off(qtbot, simulated_widget_deps):
-    """Laser AF OFF: the summary's bottom must be 0.0, not whatever stale value
-    is left sitting in entry_recording_bottom_z from when Laser AF was on.
-
-    This mirrors build_parameters()'s effective-value logic
-    (entry_recording_bottom_z.value() if checkbox_laser_af.isChecked() else 0.0)
-    -- the dialog must not show a number that doesn't match what actually runs.
-    """
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    laser_ctrl = MagicMock()
-    laser_ctrl.laser_af_properties.has_reference = True
-    simulated_widget_deps["laser_autofocus_controller"] = laser_ctrl
-
-    w = _make_valid_recording_widget(qtbot, simulated_widget_deps, laser_af=True)
-    # Leave a nonzero stale value in the field, then turn Laser AF back off.
-    w.entry_recording_bottom_z.setValue(7.5)
-    w.checkbox_laser_af.setChecked(False)
-    w.entry_recording_Nz.setValue(1)
-    w.entry_duration.setValue(1.0)
-
-    assert w.entry_recording_bottom_z.value() == pytest.approx(7.5)  # stale value still sitting there
-    assert not w.checkbox_laser_af.isChecked()
-
-    captured = {}
-
-    def fake_question(parent, title, text, *args, **kwargs):
-        captured["text"] = text
-        return QMessageBox.Yes
-
-    with patch("control.widgets.QMessageBox.question", side_effect=fake_question):
-        w.toggle_acquisition(True)
-
-    assert "+0.0" in captured["text"]
-    assert "+7.5" not in captured["text"]
-    ctrl.run_acquisition.assert_called_once()
-
-
-def test_toggle_acquisition_confirm_no_aborts_start(qtbot, simulated_widget_deps):
-    """Answering No to the confirmation dialog must NOT start the acquisition,
-    and must leave the Start button unchecked."""
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    w = _make_valid_recording_widget(qtbot, simulated_widget_deps)
-    w.btn_startAcquisition.setChecked(True)
-
-    with patch("control.widgets.QMessageBox.question", return_value=QMessageBox.No):
-        w.toggle_acquisition(True)
-
-    ctrl.run_acquisition.assert_not_called()
-    assert not w.btn_startAcquisition.isChecked()
-
-
-def test_toggle_acquisition_no_confirm_when_recording_disabled(qtbot, simulated_widget_deps):
-    """When the Recording phase is not enabled, no confirmation dialog should
-    appear at all -- Start proceeds straight through as before."""
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    w = _make_valid_widget(qtbot, simulated_widget_deps)  # zstack-only, recording off
-    assert not w.checkbox_recording.isChecked()
-
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("QMessageBox.question must not be called when recording is disabled")
-
-    with patch("control.widgets.QMessageBox.question", side_effect=fail_if_called):
-        w.toggle_acquisition(True)
-
-    ctrl.run_acquisition.assert_called_once()
-
-
-def test_recording_bottom_z_tooltip_matches_caption(qtbot, simulated_widget_deps):
-    """The entry_recording_bottom_z tooltip must track the same multi/single
-    wording as its label caption (label_recording_bottom_z), so it doesn't go
-    stale (e.g. still saying "Bottom plane offset" when Nz == 1 and the label
-    already reverted to "Z offset:")."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    # Default is Nz == 1 (single plane).
-    assert w.entry_recording_Nz.value() == 1
-    assert w.label_recording_bottom_z.text() == "Z offset:"
-    assert w.entry_recording_bottom_z.toolTip() == "Offset relative to the Z reference"
-
-    w.entry_recording_Nz.setValue(3)
-    assert w.label_recording_bottom_z.text() == "Bottom Z offset:"
-    assert w.entry_recording_bottom_z.toolTip() == "Bottom plane offset relative to the Z reference"
-
-    w.entry_recording_Nz.setValue(1)
-    assert w.label_recording_bottom_z.text() == "Z offset:"
-    assert w.entry_recording_bottom_z.toolTip() == "Offset relative to the Z reference"
-
-
-# ---------------------------------------------------------------------------
-# New tests added by fix-batch3
-# ---------------------------------------------------------------------------
-
-
-# --- IMPORTANT 9b: frame_count < 1 rejected ---
-
-
-def test_validate_helper_recording_zero_frame_count():
-    """fps × duration rounds to 0 frames — must be rejected."""
-    # 0.1 fps × 1.0 s = 0.1 → round → 0 frames
-    params = _base_params(recording_enabled=True, fps=0.1, duration_s=1.0, zstack_enabled=False)
-    err = _validate_record_zstack_params(**params)
-    assert err is not None
-    assert "0 frames" in err or "frame" in err.lower()
-
-
-def test_validate_helper_recording_one_frame_is_valid():
-    """fps × duration = exactly 1 frame — must pass."""
-    # 1.0 fps × 1.0 s = 1 frame
-    params = _base_params(recording_enabled=True, fps=1.0, duration_s=1.0, zstack_enabled=False)
-    assert _validate_record_zstack_params(**params) is None
-
-
-def test_validate_helper_recording_borderline_zero_frames():
-    """fps × duration just below 0.5 → rounds to 0 — must be rejected."""
-    params = _base_params(recording_enabled=True, fps=0.4, duration_s=1.0, zstack_enabled=False)
-    err = _validate_record_zstack_params(**params)
-    assert err is not None
-
-
-# --- IMPORTANT 3+4: well count handles None / glass-slide ---
-
-
-def test_get_selected_well_count_glass_slide_returns_one(qtbot, simulated_widget_deps):
-    """_get_selected_well_count returns 1 (not 0) when scanCoordinates.get_selected_wells() is None (glass-slide)."""
-    from unittest.mock import MagicMock
-    from control.widgets import RecordZStackMultiPointWidget
-
-    sc = MagicMock()
-    sc.get_selected_wells.return_value = None  # glass-slide: returns None
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    assert w._get_selected_well_count() == 1
-
-
-def test_get_selected_well_count_empty_wellplate_returns_zero(qtbot, simulated_widget_deps):
-    """_get_selected_well_count returns 0 when no wells are selected on a wellplate."""
-    from unittest.mock import MagicMock
-    from control.widgets import RecordZStackMultiPointWidget
-
-    sc = MagicMock()
-    sc.get_selected_wells.return_value = {}  # wellplate, no wells selected
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    assert w._get_selected_well_count() == 0
-
-
-def test_get_selected_well_count_wellplate_selection(qtbot, simulated_widget_deps):
-    """_get_selected_well_count reflects current well_selector, not a stale cached widget."""
-    from unittest.mock import MagicMock
-    from control.widgets import RecordZStackMultiPointWidget
-
-    sc = MagicMock()
-    sc.get_selected_wells.return_value = {"A1": (0.0, 0.0), "A2": (1.0, 0.0)}
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    assert w._get_selected_well_count() == 2
-
-    # Simulate a plate-format change that updates the scanCoordinates well_selector
-    sc.get_selected_wells.return_value = {"B1": (0.0, 1.0)}
-    assert w._get_selected_well_count() == 1  # picks up new selection, no stale cache
-
-
-def test_validate_rejects_no_wells_selected(qtbot, simulated_widget_deps):
-    """validate() returns an error when no wells are selected (dict empty from scanCoordinates)."""
-    from unittest.mock import MagicMock
-    from control.widgets import RecordZStackMultiPointWidget
-
-    sc = MagicMock()
-    sc.get_selected_wells.return_value = {}  # no wells
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test")
-    w.checkbox_zstack.setChecked(True)
-    w.entry_zmin.setValue(-1.0)
-    w.entry_zmax.setValue(1.0)
-    w.entry_step.setValue(1.0)
-    w._add_zstack_channel_row("BF LED matrix full")
-
-    err = w.validate()
-    assert err is not None
-    assert "well" in err.lower()
-
-
-# --- MEDIUM: _abort_event threading.Event path ---
-
-
-def test_abort_event_set_on_request_abort():
-    """request_abort() sets the abort event; run_acquisition() clears it before starting."""
-    import threading
-    from unittest.mock import MagicMock, patch
-
-    ctrl_kwargs = dict(
-        microscope=MagicMock(),
-        live_controller=MagicMock(),
-        laser_autofocus_controller=MagicMock(),
-        objective_store=MagicMock(),
-        scan_coordinates=MagicMock(),
-        callbacks=MagicMock(),
-    )
-
-    with patch("control._def.Acquisition.USE_MULTIPROCESSING", False):
-        from control.core.record_zstack_controller import RecordZStackController
-
-        ctrl = RecordZStackController(**ctrl_kwargs)
-
-        # Event should start clear
-        assert not ctrl._abort_event.is_set()
-
-        ctrl.request_abort()
-        assert ctrl._abort_event.is_set()
-
-        # Simulate run_acquisition clearing the event before spawning the worker
-        ctrl._abort_event.clear()
-        assert not ctrl._abort_event.is_set()
-
-
-# ---------------------------------------------------------------------------
-# Fix-batch5: signal_acquisition_started wiring
-# ---------------------------------------------------------------------------
-
-
-def test_signal_acquisition_started_emits_true_on_start(qtbot, simulated_widget_deps):
-    """signal_acquisition_started(True) is emitted when toggle_acquisition(True) succeeds."""
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    w = _make_valid_widget(qtbot, simulated_widget_deps)
-
-    emitted = []
-    w.signal_acquisition_started.connect(emitted.append)
-
-    w.toggle_acquisition(True)
-
-    assert emitted == [True]
-
-
-def test_signal_acquisition_started_not_emitted_on_invalid_start(qtbot, simulated_widget_deps):
-    """signal_acquisition_started must NOT emit when validation rejects the start."""
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test")
-    w.checkbox_zstack.setChecked(False)
-    w.checkbox_recording.setChecked(False)
-
-    emitted = []
-    w.signal_acquisition_started.connect(emitted.append)
-
-    with patch("control.widgets.QMessageBox.warning"):
-        w.toggle_acquisition(True)
-
-    assert emitted == []
-
-
-def test_signal_acquisition_started_emits_false_on_finish(qtbot, simulated_widget_deps):
-    """signal_acquisition_started(False) is emitted when acquisition_is_finished() is called."""
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    w = _make_valid_widget(qtbot, simulated_widget_deps)
-
-    emitted = []
-    w.signal_acquisition_started.connect(emitted.append)
-
-    w.acquisition_is_finished()
-
-    assert emitted == [False]
-
-
-def test_signal_acquisition_started_emitted_before_run_acquisition(qtbot, simulated_widget_deps):
-    """emit(True) must happen BEFORE run_acquisition() spawns the worker thread.
-
-    Otherwise a fast/one-frame acquisition could finish (emit False) before this
-    widget reaches the emit(True) line, leaving the UI permanently locked.
-    """
-    events = []
-
-    ctrl = _make_stub_controller()
-    ctrl.run_acquisition.side_effect = lambda *a, **k: events.append("run")
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    w = _make_valid_widget(qtbot, simulated_widget_deps)
-    w.signal_acquisition_started.connect(lambda started: events.append(f"emit({started})"))
-
-    w.toggle_acquisition(True)
-
-    # The True emit must come first, then run_acquisition.
-    assert events == ["emit(True)", "run"]
-
-
-def test_signal_acquisition_started_emits_false_when_run_raises(qtbot, simulated_widget_deps):
-    """If run_acquisition() raises, the UI is unlocked: emit(True) then emit(False)."""
-    ctrl = _make_stub_controller()
-    ctrl.run_acquisition.side_effect = RuntimeError("boom starting worker")
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    w = _make_valid_widget(qtbot, simulated_widget_deps)
-
-    emitted = []
-    w.signal_acquisition_started.connect(emitted.append)
-
-    w.toggle_acquisition(True)
-
-    assert emitted == [True, False]
-    # Button must be un-checked after a failed start.
-    assert not w.btn_startAcquisition.isChecked()
-
-
-# ---------------------------------------------------------------------------
-# FOV-grid wiring tests (entry_scan_size / entry_overlap / combobox_shape)
-# ---------------------------------------------------------------------------
-
-
-def test_entry_scan_size_exists(qtbot, simulated_widget_deps):
-    """entry_scan_size widget is created on the widget."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    assert hasattr(w, "entry_scan_size")
-
-
-def test_fov_grid_wired_overlap_calls_set_well_coordinates(qtbot, simulated_widget_deps):
-    """Changing entry_overlap triggers scanCoordinates.set_well_coordinates with correct args."""
-    from unittest.mock import MagicMock
-    from control.widgets import RecordZStackMultiPointWidget
-
-    sc = MagicMock()
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    sc.reset_mock()
-    w.entry_overlap.setValue(20.0)
-
-    sc.set_well_coordinates.assert_called()
-    call_args = sc.set_well_coordinates.call_args
-    _scan_size_mm, overlap_pct, _shape = call_args.args
-    assert overlap_pct == pytest.approx(20.0)
-
-
-def test_fov_grid_wired_scan_size_calls_set_well_coordinates(qtbot, simulated_widget_deps):
-    """Changing entry_scan_size triggers scanCoordinates.set_well_coordinates with correct args."""
-    from unittest.mock import MagicMock
-    from control.widgets import RecordZStackMultiPointWidget
-
-    sc = MagicMock()
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    sc.reset_mock()
-    w.entry_scan_size.setValue(2.5)
-
-    sc.set_well_coordinates.assert_called()
-    call_args = sc.set_well_coordinates.call_args
-    scan_size_mm, _overlap_pct, _shape = call_args.args
-    assert scan_size_mm == pytest.approx(2.5)
-
-
-def test_fov_grid_wired_shape_calls_set_well_coordinates(qtbot, simulated_widget_deps):
-    """Changing combobox_shape triggers scanCoordinates.set_well_coordinates with correct shape."""
-    from unittest.mock import MagicMock
-    from control.widgets import RecordZStackMultiPointWidget
-
-    sc = MagicMock()
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    sc.reset_mock()
-    w.combobox_shape.setCurrentText("Circle")
-
-    sc.set_well_coordinates.assert_called()
-    call_args = sc.set_well_coordinates.call_args
-    _scan_size_mm, _overlap_pct, shape = call_args.args
-    assert shape == "Circle"
-
-
-def test_fov_grid_wired_set_well_coordinates_receives_all_three_args(qtbot, simulated_widget_deps):
-    """_update_scan_regions passes scan_size_mm, overlap_percent, shape to set_well_coordinates."""
-    from unittest.mock import MagicMock
-    from control.widgets import RecordZStackMultiPointWidget
-
-    sc = MagicMock()
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.entry_scan_size.setValue(1.5)
-    w.entry_overlap.setValue(15.0)
-    w.combobox_shape.setCurrentText("Rectangle")
-
-    sc.reset_mock()
-    w._update_scan_regions()
-
-    sc.set_well_coordinates.assert_called_once_with(pytest.approx(1.5), pytest.approx(15.0), "Rectangle")
-
-
-def test_fov_grid_clears_regions_before_set_well_coordinates(qtbot, simulated_widget_deps):
-    """_update_scan_regions must clear_regions() BEFORE set_well_coordinates().
-
-    Regression guard: set_well_coordinates only adds wells not already present, so
-    without clearing first, already-selected wells keep their old tile geometry and
-    a new size/overlap/shape is silently ignored.
-    """
-    from unittest.mock import MagicMock, call
-    from control.widgets import RecordZStackMultiPointWidget
-
-    sc = MagicMock()
-    sc.has_regions.return_value = True  # there is an existing region to clear
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    sc.reset_mock()
-    sc.has_regions.return_value = True
-    w._update_scan_regions()
-
-    # clear_regions must be called, and must precede set_well_coordinates.
-    sc.clear_regions.assert_called_once()
-    sc.set_well_coordinates.assert_called_once()
-    relevant = [c for c in sc.method_calls if c[0] in ("clear_regions", "set_well_coordinates")]
-    assert relevant[0] == call.clear_regions()
-    assert relevant[1][0] == "set_well_coordinates"
-
-
-def test_fov_grid_no_crash_without_scan_coordinates(qtbot, simulated_widget_deps):
-    """_update_scan_regions is a no-op when scanCoordinates is None."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    simulated_widget_deps["scanCoordinates"] = None
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    # Must not raise
-    w._update_scan_regions()
-
-
-def test_toggle_acquisition_calls_update_scan_regions_before_run(qtbot, simulated_widget_deps):
-    """toggle_acquisition calls _update_scan_regions before run_acquisition."""
-    from unittest.mock import MagicMock
-
-    sc = MagicMock()
-    # Non-empty well selection so validate() passes (no modal warning dialog).
-    sc.get_selected_wells.return_value = {"A1": (0.0, 0.0)}
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-
-    w = _make_valid_widget(qtbot, simulated_widget_deps)
-    w.scanCoordinates = sc
-
-    sc.reset_mock()
-    ctrl.reset_mock()
-    ctrl.acquisition_in_progress.return_value = False
-
-    call_order = []
-    sc.set_well_coordinates.side_effect = lambda *a: call_order.append("set_well_coordinates")
-    ctrl.run_acquisition.side_effect = lambda *a: call_order.append("run_acquisition")
-
-    w.toggle_acquisition(True)
-
-    assert "set_well_coordinates" in call_order
-    assert "run_acquisition" in call_order
-    assert call_order.index("set_well_coordinates") < call_order.index("run_acquisition")
-
-
-def test_refresh_channel_list_repopulates_combos(qtbot, simulated_widget_deps):
-    """Channel sets are per-objective: after an objective/profile change the
-    combos must repopulate, or stale names silently fall back to a bare
-    channel with no illumination source (dark acquisition)."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.liveController.get_channels.return_value = [
-        _make_channel("New Channel A"),
-        _make_channel("New Channel B"),
-    ]
-    w.refresh_channel_list()
-
-    rec_names = [w._recording_ch_combo.itemText(i) for i in range(w._recording_ch_combo.count())]
-    add_names = [w.combobox_zstack_add_channel.itemText(i) for i in range(w.combobox_zstack_add_channel.count())]
-    assert rec_names == ["New Channel A", "New Channel B"]
-    assert add_names == ["New Channel A", "New Channel B"]
-
-
-def test_refresh_channel_list_drops_stale_zstack_rows(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w._add_zstack_channel_row("BF LED matrix full")  # valid for the old objective
-
-    w.liveController.get_channels.return_value = [_make_channel("New Channel A")]
-    w.refresh_channel_list()
-
-    assert "BF LED matrix full" not in w._zstack_channel_names
-
-
-def test_refresh_channel_list_preserves_state_on_failure(qtbot, simulated_widget_deps):
-    """Round-2: a transient get_channels failure (or empty result) during an
-    objective/profile switch must NOT wipe the user's configured z-stack rows
-    and channel combos — keep the existing lists until a successful refresh."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w._add_zstack_channel_row("BF LED matrix full")
-    combo_count_before = w._recording_ch_combo.count()
-
-    w.liveController.get_channels.side_effect = RuntimeError("config repo hiccup")
-    w.refresh_channel_list()
-    assert w._zstack_channel_names == ["BF LED matrix full"], "rows wiped on transient failure"
-    assert w._recording_ch_combo.count() == combo_count_before, "combo wiped on transient failure"
-
-    w.liveController.get_channels.side_effect = None
-    w.liveController.get_channels.return_value = []
-    w.refresh_channel_list()
-    assert w._zstack_channel_names == ["BF LED matrix full"], "rows wiped on empty channel list"
-    assert w._recording_ch_combo.count() == combo_count_before
-
-
-def test_on_well_selection_changed_rebuilds_regions(qtbot, simulated_widget_deps):
-    """R7: well clicks while this tab is current must rebuild the FOV grid so
-    the navigation viewer shows scan coverage (wellplate's handler early-returns
-    for other tabs, leaving this tab's preview inert)."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    sc = w.scanCoordinates
-    sc.reset_mock()
-
-    w.on_well_selection_changed()
-
-    assert sc.set_well_coordinates.called, "well selection change did not rebuild the FOV grid"
-
-
-def test_refresh_channel_list_warns_on_silent_selection_swap(qtbot, simulated_widget_deps, caplog):
-    """R8: when the previously selected recording channel vanishes after an
-    objective/profile change, the combo falls back to the first channel — that
-    swap must be loud, or the next Start records the wrong channel."""
-    import logging
-
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    # Select the second channel, then refresh with a set that lacks it.
-    w._recording_ch_combo.setCurrentIndex(1)
-    prev = w._recording_ch_combo.currentText()
-    w.liveController.get_channels.return_value = [_make_channel("Only Channel")]
-
-    with caplog.at_level(logging.WARNING):
-        w.refresh_channel_list()
-
-    assert w._recording_ch_combo.currentText() == "Only Channel"
-    assert any(
-        prev in rec.message and "Only Channel" in rec.message for rec in caplog.records
-    ), f"no warning about the recording selection changing from {prev!r}"
-
-
-def test_refresh_channel_list_preserves_user_edited_recording_settings(qtbot, simulated_widget_deps):
-    """R9: refresh_channel_list() must not silently reset the user's manually
-    edited recording exposure/gain/illumination when the selected channel is
-    still available afterward — even though repopulating the combo transiently
-    fires currentIndexChanged for other channels along the way."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w._recording_exp_spin.setValue(999.0)
-    w._recording_gain_spin.setValue(77.0)
-    w._recording_illum_spin.setValue(88.0)
-
-    # Same channel list, same selection still available (e.g. an objective
-    # switch that doesn't change the configured channels).
-    w.refresh_channel_list()
-
-    assert w._recording_exposure() == pytest.approx(999.0)
-    assert w._recording_gain() == pytest.approx(77.0)
-    assert w._recording_illumination() == pytest.approx(88.0)
-
-
-# ---------------------------------------------------------------------------
-# Channel-add seeds from the channel's configured live-controller settings
-# (instead of the hardcoded 50 ms / 0 gain / 50% defaults).
-# ---------------------------------------------------------------------------
-
-
-def test_zstack_add_channel_seeds_from_channel_config(qtbot, simulated_widget_deps):
-    """Clicking + Add on a channel must seed its row from that channel's own
-    configured exposure/gain/illumination, not the hardcoded (50, 0, 50)."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    simulated_widget_deps["liveController"].get_channels.return_value = [
-        _make_live_channel("Fluorescence 488 nm Ex", exposure=123.0, gain=4.0, intensity=77.0),
-    ]
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.checkbox_zstack.setChecked(True)  # unchecked group box disables its children
-    w.combobox_zstack_add_channel.setCurrentText("Fluorescence 488 nm Ex")
-    w.btn_zstack_add_channel.click()
-
-    exposure, gain, illum = w._get_zstack_row_values("Fluorescence 488 nm Ex")
-    assert exposure == pytest.approx(123.0)
-    assert gain == pytest.approx(4.0)
-    assert illum == pytest.approx(77.0)
-
-
-def test_recording_row_seeds_from_channel_config_on_construction(qtbot, simulated_widget_deps):
-    """The recording table's initial row must reflect the first channel's own
-    configured settings, not the hardcoded (50, 0, 50) defaults."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    simulated_widget_deps["liveController"].get_channels.return_value = [
-        _make_live_channel("BF LED matrix full", exposure=12.0, gain=1.5, intensity=33.0),
-        _make_live_channel("Fluorescence 488 nm Ex", exposure=123.0, gain=4.0, intensity=77.0),
-    ]
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    assert w._recording_channel_name() == "BF LED matrix full"
-    assert w._recording_exposure() == pytest.approx(12.0)
-    assert w._recording_gain() == pytest.approx(1.5)
-    assert w._recording_illumination() == pytest.approx(33.0)
-
-
-def test_recording_row_seeds_from_channel_config_on_selection_change(qtbot, simulated_widget_deps):
-    """Switching the recording channel combo must reseed exposure/gain/illum
-    from the newly selected channel's own configured settings."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    simulated_widget_deps["liveController"].get_channels.return_value = [
-        _make_live_channel("BF LED matrix full", exposure=12.0, gain=1.5, intensity=33.0),
-        _make_live_channel("Fluorescence 488 nm Ex", exposure=123.0, gain=4.0, intensity=77.0),
-    ]
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w._recording_ch_combo.setCurrentText("Fluorescence 488 nm Ex")
-
-    assert w._recording_exposure() == pytest.approx(123.0)
-    assert w._recording_gain() == pytest.approx(4.0)
-    assert w._recording_illumination() == pytest.approx(77.0)
-
-
-# ---------------------------------------------------------------------------
-# XY / Time tabbed row (mirrors WellplateMultiPointWidget, skipping Z).
-# ---------------------------------------------------------------------------
-
-
-def test_checkbox_xy_exists_and_defaults_checked(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    assert w.checkbox_xy.isChecked() is True
-    assert w.combobox_xy_mode.isEnabled() is True
-    # isHidden() reflects the explicit show/hide flag; isVisible() would be
-    # False regardless since the top-level widget itself is never shown().
-    assert w.xy_controls_frame.isHidden() is False
-
-
-def test_unchecking_xy_hides_scan_grid_controls(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.checkbox_xy.setChecked(False)
-    assert w.xy_controls_frame.isHidden() is True
-    assert w.combobox_xy_mode.isEnabled() is False
-
-    w.checkbox_xy.setChecked(True)
-    assert w.xy_controls_frame.isHidden() is False
-    assert w.combobox_xy_mode.isEnabled() is True
-
-
-def test_combobox_xy_mode_has_current_position_and_select_wells(qtbot, simulated_widget_deps):
-    """The XY mode combo offers both modes, defaulting to Select Wells so
-    existing tiling behavior is unchanged out of the box."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    items = [w.combobox_xy_mode.itemText(i) for i in range(w.combobox_xy_mode.count())]
-    assert items == ["Current Position", "Select Wells", "Load Coordinates"]
-    assert w.combobox_xy_mode.currentText() == "Select Wells"
-
-
-def test_selecting_current_position_mode_hides_scan_grid_controls(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.combobox_xy_mode.setCurrentText("Current Position")
-    assert w.xy_controls_frame.isHidden() is True
-
-    w.combobox_xy_mode.setCurrentText("Select Wells")
-    assert w.xy_controls_frame.isHidden() is False
-
-
-def test_current_position_mode_uses_live_stage_position(qtbot, simulated_widget_deps):
-    """Current Position mode must build a single region at the live stage
-    position via add_region, bypassing well selection entirely."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    sc = MagicMock()
-    sc.has_regions.return_value = False
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    sc.set_well_coordinates.reset_mock()  # construction seeds the default Select Wells mode
-
-    w.combobox_xy_mode.setCurrentText("Current Position")
-
-    sc.add_region.assert_called_with("current", 1.5, 2.5, 0.01, 0, "Square")
-    sc.set_well_coordinates.assert_not_called()
-
-
-def test_unchecking_xy_forces_current_position_and_restores_on_recheck(qtbot, simulated_widget_deps):
-    """Mirrors WellplateMultiPointWidget: unchecking XY forces Current
-    Position (single stage-position FOV) and disables the mode combo;
-    re-checking restores whatever mode was previously selected."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    sc = MagicMock()
-    sc.has_regions.return_value = False
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.checkbox_xy.setChecked(False)
-    assert w.combobox_xy_mode.currentText() == "Current Position"
-    assert w.combobox_xy_mode.isEnabled() is False
-    sc.add_region.assert_called_with("current", 1.5, 2.5, 0.01, 0, "Square")
-
-    w.checkbox_xy.setChecked(True)
-    assert w.combobox_xy_mode.currentText() == "Select Wells"
-    assert w.combobox_xy_mode.isEnabled() is True
-
-
-def test_toggling_xy_rebuilds_scan_region_exactly_once(qtbot, simulated_widget_deps):
-    """Toggling XY changes combobox_xy_mode's text, which already triggers
-    _update_scan_regions() via _on_xy_mode_changed — _on_xy_toggled must not
-    also call it unconditionally, or the region gets rebuilt twice (including
-    an extra stage.get_pos() query) per toggle."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    sc = MagicMock()
-    sc.has_regions.return_value = False
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.stage.get_pos.reset_mock()
-    w.checkbox_xy.setChecked(False)
-    w.stage.get_pos.assert_called_once()
-
-    w.stage.get_pos.reset_mock()
-    sc.set_well_coordinates.reset_mock()
-    w.checkbox_xy.setChecked(True)
-    sc.set_well_coordinates.assert_called_once()
-
-
-def test_validate_current_position_mode_bypasses_well_selection(qtbot, simulated_widget_deps):
-    """With no wells selected, Current Position mode must still validate
-    (it doesn't need any wells), while Select Wells mode still requires one."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    sc = MagicMock()
-    sc.get_selected_wells.return_value = {}
-    simulated_widget_deps["scanCoordinates"] = sc
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test")
-    w.checkbox_zstack.setChecked(True)
-    w.entry_zmin.setValue(-1.0)
-    w.entry_zmax.setValue(1.0)
-    w.entry_step.setValue(1.0)
-    w._add_zstack_channel_row("BF LED matrix full")
-
-    assert w.validate() is not None  # Select Wells (default) with 0 wells: still rejected
-
-    w.combobox_xy_mode.setCurrentText("Current Position")
-    assert w.validate() is None
-
-
-# ---------------------------------------------------------------------------
-# Time tabbed row (mirrors WellplateMultiPointWidget).
-# ---------------------------------------------------------------------------
-
-
-def test_checkbox_time_exists_and_defaults_unchecked(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    assert w.checkbox_time.isChecked() is False
-    assert w.time_controls_frame.isHidden() is True
-
-
-def test_checking_time_shows_nt_dt_controls(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.checkbox_time.setChecked(True)
-    assert w.time_controls_frame.isHidden() is False
-
-
-def test_unchecking_time_resets_and_restores_nt_dt(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w.checkbox_time.setChecked(True)
-    w.entry_Nt.setValue(5)
-    w.entry_dt.setValue(10.0)
-
-    w.checkbox_time.setChecked(False)
-    assert w.entry_Nt.value() == 1
-    assert w.entry_dt.value() == pytest.approx(0.0)
-    assert w.time_controls_frame.isHidden() is True
-
-    w.checkbox_time.setChecked(True)
-    assert w.entry_Nt.value() == 5
-    assert w.entry_dt.value() == pytest.approx(10.0)
-
-
-# ---------------------------------------------------------------------------
-# AcquisitionYAMLDropMixin integration (Task 7)
-# ---------------------------------------------------------------------------
-
-
-def test_apply_yaml_settings_round_trips_all_fields(qtbot, simulated_widget_deps):
-    from control.acquisition_yaml_loader import RecordZStackYAMLData
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    yaml_data = RecordZStackYAMLData(
-        widget_type="record_zstack",
-        xy_mode="Current Position",
-        nt=4,
-        delta_t_s=2.5,
-        laser_af=True,
-        recording_enabled=True,
-        recording_channel={
-            "name": "BF LED matrix full",
-            "camera_settings": {"exposure_time_ms": 33.0, "gain_mode": 1.0},
-            "illumination_settings": {"intensity": 60.0},
-        },
-        fps=25.0,
-        duration_s=3.0,
-        recording_bottom_z_offset_um=2.0,
-        recording_nz=3,
-        recording_dz_um=1.5,
-        zstack_enabled=True,
-        zstack_channels=[
-            {
-                "name": "Fluorescence 488 nm Ex",
-                "camera_settings": {"exposure_time_ms": 80.0, "gain_mode": 0.5},
-                "illumination_settings": {"intensity": 40.0},
-            }
-        ],
-        z_min_um=-4.0,
-        z_max_um=4.0,
-        z_step_um=2.0,
-        scan_size_mm=2.0,
-        overlap_percent=15.0,
-    )
-
-    w._apply_yaml_settings(yaml_data)
-
-    assert w.entry_Nt.value() == 4
-    assert w.entry_dt.value() == pytest.approx(2.5)
-    assert w.checkbox_laser_af.isChecked() is True
-    assert w.checkbox_recording.isChecked() is True
-    assert w._recording_channel_name() == "BF LED matrix full"
-    assert w._recording_exposure() == pytest.approx(33.0)
-    assert w._recording_gain() == pytest.approx(1.0)
-    assert w._recording_illumination() == pytest.approx(60.0)
-    assert w.entry_fps.value() == pytest.approx(25.0)
-    assert w.entry_duration.value() == pytest.approx(3.0)
-    assert w.entry_recording_bottom_z.value() == pytest.approx(2.0)
-    assert w.entry_recording_Nz.value() == 3
-    assert w.entry_recording_dz.value() == pytest.approx(1.5)
-    assert w.checkbox_zstack.isChecked() is True
-    assert w._zstack_channel_names == ["Fluorescence 488 nm Ex"]
-    assert w._get_zstack_row_values("Fluorescence 488 nm Ex") == pytest.approx((80.0, 0.5, 40.0))
-    assert w.entry_zmin.value() == pytest.approx(-4.0)
-    assert w.entry_zmax.value() == pytest.approx(4.0)
-    assert w.entry_step.value() == pytest.approx(2.0)
-    assert w.combobox_xy_mode.currentText() == "Current Position"
-    assert w.entry_scan_size.value() == pytest.approx(2.0)
-    assert w.entry_overlap.value() == pytest.approx(15.0)
-    assert w.checkbox_time.isChecked() is True
-
-
-def test_apply_yaml_settings_unknown_recording_channel_keeps_existing_row(qtbot, simulated_widget_deps, caplog):
-    """Fix Round 1 / Finding 1: when the YAML's recording channel name isn't in the
-    current combo (e.g. objective changed, or the channel was renamed/removed since
-    the YAML was saved), the exposure/gain/illumination spinboxes must NOT be
-    silently paired with a channel that doesn't match the combo's selection."""
-    import logging
-
-    from control.acquisition_yaml_loader import RecordZStackYAMLData
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    # Pre-set the recording row to known, distinct values that must survive untouched.
-    w._recording_ch_combo.setCurrentIndex(0)
-    pre_channel_name = w._recording_ch_combo.currentText()
-    w._recording_exp_spin.setValue(11.0)
-    w._recording_gain_spin.setValue(2.0)
-    w._recording_illum_spin.setValue(22.0)
-
-    yaml_data = RecordZStackYAMLData(
-        widget_type="record_zstack",
-        recording_enabled=True,
-        recording_channel={
-            "name": "Channel Not In Combo",
-            "camera_settings": {"exposure_time_ms": 99.0, "gain_mode": 9.0},
-            "illumination_settings": {"intensity": 99.0},
-        },
-    )
-
-    with caplog.at_level(logging.WARNING):
-        w._apply_yaml_settings(yaml_data)
-
-    # Combo selection and spinbox values are unchanged -- no name/value mismatch.
-    assert w._recording_ch_combo.currentText() == pre_channel_name
-    assert w._recording_exp_spin.value() == pytest.approx(11.0)
-    assert w._recording_gain_spin.value() == pytest.approx(2.0)
-    assert w._recording_illum_spin.value() == pytest.approx(22.0)
-    assert any(
-        "Channel Not In Combo" in rec.message for rec in caplog.records
-    ), "expected a warning naming the missing recording channel"
-
-
-def test_apply_yaml_settings_checks_time_checkbox_and_shows_frame(qtbot, simulated_widget_deps):
-    """Fix Round 1 / Finding 2: loading a multi-timepoint YAML (nt > 1) must check
-    checkbox_time and make the time-controls frame visible immediately, not just
-    update entry_Nt/entry_dt under the hood."""
-    from control.acquisition_yaml_loader import RecordZStackYAMLData
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    # Sanity check on the default (unchecked) state before loading.
-    assert w.checkbox_time.isChecked() is False
-    assert w.time_controls_frame.isHidden() is True
-
-    yaml_data = RecordZStackYAMLData(widget_type="record_zstack", nt=4, delta_t_s=2.0)
-
-    w._apply_yaml_settings(yaml_data)
-
-    assert w.checkbox_time.isChecked() is True
-    assert w.entry_Nt.value() == 4
-    assert w.entry_dt.value() == pytest.approx(2.0)
-    assert w.time_controls_frame.isHidden() is False
-
-
-def test_apply_yaml_settings_refreshes_time_tab_styling(qtbot, simulated_widget_deps):
-    """Fix Round 2: loading a multi-timepoint YAML (nt > 1) must also refresh the
-    Time tab's stylesheet (border/background), not just the checkbox state and
-    frame visibility. checkbox_time.toggled is blocked during the load, so the
-    normal _on_time_toggled -> _update_tab_styles path never fires; the fix calls
-    _update_tab_styles() directly in the finally block. Compare against a second
-    widget where checkbox_time is toggled normally (unblocked) to avoid hardcoding
-    the expected stylesheet string."""
-    from control.acquisition_yaml_loader import RecordZStackYAMLData
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w_loaded = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w_loaded)
-
-    yaml_data = RecordZStackYAMLData(widget_type="record_zstack", nt=4, delta_t_s=2.0)
-    w_loaded._apply_yaml_settings(yaml_data)
-
-    # Reference widget: toggle checkbox_time normally (signals not blocked), so
-    # _on_time_toggled -> _update_tab_styles runs through its ordinary path.
-    w_reference = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w_reference)
-    w_reference.checkbox_time.setChecked(True)
-
-    assert w_reference.checkbox_time.isChecked() is True
-    assert w_loaded.time_frame.styleSheet() == w_reference.time_frame.styleSheet()
-    assert w_loaded.time_controls_frame.styleSheet() == w_reference.time_controls_frame.styleSheet()
-    # Guard against both sides trivially being empty strings (which would make
-    # the equality assertions above vacuous rather than a real regression check).
-    assert w_reference.time_frame.styleSheet() != ""
-    assert w_reference.time_controls_frame.styleSheet() != ""
-
-
-def test_apply_yaml_settings_resyncs_xy_controls_frame_visibility(qtbot, simulated_widget_deps):
-    """Final-review Finding 1: like checkbox_time's toggled signal, checkbox_xy's
-    toggled signal (and combobox_xy_mode's currentTextChanged) are blocked during
-    the load, so the normal _on_xy_mode_changed-driven visibility refresh never
-    fires. Loading a YAML with xy_mode="Current Position" onto a widget that starts
-    in its default state (XY checked, Select Wells, controls visible) must still
-    hide xy_controls_frame and disable combobox_xy_mode's peer state correctly."""
-    from control.acquisition_yaml_loader import RecordZStackYAMLData
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    # Sanity check on the default state before loading.
-    assert w.checkbox_xy.isChecked() is True
-    assert w.combobox_xy_mode.currentText() == "Select Wells"
-    assert w.xy_controls_frame.isHidden() is False
-
-    yaml_data = RecordZStackYAMLData(widget_type="record_zstack", xy_mode="Current Position")
-
-    w._apply_yaml_settings(yaml_data)
-
-    assert w.combobox_xy_mode.currentText() == "Current Position"
-    # The FOV overlap/shape/size controls don't apply in Current Position mode.
-    assert w.xy_controls_frame.isHidden() is True
-
-
-def test_apply_yaml_settings_resyncs_recording_and_zstack_section_visibility(qtbot, simulated_widget_deps):
-    """Code-review finding: like checkbox_time/checkbox_xy, checkbox_recording's
-    and checkbox_zstack's toggled signals are blocked during the load, so the
-    collapse-when-unchecked visibility wiring in _build_recording_group /
-    _build_zstack_group never fires on its own. Loading a YAML that flips both
-    phases from the widget's default state (Recording on, Z-Stack off) must
-    still collapse Recording's content and expand Z-Stack's."""
-    from control.acquisition_yaml_loader import RecordZStackYAMLData
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    # Sanity check on the default state before loading.
-    assert w.checkbox_recording.isChecked() is True
-    assert w.recording_channel_table.isHidden() is False
-    assert w.checkbox_zstack.isChecked() is False
-    assert w.entry_zmin.isHidden() is True
-
-    yaml_data = RecordZStackYAMLData(widget_type="record_zstack", recording_enabled=False, zstack_enabled=True)
-
-    w._apply_yaml_settings(yaml_data)
-
-    assert w.checkbox_recording.isChecked() is False
-    assert w.recording_channel_table.isHidden() is True
-    assert w.checkbox_zstack.isChecked() is True
-    assert w.entry_zmin.isHidden() is False
-
-
-def test_start_button_disabled_when_neither_phase_enabled(qtbot, simulated_widget_deps):
-    """Start Acquisition must be grayed out (instead of only erroring on click)
-    when neither Recording nor Z-Stack is enabled."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    # Recording is checked by default, so the button starts enabled.
-    assert w.checkbox_recording.isChecked() is True
-    assert w.btn_startAcquisition.isEnabled() is True
-
-    w.checkbox_recording.setChecked(False)
-    assert w.checkbox_zstack.isChecked() is False
-    assert w.btn_startAcquisition.isEnabled() is False
-
-    w.checkbox_zstack.setChecked(True)
-    assert w.btn_startAcquisition.isEnabled() is True
-
-    # Both enabled must also stay enabled.
-    w.checkbox_recording.setChecked(True)
-    assert w.btn_startAcquisition.isEnabled() is True
-
-    # Back down to neither.
-    w.checkbox_recording.setChecked(False)
-    w.checkbox_zstack.setChecked(False)
-    assert w.btn_startAcquisition.isEnabled() is False
-
-
-def test_apply_yaml_settings_resyncs_start_button_enabled(qtbot, simulated_widget_deps):
-    """checkbox_recording's/checkbox_zstack's toggled signals are blocked during
-    YAML load (see test_apply_yaml_settings_resyncs_recording_and_zstack_section_visibility),
-    so the Start Acquisition enabled-state resync needs the same explicit fix-up."""
-    from control.acquisition_yaml_loader import RecordZStackYAMLData
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    assert w.btn_startAcquisition.isEnabled() is True
-
-    yaml_data = RecordZStackYAMLData(widget_type="record_zstack", recording_enabled=False, zstack_enabled=False)
-    w._apply_yaml_settings(yaml_data)
-
-    assert w.checkbox_recording.isChecked() is False
-    assert w.checkbox_zstack.isChecked() is False
-    assert w.btn_startAcquisition.isEnabled() is False
-
-
-def test_get_expected_widget_type_is_record_zstack(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    assert w._get_expected_widget_type() == "record_zstack"
-
-
-def test_get_camera_for_binning_check_uses_live_controller(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    camera = object()
-    simulated_widget_deps["liveController"].camera = camera
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    assert w._get_camera_for_binning_check() is camera
-
-
-def test_save_settings_button_writes_yaml(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
-    """Verify that clicking Save Settings runs the REAL save chain end to end:
-    _on_save_settings_clicked -> build_parameters -> _build_objective_info ->
-    _save_record_zstack_yaml -> a real YAML file on disk. Only QFileDialog is mocked
-    (real file dialogs can't run in tests).
-
-    simulated_widget_deps's stub objectiveStore/liveController are plain MagicMocks
-    with no objectives_dict/camera attributes configured, so the real
-    _build_objective_info() would otherwise produce MagicMock leaf values (e.g. for
-    magnification/pixel_size_um) that yaml.dump() cannot serialize -- a failure that
-    _save_record_zstack_yaml() swallows internally (logs and returns) via its own
-    pre-existing try/except. Hardening just these two stubs (not the shared fixture)
-    gives _build_objective_info() cleanly-serializable values so the real save runs
-    for real and actually writes the file.
-    """
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText(str(tmp_path))
-    w.checkbox_zstack.setChecked(True)
-    w._add_zstack_channel_row("BF LED matrix full")
-
-    # Harden this test's own objectiveStore/camera stubs so _build_objective_info()
-    # returns real, YAML-serializable values instead of MagicMock leaves.
+def _harden_objective_info(w):
+    """Give _build_objective_info() YAML-serialisable values instead of MagicMock leaves."""
     w.objectiveStore.objectives_dict = {"10x": {"magnification": 10.0}}
     w.objectiveStore.current_objective = "10x"
     w.objectiveStore.get_pixel_size_factor.return_value = 1.0
-
     camera = MagicMock()
     camera.get_binning.return_value = (1, 1)
     camera.get_pixel_size_binned_um.return_value = 0.5
+    camera.get_max_frame_rate.return_value = 1000.0
     w.liveController.camera = camera
+    return camera
 
+
+# ---------------------------------------------------------------------------
+# Channel table
+# ---------------------------------------------------------------------------
+
+
+def test_table_has_spencers_columns(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    headers = [w.channel_table.horizontalHeaderItem(c).text() for c in range(w.channel_table.columnCount())]
+    assert headers == ["Channel", "Exp", "Gain", "Ill%", "Cam", "FPS", "Dur", "Zi", "R", "Zf", ""]
+    assert w.channel_table.rowCount() == 0
+
+
+def test_add_channel_seeds_the_row_from_the_channel_config_and_defaults_to_r_only(qtbot, simulated_widget_deps):
+    simulated_widget_deps["liveController"].get_channels.return_value = [
+        _make_channel(BF, 12.0, 3.0, 20.0),
+        _make_channel(FL, 200.0, 10.0, 80.0),
+    ]
+    w = _widget(qtbot, simulated_widget_deps)
+    w.combobox_add_channel.setCurrentText(FL)
+    w.btn_add_channel.click()
+
+    assert w._channel_row_names == [FL]
+    v = w._get_row_values(FL)
+    assert (v["exposure"], v["gain"], v["illumination"]) == pytest.approx((200.0, 10.0, 80.0))
+    assert (v["zi"], v["r"], v["zf"]) == (False, True, False)
+    assert (v["fps"], v["duration_s"]) == (10.0, 1.0)
+    assert v["geometry"] == CameraGeometry()
+    assert w.channel_table.cellWidget(0, w.COL_CAM).text() == "—"
+
+
+def test_add_channel_row_deduplicates_and_shows_the_full_name_as_tooltip(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w._add_channel_row(BF)
+    w._add_channel_row(BF)
+    assert w._channel_row_names == [BF]
+    assert w.channel_table.item(0, w.COL_NAME).toolTip() == BF
+
+
+def test_remove_button_removes_the_row(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w._add_channel_row(BF)
+    w._add_channel_row(FL)
+    w.channel_table.cellWidget(0, w.COL_ACTIONS).click()
+    assert w._channel_row_names == [FL]
+
+
+def test_fps_and_duration_are_only_editable_for_a_recording_row(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w._add_channel_row(BF, r=False, zf=True)
+    assert not w.channel_table.cellWidget(0, w.COL_FPS).isEnabled()
+    assert not w.channel_table.cellWidget(0, w.COL_DUR).isEnabled()
+    w._set_row_values(BF, r=True)
+    assert w.channel_table.cellWidget(0, w.COL_FPS).isEnabled()
+    assert w.channel_table.cellWidget(0, w.COL_DUR).isEnabled()
+
+
+def test_start_button_needs_a_row_with_a_phase_ticked(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    assert not w.btn_startAcquisition.isEnabled()
+    w._add_channel_row(BF, r=False)
+    assert not w.btn_startAcquisition.isEnabled()
+    w._set_row_values(BF, zi=True)
+    assert w.btn_startAcquisition.isEnabled()
+    w._remove_channel_row(BF)
+    assert not w.btn_startAcquisition.isEnabled()
+
+
+def test_exposure_editors_cannot_hold_zero(qtbot, simulated_widget_deps):
+    """A 0 ms exposure is rejected by the camera mid-run; the editor's floor is the smallest value it can show."""
+    w = _widget(qtbot, simulated_widget_deps)
+    w._add_channel_row(BF)
+    w._set_row_values(BF, exposure=0.0)
+    assert w._get_row_values(BF)["exposure"] == pytest.approx(0.1)
+
+
+def test_build_parameters_reads_every_row_in_table_order(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w.lineEdit_savingDir.setText("/tmp/x")
+    w._add_channel_row(FL, 80.0, 0.5, 40.0, fps=25, duration_s=3, zi=True, r=True, zf=False)
+    w._add_channel_row(BF, 5.0, 1.0, 10.0, zi=False, r=False, zf=True, geometry=CameraGeometry(binning=2))
+    w._set_row_values(FL, exposure=90.0)
+
+    params = w.build_parameters()
+
+    assert [p.name for p in params.channels] == [FL, BF]
+    first, second = params.channels
+    assert first.channel.exposure_time == pytest.approx(90.0)  # the inline edit, not the channel config
+    assert (first.channel.analog_gain, first.channel.illumination_intensity) == pytest.approx((0.5, 40.0))
+    assert (first.fps, first.duration_s, first.zi, first.r, first.zf) == (25.0, 3.0, True, True, False)
+    assert second.geometry == CameraGeometry(binning=2)
+    assert [c.name for c in params.zi_channels] == [FL]
+    assert [p.name for p in params.r_plans] == [FL]
+    assert [c.name for c in params.zf_channels] == [BF]
+    assert params.experiment_id == "record_zstack"
+
+
+def test_build_parameters_does_not_mutate_the_channel_config(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    source = w.liveController.get_channels("10x")[0]
+    w._add_channel_row(BF, 7.0)
+    assert w.build_parameters().channels[0].channel.exposure_time == pytest.approx(7.0)
+    assert source.exposure_time == pytest.approx(50.0)
+
+
+def test_build_parameters_includes_xy_mode_and_scan_settings(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w.entry_scan_size.setValue(2.5)
+    w.entry_overlap.setValue(20.0)
+    params = w.build_parameters()
+    assert (params.xy_mode, params.scan_size_mm, params.overlap_percent) == ("Select Wells", 2.5, 20.0)
+
+
+def test_camera_cell_shows_the_pinned_settings(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w._add_channel_row(BF, geometry=CameraGeometry(binning=2, crop_w=1024, crop_h=1024, pixel_format="MONO8"))
+    button = w.channel_table.cellWidget(0, w.COL_CAM)
+    assert button.text() == "2×2 1024² M8"
+    assert "binning 2×2" in button.toolTip()
+
+
+def test_camera_geometry_dialog_round_trips_a_geometry(qtbot):
+    from control.widgets import CameraGeometryDialog
+
+    camera = MagicMock()
+    camera.get_binning_options.return_value = [(1, 1), (2, 2)]
+    camera.get_binning.return_value = (1, 1)
+    camera.get_resolution.return_value = (2048, 2048)
+    camera.get_available_pixel_formats.return_value = [MagicMock(), MagicMock()]
+    camera.get_available_pixel_formats.return_value[0].name = "MONO8"
+    camera.get_available_pixel_formats.return_value[1].name = "MONO16"
+    geometry = CameraGeometry(binning=2, crop_w=512, crop_h=256, pixel_format="MONO16")
+    dialog = CameraGeometryDialog(camera, geometry, BF)
+    qtbot.addWidget(dialog)
+    assert dialog.geometry() == geometry
+    assert "1024 × 1024" in dialog.label_sensor.text()  # full sensor at the selected 2x2 binning
+    dialog.btn_all_current.click()
+    assert dialog.geometry() == CameraGeometry()
+
+
+def test_validate_rejects_camera_settings_the_camera_cannot_deliver(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    camera = MagicMock()
+    camera.get_binning_options.return_value = [(1, 1), (2, 2)]
+    w.liveController.camera = camera
+    w._set_row_values(BF, geometry=CameraGeometry(binning=4))
+    assert "does not offer 4×4 binning" in w.validate()
+
+
+def test_validate_rejects_a_colour_pixel_format_on_a_recording_row(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps, r=True, zf=False)
+    w._set_row_values(BF, geometry=CameraGeometry(pixel_format="BAYER_RG8"))
+    assert "recordings need a mono pixel format" in w.validate()
+
+
+# ---------------------------------------------------------------------------
+# Z block and record planes
+# ---------------------------------------------------------------------------
+
+
+def test_from_bottom_is_the_default_mode_and_nz_is_editable(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    assert w.combobox_z_mode.currentText() == "From Bottom"
+    assert [w.combobox_z_mode.itemText(i) for i in range(3)] == ["From Bottom", "Set Range", "Relative"]
+    assert w.entry_NZ.isEnabled()
+    assert w.entry_deltaZ.value() == pytest.approx(1.0)  # no Nyquist default on this tab
+    assert w.z_range_frame.isHidden() and w.relative_frame.isHidden()
+    w.entry_NZ.setValue(5)
+    plan = w._zstack_plan()
+    assert (plan.mode, plan.nz, plan.dz_um) == ("From Bottom", 5, 1.0)
+
+
+def test_relative_mode_derives_an_odd_nz_from_the_range(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w.combobox_z_mode.setCurrentText("Relative")
+    assert not w.relative_frame.isHidden() and not w.entry_NZ.isEnabled()
+    w.entry_deltaZ.setValue(1.0)
+    w.entry_zRange.setValue(6.0)
+    assert w.entry_NZ.value() == 7
+    assert "3.00" in w.label_actual_range.text()
+    w.entry_zRange.setValue(5.0)  # rounded up to the next odd count
+    assert w.entry_NZ.value() == 7
+    assert w._zstack_plan().z_range_um == pytest.approx(5.0)
+
+
+def test_set_range_mode_uses_absolute_limits_and_switches_autofocus_off(qtbot, simulated_widget_deps):
+    simulated_widget_deps["stage"].get_pos.return_value = MagicMock(x_mm=1.5, y_mm=2.5, z_mm=1.25)
+    w = _widget(qtbot, simulated_widget_deps)
+    w.checkbox_laser_af.setChecked(True)
+    w.checkbox_withAutofocus.setChecked(True)
+
+    w.combobox_z_mode.setCurrentText("Set Range")
+
+    assert not w.z_range_frame.isHidden() and not w.entry_NZ.isEnabled()
+    assert not w.checkbox_laser_af.isChecked() and not w.checkbox_laser_af.isEnabled()
+    assert not w.checkbox_withAutofocus.isChecked() and not w.checkbox_withAutofocus.isEnabled()
+    assert w.entry_minZ.value() == pytest.approx(1250.0) and w.entry_maxZ.value() == pytest.approx(1250.0)
+
+    w.entry_deltaZ.setValue(2.0)
+    w.entry_maxZ.setValue(1256.0)
+    assert w.entry_NZ.value() == 4
+    plan = w._zstack_plan()
+    assert (plan.mode, plan.z_min_mm, plan.z_max_mm) == ("Set Range", pytest.approx(1.25), pytest.approx(1.256))
+
+    w.entry_minZ.setValue(1300.0)  # min above max drags max along
+    assert w.entry_maxZ.value() == pytest.approx(1300.0)
+
+    w.combobox_z_mode.setCurrentText("From Bottom")
+    assert w.checkbox_laser_af.isEnabled() and w.checkbox_withAutofocus.isEnabled()
+
+
+def test_set_buttons_capture_the_stage_z(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w.combobox_z_mode.setCurrentText("Set Range")
+    w.stage.get_pos.return_value = MagicMock(z_mm=2.0)
+    w.set_maxZ_button.click()
+    w.stage.get_pos.return_value = MagicMock(z_mm=1.9)
+    w.set_minZ_button.click()
+    assert (w.entry_minZ.value(), w.entry_maxZ.value()) == pytest.approx((1900.0, 2000.0))
+
+
+def test_record_plane_buttons_start_all_on_and_follow_the_plane_count(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w.entry_NZ.setValue(7)
+    assert w.btn_slice_bottom.isChecked() and w.btn_slice_mid.isChecked() and w.btn_slice_top.isChecked()
+    assert w.label_slice_summary.text() == "3 of 7 planes"
+    assert w._record_slice_selection().resolve(7) == [0, 3, 6]
+
+    w.btn_slice_mid.click()
+    assert w.label_slice_summary.text() == "2 of 7 planes"
+    assert w._record_slice_selection().resolve(7) == [0, 6]
+
+    w.entry_NZ.setValue(1)  # every preset is the same plane
+    assert w.label_slice_summary.text() == "1 of 1 plane"
+
+
+def test_select_dialog_choice_maps_onto_presets_and_extra_planes(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w.entry_NZ.setValue(7)
+    w._apply_slice_choice({0, 2, 3}, 7)
+    w._sync_slice_buttons()
+    assert w.btn_slice_bottom.isChecked() and w.btn_slice_mid.isChecked() and not w.btn_slice_top.isChecked()
+    assert w.btn_slice_select.isChecked()  # an explicit extra plane is selected
+    assert w._record_slice_selection().resolve(7) == [0, 2, 3]
+    assert w.build_parameters().record_slices.resolve(7) == [0, 2, 3]
+
+    w.entry_NZ.setValue(2)  # plane 2 no longer exists: dropped, the presets stay
+    assert w._record_slice_selection().resolve(2) == [0]
+    assert not w.btn_slice_select.isChecked()
+
+
+def test_record_slices_dialog_lists_every_plane(qtbot):
+    from control.widgets import RecordSlicesDialog
+
+    dialog = RecordSlicesDialog(["Bottom", "Mid", "Top"], ["-1", "0", "+1"], {0, 2})
+    qtbot.addWidget(dialog)
+    assert dialog.selected_indices() == {0, 2}
+    dialog.set_checked(1, True)
+    dialog.set_checked(0, False)
+    assert dialog.selected_indices() == {1, 2}
+
+
+def test_validate_requires_a_record_plane_for_a_recording(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps, r=True, zf=False)
+    assert w.validate() is None
+    for button in (w.btn_slice_bottom, w.btn_slice_mid, w.btn_slice_top):
+        button.click()
+    assert "Pick at least one plane to record" in w.validate()
+
+
+# ---------------------------------------------------------------------------
+# Focus row
+# ---------------------------------------------------------------------------
+
+
+def test_focus_row_has_the_three_multipoint_options(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    assert w.checkbox_withAutofocus.text() == "Contrast AF"
+    assert w.checkbox_laser_af.text() == "Laser AF"
+    assert w.checkbox_useFocusMap.text() == "Use Focus Map"
+    params = w.build_parameters()
+    assert (params.use_laser_af, params.use_contrast_af, params.use_focus_map) == (False, False, False)
+
+
+def test_validate_laser_af_needs_a_reference(qtbot, simulated_widget_deps):
+    laser = MagicMock()
+    laser.laser_af_properties.has_reference = False
+    simulated_widget_deps["laser_autofocus_controller"] = laser
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    w.checkbox_laser_af.setChecked(True)
+    assert "no reference position" in w.validate()
+    laser.laser_af_properties.has_reference = True
+    assert w.validate() is None
+    assert w.build_parameters().use_laser_af is True
+
+
+def test_use_focus_map_passes_the_fitted_surface_and_region_offsets(qtbot, simulated_widget_deps):
+    focus_map_widget = MagicMock()
+    focus_map_widget.focusMap.is_fitted = True
+    focus_map_widget.get_offsets_for_acquisition.return_value = {"A1": 1.5}
+    simulated_widget_deps["focus_map_widget"] = focus_map_widget
+    laser = MagicMock()
+    laser.laser_af_properties.has_reference = True
+    simulated_widget_deps["laser_autofocus_controller"] = laser
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+
+    assert w.build_parameters().focus_map is None  # not ticked: nothing from the Focus Map tab is used
+    w.checkbox_laser_af.setChecked(True)
+    w.checkbox_useFocusMap.setChecked(True)
+    focus_map_widget.setEnabled.assert_called_with(True)
+
+    params = w.build_parameters()
+    assert params.use_focus_map and params.focus_map is focus_map_widget.focusMap
+    assert params.region_laser_af_offsets == {"A1": 1.5}
+    # The per-region offsets come from the Focus Map tab's own gating, as on the multipoint tabs.
+    focus_map_widget.get_offsets_for_acquisition.assert_called_with(True)
+    assert w.validate() is None
+
+
+def test_validate_use_focus_map_needs_focus_points(qtbot, simulated_widget_deps):
+    focus_map_widget = MagicMock()
+    focus_map_widget.focusMap.is_fitted = False
+    focus_map_widget.focus_points = []
+    simulated_widget_deps["focus_map_widget"] = focus_map_widget
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    w.checkbox_useFocusMap.setChecked(True)
+    assert "no focus surface is fitted" in w.validate()
+    focus_map_widget.focus_points = [("A1", 1.0, 2.0, 3.0)]
+    assert w.validate() is None
+
+
+@pytest.mark.parametrize("interactive", [True, False])
+def test_start_is_refused_when_the_focus_surface_cannot_be_fitted(qtbot, simulated_widget_deps, interactive):
+    focus_map_widget = MagicMock()
+    focus_map_widget.focusMap.is_fitted = True
+    focus_map_widget.fit_surface.return_value = False
+    simulated_widget_deps["focus_map_widget"] = focus_map_widget
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    w.checkbox_useFocusMap.setChecked(True)
+    w.btn_startAcquisition.setChecked(True)
+
+    with patch("control.widgets.QMessageBox.warning") as warn, _answer(QMessageBox.Yes):
+        w.toggle_acquisition(True, interactive=interactive)
+
+    assert warn.called is interactive
+    assert not w.btn_startAcquisition.isChecked()
+    w.recordZStackController.run_acquisition.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# validate()
+# ---------------------------------------------------------------------------
+
+
+def test_validate_requires_base_path(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    w.lineEdit_savingDir.setText("")
+    assert "Base path" in w.validate()
+    w.lineEdit_savingDir.setText("/tmp/x")
+    assert w.validate() is None
+
+
+def test_validate_requires_a_ticked_row(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps, zf=False)
+    assert "tick Zi, R, or Zf" in w.validate()
+
+
+def test_get_selected_well_count(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    sc = simulated_widget_deps["scanCoordinates"]
+    sc.get_selected_wells.return_value = None  # glass slide: the current position counts as one
+    assert w._get_selected_well_count() == 1
+    sc.get_selected_wells.return_value = []
+    assert w._get_selected_well_count() == 0
+    sc.get_selected_wells.return_value = ["A1", "B2", "C3"]
+    assert w._get_selected_well_count() == 3
+
+
+def test_validate_rejects_no_wells_selected_except_at_the_current_position(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    simulated_widget_deps["scanCoordinates"].get_selected_wells.return_value = []
+    assert "At least one well" in w.validate()
+    w.combobox_xy_mode.setCurrentText("Current Position")
+    assert w.validate() is None
+
+
+# ---------------------------------------------------------------------------
+# toggle_acquisition
+# ---------------------------------------------------------------------------
+
+
+def test_start_confirms_the_per_fov_plan_and_runs(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps, zi=True, r=True, zf=True)
+    w.combobox_z_mode.setCurrentText("Relative")
+    w.entry_zRange.setValue(4.0)
+    w._set_row_values(BF, fps=20, duration_s=2)
+    captured = {}
+
+    with _answer(QMessageBox.Yes, captured):
+        w.toggle_acquisition(True)
+
+    assert captured["title"] == "Confirm Acquisition"
+    text = captured["text"]
+    assert "Focus: stage z at each position" in text
+    assert "Zi: 1 ch × 5 planes (-2.0 … +2.0 µm rel. reference)" in text
+    assert "R: 1 recording × 3 of 5 planes" in text and f"{BF} 20 fps × 2 s — 6.0 s/FOV" in text
+    assert "Zf: 1 ch × 5 planes" in text
+    ctrl = w.recordZStackController
+    ctrl.run_acquisition.assert_called_once()
+    params = ctrl.run_acquisition.call_args.args[0]
+    assert params.base_path == "/tmp/test_time_at_xy" and params.zstack.mode == "Relative"
+    assert [p.name for p in params.r_plans] == [BF]
+
+
+def test_answering_no_does_not_start(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    w.btn_startAcquisition.setChecked(True)
+    started = []
+    w.signal_acquisition_started.connect(started.append)
+    with _answer(QMessageBox.No):
+        w.toggle_acquisition(True)
+    w.recordZStackController.run_acquisition.assert_not_called()
+    assert not w.btn_startAcquisition.isChecked() and started == []
+
+
+def test_invalid_start_shows_a_warning_and_does_not_run(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps, zf=False)  # nothing ticked
+    w.btn_startAcquisition.setChecked(True)
+    started = []
+    w.signal_acquisition_started.connect(started.append)
+    with patch("control.widgets.QMessageBox.warning") as warn:
+        w.toggle_acquisition(True)
+    warn.assert_called_once()
+    assert warn.call_args[0][1] == "Invalid Parameters"
+    w.recordZStackController.run_acquisition.assert_not_called()
+    assert not w.btn_startAcquisition.isChecked() and started == []
+
+
+def test_start_is_refused_while_an_acquisition_is_running(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    w.recordZStackController.acquisition_in_progress.return_value = True
+    w.btn_startAcquisition.setChecked(True)
+    w.toggle_acquisition(True)
+    w.recordZStackController.run_acquisition.assert_not_called()
+    assert not w.btn_startAcquisition.isChecked()
+
+
+def test_stop_requests_an_abort(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    w.toggle_acquisition(False)
+    w.recordZStackController.request_abort.assert_called_once()
+
+
+def test_started_signal_is_emitted_before_the_worker_can_finish(qtbot, simulated_widget_deps):
+    """A one-frame acquisition could finish before toggle_acquisition returns; True must already be out."""
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    events = []
+    w.signal_acquisition_started.connect(lambda started: events.append(("signal", started)))
+    w.recordZStackController.run_acquisition.side_effect = lambda params: events.append(("run", None))
+    with _answer(QMessageBox.Yes):
+        w.toggle_acquisition(True)
+    assert events == [("signal", True), ("run", None)]
+
+    w.acquisition_is_finished()
+    assert events[-1] == ("signal", False)
+    assert not w.btn_startAcquisition.isChecked()
+
+
+def test_started_signal_is_withdrawn_when_run_acquisition_raises(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    w.btn_startAcquisition.setChecked(True)
+    w.recordZStackController.run_acquisition.side_effect = RuntimeError("boom")
+    events = []
+    w.signal_acquisition_started.connect(events.append)
+    with _answer(QMessageBox.Yes):
+        w.toggle_acquisition(True)
+    assert events == [True, False]
+    assert not w.btn_startAcquisition.isChecked()
+
+
+def test_start_rebuilds_the_scan_regions_before_running(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    sc = simulated_widget_deps["scanCoordinates"]
+    sc.reset_mock()
+    order = []
+    sc.set_well_coordinates.side_effect = lambda *a: order.append("regions")
+    w.recordZStackController.run_acquisition.side_effect = lambda params: order.append("run")
+    with _answer(QMessageBox.Yes):
+        w.toggle_acquisition(True)
+    assert order == ["regions", "run"]
+
+
+def test_confirmation_warns_when_the_camera_cannot_reach_a_rows_fps(qtbot, simulated_widget_deps):
+    """The camera's own max-rate estimate for a recording row's exposure goes into the confirmation
+    dialog when the user asked for more, with the rate and frame count the run will really use."""
+    w = _make_valid_widget(qtbot, simulated_widget_deps, r=True, zf=False)
+    w._add_channel_row(FL, 5.0, r=True)
+    camera = MagicMock()
+    camera.get_max_frame_rate.side_effect = lambda exposure_ms: 28.0 if exposure_ms == 50.0 else 500.0
+    w.liveController.camera = camera
+    w._set_row_values(BF, fps=100, duration_s=3)
+    w._set_row_values(FL, fps=100, duration_s=3)
+    captured = {}
+
+    with _answer(QMessageBox.Yes, captured):
+        w.toggle_acquisition(True)
+
+    assert f"Camera limit ({BF})" in captured["text"]
+    assert "at most 28.0 fps, not 100" in captured["text"]
+    assert "28.0 fps (84 frames for 3 s)" in captured["text"]
+    assert f"Camera limit ({FL})" not in captured["text"]  # 100 fps is within its 500 fps limit
+    w.recordZStackController.run_acquisition.assert_called_once()
+
+
+def test_confirmation_has_no_limit_note_for_a_row_with_its_own_camera_settings(qtbot, simulated_widget_deps):
+    """The camera can only answer for its current binning / ROI, not for the ones a row pins."""
+    w = _make_valid_widget(qtbot, simulated_widget_deps, r=True, zf=False)
+    camera = MagicMock()
+    camera.get_max_frame_rate.return_value = 28.0
+    camera.get_binning_options.return_value = [(1, 1), (2, 2)]
+    w.liveController.camera = camera
+    w._set_row_values(BF, fps=100, geometry=CameraGeometry(binning=2))
+    captured = {}
+    with _answer(QMessageBox.Yes, captured):
+        w.toggle_acquisition(True)
+    assert "Camera limit" not in captured["text"]
+    assert "[binning 2×2, crop current, format current]" in captured["text"]
+
+
+# ---------------------------------------------------------------------------
+# Test FR
+# ---------------------------------------------------------------------------
+
+
+def test_frame_rate_test_uses_the_rows_settings_and_adopts_the_result(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    geometry = CameraGeometry(binning=2)
+    w._add_channel_row(BF, 4.0, 2.0, 30.0, geometry=geometry)
+    w._set_row_values(BF, zi=True)
+    w.combobox_add_channel.setCurrentText(BF)
+    ctrl = w.recordZStackController
+
+    w.btn_test_fps.click()
+
+    ctrl.run_frame_rate_test.assert_called_once()
+    channel, duration = ctrl.run_frame_rate_test.call_args.args
+    assert channel.name == BF and channel.exposure_time == pytest.approx(4.0)
+    assert duration == w.FRAME_RATE_TEST_DURATION_S
+    assert ctrl.run_frame_rate_test.call_args.kwargs["geometry"] == geometry
+    assert not w.btn_test_fps.isEnabled() and not w.btn_startAcquisition.isEnabled()
+    assert w.label_fps_result.text() == "testing…"
+
+    result = FrameRateTestResult(
+        channel_name=BF, exposure_ms=4.0, duration_s=5.0, frame_count=600, mean_fps=119.6, min_fps=80.0
+    )
+    ctrl.run_frame_rate_test.call_args.kwargs["on_finished"](result)
+
+    assert w.label_fps_result.text() == "119.6 fps (min 80.0 over 5.0 s)"
+    assert w._get_row_values(BF)["fps"] == 119.0  # rounded down: a rate the camera did deliver
+    assert w.btn_test_fps.isEnabled() and w.btn_startAcquisition.isEnabled()
+
+
+def test_frame_rate_test_failure_leaves_the_rows_fps_alone(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w._add_channel_row(BF, fps=30)
+    w._fps_test_channel = BF
+    w._on_frame_rate_test_finished(FrameRateTestResult(channel_name=BF, error="camera unplugged"))
+    assert w.label_fps_result.text() == "failed: camera unplugged"
+    assert w._get_row_values(BF)["fps"] == 30.0
+
+
+def test_frame_rate_test_is_refused_during_an_acquisition(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w.recordZStackController.acquisition_in_progress.return_value = True
+    with patch("control.widgets.QMessageBox.warning") as warn:
+        w.btn_test_fps.click()
+    warn.assert_called_once()
+    w.recordZStackController.run_frame_rate_test.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# XY / Time rows and the FOV grid
+# ---------------------------------------------------------------------------
+
+
+def test_xy_and_time_defaults(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    assert w.checkbox_xy.isChecked() and not w.checkbox_time.isChecked()
+    modes = [w.combobox_xy_mode.itemText(i) for i in range(w.combobox_xy_mode.count())]
+    assert modes == ["Current Position", "Select Wells", "Load Coordinates"]
+    assert w.combobox_xy_mode.currentText() == "Select Wells"
+    assert not w.xy_controls_frame.isHidden() and w.time_controls_frame.isHidden()
+    assert w.entry_scan_size.value() == pytest.approx(0.1)
+
+
+def test_grid_controls_are_only_shown_for_select_wells(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w.combobox_xy_mode.setCurrentText("Current Position")
+    assert w.xy_controls_frame.isHidden()
+    w.combobox_xy_mode.setCurrentText("Select Wells")
+    assert not w.xy_controls_frame.isHidden()
+    w.checkbox_xy.setChecked(False)
+    assert w.xy_controls_frame.isHidden()
+
+
+def test_unchecking_xy_forces_current_position_and_restores_on_recheck(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w.checkbox_xy.setChecked(False)
+    assert w.combobox_xy_mode.currentText() == "Current Position" and not w.combobox_xy_mode.isEnabled()
+    w.checkbox_xy.setChecked(True)
+    assert w.combobox_xy_mode.currentText() == "Select Wells" and w.combobox_xy_mode.isEnabled()
+
+
+def test_current_position_mode_uses_the_live_stage_position(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    sc = simulated_widget_deps["scanCoordinates"]
+    sc.reset_mock()
+    w.combobox_xy_mode.setCurrentText("Current Position")
+    sc.add_region.assert_called_once_with("current", 1.5, 2.5, 0.01, 0, "Square")
+    sc.set_well_coordinates.assert_not_called()
+
+
+def test_toggling_xy_rebuilds_the_scan_region_exactly_once(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    sc = simulated_widget_deps["scanCoordinates"]
+    sc.reset_mock()
+    w.checkbox_xy.setChecked(False)
+    assert sc.add_region.call_count == 1
+
+
+@pytest.mark.parametrize("control", ["overlap", "scan_size", "shape"])
+def test_grid_controls_retile_the_selected_wells(qtbot, simulated_widget_deps, control):
+    w = _widget(qtbot, simulated_widget_deps)
+    sc = simulated_widget_deps["scanCoordinates"]
+    sc.has_regions.return_value = True
+    sc.reset_mock()
+    calls = []
+    sc.clear_regions.side_effect = lambda: calls.append("clear")
+    sc.set_well_coordinates.side_effect = lambda *a: calls.append(a)
+    if control == "overlap":
+        w.entry_overlap.setValue(25.0)
+    elif control == "scan_size":
+        w.entry_scan_size.setValue(3.0)
+    else:
+        w.combobox_shape.setCurrentText("Circle")
+    # Cleared first: set_well_coordinates only adds wells, so the old tiles would otherwise survive.
+    assert calls == ["clear", (w.entry_scan_size.value(), w.entry_overlap.value(), w.combobox_shape.currentText())]
+
+
+def test_fov_grid_does_not_crash_without_scan_coordinates(qtbot, simulated_widget_deps):
+    simulated_widget_deps["scanCoordinates"] = None
+    w = _widget(qtbot, simulated_widget_deps)
+    w.entry_overlap.setValue(30.0)
+    assert w._get_selected_well_count() == 1
+
+
+def test_well_selection_change_keeps_the_wells_already_tiled(qtbot, simulated_widget_deps):
+    """selection_only: a drag-select must not clear and re-tile every well at each step."""
+    w = _widget(qtbot, simulated_widget_deps)
+    sc = simulated_widget_deps["scanCoordinates"]
+    sc.has_regions.return_value = True
+    sc.reset_mock()
+    w.on_well_selection_changed()
+    sc.clear_regions.assert_not_called()
+    sc.set_well_coordinates.assert_called_once()
+
+
+def test_well_selection_change_is_ignored_on_another_tab(qtbot, simulated_widget_deps):
+    tabs = MagicMock()
+    tabs.currentWidget.return_value = object()
+    simulated_widget_deps["tab_widget"] = tabs
+    w = _widget(qtbot, simulated_widget_deps)
+    sc = simulated_widget_deps["scanCoordinates"]
+    sc.reset_mock()
+    w.on_well_selection_changed()
+    sc.set_well_coordinates.assert_not_called()
+
+
+def test_time_checkbox_shows_nt_dt_and_restores_them(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w.checkbox_time.setChecked(True)
+    assert not w.time_controls_frame.isHidden()
+    w.entry_Nt.setValue(5)
+    w.entry_dt.setValue(30.0)
+    w.checkbox_time.setChecked(False)
+    assert (w.entry_Nt.value(), w.entry_dt.value()) == (1, 0.0)
+    assert (w.build_parameters().Nt, w.build_parameters().dt_s) == (1, 0.0)
+    w.checkbox_time.setChecked(True)
+    assert (w.entry_Nt.value(), w.entry_dt.value()) == (5, 30.0)
+
+
+# ---------------------------------------------------------------------------
+# refresh_channel_list
+# ---------------------------------------------------------------------------
+
+
+def test_refresh_channel_list_repopulates_the_combo_and_drops_stale_rows(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    w._add_channel_row(BF, 7.0)
+    w._add_channel_row(FL)
+    w.liveController.get_channels.return_value = [_make_channel(BF), _make_channel("Fluorescence 561 nm Ex")]
+
+    w.refresh_channel_list()
+
+    assert [w.combobox_add_channel.itemText(i) for i in range(w.combobox_add_channel.count())] == [
+        BF,
+        "Fluorescence 561 nm Ex",
+    ]
+    assert w._channel_row_names == [BF]
+    assert w._get_row_values(BF)["exposure"] == pytest.approx(7.0)  # the user's edit survives
+
+
+@pytest.mark.parametrize("failure", ["raises", "empty"])
+def test_refresh_channel_list_keeps_everything_on_a_failed_fetch(qtbot, simulated_widget_deps, failure):
+    w = _widget(qtbot, simulated_widget_deps)
+    w._add_channel_row(BF)
+    if failure == "raises":
+        w.liveController.get_channels.side_effect = RuntimeError("config repo busy")
+    else:
+        w.liveController.get_channels.return_value = []
+    w.refresh_channel_list()
+    assert w._channel_row_names == [BF]
+    assert w.combobox_add_channel.count() == 2
+
+
+# ---------------------------------------------------------------------------
+# acquisition.yaml: apply, save, load
+# ---------------------------------------------------------------------------
+
+
+def _row(name, exposure=50.0, **fields):
+    row = {
+        "channel": {
+            "name": name,
+            "camera_settings": {"exposure_time_ms": exposure, "gain_mode": 1.0},
+            "illumination_settings": {"intensity": 60.0},
+        },
+        "fps": 10.0,
+        "duration_s": 1.0,
+        "zi": False,
+        "r": False,
+        "zf": False,
+    }
+    row.update(fields)
+    return row
+
+
+def test_apply_yaml_settings_sets_every_control(qtbot, simulated_widget_deps):
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+
+    w = _widget(qtbot, simulated_widget_deps)
+    w._add_channel_row(FL)  # replaced by the file's rows
+
+    w._apply_yaml_settings(
+        RecordZStackYAMLData(
+            widget_type="record_zstack",
+            xy_mode="Current Position",
+            nt=4,
+            delta_t_s=2.5,
+            laser_af=True,
+            contrast_af=True,
+            use_focus_map=False,
+            channels=[
+                _row(
+                    BF, 33.0, fps=25.0, duration_s=3.0, zi=True, r=True, camera={"binning": 2, "pixel_format": "mono8"}
+                ),
+                _row(FL, 80.0, zf=True),
+            ],
+            record_slice_roles=["mid"],
+            record_slice_indices=[1],
+            z_mode="Relative",
+            z_dz_um=1.5,
+            z_range_um=6.0,
+            scan_size_mm=2.0,
+            overlap_percent=15.0,
+        )
+    )
+
+    assert (w.entry_Nt.value(), w.entry_dt.value()) == (4, pytest.approx(2.5))
+    assert w.checkbox_time.isChecked() and not w.time_controls_frame.isHidden()
+    assert w.checkbox_laser_af.isChecked() and w.checkbox_withAutofocus.isChecked()
+    assert not w.checkbox_useFocusMap.isChecked()
+    assert w._channel_row_names == [BF, FL]
+    bf = w._get_row_values(BF)
+    assert (bf["exposure"], bf["gain"], bf["illumination"]) == pytest.approx((33.0, 1.0, 60.0))
+    assert (bf["fps"], bf["duration_s"], bf["zi"], bf["r"], bf["zf"]) == (25.0, 3.0, True, True, False)
+    assert bf["geometry"] == CameraGeometry(binning=2, pixel_format="MONO8")
+    assert w._get_row_values(FL)["zf"] is True
+    assert w.combobox_z_mode.currentText() == "Relative"
+    assert (w.entry_deltaZ.value(), w.entry_zRange.value(), w.entry_NZ.value()) == (1.5, 6.0, 5)
+    assert not w.relative_frame.isHidden() and not w.entry_NZ.isEnabled()
+    assert w._record_slice_selection().resolve(5) == [1, 2]
+    assert w.combobox_xy_mode.currentText() == "Current Position" and w.xy_controls_frame.isHidden()
+    assert (w.entry_scan_size.value(), w.entry_overlap.value()) == (2.0, 15.0)
+    assert w.btn_startAcquisition.isEnabled()
+
+
+def test_apply_yaml_settings_set_range_keeps_autofocus_off(qtbot, simulated_widget_deps):
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+
+    w = _widget(qtbot, simulated_widget_deps)
+    w._apply_yaml_settings(
+        RecordZStackYAMLData(
+            widget_type="record_zstack",
+            laser_af=True,
+            contrast_af=True,
+            channels=[_row(BF, zf=True)],
+            z_mode="Set Range",
+            z_dz_um=2.0,
+            z_min_mm=1.0,
+            z_max_mm=1.01,
+        )
+    )
+    assert w.combobox_z_mode.currentText() == "Set Range"
+    assert (w.entry_minZ.value(), w.entry_maxZ.value(), w.entry_NZ.value()) == (1000.0, 1010.0, 6)
+    assert not w.checkbox_laser_af.isChecked() and not w.checkbox_withAutofocus.isChecked()
+
+
+def test_apply_yaml_settings_skips_a_channel_this_objective_does_not_have(qtbot, simulated_widget_deps, caplog):
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+
+    w = _widget(qtbot, simulated_widget_deps)
+    w._apply_yaml_settings(
+        RecordZStackYAMLData(widget_type="record_zstack", channels=[_row("Cy5", r=True), _row(BF, zf=True)])
+    )
+    assert w._channel_row_names == [BF]
+    assert any("'Cy5' not found" in r.getMessage() for r in caplog.records)
+
+
+def test_apply_yaml_settings_without_rows_disables_start(qtbot, simulated_widget_deps):
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    assert w.btn_startAcquisition.isEnabled()
+    w._apply_yaml_settings(RecordZStackYAMLData(widget_type="record_zstack"))
+    assert w._channel_row_names == [] and not w.btn_startAcquisition.isEnabled()
+    assert not w.checkbox_time.isChecked() and w.time_controls_frame.isHidden()
+
+
+def test_malformed_channel_row_is_a_load_error_and_leaves_the_tab_untouched(qtbot, simulated_widget_deps, tmp_path):
+    """A row whose channel fails validation must not crash the drop/button slot, and must not be
+    dropped silently either: the load is refused and the table keeps what it had."""
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    path = tmp_path / "malformed.yaml"
+    path.write_text(
+        "acquisition:\n  widget_type: record_zstack\n  xy_mode: Current Position\n"
+        "channels:\n- channel:\n    name: Foo\n  r: true\n"  # no camera_settings -> pydantic ValidationError
+    )
+    with patch("control.widgets.QMessageBox.warning") as warn:
+        assert w._load_acquisition_yaml(str(path)) is False
+    warn.assert_called_once()
+    assert warn.call_args[0][1] == "Load Error"
+    assert w._channel_row_names == [BF]
+    assert w.combobox_xy_mode.currentText() == "Select Wells"
+
+
+def test_save_settings_button_writes_spencers_schema(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
+    """Save Settings runs the real chain to a real file; only the file dialog is replaced."""
+    w = _make_valid_widget(qtbot, simulated_widget_deps, zi=True, r=True, zf=False)
+    w._set_row_values(BF, geometry=CameraGeometry(binning=2))
+    w.combobox_xy_mode.setCurrentText("Current Position")
+    _harden_objective_info(w)
     save_path = tmp_path / "my_preset.yaml"
     monkeypatch.setattr("control.widgets.QFileDialog.getSaveFileName", lambda *a, **kw: (str(save_path), ""))
 
     w.btn_saveSettings.click()
 
-    # Verify the REAL file was written by the REAL _save_record_zstack_yaml call.
-    assert save_path.exists()
-    import yaml as pyyaml
-
-    data = pyyaml.safe_load(save_path.read_text())
+    assert save_path.read_text().startswith("# Time at XY Acquisition Parameters - record_zstack\n")
+    data = yaml.safe_load(save_path.read_text())
+    assert list(data) == [
+        "acquisition",
+        "objective",
+        "time_series",
+        "autofocus",
+        "channels",
+        "record_slices",
+        "z_stack",
+    ]
     assert data["acquisition"]["widget_type"] == "record_zstack"
-    assert data["z_stack"]["enabled"] is True
-    assert data["z_stack"]["channels"][0]["name"] == "BF LED matrix full"
-    assert data["objective"]["name"] == "10x"
-    assert data["objective"]["magnification"] == pytest.approx(10.0)
-    assert data["objective"]["pixel_size_um"] == pytest.approx(0.5)
-    assert data["objective"]["camera_binning"] == [1, 1]
+    assert data["autofocus"] == {"laser_af": False, "contrast_af": False, "use_focus_map": False}
+    (row,) = data["channels"]
+    assert list(row) == ["channel", "fps", "duration_s", "zi", "r", "zf", "camera"]
+    assert row["channel"]["name"] == BF and (row["zi"], row["r"], row["zf"]) == (True, True, False)
+    # A row that pins binning also records the pixel size it will have.
+    assert row["camera"] == {"binning": 2, "pixel_size_um": pytest.approx(1.0)}
+    assert data["record_slices"] == {"roles": ["bottom", "mid", "top"], "indices": []}
+    assert list(data["z_stack"]) == ["mode", "dz_um", "nz", "z_range_um", "z_min_mm", "z_max_mm"]
+    assert (data["z_stack"]["mode"], data["z_stack"]["dz_um"], data["z_stack"]["nz"]) == ("From Bottom", 1.0, 1)
+    assert data["z_stack"]["z_range_um"] == 4.0
+    assert data["objective"] == {"name": "10x", "magnification": 10.0, "pixel_size_um": 0.5, "camera_binning": [1, 1]}
 
 
-def test_save_settings_button_shows_warning_when_write_fails(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
-    """Final-review Finding 3: when the underlying _save_record_zstack_yaml() write
-    genuinely fails, _on_save_settings_clicked()'s own try/except must reach the user
-    via QMessageBox.warning -- it must NOT log "Settings saved" and silently show no
-    warning. Mirrors test_save_settings_button_writes_yaml's structure but points the
-    save at a path inside a non-existent directory so the real open() raises."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText(str(tmp_path))
-    w.checkbox_zstack.setChecked(True)
-    w._add_zstack_channel_row("BF LED matrix full")
-
-    w.objectiveStore.objectives_dict = {"10x": {"magnification": 10.0}}
-    w.objectiveStore.current_objective = "10x"
-    w.objectiveStore.get_pixel_size_factor.return_value = 1.0
-
-    camera = MagicMock()
-    camera.get_binning.return_value = (1, 1)
-    camera.get_pixel_size_binned_um.return_value = 0.5
-    w.liveController.camera = camera
-
-    # Parent directory doesn't exist -> the real open() call raises OSError.
-    save_path = tmp_path / "does_not_exist" / "my_preset.yaml"
-    monkeypatch.setattr("control.widgets.QFileDialog.getSaveFileName", lambda *a, **kw: (str(save_path), ""))
-
-    with patch("control.widgets.QMessageBox.warning") as mock_warn:
+def test_save_settings_button_shows_a_warning_when_the_write_fails(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    _harden_objective_info(w)
+    missing = tmp_path / "no_such_dir" / "preset.yaml"
+    monkeypatch.setattr("control.widgets.QFileDialog.getSaveFileName", lambda *a, **kw: (str(missing), ""))
+    with patch("control.widgets.QMessageBox.warning") as warn:
         w.btn_saveSettings.click()
-
-    assert not save_path.exists()
-    mock_warn.assert_called_once()
-    assert mock_warn.call_args[0][1] == "Save Error"
+    warn.assert_called_once()
+    assert warn.call_args[0][1] == "Save Error"
 
 
-def test_load_settings_button_applies_yaml(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
-    """Verify that clicking Load Settings runs the REAL load chain end to end:
-    _on_load_settings_clicked -> _load_acquisition_yaml -> parse_acquisition_yaml ->
-    validate_hardware -> _apply_yaml_settings. Only QFileDialog is mocked (real file
-    dialogs can't run in tests); a real, valid record_zstack YAML file is written to
-    disk and actually read back.
-
-    The YAML has no objective:/camera_binning keys, so yaml_data.objective_name and
-    yaml_data.camera_binning are both falsy and validate_hardware() reports
-    is_valid=True -- no mismatch dialog blocks the test.
-    """
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    yaml_path = tmp_path / "preset.yaml"
-    yaml_path.write_text(
-        "acquisition:\n"
-        "  widget_type: record_zstack\n"
-        "  xy_mode: Current Position\n"
-        "time_series:\n"
-        "  nt: 7\n"
-        "  delta_t_s: 1.0\n"
-    )
-
-    monkeypatch.setattr("control.widgets.QFileDialog.getOpenFileName", lambda *a, **kw: (str(yaml_path), ""))
-
-    w.btn_loadSettings.click()
-
-    # Verify settings were applied via the REAL parse -> validate -> apply chain.
-    assert w.entry_Nt.value() == 7
-    assert w.entry_dt.value() == pytest.approx(1.0)
-    assert w.combobox_xy_mode.currentText() == "Current Position"
-
-
-def test_load_acquisition_yaml_malformed_channel_shows_warning_not_exception(qtbot, simulated_widget_deps, tmp_path):
-    """Final-review Finding 2: _apply_yaml_settings() calls
-    AcquisitionChannel.model_validate() on recording_channel/zstack_channels with no
-    guard. A YAML with valid syntax/widget_type but a malformed channel dict (here,
-    missing the required camera_settings field) must not crash the drop/button slot
-    with an uncaught pydantic ValidationError -- the shared
-    AcquisitionYAMLDropMixin._load_acquisition_yaml() must catch it, log, warn, and
-    return False, exactly like the existing YAML-parse-error path a few lines above it."""
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    yaml_path = tmp_path / "malformed.yaml"
-    yaml_path.write_text(
-        "acquisition:\n"
-        "  widget_type: record_zstack\n"
-        "  xy_mode: Current Position\n"
-        "recording:\n"
-        "  enabled: true\n"
-        "  channel:\n"
-        "    name: Foo\n"  # missing required camera_settings -> pydantic ValidationError
-    )
-
-    with patch("control.widgets.QMessageBox.warning") as mock_warn:
-        result = w._load_acquisition_yaml(str(yaml_path))
-
-    assert result is False
-    mock_warn.assert_called_once()
-    assert mock_warn.call_args[0][1] == "Load Error"
-
-
-def test_full_save_load_round_trip_preserves_settings(qtbot, simulated_widget_deps, tmp_path):
-    """Save via build_parameters()+_save_record_zstack_yaml, load into a fresh widget,
-    and confirm the fresh widget's build_parameters() output matches exactly (excluding base_path/experiment_id).
-
-    Tests round-trip serialization and deserialization via YAML for all user-facing settings:
-    - recording channel and its numeric settings (exposure_time, analog_gain, illumination_intensity)
-    - z-stack channels and their numeric settings
-    - acquisition parameters (FPS, duration, z-range, XY mode)
-    - multi-plane recording fields (Laser AF on, Nz, dz, bottom-Z offset) -- build_parameters()
-      forces recording_bottom_z_offset_um to 0.0 when Laser AF is off (see
-      _update_recording_planes_ui), so Laser AF must be enabled for the bottom-Z value to
-      round-trip meaningfully.
-    """
+def _save_and_reload(qtbot, deps, tmp_path, source):
+    """Save *source*'s settings with the real writer and load the file into a fresh widget."""
     from control.core.record_zstack_controller import _save_record_zstack_yaml
-    from control.acquisition_yaml_loader import parse_acquisition_yaml
-    from control.widgets import RecordZStackMultiPointWidget
 
-    w1 = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w1)
-    w1.lineEdit_savingDir.setText(str(tmp_path))
-    w1.checkbox_recording.setChecked(True)
-    w1.checkbox_laser_af.setChecked(True)
-    w1.entry_fps.setValue(30.0)
-    w1.entry_duration.setValue(4.0)
-    w1.entry_recording_Nz.setValue(3)
-    w1.entry_recording_dz.setValue(2.5)
-    w1.entry_recording_bottom_z.setValue(-4.0)
-    w1.checkbox_zstack.setChecked(True)
-    w1._add_zstack_channel_row("Fluorescence 488 nm Ex", exposure=80.0, gain=1.0, illumination=45.0)
-    w1.entry_zmin.setValue(-5.0)
-    w1.entry_zmax.setValue(5.0)
-    w1.entry_step.setValue(2.5)
-    w1.combobox_xy_mode.setCurrentText("Current Position")
-
-    params1 = w1.build_parameters()
-    yaml_path = tmp_path / "roundtrip.yaml"
-    _save_record_zstack_yaml(params1, str(yaml_path))
-
-    yaml_data = parse_acquisition_yaml(str(yaml_path))
-
-    w2 = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w2)
-    w2._apply_yaml_settings(yaml_data)
-    params2 = w2.build_parameters()
-
-    # Acquisition control parameters
-    assert params2.recording_enabled == params1.recording_enabled
-    assert params2.fps == pytest.approx(params1.fps)
-    assert params2.duration_s == pytest.approx(params1.duration_s)
-    assert params2.zstack_enabled == params1.zstack_enabled
-    assert params2.z_min_um == pytest.approx(params1.z_min_um)
-    assert params2.z_max_um == pytest.approx(params1.z_max_um)
-    assert params2.z_step_um == pytest.approx(params1.z_step_um)
-    assert params2.xy_mode == params1.xy_mode
-
-    # Recording channel (enabled above, so should be non-None)
-    assert params2.recording_channel == params1.recording_channel
-
-    # Multi-plane recording fields (Laser AF on, Nz/dz/bottom-Z offset)
-    assert params2.use_laser_af == params1.use_laser_af
-    assert params2.recording_Nz == params1.recording_Nz
-    assert params2.recording_dz_um == pytest.approx(params1.recording_dz_um)
-    assert params2.recording_bottom_z_offset_um == pytest.approx(params1.recording_bottom_z_offset_um)
-
-    # Z-stack channels: check channel names and numeric settings
-    assert [c.name for c in params2.zstack_channels] == [c.name for c in params1.zstack_channels]
-    assert len(params2.zstack_channels) == len(params1.zstack_channels)
-    for ch2, ch1 in zip(params2.zstack_channels, params1.zstack_channels):
-        assert ch2.exposure_time == pytest.approx(ch1.exposure_time)
-        assert ch2.analog_gain == pytest.approx(ch1.analog_gain)
-        assert ch2.illumination_intensity == pytest.approx(ch1.illumination_intensity)
+    path = tmp_path / "acquisition.yaml"
+    scan = MagicMock()
+    scan.region_centers = {"A1": [1.0, 2.0, 0.1]}
+    scan.region_shapes = {"A1": "Square"}
+    _save_record_zstack_yaml(source.build_parameters(), str(path), scan, {"name": "10x", "camera_binning": [1, 1]})
+    target = _widget(qtbot, deps)
+    target.liveController.camera.get_binning.return_value = (1, 1)
+    with patch("control.widgets.QMessageBox.warning") as warn:
+        assert target._load_acquisition_yaml(str(path)) is True, warn.call_args
+    return target, path
 
 
-def test_validate_helper_recording_nz_and_dz():
-    params = _base_params(recording_enabled=True, recording_nz=0)
-    assert _validate_record_zstack_params(**params) is not None  # Nz < 1
-    params = _base_params(recording_enabled=True, recording_nz=3, recording_dz_um=0.0)
-    assert _validate_record_zstack_params(**params) is not None  # dz <= 0 with Nz > 1
-    params = _base_params(recording_enabled=True, recording_nz=1, recording_dz_um=0.0)
-    assert _validate_record_zstack_params(**params) is None  # Nz=1: dz irrelevant
-    params = _base_params(recording_enabled=True, recording_nz=3, recording_dz_um=0.5)
-    assert _validate_record_zstack_params(**params) is None
+def test_full_save_load_round_trip_preserves_every_setting(qtbot, simulated_widget_deps, tmp_path):
+    w = _widget(qtbot, simulated_widget_deps)
+    w.lineEdit_savingDir.setText(str(tmp_path))
+    w._add_channel_row(FL, 80.0, 0.5, 40.0, fps=25, duration_s=3, zi=True, r=True, zf=False)
+    w._add_channel_row(BF, 5.0, 1.0, 10.0, zi=False, r=False, zf=True, geometry=CameraGeometry(2, 512, 256, "MONO8"))
+    w.checkbox_time.setChecked(True)
+    w.entry_Nt.setValue(3)
+    w.entry_dt.setValue(12.0)
+    w.checkbox_withAutofocus.setChecked(True)
+    w.combobox_z_mode.setCurrentText("Relative")
+    w.entry_deltaZ.setValue(0.5)
+    w.entry_zRange.setValue(3.0)
+    w._apply_slice_choice({0, 1, 6}, 7)
+    w._sync_slice_buttons()
+    w.entry_scan_size.setValue(1.2)
+    w.entry_overlap.setValue(5.0)
+    before = w.build_parameters()
+
+    reloaded, _path = _save_and_reload(qtbot, simulated_widget_deps, tmp_path, w)
+    after = reloaded.build_parameters()
+
+    assert after.channels == before.channels
+    assert after.zstack == before.zstack
+    assert after.record_slices.resolve(7) == before.record_slices.resolve(7) == [0, 1, 6]
+    assert (after.Nt, after.dt_s) == (3, 12.0)
+    assert (after.use_laser_af, after.use_contrast_af, after.use_focus_map) == (False, True, False)
+    assert (after.xy_mode, after.scan_size_mm, after.overlap_percent) == ("Select Wells", 1.2, 5.0)
 
 
-def test_recording_dz_hidden_when_nz_is_one(qtbot, simulated_widget_deps):
-    """dz must be HIDDEN (not just disabled) when Nz == 1 — user requirement."""
-    from control.widgets import RecordZStackMultiPointWidget
+def test_load_settings_button_applies_a_file(qtbot, simulated_widget_deps, tmp_path, monkeypatch):
+    source = _make_valid_widget(qtbot, simulated_widget_deps, zi=True)
+    source.entry_NZ.setValue(4)
+    _target, path = _save_and_reload(qtbot, simulated_widget_deps, tmp_path, source)
 
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    assert w.entry_recording_Nz.value() == 1
-    assert w.entry_recording_dz.isHidden()
-    assert w.label_recording_dz.isHidden()
-
-    w.entry_recording_Nz.setValue(3)
-    assert not w.entry_recording_dz.isHidden()
-    assert not w.label_recording_dz.isHidden()
-
-    w.entry_recording_Nz.setValue(1)
-    assert w.entry_recording_dz.isHidden()
-    assert w.label_recording_dz.isHidden()
+    w = _widget(qtbot, simulated_widget_deps)
+    w.liveController.camera.get_binning.return_value = (1, 1)
+    monkeypatch.setattr("control.widgets.QFileDialog.getOpenFileName", lambda *a, **kw: (str(path), ""))
+    w.btn_loadSettings.click()
+    assert w._channel_row_names == [BF] and w.entry_NZ.value() == 4
+    assert w._get_row_values(BF)["zi"] is True
 
 
-def test_collapsed_recording_section_stays_collapsed(qtbot, simulated_widget_deps):
-    """With the Recording phase unchecked its fields are hidden, and changing Laser AF or Nz
-    does not bring the Z offset or dz back; expanding shows the fields those settings call for."""
-    from control.widgets import RecordZStackMultiPointWidget
+def test_a_file_saved_by_spencers_build_loads_unchanged(qtbot, simulated_widget_deps):
+    """tests/files/record_zstack/spencer_time_at_xy.yaml has every key his _save_record_zstack_yaml writes."""
+    w = _widget(qtbot, simulated_widget_deps)
+    w.liveController.camera.get_binning.return_value = (2, 2)
+    w.objectiveStore.current_objective = "20x"
+    w.liveController.get_channels.return_value = [
+        _make_channel("Fluorescence 488 nm Ex"),
+        _make_channel("Fluorescence 561 nm Ex"),
+        _make_channel("BF LED matrix full"),
+    ]
+    w.refresh_channel_list()
+    laser = MagicMock()
+    laser.laser_af_properties.has_reference = True
+    w.laser_autofocus_controller = laser
 
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.checkbox_recording.setChecked(False)
-    assert w.entry_fps.isHidden()
-
-    w.checkbox_laser_af.setChecked(True)
-    assert w.entry_recording_bottom_z.isHidden()
-    assert w.label_recording_bottom_z.isHidden()
-
-    w.entry_recording_Nz.setValue(3)
-    assert w.entry_recording_dz.isHidden()
-    assert w.label_recording_dz.isHidden()
-
-    w.checkbox_recording.setChecked(True)
-    assert not w.entry_recording_bottom_z.isHidden()
-    assert not w.label_recording_bottom_z.isHidden()
-    assert not w.entry_recording_dz.isHidden()
-    assert not w.label_recording_dz.isHidden()
-
-    # Expanding does not show what the settings do not call for.
-    w.checkbox_recording.setChecked(False)
-    w.checkbox_laser_af.setChecked(False)
-    w.entry_recording_Nz.setValue(1)
-    w.checkbox_recording.setChecked(True)
-    assert not w.entry_fps.isHidden()
-    assert w.entry_recording_bottom_z.isHidden()
-    assert w.entry_recording_dz.isHidden()
-
-
-def test_apply_yaml_settings_keeps_a_disabled_recording_section_collapsed(qtbot, simulated_widget_deps):
-    """Loading settings with the recording phase off, Laser AF on and Nz > 1 leaves the
-    Recording section collapsed, Z offset and dz included."""
-    from control.acquisition_yaml_loader import RecordZStackYAMLData
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-
-    w._apply_yaml_settings(
-        RecordZStackYAMLData(
-            widget_type="record_zstack", recording_enabled=False, zstack_enabled=True, laser_af=True, recording_nz=3
-        )
-    )
-
-    assert w.checkbox_recording.isChecked() is False
-    assert w.checkbox_laser_af.isChecked() is True
-    assert w.entry_recording_Nz.value() == 3
-    assert w.entry_fps.isHidden()
-    assert w.entry_recording_bottom_z.isHidden()
-    assert w.label_recording_bottom_z.isHidden()
-    assert w.entry_recording_dz.isHidden()
-    assert w.label_recording_dz.isHidden()
-
-
-def test_recording_offset_caption_and_build_parameters(qtbot, simulated_widget_deps):
-    from control.widgets import RecordZStackMultiPointWidget
-
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test")
-    w.checkbox_recording.setChecked(True)
-    w.entry_duration.setValue(2.0)
-    w.entry_recording_bottom_z.setValue(-2.0)
-    w.entry_recording_Nz.setValue(3)
-    w.entry_recording_dz.setValue(4.0)
-
-    # Without Laser AF there is no reference plane to offset from: the field
-    # is hidden and its (stale) value must not reach the parameters.
-    assert not w.checkbox_laser_af.isChecked()
-    assert w.entry_recording_bottom_z.isHidden()
-    assert w.label_recording_bottom_z.isHidden()
-    assert w.build_parameters().recording_bottom_z_offset_um == 0.0
-
-    w.checkbox_laser_af.setChecked(True)
-    assert not w.entry_recording_bottom_z.isHidden()
-    assert not w.label_recording_bottom_z.isHidden()
-
-    # Caption uses multi-plane wording when Nz > 1 and reverts at Nz == 1.
-    assert w.label_recording_bottom_z.text() == "Bottom Z offset:"
-    w.entry_recording_Nz.setValue(1)
-    assert w.label_recording_bottom_z.text() == "Z offset:"
-    w.entry_recording_Nz.setValue(3)
+    with patch("control.widgets.QMessageBox.warning") as warn:
+        assert w._load_acquisition_yaml(str(FIXTURES / "spencer_time_at_xy.yaml")) is True, warn.call_args
 
     params = w.build_parameters()
-    assert params.recording_bottom_z_offset_um == -2.0
-    assert params.recording_Nz == 3
-    assert params.recording_dz_um == 4.0
+    assert [(p.name, p.fps, p.duration_s, p.zi, p.r, p.zf) for p in params.channels] == [
+        ("Fluorescence 488 nm Ex", 50.0, 10.0, True, True, True),
+        ("Fluorescence 561 nm Ex", 20.0, 5.0, False, True, False),
+        ("BF LED matrix full", 10.0, 1.0, True, False, True),
+    ]
+    assert params.channels[0].channel.exposure_time == pytest.approx(15.0)
+    assert params.channels[0].geometry == CameraGeometry(binning=2, crop_w=1024, crop_h=1024, pixel_format="MONO8")
+    assert params.channels[2].geometry == CameraGeometry()
+    assert (params.zstack.mode, params.zstack.dz_um, params.zstack.z_range_um) == ("Relative", 1.5, 12.0)
+    assert w.entry_NZ.value() == 9
+    assert params.record_slices.resolve(9) == [0, 2, 4, 8]
+    assert (params.use_laser_af, params.use_contrast_af, params.use_focus_map) == (True, False, False)
+    assert (params.Nt, params.dt_s) == (6, 600.0)
+    assert (params.xy_mode, params.scan_size_mm, params.overlap_percent) == ("Select Wells", 0.5, 10.0)
 
 
-def test_validate_wires_recording_nz_dz(qtbot, simulated_widget_deps, monkeypatch):
-    """Widget.validate() must forward the recording_nz/recording_dz_um spinbox
-    values to the helper.  The spinbox minimums (Nz>=1, dz>0) make invalid
-    values unreachable through the UI, so asserting only ``validate() is
-    None`` would still pass even if those kwargs were silently dropped from
-    the call.  Intercept the helper instead and assert the actual kwargs it
-    receives."""
-    import control.core.record_zstack_controller as rzc_mod
-    from control.widgets import RecordZStackMultiPointWidget
+def test_a_file_from_the_previous_tab_loads_as_an_equivalent_acquisition(qtbot, simulated_widget_deps, caplog):
+    """legacy_4dcell_recording_and_zstack.yaml was written by the Record + Z-Stack tab this one replaces:
+    a 30 fps / 5 s recording of BF at the reference plane, then a -3..+3 µm z-stack of two channels."""
+    w = _widget(qtbot, simulated_widget_deps)
+    w.liveController.camera.get_binning.return_value = (2, 2)
+    w.objectiveStore.current_objective = "20x"
+    w.liveController.get_channels.return_value = [
+        _make_channel("BF LED matrix full"),
+        _make_channel("DF LED matrix"),
+        _make_channel("Fluorescence 405 nm Ex"),
+    ]
+    w.refresh_channel_list()
 
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.lineEdit_savingDir.setText("/tmp/test")
-    w.checkbox_recording.setChecked(True)
-    w.checkbox_zstack.setChecked(False)
-    w.entry_recording_Nz.setValue(3)
-    w.entry_recording_dz.setValue(4.0)
+    with patch("control.widgets.QMessageBox.warning") as warn:
+        assert (
+            w._load_acquisition_yaml(str(FIXTURES / "legacy_4dcell_recording_and_zstack.yaml")) is True
+        ), warn.call_args
 
-    # validate() imports the helper from record_zstack_controller at call time,
-    # so patch it there.
-    real_validate = rzc_mod.validate_record_zstack_params
-    captured = {}
+    params = w.build_parameters()
+    assert [(p.name, p.zi, p.r, p.zf) for p in params.channels] == [
+        ("BF LED matrix full", False, True, False),
+        ("DF LED matrix", False, False, True),
+        ("Fluorescence 405 nm Ex", False, False, True),
+    ]
+    rec = params.channels[0]
+    assert (rec.fps, rec.duration_s, rec.channel.exposure_time) == (30.0, 5.0, 20.0)
+    assert params.channels[1].channel.exposure_time == pytest.approx(35.0)
+    # The old stack (-3..+3 µm in 1 µm steps about the reference) and the old recording plane (at the reference).
+    from control.core.record_zstack_controller import recording_offsets_for_plan, zstack_offsets_for_mode
 
-    def spy(**kwargs):
-        captured.update(kwargs)
-        return real_validate(**kwargs)
-
-    monkeypatch.setattr(rzc_mod, "validate_record_zstack_params", spy)
-
-    result = w.validate()
-
-    assert result is None
-    assert captured.get("recording_nz") == 3
-    assert captured.get("recording_dz_um") == 4.0
-
-
-def test_toggle_acquisition_confirm_warns_when_camera_cannot_reach_requested_fps(qtbot, simulated_widget_deps):
-    """The camera's own max-rate estimate for the recording exposure goes into the confirmation
-    dialog when the user asked for more, with the rate and frame count the run will really use."""
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-    camera = MagicMock()
-    camera.get_max_frame_rate.return_value = 28.0
-    simulated_widget_deps["liveController"].camera = camera
-
-    w = _make_valid_recording_widget(qtbot, simulated_widget_deps)
-    w.entry_fps.setValue(100.0)
-    w.entry_duration.setValue(3.0)
-
-    captured = {}
-
-    def fake_question(parent, title, text, *args, **kwargs):
-        captured["text"] = text
-        return QMessageBox.Yes
-
-    with patch("control.widgets.QMessageBox.question", side_effect=fake_question):
-        w.toggle_acquisition(True)
-
-    assert "at most 28.0 fps, not 100" in captured["text"]
-    assert "28.0 fps (84 frames for 3 s)" in captured["text"]
-    camera.get_max_frame_rate.assert_called_once_with(w._recording_exposure())
-    ctrl.run_acquisition.assert_called_once()
+    assert zstack_offsets_for_mode(params.zstack, 0.0) == [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0]
+    assert recording_offsets_for_plan(params.zstack, params.record_slices, 0.0) == [(3, 0.0)]
+    assert (params.Nt, params.dt_s, params.use_laser_af) == (3, 60.0, False)
+    assert (params.xy_mode, params.scan_size_mm, params.overlap_percent) == ("Select Wells", 0.5, 15.0)
+    assert any("pre-table" in r.getMessage() for r in caplog.records)
+    assert not any("pre-table acquisition.yaml:" in r.getMessage() for r in caplog.records)  # nothing was lost
 
 
-def test_toggle_acquisition_confirm_has_no_limit_note_when_rate_is_reachable(qtbot, simulated_widget_deps):
-    ctrl = _make_stub_controller()
-    simulated_widget_deps["recordZStackController"] = ctrl
-    camera = MagicMock()
-    camera.get_max_frame_rate.return_value = 28.0
-    simulated_widget_deps["liveController"].camera = camera
+def test_a_multi_plane_recording_file_from_the_previous_tab_keeps_its_planes_and_positions(
+    qtbot, simulated_widget_deps
+):
+    """legacy_4dcell_multiplane_recording.yaml: laser AF, three recording planes at -2 / 0 / +2 µm, no
+    z-stack, Load Coordinates with two positions."""
+    from control.core.record_zstack_controller import recording_offsets_for_plan
 
-    w = _make_valid_recording_widget(qtbot, simulated_widget_deps)
-    w.entry_fps.setValue(10.0)
-    captured = {}
+    laser = MagicMock()
+    laser.laser_af_properties.has_reference = True
+    simulated_widget_deps["laser_autofocus_controller"] = laser
+    w = _widget(qtbot, simulated_widget_deps)
+    w.lineEdit_savingDir.setText("/tmp/x")
+    w.liveController.camera.get_binning.return_value = (2, 2)
+    w.objectiveStore.current_objective = "20x"
 
-    def fake_question(parent, title, text, *args, **kwargs):
-        captured["text"] = text
-        return QMessageBox.Yes
+    with patch("control.widgets.QMessageBox.warning") as warn:
+        assert (
+            w._load_acquisition_yaml(str(FIXTURES / "legacy_4dcell_multiplane_recording.yaml")) is True
+        ), warn.call_args
 
-    with patch("control.widgets.QMessageBox.question", side_effect=fake_question):
-        w.toggle_acquisition(True)
-
-    assert "Camera limit" not in captured["text"]
-    ctrl.run_acquisition.assert_called_once()
+    params = w.build_parameters()
+    assert [(p.name, p.fps, p.duration_s, p.zi, p.r, p.zf) for p in params.channels] == [
+        (BF, 10.0, 2.0, False, True, False)
+    ]
+    assert recording_offsets_for_plan(params.zstack, params.record_slices, 0.0) == [(0, -2.0), (1, 0.0), (2, 2.0)]
+    assert params.use_laser_af is True
+    assert params.xy_mode == "Load Coordinates"
+    assert w.loaded_positions() == [
+        {"name": "target_0", "fovs": [[10.0, 12.0, 1.5]]},
+        {"name": "target_1", "fovs": [[11.0, 12.5]]},
+    ]
+    assert w.validate() is None
 
 
 # ---------------------------------------------------------------------------
-# Zero exposure: rounded to 0.0 by a one-decimal spinbox, then rejected by the camera mid-run
-# (ToupTek "The parameter is incorrect"), aborting the acquisition with the z-stack half written.
+# Misc
 # ---------------------------------------------------------------------------
 
 
-def test_validate_helper_rejects_zero_recording_exposure():
-    from control.core.record_zstack_controller import validate_record_zstack_params
-
-    err = validate_record_zstack_params(**_base_params(recording_enabled=True, recording_exposure_ms=0.0))
-    assert err is not None and "exposure" in err and "BF LED matrix full" in err
-
-
-def test_validate_helper_rejects_zero_zstack_exposure_naming_the_channel():
-    from control.core.record_zstack_controller import validate_record_zstack_params
-
-    params = _base_params(
-        zstack_channel_names=["Fluorescence 488 nm Ex", "Fluorescence 405 nm Ex"],
-        zstack_exposures_ms={"Fluorescence 488 nm Ex": 30.0, "Fluorescence 405 nm Ex": 0.0},
-    )
-    err = validate_record_zstack_params(**params)
-    assert err is not None and "Fluorescence 405 nm Ex" in err and "exposure" in err
-
-
-def test_validate_helper_accepts_positive_exposures():
-    from control.core.record_zstack_controller import validate_record_zstack_params
-
-    params = _base_params(
-        recording_enabled=True, recording_exposure_ms=0.1, zstack_exposures_ms={"BF LED matrix full": 0.1}
-    )
-    assert validate_record_zstack_params(**params) is None
-
-
-def test_exposure_editors_cannot_hold_zero(qtbot, simulated_widget_deps):
-    w = _make_valid_widget(qtbot, simulated_widget_deps)
-    w._recording_exp_spin.setValue(0.0)
-    assert w._recording_exposure() > 0
-    w._set_zstack_row_values("BF LED matrix full", 0.0, 0.0, 50.0)
-    assert w._get_zstack_row_values("BF LED matrix full")[0] > 0
-
-
-def test_validate_rejects_zero_zstack_exposure(qtbot, simulated_widget_deps, monkeypatch):
-    """A zero exposure that reaches the table anyway (e.g. from a settings file) is refused before Start."""
-    w = _make_valid_widget(qtbot, simulated_widget_deps)
-    monkeypatch.setattr(w, "_get_zstack_row_values", lambda name: (0.0, 0.0, 50.0))
-    err = w.validate()
-    assert err is not None and "exposure" in err
+def test_widget_type_and_camera_for_the_binning_check(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    assert w._get_expected_widget_type() == "record_zstack"
+    assert w._get_camera_for_binning_check() is w.liveController.camera
+    assert w._get_other_widget_name("record_zstack") == "Time at XY"
 
 
 def test_editors_and_labels_are_never_narrower_than_their_size_hints(qtbot, simulated_widget_deps):
     """Widths must come from the font in use, not from pixel counts tuned on one machine.
 
-    With a 12 pt GUI font the fixed widths left "FPS: 100", "25.0 ms", "Z-min: -3.0 μm" and the
-    "Experiment ID:" label cut off. Qt's sizeHint already fits each editor's widest value text in the
-    current font, so no editor or label may end up narrower than its own hint.
+    Qt's sizeHint already fits each editor's widest value text in the current font, so no editor or
+    label outside the channel table may end up narrower than its own hint.  (The table's cells are
+    sized from the font metrics of each column's widest value instead: see _column_widths.)
     """
     from qtpy.QtWidgets import QAbstractSpinBox, QApplication, QComboBox, QLabel, QScrollArea
-    from control.widgets import RecordZStackMultiPointWidget
 
-    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
-    qtbot.addWidget(w)
-    w.checkbox_recording.setChecked(True)
-    w.checkbox_zstack.setChecked(True)
+    w = _widget(qtbot, simulated_widget_deps)
     w.checkbox_time.setChecked(True)
-    w.entry_recording_Nz.setValue(2)  # shows dz too
-    w._add_zstack_channel_row(w.liveController.get_channels(w.objectiveStore.current_objective)[0].name)
-    w.entry_fps.setValue(100)
+    w._add_channel_row(BF)
     w.show()
     qtbot.waitExposed(w)
     QApplication.processEvents()
 
-    # The GUI's left panel is as wide as the widest multipoint tab, which is never narrower than this
-    # tab's own content; the tab scrolls, so its sizeHint is the scroll area's, not the content's.
+    # The tab scrolls, so its sizeHint is the scroll area's, not the content's.
     content = w.findChild(QScrollArea).widget()
 
-    def _fit_content():
+    def fit_content():
         chrome = w.width() - content.width()
         w.resize(content.sizeHint().width() + chrome, w.sizeHint().height())
         QApplication.processEvents()
 
-    _fit_content()
-
-    def _label(widget):
+    def label(widget):
         shown = widget.currentText() if isinstance(widget, QComboBox) else widget.text()
         return f"{type(widget).__name__}({shown!r})"
 
-    def _too_narrow():
-        checked = [c for c in w.findChildren(QAbstractSpinBox) + w.findChildren(QLabel) if c.isVisible()]
-        checked += [w.combobox_shape, w.combobox_xy_mode]
-        assert len(checked) > 20, "the tab's editors were not found"
+    def too_narrow():
+        in_table = set(w.channel_table.findChildren(QAbstractSpinBox))
+        checked = [
+            c for c in w.findChildren(QAbstractSpinBox) + w.findChildren(QLabel) if c.isVisible() and c not in in_table
+        ]
+        checked += [w.combobox_shape, w.combobox_xy_mode, w.combobox_z_mode]
+        assert len(checked) > 15, "the tab's editors were not found"
         return [
-            f"{_label(c)}: {c.width()}px < hint {c.sizeHint().width()}px"
+            f"{label(c)}: {c.width()}px < hint {c.sizeHint().width()}px"
             for c in checked
             if c.width() < c.sizeHint().width()
         ]
 
-    assert not _too_narrow(), "\n".join(_too_narrow())
+    for mode in ("From Bottom", "Relative", "Set Range"):
+        w.combobox_z_mode.setCurrentText(mode)
+        fit_content()
+        assert not too_narrow(), f"{mode}:\n" + "\n".join(too_narrow())
 
-    # Nz > 1 with Laser AF on moves Nz/dz to a row of their own under FPS/Dur, aligned by column.
-    w.checkbox_laser_af.setChecked(True)
-    _fit_content()
-    assert not _too_narrow(), "\n".join(_too_narrow())
+
+def test_channel_table_columns_fit_their_widest_values(qtbot, simulated_widget_deps):
+    w = _widget(qtbot, simulated_widget_deps)
+    fm = w.channel_table.fontMetrics()
+    for col, sample in w._COLUMN_SAMPLES.items():
+        assert w.channel_table.columnWidth(col) >= fm.horizontalAdvance(sample)
+        assert w.channel_table.columnWidth(col) >= fm.horizontalAdvance(w._COLUMN_HEADERS[col])
+
+
+def test_camera_tab_refresh_shows_what_the_camera_is_set_to(qtbot):
+    """Per-channel camera settings change the camera behind the Camera tab's back; after a run or a
+    frame-rate test the tab re-reads the camera instead of writing its own stale values to it."""
+    import squid.camera.utils
+    import squid.config
+    from control.widgets import CameraSettingsWidget
+
+    camera = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+    tab = CameraSettingsWidget(camera)
+    qtbot.addWidget(tab)
+    emitted = []
+    tab.signal_binning_changed.connect(lambda: emitted.append(1))
+
+    tab.refresh_from_camera()
+    assert emitted == []  # the camera is as the tab shows it: nothing for listeners to redo
+
+    shown = tab.dropdown_binning.currentText()
+    other = next(b for b in (1, 2) if f"{b}x{b}" != shown)
+    writes = []
+    real_set_binning = camera.set_binning
+    camera.set_binning = lambda x, y: writes.append((x, y)) or real_set_binning(x, y)
+    real_set_binning(other, other)  # as the Time at XY worker does, not through the tab
+
+    tab.refresh_from_camera()
+
+    assert tab.dropdown_binning.currentText() == f"{other}x{other}"
+    assert tab.entry_ROI_width.value() == camera.get_region_of_interest()[2]
+    assert tab.entry_ROI_height.value() == camera.get_region_of_interest()[3]
+    assert writes == []  # read back only
+    assert emitted == [1]
