@@ -235,6 +235,20 @@ def ensure_directory_exists(raw_string_path: str):
     path.mkdir(parents=True, exist_ok=True)
 
 
+def sanitize_path_component(name: str, fallback: str = "channel") -> str:
+    """Return *name* reduced to a filesystem-safe single path component.
+
+    Keeps ``[A-Za-z0-9._-]``, collapses every other run of characters to a
+    single ``_``, strips leading/trailing dots and underscores (so the result
+    is never hidden or a ``..``), and falls back to *fallback* when nothing is
+    left.  Used to turn user-facing channel names into output directory names.
+    """
+    import re
+
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name)).strip("._")
+    return cleaned or fallback
+
+
 def serialize_for_yaml(obj):
     """Recursively convert objects into YAML/JSON-safe Python primitives.
 
@@ -487,6 +501,43 @@ def get_squid_repo_state_description() -> Optional[str]:
 
 def truncate_to_interval(val, interval: int):
     return int(interval * (val // interval))
+
+
+def clamp_roi(
+    offset_x: float,
+    offset_y: float,
+    width: float,
+    height: float,
+    sensor_width: int,
+    sensor_height: int,
+    x_interval: int = 8,
+    y_interval: int = 2,
+    min_width: int = 8,
+    min_height: int = 2,
+) -> Tuple[int, int, int, int]:
+    """Snap an ROI to the camera's alignment grid and clamp it inside the sensor.
+
+    Cameras reject an ROI that runs off the sensor. Some backends raise (the Daheng
+    backend in control/camera.py compares the readback and raises CameraError), others
+    silently keep the previous ROI, which leaves the config and the delivered frames
+    describing different regions. Callers should route any computed ROI through here so
+    an out-of-range request never reaches the driver.
+
+    Returns (offset_x, offset_y, width, height) as ints, guaranteed to satisfy
+    0 <= offset and offset + size <= sensor.
+
+    Order matters. Sizes are clamped and truncated first, then offsets are clamped
+    against the resulting size; truncation only ever shrinks, so the result stays in
+    bounds. Negative offsets are clamped to 0 *before* truncation because
+    truncate_to_interval floors: truncate_to_interval(-3, 8) == -8, not 0.
+    """
+    width = truncate_to_interval(min(max(width, min_width), sensor_width), x_interval)
+    height = truncate_to_interval(min(max(height, min_height), sensor_height), y_interval)
+
+    offset_x = truncate_to_interval(min(max(offset_x, 0), sensor_width - width), x_interval)
+    offset_y = truncate_to_interval(min(max(offset_y, 0), sensor_height - height), y_interval)
+
+    return int(offset_x), int(offset_y), int(width), int(height)
 
 
 def get_available_disk_space(directory: pathlib.Path) -> int:
