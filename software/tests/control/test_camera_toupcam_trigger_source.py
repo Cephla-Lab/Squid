@@ -3,7 +3,7 @@
 Measured on an ITR3CMOS26000KMA: the SDK moves the trigger source (IOCONTROLTYPE TRIGGERSOURCE: 1 = GPIO0,
 5 = software) along with OPTION_TRIGGER only while the stream runs. Switched from hardware to software
 trigger while stopped, the source stays on GPIO0 and every software trigger is ignored, which aborted
-Record + Z-Stack z-stacks started from hardware-trigger live view. The fake SDK below models that.
+Time at XY z-stacks started from hardware-trigger live view. The fake SDK below models that.
 """
 
 from squid.abc import CameraAcquisitionMode

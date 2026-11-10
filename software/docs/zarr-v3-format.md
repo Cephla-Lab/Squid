@@ -71,6 +71,41 @@ Combines all FOVs into a single zarr store per region. **Warning:** This is a no
 
 Note: Unlike HCS/per-FOV modes where the array is in a `/0` subdirectory, 6D mode stores the array at the zarr root with `datasets.path = "."` in the metadata.
 
+### Time at XY (Record tab)
+
+A Time at XY acquisition (`widget_type: record_zstack`) writes Zarr v3 stores. Per FOV it acquires an
+initial z-stack (Zi), one time-lapse recording per recording
+channel (R), then a final z-stack (Zf), and each phase has its own tree under the experiment folder:
+
+```
+{experiment}/
+├── acquisition.yaml
+├── acquisition_channels.yaml
+├── zstack_initial/
+│   └── zarr/{region}/fov_{k}.ome.zarr/           # Zi: 5D (T, C, Z, Y, X), per-FOV layout as above
+├── recording/
+│   └── t{N}/{region}/{channel}/
+│       └── fov_{k}_z{i}.ome.zarr/                # R: 5D (frames, 1, 1, Y, X), array at the store root
+└── zstack_final/
+    └── zarr/{region}/fov_{k}.ome.zarr/           # Zf
+```
+
+- `t{N}` is the acquisition timepoint (Nt / dt); the T axis of a recording store is its frames.
+- `{channel}` is the channel name made filesystem-safe (`BF LED matrix full` -> `BF_LED_matrix_full`).
+  The directory is always present, with one recording channel or several.
+- `_z{i}` is the index of the recorded plane in the shared z-stack, so `fov_0_z3` is the same plane as
+  Z index 3 of that FOV's `zstack_initial` / `zstack_final` stores. A recording's `_squid` attributes add
+  `plane_index`, `plane_z_offset_um` (from the FOV's z reference), `n_planes` (planes recorded),
+  `stack_planes` (planes in the stack), `requested_fps` and `effective_fps`.
+- Stack channels with different per-channel camera settings (binning, crop, pixel format) cannot share
+  an array. A phase that has more than one such group gains a level naming the settings, for example
+  `zstack_initial/bin2_1024x1024_mono8/zarr/{region}/fov_{k}.ome.zarr`. With a single group there is no
+  extra level.
+
+The viewer opens a folder that has `zarr/` or `plate.ome.zarr/` directly inside it, so open
+`{experiment}/zstack_initial` or `{experiment}/zstack_final` (or a group folder below them), not
+`{experiment}` itself. Recording stores are not listed by the viewer; open them with TensorStore.
+
 ## Array Structure
 
 ### 5D Arrays (Standard)

@@ -966,7 +966,7 @@ ENABLE_RECORDING = False
 # See docs/smart-acquisition.md.
 ENABLE_SMART_ACQUISITION = False
 
-# Throttled live preview during Record + Z-Stack acquisitions: frames/s shown in
+# Throttled live preview during Time at XY acquisitions: frames/s shown in
 # the live display during the recording phase. When preview is enabled, z-stack
 # planes display unthrottled (like multipoint). 0 disables the preview for both
 # phases.
