@@ -40,6 +40,7 @@ class _BuildParamsStub:
         self.z_stack_order = "CHANNEL FIRST"
         self.z_range = (0.0, 0.0)
         self.skip_saving = False
+        self.dry_run = False
         self.xy_mode = "Current Position"
 
     build_params = MultiPointController.build_params

@@ -287,6 +287,27 @@ class TestSlackNotifierAcquisitionNotifications:
             args = mock_queue.call_args[0][0]
             assert "test_exp" in args.text
 
+    def test_notify_acquisition_finished_reports_late_timepoints(self, notifier):
+        """Time points that ran past their interval are noted next to the count; none were skipped."""
+        stats = AcquisitionStats(
+            total_images=5000,
+            total_timepoints=10,
+            total_duration_seconds=7200,
+            errors_encountered=0,
+            experiment_id="test_exp",
+        )
+        assert stats.late_timepoints == 0
+        with mock.patch.object(notifier, "_queue_message") as mock_queue:
+            notifier.notify_acquisition_finished(stats)
+            assert "*Timepoints:* 10\n" in mock_queue.call_args[0][0].blocks[1]["text"]["text"]
+
+        stats.late_timepoints = 3
+        with mock.patch.object(notifier, "_queue_message") as mock_queue:
+            notifier.notify_acquisition_finished(stats)
+            assert (
+                "*Timepoints:* 10 (3 ran past the interval)\n" in mock_queue.call_args[0][0].blocks[1]["text"]["text"]
+            )
+
     def test_notify_acquisition_finished_respects_flag(self):
         """Test that notify_acquisition_finished respects flag."""
         control._def.SlackNotifications.ENABLED = True

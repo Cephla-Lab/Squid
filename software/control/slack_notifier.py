@@ -53,6 +53,8 @@ class AcquisitionStats:
     errors_encountered: int
     experiment_id: str
     reason: str = "completed"
+    # Time points that ran past their dt interval.  They were still acquired, not skipped.
+    late_timepoints: int = 0
 
 
 @dataclass
@@ -570,6 +572,7 @@ class SlackNotifier:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         status_text = f"with {stats.errors_encountered} errors" if stats.errors_encountered > 0 else "successfully"
+        late_suffix = f" ({stats.late_timepoints} ran past the interval)" if stats.late_timepoints else ""
 
         blocks = [
             {
@@ -584,7 +587,7 @@ class SlackNotifier:
                         f"*Experiment:* {stats.experiment_id}\n"
                         f"*Status:* Finished {status_text}\n"
                         f"*Total Images:* {stats.total_images:,}\n"
-                        f"*Timepoints:* {stats.total_timepoints}\n"
+                        f"*Timepoints:* {stats.total_timepoints}{late_suffix}\n"
                         f"*Duration:* {duration_str}\n"
                         f"*Completed:* {timestamp}"
                     ),

@@ -206,6 +206,9 @@ class QtAutoFocusController(AutoFocusController, QObject):
 
 class QtMultiPointController(MultiPointController, QObject):
     acquisition_finished = Signal()
+    # TimingProbeResult from run_timing_probe().  Emitted from the probe thread; Qt's auto
+    # connection queues it onto the GUI thread for the widget that launched the probe.
+    timing_probe_finished = Signal(object)
     signal_acquisition_start = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
