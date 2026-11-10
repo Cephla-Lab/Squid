@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from qtpy.QtCore import QTimer
-from qtpy.QtWidgets import QDialog
+from qtpy.QtWidgets import QApplication, QDialog
 
 import control.widgets_fluidics.protocol_widget as protocol_widget_module
 from control.core.fluidics_protocol import manifest as manifest_io
@@ -242,6 +242,11 @@ def test_display_tab_initializes_and_builds_the_port(qtbot, tmp_path, monkeypatc
     finally:
         tab.shutdown()
         assert service.close() == []
+        # close() joins the sensor polling threads, and each publishes a last reading on its way out.
+        # Deliver them while `tab` is still referenced here: once this function returns only reference
+        # cycles hold the tab, and a garbage collection during a queued plot redraw deletes the widgets
+        # under it ("wrapped C/C++ object of type MplCanvas has been deleted").
+        QApplication.processEvents()
 
 
 class _GuiGatedImaging:

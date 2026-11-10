@@ -1,4 +1,5 @@
 import pytest
+from qtpy.QtWidgets import QApplication
 
 import control._def
 import control.microscope
@@ -55,3 +56,7 @@ def initialized_display_tab(qtbot, tmp_path, monkeypatch):
     for tab, service in built:
         tab.shutdown()
         assert service.close() == []
+    # close() joins the sensor polling threads, and each publishes a last reading on its way out.
+    # Deliver them while `built` still references the tabs: afterwards only reference cycles hold a
+    # tab, and a garbage collection during a queued plot redraw deletes the widgets under it.
+    QApplication.processEvents()
