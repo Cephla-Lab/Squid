@@ -122,15 +122,6 @@ def test_unfinished_survey_is_refused(survey):
         _analyze(acq, template)
 
 
-def test_record_zstack_template_is_refused(survey):
-    """The Record + Z-Stack tab cannot take a target list on this branch; it must not be sent one."""
-    acq, _, tmp_path = survey
-    template = tmp_path / "template_record.yaml"
-    template.write_text(yaml.safe_dump(_acquisition_yaml("record_zstack")))
-    with pytest.raises(emit.TargetValidationError, match="Record \\+ Z-Stack"):
-        _analyze(acq, str(template))
-
-
 def test_two_magnification_workflow_round_trips_and_validates(survey):
     acq, template, tmp_path = survey
     workflow = Workflow(

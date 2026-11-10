@@ -13,14 +13,15 @@ ring individually at 20x. But nothing in the pipeline is specific to rings —
 the detector is one implementation of an analyzer contract that any other
 measurement (focus, SNR, confluence, a segmentation model) can implement.
 
-> **Status on the `4dcell` branch.** This feature was ported from the 4DCell portable build. The
-> analysis pipeline, the command line, the Smart Acquisition tab, the Workflow Runner's Objective and
-> Analyze steps and the Smart Ring wizard are all here, with **Flexible Multipoint** as the follow-up
-> acquisition. Sections below that describe a **Time at XY** follow-up (the 4DCell build's rewrite of the
-> Record + Z-Stack tab: Load Coordinates mode, per-channel Cam settings, Save Settings...) do not apply
-> yet: a `record_zstack` template is refused with a message rather than run at the wrong positions.
-> Make the templates from the `acquisition.yaml` any run writes. Surveys must be saved as TIFF or
-> OME-TIFF; Zarr surveys are not read.
+> **On the `4dcell` branch.** This feature was ported from the 4DCell portable build, where the follow-up
+> tab is called **Time at XY**. Here that tab is upstream's **Record + Z-Stack**: wherever this page says
+> Time at XY, read Record + Z-Stack. It has the same **Load Coordinates** mode and **Save Settings…**
+> button, and a `record_zstack` template sends the targets there. What differs is the tab's own
+> settings: one recording channel (FPS, Dur, planes) and a z-stack channel list with Z-min / Z-max /
+> step, rather than a channel table with Zi / R / Zf columns, a z-mode selector, Use Focus Map, or
+> per-channel **Cam** settings. Passages about those do not apply. Per ring the run does: laser AF
+> (started from the carried survey z + dz), the recording, then the z-stack, Nt times.
+> Surveys must be saved as TIFF or OME-TIFF; Zarr surveys are not read.
 
 ## The pipeline
 

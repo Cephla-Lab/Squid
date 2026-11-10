@@ -190,11 +190,6 @@ def validate_recipe(recipe: SmartRingRecipe) -> List[str]:
         errors.append(f"Follow-up template acquisition.yaml not readable: {recipe.template_yaml!r}")
     elif _widget_type(template) not in ("record_zstack", "flexible", "wellplate"):
         errors.append(f"Unsupported template widget_type {_widget_type(template)!r}")
-    elif _widget_type(template) == "record_zstack":
-        from control.core.smart_acquisition import emit
-
-        if not emit.RECORD_ZSTACK_FOLLOW_UP_SUPPORTED:
-            errors.append(emit.RECORD_ZSTACK_UNSUPPORTED_MESSAGE)
 
     try:
         from control.core.smart_acquisition import analyzers
@@ -262,7 +257,7 @@ def recipe_warnings(
     if recipe.xy_offset_mm is None:
         warnings.append("No XY offset between the objectives; only right if they are parcentric to within a field")
     if _widget_type(template) == "record_zstack":
-        # A Time at XY template: the settings below are applied unattended at every ring.
+        # A Record + Z-Stack template: the settings below are applied unattended at every ring.
         autofocus = _autofocus(template)
         if autofocus.get("use_focus_map"):
             if recipe.carry_z:

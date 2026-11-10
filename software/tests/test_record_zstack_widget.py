@@ -1482,7 +1482,7 @@ def test_combobox_xy_mode_has_current_position_and_select_wells(qtbot, simulated
     qtbot.addWidget(w)
 
     items = [w.combobox_xy_mode.itemText(i) for i in range(w.combobox_xy_mode.count())]
-    assert items == ["Current Position", "Select Wells"]
+    assert items == ["Current Position", "Select Wells", "Load Coordinates"]
     assert w.combobox_xy_mode.currentText() == "Select Wells"
 
 

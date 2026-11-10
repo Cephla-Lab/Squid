@@ -303,7 +303,7 @@ class AddAcquisitionDialog(QDialog):
         # Help text
         help_text = QLabel(
             "<small><i>Leave the config empty to use the current settings of the tab that matches the file.<br>"
-            "A config file picks its own tab (wellplate, flexible or Time at XY) when it runs.<br>"
+            "A config file picks its own tab (wellplate, flexible or Record + Z-Stack) when it runs.<br>"
             "A well list replaces the wells stored in a wellplate config.</i></small>"
         )
         help_text.setStyleSheet("color: gray;")
@@ -695,7 +695,7 @@ class SmartRingWorkflowDialog(QDialog):
         layout = QFormLayout(self)
         intro = QLabel(
             "Survey the wells at low magnification, find the ring structures, switch objective and "
-            "image every ring with the follow-up acquisition (Time at XY or multipoint)."
+            "image every ring with the follow-up acquisition (Record + Z-Stack or multipoint)."
         )
         intro.setWordWrap(True)
         layout.addRow(intro)
@@ -724,7 +724,7 @@ class SmartRingWorkflowDialog(QDialog):
         template_layout = QHBoxLayout()
         self.edit_template = QLineEdit()
         self.edit_template.setPlaceholderText(
-            "acquisition.yaml of the follow-up run (Time at XY: channel rows with Zi/R/Zf, FPS/Dur, z planes, Nt/dt)"
+            "acquisition.yaml of the follow-up run (Record + Z-Stack: recording and z-stack settings, Laser AF, Nt/dt)"
         )
         template_layout.addWidget(self.edit_template)
         btn = QPushButton("Browse...")
@@ -762,7 +762,7 @@ class SmartRingWorkflowDialog(QDialog):
         # Where the follow-up (Image targets) step saves its recordings; remembered like the offset.
         recording_layout = QHBoxLayout()
         self.edit_recording = QLineEdit()
-        self.edit_recording.setPlaceholderText("(Optional) default: the Time at XY tab's saving folder")
+        self.edit_recording.setPlaceholderText("(Optional) default: the Record + Z-Stack tab's saving folder")
         self.edit_recording.setText(load_recording_folder() or "")
         recording_layout.addWidget(self.edit_recording)
         btn = QPushButton("Browse...")

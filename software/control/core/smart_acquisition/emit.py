@@ -240,17 +240,6 @@ def load_template(template_path: str) -> Dict[str, Any]:
     return data
 
 
-#: Whether a ``record_zstack`` template can be a follow-up. The Record + Z-Stack tab on this branch has
-#: no "Load Coordinates" mode: it would load the template's settings, ignore the target list and image
-#: whatever wells happen to be selected. Refuse rather than acquire in the wrong place.
-RECORD_ZSTACK_FOLLOW_UP_SUPPORTED = False
-
-RECORD_ZSTACK_UNSUPPORTED_MESSAGE = (
-    "The follow-up template is a Record + Z-Stack acquisition, which cannot take a target list on this "
-    "branch yet. Use a Flexible Multipoint (or Wellplate) acquisition.yaml as the template."
-)
-
-
 def template_widget_type(template: Dict[str, Any]) -> str:
     """The widget type an emitted acquisition will run in: the template's, or flexible."""
     widget_type = str((template.get("acquisition") or {}).get("widget_type") or "flexible").lower()
@@ -285,8 +274,8 @@ def build_acquisition_dict(
 
     * A wellplate/flexible template becomes a *flexible* acquisition with one
       position per target (``nx = ny = 1``, see the module docstring).
-    * A ``record_zstack`` template (the Time at XY tab) keeps its channel table
-      (Zi/R/Zf rows), z planes, record slices, focus row and time series, and
+    * A ``record_zstack`` template (the Record + Z-Stack tab) keeps its recording
+      and z-stack settings, focus setting and time series, and
       lists the targets as explicit ``wellplate_scan.regions`` for that tab's
       "Load Coordinates" mode. Each region carries both ``center_mm`` and a
       one-element ``fovs`` list so the per-target z (when carried) reaches the
@@ -299,8 +288,6 @@ def build_acquisition_dict(
       appended to ``notes`` when a list is given.
     """
     widget_type = template_widget_type(template)
-    if widget_type == "record_zstack" and not RECORD_ZSTACK_FOLLOW_UP_SUPPORTED:
-        raise TargetValidationError(RECORD_ZSTACK_UNSUPPORTED_MESSAGE)
     out = _prepare_common(template, widget_type)
 
     if widget_type == "record_zstack":

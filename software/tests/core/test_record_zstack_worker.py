@@ -270,6 +270,7 @@ def test_record_zstack_controller_smoke(tmp_path, monkeypatch):
         z_step_um=1.0,  # 3 planes
     )
 
+    assert controller.last_experiment_path is None and controller.last_end_reason is None
     controller.run_acquisition(params)
     # Wait up to 120 s for the worker thread to finish.
     controller.join(timeout=120)
@@ -279,6 +280,10 @@ def test_record_zstack_controller_smoke(tmp_path, monkeypatch):
     subdirs = [d for d in Path(tmp_path).iterdir() if d.is_dir()]
     assert len(subdirs) == 1, f"expected exactly one experiment dir, got {subdirs}"
     base = subdirs[0]
+
+    # What an unattended caller (the Workflow Runner) reads to decide whether to build on this run.
+    assert Path(controller.last_experiment_path) == base
+    assert controller.last_end_reason == "completed"
 
     # Recording: one dataset per (t, well, fov).
     rec = sorted((base / "recording").rglob("*.ome.zarr"))

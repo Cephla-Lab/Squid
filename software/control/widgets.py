@@ -1009,6 +1009,37 @@ def _parse_well_name(well_name: str):
         return None, None
 
 
+RECORD_XY_LOAD_COORDINATES = "Load Coordinates"
+
+
+def positions_from_regions(regions) -> list:
+    """Turn acquisition.yaml ``wellplate_scan.regions`` into [{"name", "fovs"}, ...].
+
+    Each region contributes its explicit ``fovs`` list, or its ``center_mm`` as a
+    single FOV. FOVs are [x, y] or [x, y, z] in mm. Raises ValueError on a
+    malformed entry so a bad file fails at load time, not on the stage.
+    """
+    positions = []
+    for index, region in enumerate(regions or []):
+        if not isinstance(region, dict):
+            raise ValueError(f"region #{index} is not a mapping")
+        name = str(region.get("name") or f"pos{index}")
+        fovs = region.get("fovs") or ([region["center_mm"]] if region.get("center_mm") else [])
+        if not fovs:
+            raise ValueError(f"region {name!r} has neither fovs nor center_mm")
+        clean = []
+        for fov in fovs:
+            try:
+                values = [float(v) for v in fov]
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"region {name!r}: FOV {fov!r} is not numeric") from e
+            if len(values) not in (2, 3):
+                raise ValueError(f"region {name!r}: FOV {fov!r} must be [x, y] or [x, y, z] in mm")
+            clean.append(values)
+        positions.append({"name": name, "fovs": clean})
+    return positions
+
+
 def _load_well_regions(well_selection_widget, regions) -> None:
     """Select *regions* (from a dropped acquisition YAML) in *well_selection_widget*.
 
@@ -17482,7 +17513,12 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_xy = QCheckBox("XY")
         self.checkbox_xy.setChecked(True)
         self.combobox_xy_mode = QComboBox()
-        self.combobox_xy_mode.addItems(["Current Position", "Select Wells"])
+        self.combobox_xy_mode.addItems(["Current Position", "Select Wells", RECORD_XY_LOAD_COORDINATES])
+        # Positions supplied by a loaded acquisition.yaml (Load Coordinates mode).
+        self._loaded_positions: list = []
+        self.label_loaded_positions = QLabel("")
+        self.label_loaded_positions.setStyleSheet("color: gray;")
+        self.label_loaded_positions.setVisible(False)
         # Select Wells (tile a grid over the selected wells) is the default so
         # existing tiling behavior is unchanged out of the box; Current
         # Position is a single FOV at the live stage position, bypassing
@@ -17493,6 +17529,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         xy_layout.setContentsMargins(8, 4, 8, 4)
         xy_layout.addWidget(self.checkbox_xy)
         xy_layout.addWidget(self.combobox_xy_mode)
+        xy_layout.addWidget(self.label_loaded_positions)
 
         self.checkbox_time = QCheckBox("Time")
         self.checkbox_time.setChecked(False)
@@ -17621,10 +17658,31 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
     def _on_xy_mode_changed(self, mode: str) -> None:
         """Show the FOV-tiling controls only for Select Wells; Current
-        Position always uses a fixed single FOV at the live stage position.
+        Position always uses a fixed single FOV at the live stage position;
+        Load Coordinates images the positions of the last loaded acquisition.yaml.
         """
         self.xy_controls_frame.setVisible(self.checkbox_xy.isChecked() and mode == "Select Wells")
+        self._update_loaded_positions_label()
         self._update_scan_regions()
+
+    def _update_loaded_positions_label(self) -> None:
+        loading = self.combobox_xy_mode.currentText() == RECORD_XY_LOAD_COORDINATES
+        n = len(self._loaded_positions)
+        self.label_loaded_positions.setText(f"{n} position(s) loaded" if n else "no coordinates loaded")
+        self.label_loaded_positions.setVisible(loading)
+
+    def set_loaded_positions(self, positions) -> None:
+        """Use an explicit position list ([{"name", "fovs"}, ...]) and switch to Load Coordinates mode."""
+        self._loaded_positions = list(positions)
+        self.checkbox_xy.setChecked(True)
+        if self.combobox_xy_mode.currentText() == RECORD_XY_LOAD_COORDINATES:
+            self._update_loaded_positions_label()
+            self._update_scan_regions()
+        else:
+            self.combobox_xy_mode.setCurrentText(RECORD_XY_LOAD_COORDINATES)
+
+    def loaded_positions(self) -> list:
+        return list(self._loaded_positions)
 
     def _on_time_toggled(self, checked: bool) -> None:
         """Show/hide the Nt/dt controls, resetting to a single timepoint when
@@ -17924,9 +17982,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         layout.setSpacing(4)
 
         # Save/Load full settings (reusable across acquisitions, unlike the
-        # per-run acquisition_channels.yaml audit snapshot). Hidden by
-        # default — drag-and-drop of an acquisition YAML onto the widget
-        # covers the same functionality without permanently using UI space.
+        # per-run acquisition_channels.yaml audit snapshot). Save Settings writes
+        # an acquisition.yaml without acquiring: the follow-up template for the
+        # smart-ring workflow, or any reusable settings file.
         self.settings_buttons_frame = QFrame()
         settings_row = QHBoxLayout(self.settings_buttons_frame)
         settings_row.setContentsMargins(0, 0, 0, 0)
@@ -17938,7 +17996,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.btn_loadSettings.clicked.connect(self._on_load_settings_clicked)
         settings_row.addWidget(self.btn_loadSettings)
         settings_row.addStretch(1)
-        self.settings_buttons_frame.setVisible(False)
         layout.addWidget(self.settings_buttons_frame)
 
         self.btn_startAcquisition = QPushButton("Start Acquisition")
@@ -18337,7 +18394,8 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         """
         if self.scanCoordinates is None:
             return
-        select_wells = self.combobox_xy_mode.currentText() == "Select Wells"
+        mode = self.combobox_xy_mode.currentText()
+        select_wells = mode == "Select Wells"
         try:
             # Clear first: set_well_coordinates only adds wells not already present,
             # so without clearing, already-selected wells keep their old tile geometry
@@ -18348,6 +18406,11 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self.scanCoordinates.set_well_coordinates(
                     self.entry_scan_size.value(), self.entry_overlap.value(), self.combobox_shape.currentText()
                 )
+            elif mode == RECORD_XY_LOAD_COORDINATES:
+                # One region per loaded position; add_region_from_fovs keeps a
+                # per-FOV z, which the worker honours, and validates the limits.
+                for position in self._loaded_positions:
+                    self.scanCoordinates.add_region_from_fovs(position["name"], position["fovs"], shape="Manual")
             else:  # "Current Position"
                 pos = self.stage.get_pos()
                 self.scanCoordinates.add_region("current", pos.x_mm, pos.y_mm, 0.01, 0, "Square")
@@ -18430,18 +18493,26 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.entry_zmax.setValue(yaml_data.z_max_um)
             self.entry_step.setValue(yaml_data.z_step_um)
 
-            if yaml_data.xy_mode in ("Current Position", "Select Wells"):
+            self._loaded_positions = []
+            if yaml_data.xy_mode == RECORD_XY_LOAD_COORDINATES:
+                # Explicit positions travel in the file; the well selector is not involved.
+                self._loaded_positions = positions_from_regions(yaml_data.wellplate_regions)
+                self.combobox_xy_mode.setCurrentText(RECORD_XY_LOAD_COORDINATES)
+                self.checkbox_xy.setChecked(True)
+            elif yaml_data.xy_mode in ("Current Position", "Select Wells"):
                 self.combobox_xy_mode.setCurrentText(yaml_data.xy_mode)
             if yaml_data.scan_size_mm is not None:
                 self.entry_scan_size.setValue(yaml_data.scan_size_mm)
             self.entry_overlap.setValue(yaml_data.overlap_percent)
 
-            if yaml_data.wellplate_regions:
+            if yaml_data.wellplate_regions and yaml_data.xy_mode != RECORD_XY_LOAD_COORDINATES:
                 _load_well_regions(self.well_selection_widget, yaml_data.wellplate_regions)
                 self.checkbox_xy.setChecked(True)
         finally:
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+            # The mode combo's signal was blocked, so _on_xy_mode_changed did not refresh the label.
+            self._update_loaded_positions_label()
             # checkbox_time's toggled signal was blocked above, so the normal
             # _on_time_toggled-driven visibility refresh didn't fire. Set the
             # frame's visibility directly rather than calling _on_time_toggled
@@ -18504,8 +18575,16 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         """
         from control.core.record_zstack_controller import validate_record_zstack_params
 
-        if self.combobox_xy_mode.currentText() == "Current Position":
+        mode = self.combobox_xy_mode.currentText()
+        if mode == "Current Position":
             selected_well_count = 1
+        elif mode == RECORD_XY_LOAD_COORDINATES:
+            if not self._loaded_positions:
+                return "Load Coordinates: no positions loaded (load an acquisition.yaml with positions first)."
+            outside = self._loaded_positions_outside_limits()
+            if outside:
+                return f"Load Coordinates: position(s) outside the stage limits: {', '.join(outside)}"
+            selected_well_count = len(self._loaded_positions)
         else:
             selected_well_count = self._get_selected_well_count()
         return validate_record_zstack_params(
@@ -18527,6 +18606,21 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             recording_exposure_ms=self._recording_exposure(),
             zstack_exposures_ms={name: self._get_zstack_row_values(name)[0] for name in self._zstack_channel_names},
         )
+
+    def _loaded_positions_outside_limits(self) -> list:
+        """Names of loaded positions the scan coordinates would refuse (outside the software XY limits)."""
+        check = getattr(self.scanCoordinates, "validate_coordinates", None)
+        if not callable(check):
+            return []
+        outside = []
+        for position in self._loaded_positions:
+            try:
+                ok = all(bool(check(fov[0], fov[1])) for fov in position["fovs"])
+            except Exception:
+                ok = True  # a stub without limits should not block validation
+            if not ok:
+                outside.append(position["name"])
+        return outside
 
     def build_parameters(self):
         """Read widget fields and return a RecordZStackAcquisitionParameters instance.
@@ -18606,7 +18700,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             overlap_percent=self.entry_overlap.value(),
         )
 
-    def toggle_acquisition(self, pressed: bool) -> None:
+    def toggle_acquisition(self, pressed: bool, interactive: bool = True) -> None:
         """Handle Start/Stop button press.
 
         On start (pressed=True):
@@ -18614,6 +18708,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
           - if Recording is enabled, show a QMessageBox.question confirming the
             plane-count/Z-range/per-FOV-duration summary; un-check button and
             abort if the user answers No.
+          - with ``interactive=False`` (an unattended workflow) no dialog is
+            shown: a validation failure is logged and the button un-checked, and
+            the recording summary is logged instead of confirmed.
           - emit signal_acquisition_started(True) so gui_hcs can lock down the UI.
           - call recordZStackController.run_acquisition(self.build_parameters()).
 
@@ -18638,7 +18735,10 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             error = self.validate()
             if error is not None:
                 self.btn_startAcquisition.setChecked(False)
-                QMessageBox.warning(self, "Invalid Parameters", error)
+                if interactive:
+                    QMessageBox.warning(self, "Invalid Parameters", error)
+                else:
+                    self._log.error(f"Record + Z-Stack: invalid parameters: {error}")
                 return
 
             params = self.build_parameters()
@@ -18669,14 +18769,18 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 if limit_note:
                     text += f"\n\n{limit_note}"
                     self._log.warning(limit_note.replace("\n", " "))
-                reply = QMessageBox.question(
-                    self,
-                    "Confirm Recording",
-                    f"{text}\n\nStart acquisition?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes,
-                )
-                if reply != QMessageBox.Yes:
+                if not interactive:
+                    self._log.info(text.replace("\n", " "))
+                elif (
+                    QMessageBox.question(
+                        self,
+                        "Confirm Recording",
+                        f"{text}\n\nStart acquisition?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.Yes,
+                    )
+                    != QMessageBox.Yes
+                ):
                     self.btn_startAcquisition.setChecked(False)
                     return
 

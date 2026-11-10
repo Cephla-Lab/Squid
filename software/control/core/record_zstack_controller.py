@@ -201,6 +201,22 @@ def _save_record_zstack_yaml(
                 for name, center in region_centers.items()
             ],
         }
+    elif params.xy_mode == "Load Coordinates":
+        # Explicit positions (e.g. smart-acquisition targets): keep every FOV, with its z when it has
+        # one, so the file can be loaded straight back into Load Coordinates mode.
+        region_fovs = scan_coordinates.region_fov_coordinates if scan_coordinates is not None else {}
+        region_centers = scan_coordinates.region_centers if scan_coordinates is not None else {}
+        yaml_dict["wellplate_scan"] = {
+            "regions": [
+                {
+                    "name": name,
+                    "center_mm": _serialize_for_yaml(region_centers.get(name, fovs[0] if fovs else None)),
+                    "shape": "Manual",
+                    "fovs": [[float(v) for v in fov] for fov in fovs],
+                }
+                for name, fovs in region_fovs.items()
+            ],
+        }
 
     # Let OSError/yaml.YAMLError propagate: both real call sites already handle
     # failures appropriately one level up -- run_acquisition()'s snapshot call site
@@ -278,6 +294,24 @@ class RecordZStackController:
 
         self._abort_event: Event = Event()
         self._thread: Optional[Thread] = None
+        self._worker = None
+        self._last_experiment_path: Optional[str] = None
+
+    @property
+    def last_experiment_path(self) -> Optional[str]:
+        """Experiment folder of the most recently started acquisition (None before the first)."""
+        return self._last_experiment_path
+
+    @property
+    def last_end_reason(self) -> Optional[str]:
+        """How the most recent acquisition ended ("completed", "user_abort", "error", ...).
+
+        None while it is still running or before the first one. For unattended callers (the
+        Workflow Runner), which must not analyse or build on a run that failed.
+        """
+        if self._worker is None or self.acquisition_in_progress():
+            return None
+        return getattr(self._worker, "end_reason", None)
 
     # ---------------------------------------------------------------------- acquisition
 
@@ -321,6 +355,8 @@ class RecordZStackController:
         # Resolve and create a timestamped unique output directory.
         resolved_id, experiment_dir = create_experiment_dir(params.base_path, params.experiment_id)
         params.experiment_id = resolved_id
+        self._last_experiment_path = experiment_dir
+        self._worker = None
 
         # Snapshot the acquisition settings into the experiment directory
         # (mirrors MultiPointController.start_new_experiment) so the run is
@@ -409,6 +445,7 @@ class RecordZStackController:
             run_state_writer.end("error", None)
             raise
 
+        self._worker = worker
         self._thread = Thread(target=worker.run, name="RecordZStack-acquisition", daemon=True)
         self._thread.start()
 
