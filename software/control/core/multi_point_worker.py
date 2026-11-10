@@ -1148,8 +1148,9 @@ class MultiPointWorker(MultiPointWorkerBase):
             return []
         configs = list(self.selected_configurations)
         if self.do_autofocus and not self.do_reflection_af:
+            # Through the module, like perform_autofocus(): Preferences rebinds control._def's copy.
             config_af = self.liveController.get_channel_by_name(
-                self.objectiveStore.current_objective, MULTIPOINT_AUTOFOCUS_CHANNEL
+                self.objectiveStore.current_objective, control._def.MULTIPOINT_AUTOFOCUS_CHANNEL
             )
             if config_af is not None:
                 configs.append(config_af)
@@ -1520,6 +1521,11 @@ class MultiPointWorker(MultiPointWorkerBase):
         else:
             z_steps_taken = self._acquire_channel_first(region_id, current_path, fov, af_succeeded)
 
+        # update FOV counter -- once per FOV, NOT once per z level.  Acquisition.
+        # NUMBER_OF_FOVS_PER_AF throttles contrast AF in perform_autofocus(); incrementing
+        # inside the z loop turned it into "once every N images" for any NZ > 1 stack.
+        self.af_fov_count = self.af_fov_count + 1
+
         if self.NZ > 1:
             # Undo only the steps actually taken: an abort leaves the loop before the last plane.
             self.move_z_back_after_stack(z_steps_taken)
@@ -1558,9 +1564,6 @@ class MultiPointWorker(MultiPointWorkerBase):
             if self.abort_requested_fn():
                 break
 
-            # update FOV counter
-            self.af_fov_count = self.af_fov_count + 1
-
             if z_level < self.NZ - 1:
                 self.move_z_for_stack()
                 z_steps_taken += 1
@@ -1569,7 +1572,7 @@ class MultiPointWorker(MultiPointWorkerBase):
     def _acquire_z_first(self, region_id, current_path, fov, af_succeeded) -> int:
         """For each selected channel, acquire the whole z stack before switching to the next channel.
 
-        Per-z bookkeeping (coordinates.csv row, FOV signal, AF counter) happens during the first
+        Per-z bookkeeping (coordinates.csv row, FOV signal) happens during the first
         channel's pass only. Positions are recorded without the channel z-offset, matching the
         channel-first order. Returns the number of z steps above the first plane where it stopped
         (NZ - 1 unless aborted), so move_z_back_after_stack() applies unchanged.
@@ -1609,8 +1612,6 @@ class MultiPointWorker(MultiPointWorkerBase):
 
                     if first_pass:
                         self._finish_z_level(region_id, fov, z_level, acquire_pos, z_piezo_um)
-                        if not self.abort_requested_fn():
-                            self.af_fov_count = self.af_fov_count + 1
 
                     if z_level < self.NZ - 1 and not self.abort_requested_fn():
                         self.move_z_for_stack()
@@ -1667,10 +1668,23 @@ class MultiPointWorker(MultiPointWorkerBase):
                 and (self.do_autofocus)
                 and (self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0)
             ):
-                configuration_name_AF = MULTIPOINT_AUTOFOCUS_CHANNEL
-                config_AF = self.liveController.get_channel_by_name(
-                    self.objectiveStore.current_objective, configuration_name_AF
-                )
+                # Read through the module, NOT the star-imported name.  `from control._def
+                # import *` above bound a snapshot of MULTIPOINT_AUTOFOCUS_CHANNEL into this
+                # module at import time, and Preferences only rebinds control._def's copy
+                # (widgets.py:_apply_live_settings), so the star-imported name would pin the
+                # AF channel to whatever it was at startup.
+                configuration_name_AF = control._def.MULTIPOINT_AUTOFOCUS_CHANNEL
+                objective = self.objectiveStore.current_objective
+                config_AF = self.liveController.get_channel_by_name(objective, configuration_name_AF)
+                if config_AF is None:
+                    # Without this guard a missing channel would not be a visible autofocus
+                    # failure: the acquisition would die inside _select_config() instead.
+                    available = [c.name for c in self.liveController.get_channels(objective)]
+                    self._log.error(
+                        f"Contrast autofocus channel '{configuration_name_AF}' does not exist for objective "
+                        f"'{objective}'; skipping autofocus for this FOV.  Available channels: {available}"
+                    )
+                    return False
                 self._select_config(config_AF)
                 if (
                     self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0
