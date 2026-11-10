@@ -24,7 +24,7 @@ def test_get_other_widget_name_maps_all_three_types():
     host = _HostWithMultipointController(camera=None)
     assert host._get_other_widget_name("wellplate") == "Wellplate Multipoint"
     assert host._get_other_widget_name("flexible") == "Flexible Multipoint"
-    assert host._get_other_widget_name("record_zstack") == "Record + Z-Stack"
+    assert host._get_other_widget_name("record_zstack") == "Time at XY"
 
 
 def test_parse_well_name_basic():

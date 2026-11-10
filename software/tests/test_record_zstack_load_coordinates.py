@@ -1,4 +1,4 @@
-"""Record + Z-Stack "Load Coordinates" mode: explicit positions (e.g. smart-acquisition targets) from an
+"""Time at XY "Load Coordinates" mode: explicit positions (e.g. smart-acquisition targets) from an
 acquisition.yaml, the save/load round trip, and unattended (dialog-free) starts for the Workflow Runner."""
 
 from unittest.mock import MagicMock, patch
@@ -19,18 +19,19 @@ REGIONS = [
 
 
 def _widget(qtbot, deps, tmp_path):
-    """A widget set up for a valid z-stack-only run, in the default Select Wells mode."""
+    """A widget set up for a valid run (an initial stack, a recording and a final stack over a
+    Relative ±2 µm range), in the default Select Wells mode."""
     from control.widgets import RecordZStackMultiPointWidget
 
     w = RecordZStackMultiPointWidget(**deps)
     qtbot.addWidget(w)
     w.lineEdit_savingDir.setText(str(tmp_path))
-    w.checkbox_recording.setChecked(False)
-    w.checkbox_zstack.setChecked(True)
-    w.entry_zmin.setValue(-2.0)
-    w.entry_zmax.setValue(2.0)
-    w.entry_step.setValue(1.0)
-    w._add_zstack_channel_row("BF LED matrix full")
+    w.combobox_z_mode.setCurrentText("Relative")
+    w.entry_deltaZ.setValue(1.0)
+    w.entry_zRange.setValue(4.0)
+    w._add_channel_row("BF LED matrix full", 12.0, 1.0, 30.0, fps=25, duration_s=4, zi=True, r=True, zf=False)
+    w._add_channel_row("Fluorescence 488 nm Ex", zi=False, r=False, zf=True)
+    w.btn_slice_top.click()  # record Bottom and Mid only
     return w
 
 
@@ -61,16 +62,33 @@ def test_targets_emitted_from_a_record_template_load_into_load_coordinates_mode(
     )
     assert summary["widget_type"] == "record_zstack"
 
-    # The emitted file keeps the template's recording / z-stack settings and carries the targets.
+    # The emitted file keeps the template's channel table, z planes and record planes, and carries the targets.
     parsed = parse_acquisition_yaml(summary["acquisition_yaml"])
-    assert parsed.widget_type == "record_zstack"
+    assert parsed.widget_type == "record_zstack" and parsed.legacy_schema is False
     assert parsed.xy_mode == "Load Coordinates"
     assert parsed.objective_name is None and parsed.camera_binning is None  # follow-up objective differs
-    assert parsed.zstack_enabled and (parsed.z_min_um, parsed.z_max_um, parsed.z_step_um) == (-2.0, 2.0, 1.0)
+    assert (parsed.z_mode, parsed.z_dz_um, parsed.z_range_um) == ("Relative", 1.0, 4.0)
+    assert parsed.record_slice_roles == ["bottom", "mid"]
 
+    template_rows = w.build_parameters().channels
     scan = simulated_widget_deps["scanCoordinates"]
     scan.reset_mock()
+    # Into a tab that currently holds something else entirely, as at the next ring of a workflow.
+    for name in list(w._channel_row_names):
+        w._remove_channel_row(name)
+    w.combobox_z_mode.setCurrentText("From Bottom")
     w._apply_yaml_settings(parsed)
+
+    # The channel table is intact: same rows, in order, with every per-row setting.
+    loaded = w.build_parameters()
+    assert loaded.channels == template_rows
+    assert [(p.name, p.fps, p.duration_s, p.zi, p.r, p.zf) for p in loaded.channels] == [
+        ("BF LED matrix full", 25.0, 4.0, True, True, False),
+        ("Fluorescence 488 nm Ex", 10.0, 1.0, False, False, True),
+    ]
+    assert loaded.channels[0].channel.exposure_time == pytest.approx(12.0)
+    assert (loaded.zstack.mode, loaded.zstack.z_range_um, w.entry_NZ.value()) == ("Relative", 4.0, 5)
+    assert loaded.record_slices.resolve(5) == [0, 2]
 
     assert w.combobox_xy_mode.currentText() == "Load Coordinates"
     assert w.label_loaded_positions.text() == "3 position(s) loaded"
@@ -126,7 +144,7 @@ def test_saved_load_coordinates_settings_round_trip(qtbot, simulated_widget_deps
 
 
 def test_unattended_start_shows_no_dialog(qtbot, simulated_widget_deps, tmp_path):
-    """interactive=False (the Workflow Runner): an invalid start is logged, a recording is not confirmed."""
+    """interactive=False (the Workflow Runner): an invalid start is logged, the per-FOV plan is not confirmed."""
     ctrl = _make_stub_controller()
     simulated_widget_deps["recordZStackController"] = ctrl
     w = _widget(qtbot, simulated_widget_deps, tmp_path)
@@ -144,8 +162,9 @@ def test_unattended_start_shows_no_dialog(qtbot, simulated_widget_deps, tmp_path
         assert not w.btn_startAcquisition.isChecked()  # what tells the runner the start was refused
 
         w.set_loaded_positions([{"name": "a", "fovs": [[1.0, 2.0, 3.0]]}])
-        w.checkbox_recording.setChecked(True)  # would normally ask "Confirm Recording"
-        w.btn_startAcquisition.setChecked(True)
+        w.btn_startAcquisition.setChecked(True)  # would normally ask "Confirm Acquisition"
         w.toggle_acquisition(True, interactive=False)
     ctrl.run_acquisition.assert_called_once()
-    assert ctrl.run_acquisition.call_args.args[0].xy_mode == "Load Coordinates"
+    params = ctrl.run_acquisition.call_args.args[0]
+    assert params.xy_mode == "Load Coordinates"
+    assert [p.name for p in params.r_plans] == ["BF LED matrix full"]

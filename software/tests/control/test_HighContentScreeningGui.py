@@ -299,7 +299,7 @@ def test_there_is_one_utils_menu_with_every_utility(qtbot, monkeypatch, confirm_
 
 
 def test_record_zstack_tab_keeps_well_selector_visible(qtbot, monkeypatch):
-    """Switching to the Record + Z-Stack tab must not hide the well selector dock.
+    """Switching to the Time at XY tab must not hide the well selector dock.
 
     The tab's own validation requires selected wells, so onTabChanged has to
     treat it like Wellplate Multipoint when deciding well-selector visibility.
@@ -322,15 +322,15 @@ def test_record_zstack_tab_keeps_well_selector_visible(qtbot, monkeypatch):
 
     tabw = win.recordTabWidget
     labels = [tabw.tabText(i) for i in range(tabw.count())]
-    assert "Record + Z-Stack" in labels
+    assert "Time at XY" in labels
 
-    tabw.setCurrentIndex(labels.index("Record + Z-Stack"))
+    tabw.setCurrentIndex(labels.index("Time at XY"))
 
-    assert not win.dock_wellSelection.isHidden(), "well selector dock must stay available on the Record + Z-Stack tab"
+    assert not win.dock_wellSelection.isHidden(), "well selector dock must stay available on the Time at XY tab"
 
 
 def test_record_zstack_acquisition_finish_keeps_well_selector(qtbot, monkeypatch):
-    """R6: toggleAcquisitionStart(False) after a Record + Z-Stack acquisition
+    """R6: toggleAcquisitionStart(False) after a Time at XY acquisition
     must not hide the well selector dock (only the wellplate branch kept it)."""
 
     def confirm_exit(parent, title, text, *args, **kwargs):
@@ -347,13 +347,13 @@ def test_record_zstack_acquisition_finish_keeps_well_selector(qtbot, monkeypatch
 
     tabw = win.recordTabWidget
     labels = [tabw.tabText(i) for i in range(tabw.count())]
-    tabw.setCurrentIndex(labels.index("Record + Z-Stack"))
+    tabw.setCurrentIndex(labels.index("Time at XY"))
     assert not win.dock_wellSelection.isHidden()
 
     win.toggleAcquisitionStart(True)  # acquisition starts: selector hides
     assert win.dock_wellSelection.isHidden()
     win.toggleAcquisitionStart(False)  # acquisition ends: selector must return
-    assert not win.dock_wellSelection.isHidden(), "well selector not restored after Record+Z-Stack acquisition"
+    assert not win.dock_wellSelection.isHidden(), "well selector not restored after Time at XY acquisition"
 
 
 def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm_exit_yes):
@@ -432,3 +432,63 @@ def test_record_zstack_preview_disabled_at_zero_fps(qtbot, monkeypatch, confirm_
     ctrl._callbacks.signal_new_image(SimpleNamespace(frame=np.zeros((4, 4), np.uint16)), None)
     assert frames == []  # z-stack handler stays a no-op at 0 fps
     assert ctrl._display_frame_fn is None  # recording tap absent
+
+
+def test_time_at_xy_tab_is_wired_and_runs_an_acquisition_end_to_end(qtbot, monkeypatch, confirm_exit_yes, tmp_path):
+    """The simulated GUI's Time at XY tab, started unattended (as the Workflow Runner starts it): the real
+    widget, Qt controller and worker write an initial z-stack, a recording and a final z-stack, the
+    Start button comes back up, and the camera settings a row pinned are put back."""
+    pytest.importorskip("tensorstore")
+    from pathlib import Path
+
+    from control.core.camera_geometry import CameraGeometry, snapshot_camera
+
+    monkeypatch.setattr(control.gui_hcs, "ENABLE_RECORDING", True)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    w = win.recordZStackWidget
+    ctrl = win.recordZStackController
+    # The focus row's dependencies come from the main window.
+    assert w.focus_map_widget is win.focusMapWidget
+    assert ctrl._autofocus_controller is win.autofocusController
+    assert w.laser_autofocus_controller is win.laserAutofocusController
+
+    # Somewhere inside the stage limits, and reported to the GUI (the navigation view redraws its
+    # FOV box when the camera settings are refreshed after the run).
+    scope.stage.move_x_to(50.0)
+    scope.stage.move_y_to(40.0)
+    qtbot.waitUntil(lambda: win.navigationViewer.y_mm is not None and abs(win.navigationViewer.y_mm - 40.0) < 0.01)
+
+    tabw = win.recordTabWidget
+    tabw.setCurrentIndex([tabw.tabText(i) for i in range(tabw.count())].index("Time at XY"))
+    w.lineEdit_savingDir.setText(str(tmp_path))
+    w.combobox_xy_mode.setCurrentText("Current Position")
+    w.entry_NZ.setValue(2)
+    name = w.combobox_add_channel.itemText(0)
+    pinned = CameraGeometry(binning=1 if scope.camera.get_binning()[0] != 1 else 2)
+    w._add_channel_row(name, 2.0, fps=10, duration_s=1, zi=True, r=True, zf=True, geometry=pinned)
+    assert w.validate() is None, w.validate()
+    before = snapshot_camera(scope.camera)
+
+    w.btn_startAcquisition.setChecked(True)
+    w.toggle_acquisition(True, interactive=False)
+    assert w.btn_startAcquisition.isChecked(), "the start was refused"
+    # acquisition_finished is queued onto the GUI thread; it un-checks Start.
+    qtbot.waitUntil(lambda: not w.btn_startAcquisition.isChecked(), timeout=180000)
+
+    assert ctrl.last_end_reason == "completed"
+    base = Path(ctrl.last_experiment_path)
+    channel_dir = name.replace(" ", "_")
+    stores = sorted(str(p.relative_to(base)) for p in base.rglob("*.ome.zarr"))
+    assert stores == [
+        f"recording/t0/current/{channel_dir}/fov_0_z0.ome.zarr",
+        f"recording/t0/current/{channel_dir}/fov_0_z1.ome.zarr",
+        "zstack_final/zarr/current/fov_0.ome.zarr",
+        "zstack_initial/zarr/current/fov_0.ome.zarr",
+    ]
+    assert (base / ".done").exists() and (base / "acquisition.yaml").exists()
+    assert snapshot_camera(scope.camera) == before
+    assert win.cameraSettingWidget.dropdown_binning.currentText() == f"{before.binning[0]}x{before.binning[1]}"
