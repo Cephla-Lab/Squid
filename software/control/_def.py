@@ -519,20 +519,39 @@ class CMD_EXECUTION_STATUS:
 
 
 class SpotDetectionMode(Enum):
-    """Specifies which spot to detect when multiple spots are present.
+    """Which candidate to select when the detector finds more than one spot.
 
-    SINGLE: Expect and detect single spot
-    DUAL_RIGHT: In dual-spot case, use rightmost spot
-    DUAL_LEFT: In dual-spot case, use leftmost spot
-    MULTI_RIGHT: In multi-spot case, use rightmost spot
-    MULTI_SECOND_RIGHT: In multi-spot case, use spot immediately left of rightmost spot
+    Selection is purely positional; none of these rejects a candidate on merit.
+
+    SINGLE: expect exactly one spot, and fail if more than one is found
+    DUAL_LEFT: use the leftmost spot
+    DUAL_RIGHT: use the rightmost spot
+
+    multi_right and multi_second_right were retired; configs naming them are rewritten by
+    LaserAFConfig._migrate_retired_spot_detection_modes.
     """
 
     SINGLE = "single"
     DUAL_RIGHT = "dual_right"
     DUAL_LEFT = "dual_left"
-    MULTI_RIGHT = "multi_right"
-    MULTI_SECOND_RIGHT = "multi_second_right"
+
+
+class LaserAFConfirmMotionMode(Enum):
+    """When to verify that a detected spot actually translates with defocus.
+
+    The sample reflection moves along x as z changes; a static back-reflection does not.
+    None of the intensity, area, aspect or row filters can tell them apart, so this is a
+    separate check that costs an extra z step.
+
+    OFF: never verify (historical behaviour)
+    SEARCH_ONLY: verify candidates found by the z spot-search, which only runs after a
+        first-try detection failure, so the cost is paid rarely
+    ALWAYS: also verify the first-try detection, which runs at every FOV of an acquisition
+    """
+
+    OFF = "off"
+    SEARCH_ONLY = "search_only"
+    ALWAYS = "always"
 
 
 class FileSavingOption(Enum):
@@ -1053,20 +1072,77 @@ LASER_AF_CROP_WIDTH = 1536
 LASER_AF_CROP_HEIGHT = 256
 LASER_AF_SPOT_DETECTION_MODE = SpotDetectionMode.DUAL_LEFT.value
 LASER_AF_RANGE = 100
-DISPLACEMENT_SUCCESS_WINDOW_UM = 1.0
+# Z spot-search: how far to look for a lost spot, and how finely. The range is separate from
+# LASER_AF_RANGE, which stays the "implausible displacement" ceiling in move_to_target.
+LASER_AF_SEARCH_STEP_UM = 10
+# Warn when the spot sits this far from the reference after a move-to-target. Expressed in microns
+# rather than pixels because pixel_to_um spans more than an order of magnitude across objectives
+# here (0.09 to 2.0 um/px), so a fixed pixel offset meant anything from 1.8 to 40 um.
+LASER_AF_DEBRIS_WARNING_OFFSET_UM = 10.0
+# Iterative correction: pixel_to_um is calibrated over a few microns near focus, so a large
+# correction extrapolates a curve with a straight line and lands short. Re-measuring and moving
+# again converges regardless, at the cost of one extra measurement per correction that engages.
+LASER_AF_ITERATIVE_CORRECTION_TOLERANCE_UM = 1.0
+LASER_AF_ITERATIVE_CORRECTION_MIN_DISPLACEMENT_UM = 10.0
+# Confirm-by-step: a confirm step predicting less spot motion than this cannot discriminate a
+# moving spot from a static one, so the check is skipped rather than guessed at.
+LASER_AF_CONFIRM_MIN_PREDICTED_PX = 4.0
+LASER_AF_CONFIRM_TOLERANCE_FRACTION = 0.35  # slack as a fraction of the predicted motion
 SPOT_CROP_SIZE = 100
-CORRELATION_THRESHOLD = 0.7
+CORRELATION_THRESHOLD = 0.75
+# A live frame correlated against a stored template never reaches exactly 1.0 -- camera noise alone
+# keeps real matches in the 0.75-0.99 band -- so a threshold of 1.0 rejects every measurement,
+# including perfect ones. Cap it below 1.0 so that setting is unreachable.
+MAX_CORRELATION_THRESHOLD = 0.99
 PIXEL_TO_UM_CALIBRATION_DISTANCE = 6.0
-LASER_AF_Y_WINDOW = 96
-LASER_AF_X_WINDOW = 20
-LASER_AF_MIN_PEAK_WIDTH = 10
-LASER_AF_MIN_PEAK_DISTANCE = 10
-LASER_AF_MIN_PEAK_PROMINENCE = 0.20
-LASER_AF_SPOT_SPACING = 100
+# Ceiling offered for that distance. A low-magnification objective is far less sensitive to
+# defocus -- a 4x/0.13 lands near 30 um/px -- so the few-micron move that suits a 20x shifts the
+# spot by less than one pixel there and cannot be resolved at all. The ceiling has to leave room
+# for the least sensitive objective to move the spot by tens of pixels.
+PIXEL_TO_UM_CALIBRATION_DISTANCE_MAX = 1000.0
+# Connected component spot detection parameters
+LASER_AF_CC_THRESHOLD = 8  # Intensity threshold for binarization
+LASER_AF_CC_MIN_AREA = 5  # Minimum component area in pixels
+LASER_AF_CC_MAX_AREA = 5000  # Maximum component area in pixels
+LASER_AF_CC_ROW_TOLERANCE = 50  # Allowed deviation from expected row (pixels)
+LASER_AF_CC_MAX_ASPECT_RATIO = 2.5  # Maximum aspect ratio (width/height or height/width)
+
+# Live spot-detection diagnostics. These tune how the detector explains a failure to the operator;
+# none of them change what it accepts.
+# How many rejected components a diagnosis may describe. Capped because an over-exposed full-sensor
+# frame yields tens of thousands, and only the few closest to passing are worth reading.
+LASER_AF_DIAG_MAX_REJECTS = 5
+# Above this many components the frame is noise rather than a scene with spots in it, and the useful
+# answer is "raise the threshold", not a list of blobs.
+LASER_AF_DIAG_MAX_COMPONENTS = 5000
+# Gray levels of peak-above-median below which a frame carries no signal at all. Binarizing one of
+# these labels the whole sensor, so diagnosis stops here and reports the frame as uniform.
+LASER_AF_DIAG_MIN_CONTRAST = 3
+# Noise multiple (of the median absolute deviation) used to pick a threshold below the configured
+# one, for the single case where nothing at all cleared cc_threshold and the blob must still be
+# located to be described.
+LASER_AF_DIAG_NOISE_K = 3.0
+# How many times the area ceiling a blob may be before the "what threshold would separate this
+# merged spot" search is skipped. A spot fused with its halo runs a few times the ceiling; a blob
+# tens of times over it is the background, not a merge, and searching a frame-sized blob costs a
+# quarter of a second for an answer that was never going to be "raise the threshold a little".
+LASER_AF_DIAG_SEPARATION_MAX_AREA_FACTOR = 20
 SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS = False
-LASER_AF_FILTER_SIGMA = None
+LASER_AF_FILTER_SIGMA = 1  # Sigma for Gaussian filter before spot detection
 LASER_AF_INITIALIZE_CROP_WIDTH = 1200
 LASER_AF_INITIALIZE_CROP_HEIGHT = 800
+# Calibration sanity limits. A pixel_to_um calibration divides the z move by the spot's x
+# displacement, so a spot that barely moves yields a huge factor: locking onto a static
+# back-reflection once produced -98.6 um/pixel from 0.06 px of travel.
+LASER_AF_MIN_CALIBRATION_DISPLACEMENT_PX = 1.0  # below this, calibration fails rather than dividing
+# Above this, calibration warns that the spot may not be the sample reflection. Real values span
+# the objective range, from ~0.09 um/px at 100x to ~30 um/px at 4x, so this sits well above the
+# least sensitive objective rather than above the common ones.
+LASER_AF_MAX_PLAUSIBLE_PIXEL_TO_UM = 50.0
+
+LASER_AF_SEARCH_DOWN_FIRST = (
+    True  # If True, search downward (smaller z values) first then upward; if False, search upward first
+)
 
 MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT = False
 MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT = False

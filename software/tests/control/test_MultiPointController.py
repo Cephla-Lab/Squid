@@ -306,10 +306,14 @@ def test_multi_point_with_laser_af():
     laser_af_ref_image = scope.addons.camera_focus.read_frame()
     assert laser_af_ref_image is not None
     mpc.laserAutoFocusController.laser_af_properties.set_reference_image(laser_af_ref_image)
+    laser_af = mpc.laserAutoFocusController
+    laser_af.laser_af_properties = laser_af.laser_af_properties.model_copy(update={"laser_af_search_range_um": 20.0})
 
     mpc.run_acquisition()
 
-    timeout_s = 5
+    # The simulated focus camera shows no spot, so every FOV runs the laser AF z spot-search before falling back
+    # (kept short above so the test stays quick).
+    timeout_s = 60
     assert tt.started_event.wait(timeout_s)
     assert tt.finished_event.wait(timeout_s)
 

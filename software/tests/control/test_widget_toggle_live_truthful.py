@@ -17,17 +17,19 @@ def _widget_stub(is_live_after_call: bool) -> MagicMock:
     return stub
 
 
-# (widget class, button text while live, button text while idle, companion button enabled only while idle)
+# (widget class, button text while live, button text while idle, companion button enabled only while idle).
+# The laser AF settings panel has no companion: its spot detection runs on the live frames.
 CASES = [
     (LiveControlWidget, "Stop", "Live", "btn_snap"),
-    (LaserAutofocusSettingWidget, "Stop Live", "Start Live", "run_spot_detection_button"),
+    (LaserAutofocusSettingWidget, "Stop Live", "Start Live", None),
 ]
 
 
 def _assert_button_state(stub, is_live, live_text, idle_text, companion):
     stub.btn_live.setText.assert_called_with(live_text if is_live else idle_text)
     stub.btn_live.setChecked.assert_called_with(is_live)
-    getattr(stub, companion).setEnabled.assert_called_with(not is_live)
+    if companion is not None:
+        getattr(stub, companion).setEnabled.assert_called_with(not is_live)
 
 
 @pytest.mark.parametrize("cls,live_text,idle_text,companion", CASES)
