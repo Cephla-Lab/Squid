@@ -453,21 +453,33 @@ calibration_timestamp: ""
 pixel_to_um_calibration_distance: 6.0
 
 # Detection parameters
-laser_af_range: 100.0
+laser_af_range: 100.0             # ceiling on an accepted displacement
 laser_af_averaging_n: 3
-spot_detection_mode: dual_right
-displacement_success_window_um: 1.0
+spot_detection_mode: dual_right   # single | dual_left | dual_right
 
-# Spot detection
+# Z spot search (runs when the first measurement finds no spot)
+laser_af_search_range_um: 100.0   # half-span; back-filled from laser_af_range in older configs
+laser_af_search_step_um: 10.0
+
+# Motion confirm (reject static back-reflections)
+confirm_motion_mode: "off"        # off | search_only | always
+confirm_step_um: 2.0
+confirm_tolerance_px: 4.0
+
+# Iterative correction
+iterative_correction_enabled: false
+iterative_correction_tolerance_um: 1.0
+iterative_correction_min_displacement_um: 10.0
+
+# Spot detection (connected components)
 spot_crop_size: 100
-correlation_threshold: 0.9
-y_window: 96
-x_window: 20
-min_peak_width: 10.0
-min_peak_distance: 10.0
-min_peak_prominence: 0.25
-spot_spacing: 100.0
-filter_sigma: null
+correlation_threshold: 0.75       # clamped to 0.99 on load
+cc_threshold: 8.0
+cc_min_area: 5
+cc_max_area: 5000
+cc_row_tolerance: 50.0
+cc_max_aspect_ratio: 2.5
+filter_sigma: 1
 
 # Camera settings
 focus_camera_exposure_time_ms: 0.2
@@ -478,6 +490,12 @@ reference_image: null
 reference_image_shape: null
 reference_image_dtype: null
 ```
+
+`x_reference` is stored in full-sensor pixels. Configs written by the earlier line-profile detector still load:
+their `y_window`, `x_window`, `min_peak_*`, `spot_spacing` and `displacement_success_window_um` keys are dropped,
+`multi_right` / `multi_second_right` become `dual_right`, and the `cc_*` parameters take their defaults (re-tune the
+objective). See [laser-af-spot-diagnostics.md](laser-af-spot-diagnostics.md) for tuning the `cc_*` parameters, and
+`tools/reconcile_laser_af.py` for repairing configs copied from another build.
 
 ---
 
