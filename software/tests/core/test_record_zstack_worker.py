@@ -1,39 +1,47 @@
+"""RecordZStackWorker / RecordZStackController ("Time at XY") on the simulated microscope.
+
+Engine behaviour: streaming, pacing, sealing, drops, aborts, run state, .done, error
+propagation, trigger-mode and camera restore, live preview, and the per-FOV order
+Zi -> R rows -> Zf with the output layout that follows from it.  The parameter model and
+its pure helpers are covered in tests/core/test_record_zstack_model.py.
+"""
+
+import json
 import os
 from pathlib import Path
 
 import pytest
 
-from control.core.record_zstack_controller import frame_count, zstack_plane_count, zstack_offsets_um
+from control.core.camera_geometry import CameraGeometry
+from control.core.record_zstack_controller import (
+    ChannelPlan,
+    RecordSliceSelection,
+    RecordZStackAcquisitionParameters,
+    ZStackPlan,
+    frame_count,
+)
 
 
-def test_frame_count():
-    assert frame_count(10.0, 30.0) == 300
-    assert frame_count(7.5, 2.0) == 15
+def _stack_dirs(experiment_dir, phase):
+    """Sorted experiment-relative paths of the z-stack stores of one phase ("initial" / "final")."""
+    root = Path(experiment_dir) / f"zstack_{phase}"
+    return sorted(str(p.relative_to(experiment_dir)).replace(os.sep, "/") for p in root.rglob("fov_*.ome.zarr"))
 
 
-def test_zstack_plane_count_and_offsets():
-    assert zstack_plane_count(-3.0, 3.0, 1.0) == 7
-    assert zstack_offsets_um(-3.0, 3.0, 1.0) == [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0]
-    assert zstack_plane_count(0.0, 5.0, 2.0) == 3  # 0,2,4
-    assert zstack_offsets_um(0.0, 5.0, 2.0) == [0.0, 2.0, 4.0]
+def _recording_dirs(experiment_dir):
+    root = Path(experiment_dir) / "recording"
+    return sorted(str(p.relative_to(experiment_dir)).replace(os.sep, "/") for p in root.rglob("*.ome.zarr"))
 
 
-def test_zstack_plane_count_validation():
-    with pytest.raises(ValueError):
-        zstack_plane_count(3.0, -3.0, 1.0)  # z_max < z_min
-    with pytest.raises(ValueError):
-        zstack_plane_count(0.0, 3.0, 0.0)  # step == 0
-    with pytest.raises(ValueError):
-        zstack_plane_count(0.0, 3.0, -1.0)  # step < 0
+def _recording_attrs(store):
+    return json.load(open(Path(store) / "zarr.json"))["attributes"]["_squid"]
 
 
 # ---------------------------------------------------------------------------
-# Task D2: RecordZStackWorker smoke test (simulated microscope, in-process Zarr runner)
+# Smoke tests (simulated microscope, in-process Zarr runner)
 #
-# 2 wells x 2 FOV x 2 time points, both phases (recording + z-stack) enabled.
-# Asserts:
-#   - one recording .ome.zarr per (t, well, fov) with shape (T,1,1,Y,X)
-#   - the z-stack per-FOV zarr datasets exist
+# 2 wells x 2 FOV x 2 time points with every phase: an initial z-stack of two channels,
+# two recordings (each at its own rate and duration), a final z-stack of one channel.
 # ---------------------------------------------------------------------------
 
 
@@ -66,74 +74,81 @@ def test_build_simulated_microscope_leaves_the_global_camera_config_alone():
     assert squid.config.get_camera_config() == before
 
 
-def test_record_zstack_worker_smoke(tmp_path):
-    pytest.importorskip("tensorstore")  # optional dep; the worker writes real Zarr
-    import control._def
-    import tests.control.test_stubs as ts
-    from control.core.multi_point_controller import NoOpCallbacks
-    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, frame_count
-    from control.core.record_zstack_worker import RecordZStackWorker
-
-    # Use real Zarr v3 saving for the z-stack phase (the path under test).
-    control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
-
-    crop_w, crop_h = 64, 48
-    scope = _build_simulated_microscope(crop_w, crop_h)
-    live_controller = ts.get_test_live_controller(scope, scope.objective_store.default_objective)
-    laser_af = ts.get_test_laser_autofocus_controller(scope)
-
-    channels = live_controller.get_channels(scope.objective_store.default_objective)
-    assert len(channels) >= 2
-    recording_channel = channels[0]
-    zstack_channels = channels[:2]
-
-    # Keep exposure short so capture/recording is fast.
-    scope.camera.set_exposure_time(1)
-
-    # Move the stage to a safe mid-Z so z_ref +/- offsets stay in range.
-    z_cfg = scope.stage.get_config().Z_AXIS
-    z_mid = (z_cfg.MAX_POSITION + z_cfg.MIN_POSITION) / 2.0
-    scope.stage.move_z_to(z_mid)
-    scope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
-
-    x_cfg = scope.stage.get_config().X_AXIS
-    y_cfg = scope.stage.get_config().Y_AXIS
-    x0 = x_cfg.MIN_POSITION + 1.0
-    y0 = y_cfg.MIN_POSITION + 1.0
-    # 2 wells x 2 FOV
-    scan_region_fov_coords = {
-        "A1": [(x0, y0), (x0 + 0.5, y0)],
-        "A2": [(x0 + 1.0, y0), (x0 + 1.5, y0)],
-    }
-    n_wells = len(scan_region_fov_coords)
-    n_fov = 2
-    Nt = 2
-
-    fps = 10.0
-    duration_s = 0.3
-    T = frame_count(fps, duration_s)
-    assert T >= 1
-
-    params = RecordZStackAcquisitionParameters(
+def _smoke_params(tmp_path, channels, experiment_id):
+    """Zi: channels 0+1; R: channel 0 at 10 fps / 0.3 s and channel 1 at 20 fps / 0.2 s; Zf: channel 0.
+    Three planes centred on the reference; recordings at Bottom and Top."""
+    return RecordZStackAcquisitionParameters(
         base_path=str(tmp_path),
-        experiment_id="rec_zstack_smoke",
-        Nt=Nt,
-        dt_s=0.0,
-        use_laser_af=False,  # no reference set -> would fall back anyway
-        recording_enabled=True,
-        recording_channel=recording_channel,
-        fps=fps,
-        duration_s=duration_s,
-        recording_bottom_z_offset_um=0.0,
-        zstack_enabled=True,
-        zstack_channels=zstack_channels,
-        z_min_um=-1.0,
-        z_max_um=1.0,
-        z_step_um=1.0,  # 3 planes
+        experiment_id=experiment_id,
+        Nt=2,
+        dt_s=0.0,  # continuous: dt>0 would skip slots missed while working
+        channels=[
+            ChannelPlan(channel=channels[0], fps=10.0, duration_s=0.3, zi=True, r=True, zf=True),
+            ChannelPlan(channel=channels[1], fps=20.0, duration_s=0.2, zi=True, r=True, zf=False),
+        ],
+        zstack=ZStackPlan(mode="Relative", dz_um=1.0, z_range_um=2.0),
+        record_slices=RecordSliceSelection(roles=["bottom", "top"]),
     )
 
-    aborted = {"v": False}
 
+def _assert_smoke_output(base, channels, crop_w, crop_h):
+    """The exact folder layout and store shapes of a _smoke_params run over A1 / A2 with 2 FOVs each."""
+    import tensorstore as tstore
+
+    def dirname(channel):
+        return channel.name.replace(" ", "_")
+
+    regions, fovs, timepoints = ("A1", "A2"), (0, 1), (0, 1)
+    assert sorted(p.name for p in base.iterdir() if p.is_dir()) == ["recording", "zstack_final", "zstack_initial"]
+    assert _stack_dirs(base, "initial") == sorted(
+        f"zstack_initial/zarr/{r}/fov_{k}.ome.zarr" for r in regions for k in fovs
+    )
+    assert _stack_dirs(base, "final") == sorted(
+        f"zstack_final/zarr/{r}/fov_{k}.ome.zarr" for r in regions for k in fovs
+    )
+    # recording/t<N>/<region>/<channel>/fov_<k>_z<i>: the channel directory is always there, and
+    # i is the plane's index in the shared stack (Bottom = 0, Top = 2 of three planes).
+    assert _recording_dirs(base) == sorted(
+        f"recording/t{t}/{r}/{dirname(c)}/fov_{k}_z{i}.ome.zarr"
+        for t in timepoints
+        for r in regions
+        for c in channels[:2]
+        for k in fovs
+        for i in (0, 2)
+    )
+
+    def shape(path):
+        return tuple(tstore.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": str(path)}}).result().shape)
+
+    # Each R row is recorded at its own rate and duration.
+    for channel, fps, duration_s in ((channels[0], 10.0, 0.3), (channels[1], 20.0, 0.2)):
+        stores = [base / d for d in _recording_dirs(base) if f"/{dirname(channel)}/" in d]
+        assert len(stores) == 2 * 2 * 2 * 2
+        for store in stores:
+            assert shape(store) == (frame_count(fps, duration_s), 1, 1, crop_h, crop_w), store
+            attrs = _recording_attrs(store)
+            assert attrs["requested_fps"] == fps and attrs["effective_fps"] == pytest.approx(fps)
+            assert attrs.get("nominal_time_increment_s", attrs["time_increment_s"]) == pytest.approx(1.0 / fps)
+            assert (attrs["n_planes"], attrs["stack_planes"]) == (2, 3)
+            plane = attrs["plane_index"]
+            assert store.name.endswith(f"_z{plane}.ome.zarr")
+            assert attrs["plane_z_offset_um"] == pytest.approx({0: -1.0, 2: 1.0}[plane])
+    # Z-stacks: (T, C, Z, Y, X), written across all time points.
+    for store in _stack_dirs(base, "initial"):
+        assert shape(base / store / "0") == (2, 2, 3, crop_h, crop_w)
+    for store in _stack_dirs(base, "final"):
+        assert shape(base / store / "0") == (2, 1, 3, crop_h, crop_w)
+
+
+def test_record_zstack_worker_smoke(tmp_path):
+    pytest.importorskip("tensorstore")  # optional dep; the worker writes real Zarr
+    from control.core.multi_point_controller import NoOpCallbacks
+    from control.core.record_zstack_worker import RecordZStackWorker
+
+    scope, live_controller, laser_af, channels, (x0, y0) = _build_simulated_setup()
+    assert len(channels) >= 2
+    params = _smoke_params(tmp_path, channels, "rec_zstack_smoke")
+    aborted = {"v": False}
     worker = RecordZStackWorker(
         scope=scope,
         live_controller=live_controller,
@@ -143,105 +158,35 @@ def test_record_zstack_worker_smoke(tmp_path):
         callbacks=NoOpCallbacks,
         abort_requested_fn=lambda: aborted["v"],
         request_abort_fn=lambda: aborted.__setitem__("v", True),
-        scan_region_fov_coords=scan_region_fov_coords,
+        scan_region_fov_coords={"A1": [(x0, y0), (x0 + 0.5, y0)], "A2": [(x0 + 1.0, y0), (x0 + 1.5, y0)]},
     )
 
     worker.run()
 
     assert not aborted["v"], "worker requested abort during the smoke run"
-
-    base = Path(params.base_path) / params.experiment_id
-
-    # Recording: one dataset per (t, well, fov).
-    rec = sorted((base / "recording").rglob("*.ome.zarr"))
-    assert len(rec) == Nt * n_wells * n_fov, f"expected {Nt * n_wells * n_fov} recordings, got {len(rec)}: {rec}"
-
-    # Each recording dataset has shape (T, 1, 1, Y, X).
-    import tensorstore as tstore
-
-    for path in rec:
-        ds = tstore.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": str(path)}}).result()
-        assert tuple(ds.shape) == (T, 1, 1, crop_h, crop_w), f"bad recording shape {ds.shape} for {path}"
-
-    # Z-stack: per-FOV zarr datasets exist under {experiment}/zarr (non-HCS per-FOV layout).
-    zstack_zarrs = list((base / "zarr").rglob("fov_*.ome.zarr"))
-    assert zstack_zarrs, f"no z-stack zarr datasets found under {base / 'zarr'}"
-    # One per (well, fov) — written across all time points/z/channels.
-    assert len(zstack_zarrs) == n_wells * n_fov, f"expected {n_wells * n_fov} z-stack fovs, got {len(zstack_zarrs)}"
-
-    # Verify z-stack shape (T, C, Z, Y, X).
-    n_z = len(zstack_offsets_um(params.z_min_um, params.z_max_um, params.z_step_um))
-    for path in zstack_zarrs:
-        ds = tstore.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": str(path / "0")}}).result()
-        assert tuple(ds.shape) == (Nt, len(zstack_channels), n_z, crop_h, crop_w), f"bad z-stack shape {ds.shape}"
+    assert worker.end_reason == "completed"
+    _assert_smoke_output(Path(params.base_path) / params.experiment_id, channels, 64, 48)
 
 
 # ---------------------------------------------------------------------------
-# Task D3: RecordZStackController smoke test
-#
-# Same 2-well x 2-FOV geometry as the D2 test but driven through
-# RecordZStackController.run_acquisition() + join().
-# Also exercises Nt=2 with dt_s=0.0 (continuous: no grid pacing, so both
-# time-points run even though the per-timepoint work exceeds any short dt —
-# with dt>0 the worker now SKIPS missed slots, mirroring MultiPointWorker).
+# The same acquisition driven end to end through RecordZStackController.run_acquisition() + join():
+# the real controller and the real worker on the simulated microscope.
 # ---------------------------------------------------------------------------
 
 
-def test_record_zstack_controller_smoke(tmp_path, monkeypatch):
+def test_record_zstack_controller_smoke(tmp_path):
     pytest.importorskip("tensorstore")  # optional dep; the worker writes real Zarr
-    import control._def
-    import tests.control.test_stubs as ts
+    import yaml
     from control.core.multi_point_controller import NoOpCallbacks
-    from control.core.record_zstack_controller import (
-        RecordZStackAcquisitionParameters,
-        RecordZStackController,
-        frame_count,
-    )
+    from control.core.record_zstack_controller import RecordZStackController
     from control.core.scan_coordinates import ScanCoordinates
 
-    control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
-
-    crop_w, crop_h = 64, 48
-    scope = _build_simulated_microscope(crop_w, crop_h)
-    live_controller = ts.get_test_live_controller(scope, scope.objective_store.default_objective)
-    laser_af = ts.get_test_laser_autofocus_controller(scope)
-
-    channels = live_controller.get_channels(scope.objective_store.default_objective)
-    assert len(channels) >= 2
-    recording_channel = channels[0]
-    zstack_channels = channels[:2]
-
-    scope.camera.set_exposure_time(1)
-
-    z_cfg = scope.stage.get_config().Z_AXIS
-    z_mid = (z_cfg.MAX_POSITION + z_cfg.MIN_POSITION) / 2.0
-    scope.stage.move_z_to(z_mid)
-    scope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
-
-    x_cfg = scope.stage.get_config().X_AXIS
-    y_cfg = scope.stage.get_config().Y_AXIS
-    x0 = x_cfg.MIN_POSITION + 1.0
-    y0 = y_cfg.MIN_POSITION + 1.0
-
-    # Build a minimal ScanCoordinates with two regions, two FOVs each.
-    scan_coords = ScanCoordinates(
-        objectiveStore=scope.objective_store,
-        stage=scope.stage,
-        camera=scope.camera,
-    )
+    scope, live_controller, laser_af, channels, (x0, y0) = _build_simulated_setup()
+    scan_coords = ScanCoordinates(objectiveStore=scope.objective_store, stage=scope.stage, camera=scope.camera)
     scan_coords.region_fov_coordinates = {
         "A1": [(x0, y0), (x0 + 0.5, y0)],
         "A2": [(x0 + 1.0, y0), (x0 + 1.5, y0)],
     }
-    n_wells = 2
-    n_fov = 2
-    Nt = 2
-
-    fps = 10.0
-    duration_s = 0.3
-    T = frame_count(fps, duration_s)
-    assert T >= 1
-
     controller = RecordZStackController(
         microscope=scope,
         live_controller=live_controller,
@@ -250,30 +195,11 @@ def test_record_zstack_controller_smoke(tmp_path, monkeypatch):
         scan_coordinates=scan_coords,
         callbacks=NoOpCallbacks,
     )
-
-    # Build params directly and pass to run_acquisition (same path as the widget).
-    params = RecordZStackAcquisitionParameters(
-        base_path=str(tmp_path),
-        experiment_id="ctrl_smoke",
-        Nt=Nt,
-        dt_s=0.0,  # continuous: dt>0 would skip slots missed while working
-        use_laser_af=False,
-        recording_enabled=True,
-        recording_channel=recording_channel,
-        fps=fps,
-        duration_s=duration_s,
-        recording_bottom_z_offset_um=0.0,
-        zstack_enabled=True,
-        zstack_channels=zstack_channels,
-        z_min_um=-1.0,
-        z_max_um=1.0,
-        z_step_um=1.0,  # 3 planes
-    )
+    params = _smoke_params(tmp_path, channels, "ctrl_smoke")
 
     assert controller.last_experiment_path is None and controller.last_end_reason is None
     controller.run_acquisition(params)
-    # Wait up to 120 s for the worker thread to finish.
-    controller.join(timeout=120)
+    controller.join(timeout=180)
     assert not controller.acquisition_in_progress(), "worker thread did not finish in time"
 
     # Determine the resolved experiment_id (has a timestamp appended).
@@ -285,26 +211,13 @@ def test_record_zstack_controller_smoke(tmp_path, monkeypatch):
     assert Path(controller.last_experiment_path) == base
     assert controller.last_end_reason == "completed"
 
-    # Recording: one dataset per (t, well, fov).
-    rec = sorted((base / "recording").rglob("*.ome.zarr"))
-    assert len(rec) == Nt * n_wells * n_fov, f"expected {Nt * n_wells * n_fov} recordings, got {len(rec)}: {rec}"
-
-    import tensorstore as tstore
-
-    for path in rec:
-        ds = tstore.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": str(path)}}).result()
-        assert tuple(ds.shape) == (T, 1, 1, crop_h, crop_w), f"bad recording shape {ds.shape} for {path}"
-
-    # Z-stack: per-FOV zarr datasets exist.
-    zstack_zarrs = list((base / "zarr").rglob("fov_*.ome.zarr"))
-    assert zstack_zarrs, f"no z-stack zarr datasets found under {base / 'zarr'}"
-    assert len(zstack_zarrs) == n_wells * n_fov, f"expected {n_wells * n_fov} z-stack fovs, got {len(zstack_zarrs)}"
-
-    n_z = len(zstack_offsets_um(-1.0, 1.0, 1.0))
-    for path in zstack_zarrs:
-        ds = tstore.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": str(path / "0")}}).result()
-        assert tuple(ds.shape) == (Nt, len(zstack_channels), n_z, crop_h, crop_w), f"bad z-stack shape {ds.shape}"
-
+    _assert_smoke_output(base, channels, 64, 48)
+    assert (base / ".done").exists() and (base / "acquisition_channels.yaml").exists()
+    saved = yaml.safe_load(open(base / "acquisition.yaml"))
+    assert [(r["channel"]["name"], r["zi"], r["r"], r["zf"]) for r in saved["channels"]] == [
+        (channels[0].name, True, True, True),
+        (channels[1].name, True, True, False),
+    ]
     controller.close()
 
 
@@ -386,9 +299,16 @@ def _build_simulated_setup():
 
 
 def _params(base_path, channels, **overrides):
-    """Tiny Record + Z-Stack parameters: one timepoint, a 0.2 s recording of channels[0], a 2-plane z-stack
-    of channels[1]; overrides replace any field."""
-    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters
+    """Tiny Time at XY parameters: one timepoint, a 0.2 s recording of channels[0], then a final
+    2-plane z-stack of channels[1]; overrides replace any field.
+
+    The engine tests describe a run as one recording (recording_channel, fps, duration_s, and its planes
+    recording_bottom_z_offset_um / recording_Nz / recording_dz_um) followed by one z-stack (zstack_channels
+    over z_min_um..z_max_um in z_step_um steps, relative to the reference).  That is turned into channel
+    rows (recording = R, stack = Zf), one z plan and the recorded planes by the same rules that load a file
+    saved by the tab this one replaces, so the planes visited are exactly the ones described.
+    """
+    from control.acquisition_yaml_loader import _legacy_recording_plan, _legacy_stack_plan
 
     values = dict(
         base_path=str(base_path),
@@ -401,6 +321,8 @@ def _params(base_path, channels, **overrides):
         fps=10.0,
         duration_s=0.2,
         recording_bottom_z_offset_um=0.0,
+        recording_Nz=1,
+        recording_dz_um=1.0,
         zstack_enabled=True,
         zstack_channels=list(channels[1:2]),
         z_min_um=0.0,
@@ -408,7 +330,39 @@ def _params(base_path, channels, **overrides):
         z_step_um=1.0,
     )
     values.update(overrides)
-    return RecordZStackAcquisitionParameters(**values)
+    rows, notes = [], []
+    if values["recording_enabled"]:
+        rows.append(
+            ChannelPlan(channel=values["recording_channel"], fps=values["fps"], duration_s=values["duration_s"], r=True)
+        )
+    stack_on = bool(values["zstack_enabled"] and values["zstack_channels"])
+    for channel in values["zstack_channels"] if stack_on else []:
+        same = [row for row in rows if row.name == channel.name]
+        if same:
+            same[0].zf = True
+        else:
+            rows.append(ChannelPlan(channel=channel, zf=True))
+    rec_offsets = [
+        values["recording_bottom_z_offset_um"] + j * values["recording_dz_um"] for j in range(values["recording_Nz"])
+    ]
+    if stack_on:
+        z, offsets = _legacy_stack_plan(values["z_min_um"], values["z_max_um"], values["z_step_um"], notes)
+        recorded = [offsets.index(off) for off in rec_offsets]
+    else:
+        z, offsets, recorded = _legacy_recording_plan(
+            values["recording_bottom_z_offset_um"], values["recording_Nz"], values["recording_dz_um"], notes
+        )
+    assert not notes, notes
+    return RecordZStackAcquisitionParameters(
+        base_path=values["base_path"],
+        experiment_id=values["experiment_id"],
+        Nt=values["Nt"],
+        dt_s=values["dt_s"],
+        use_laser_af=values["use_laser_af"],
+        channels=rows,
+        zstack=ZStackPlan(mode=z["z_mode"], dz_um=z["z_dz_um"], nz=z["z_nz"], z_range_um=z["z_range_um"]),
+        record_slices=RecordSliceSelection(roles=[], indices=recorded),
+    )
 
 
 def _build_controller_harness():
@@ -469,6 +423,11 @@ def _build_worker_harness(
         display_fps=display_fps,
     )
     return scope, live_controller, channels, worker, aborted
+
+
+def _record(worker, z_ref, row=0):
+    """Record R row *row* at FOV 0 of A1, timepoint 0."""
+    return worker.record(0, "A1", 0, z_ref, worker.r_plans[row], row)
 
 
 def test_record_only_restores_trigger_mode(tmp_path):
@@ -580,6 +539,7 @@ def test_recording_uses_achievable_fps_when_camera_clamps(tmp_path):
     meta = json.load(open(rec[0] / "zarr.json"))
     squid_attrs = meta["attributes"]["_squid"]
     expected_T = max(1, frame_count(achievable, 0.2))
+    assert rec[0].parent.name == channels[0].name.replace(" ", "_")
     assert squid_attrs["shape"][0] == expected_T, (
         f"dataset sized for the requested fps (T={squid_attrs['shape'][0]}), "
         f"expected achievable-rate T={expected_T}"
@@ -650,10 +610,7 @@ def test_controller_writes_config_snapshot_and_done_file(tmp_path):
     import control._def
     import tests.control.test_stubs as ts
     from control.core.multi_point_controller import NoOpCallbacks
-    from control.core.record_zstack_controller import (
-        RecordZStackAcquisitionParameters,
-        RecordZStackController,
-    )
+    from control.core.record_zstack_controller import RecordZStackController
 
     control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
     scope = _build_simulated_microscope(64, 48)
@@ -674,10 +631,7 @@ def test_controller_writes_config_snapshot_and_done_file(tmp_path):
         base_path=str(tmp_path),
         experiment_id="bookkeeping",
         Nt=1,
-        recording_enabled=True,
-        recording_channel=channels[0],
-        fps=10.0,
-        duration_s=0.2,
+        channels=[ChannelPlan(channel=channels[0], fps=10.0, duration_s=0.2, r=True)],
     )
     try:
         controller.run_acquisition(params)
@@ -711,6 +665,64 @@ def test_pace_timepoint_skips_missed_slots(tmp_path):
 
     aborted["v"] = True
     assert worker._pace_timepoint(1) in ("abort", "skip")  # never 'run' while aborted
+
+
+def test_probe_frame_shape_passes_over_a_frame_from_before_its_stream():
+    """The probe runs once per camera setting.  A camera whose latest frame predates the stream (the
+    simulated camera after a binning change) must not size the dataset with the previous shape."""
+    import time as _time
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    stale = SimpleNamespace(frame=np.zeros((48, 64), dtype=np.uint16), timestamp=_time.time() - 60.0)
+    reads = []
+
+    class _FakeCamera:
+        def set_acquisition_mode(self, mode):
+            pass
+
+        def start_streaming(self):
+            pass
+
+        def stop_streaming(self):
+            pass
+
+        def read_camera_frame(self):
+            reads.append(1)
+            if len(reads) < 3:
+                return stale
+            return SimpleNamespace(frame=np.zeros((24, 32), dtype=np.uint16), timestamp=_time.time())
+
+    assert _probe_frame_shape_with(_FakeCamera())[:2] == (24, 32)
+    assert len(reads) == 3
+
+
+def test_probe_frame_shape_settles_for_the_latest_frame_when_none_is_newer(monkeypatch):
+    """A camera that never stamps a frame after the stream start (a clock that is not host time) still
+    gets its dataset sized, from its latest frame, after the short wait."""
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from control.core.record_zstack_worker import RecordZStackWorker
+
+    monkeypatch.setattr(RecordZStackWorker, "PROBE_FRESH_FRAME_TIMEOUT_S", 0.05)
+
+    class _FakeCamera:
+        def set_acquisition_mode(self, mode):
+            pass
+
+        def start_streaming(self):
+            pass
+
+        def stop_streaming(self):
+            pass
+
+        def read_camera_frame(self):
+            return SimpleNamespace(frame=np.zeros((50, 60), dtype=np.uint8), timestamp=12.5)
+
+    assert _probe_frame_shape_with(_FakeCamera())[:2] == (50, 60)
 
 
 def test_probe_frame_shape_rejects_color_frames():
@@ -862,19 +874,16 @@ def test_record_fails_fast_on_dropped_frames(tmp_path, monkeypatch):
 
 
 def test_config_snapshot_dedupes_channels_by_name(tmp_path):
-    """R10: recording the same channel that is also z-stacked must not produce
-    two same-name entries in acquisition_channels.yaml (channels are identified
-    by name; duplicate names make the snapshot ambiguous)."""
+    """R10: a channel used by more than one phase, or listed in two rows, must not produce two
+    same-name entries in acquisition_channels.yaml (channels are identified by name; duplicate
+    names make the snapshot ambiguous)."""
     pytest.importorskip("tensorstore")
     import yaml
 
     import control._def
     import tests.control.test_stubs as ts
     from control.core.multi_point_controller import NoOpCallbacks
-    from control.core.record_zstack_controller import (
-        RecordZStackAcquisitionParameters,
-        RecordZStackController,
-    )
+    from control.core.record_zstack_controller import RecordZStackController
 
     control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
     scope = _build_simulated_microscope(64, 48)
@@ -895,15 +904,12 @@ def test_config_snapshot_dedupes_channels_by_name(tmp_path):
         base_path=str(tmp_path),
         experiment_id="dedupe",
         Nt=1,
-        recording_enabled=True,
-        recording_channel=channels[0],
-        fps=10.0,
-        duration_s=0.2,
-        zstack_enabled=True,
-        zstack_channels=[channels[0], channels[1]],  # channel 0 in BOTH phases
-        z_min_um=0.0,
-        z_max_um=1.0,
-        z_step_um=1.0,
+        channels=[
+            ChannelPlan(channel=channels[0], fps=10.0, duration_s=0.2, zi=True, r=True, zf=True),  # every phase
+            ChannelPlan(channel=channels[0].model_copy(deep=True), zf=True),  # and listed again
+            ChannelPlan(channel=channels[1], zf=True),
+        ],
+        zstack=ZStackPlan(nz=2, dz_um=1.0),
     )
     try:
         controller.run_acquisition(params)
@@ -913,23 +919,7 @@ def test_config_snapshot_dedupes_channels_by_name(tmp_path):
 
     snapshot = yaml.safe_load(open(Path(tmp_path) / params.experiment_id / "acquisition_channels.yaml"))
     names = [c["name"] for c in snapshot["channels"]]
-    assert len(names) == len(set(names)), f"duplicate channel names in snapshot: {names}"
-
-
-def test_recording_plane_offsets():
-    from control.core.record_zstack_controller import recording_plane_offsets_um
-
-    assert recording_plane_offsets_um(-2.0, 3, 4.0) == [-2.0, 2.0, 6.0]
-    assert recording_plane_offsets_um(5.0, 1, 1.0) == [5.0]  # Nz=1: dz irrelevant
-
-
-def test_recording_plane_offsets_validation():
-    from control.core.record_zstack_controller import recording_plane_offsets_um
-
-    with pytest.raises(ValueError):
-        recording_plane_offsets_um(0.0, 0, 1.0)  # Nz < 1
-    with pytest.raises(ValueError):
-        recording_plane_offsets_um(0.0, 2, 0.0)  # dz <= 0 with Nz > 1
+    assert sorted(names) == sorted([channels[0].name, channels[1].name]), f"snapshot channels: {names}"
 
 
 def test_recording_path_plane_naming():
@@ -938,10 +928,12 @@ def test_recording_path_plane_naming():
     from control.core.record_zstack_worker import RecordZStackWorker
 
     fake_self = SimpleNamespace(experiment_path="/exp")
-    single = RecordZStackWorker._recording_path(fake_self, 0, "B2", 1).replace(os.sep, "/")
-    multi = RecordZStackWorker._recording_path(fake_self, 0, "B2", 1, plane_idx=2, n_planes=3).replace(os.sep, "/")
-    assert single.endswith("recording/t0/B2/fov_1.ome.zarr")  # Nz=1 keeps today's name
-    assert multi.endswith("recording/t0/B2/fov_1_z2.ome.zarr")
+    path = RecordZStackWorker._recording_path(fake_self, 0, "B2", 1, "GFP", 2).replace(os.sep, "/")
+    # The channel directory and the stack-plane suffix are always present, single plane or not.
+    assert path == "/exp/recording/t0/B2/GFP/fov_1_z2.ome.zarr"
+    assert RecordZStackWorker._recording_path(fake_self, 3, "B2", 0, "GFP", 0).replace(os.sep, "/") == (
+        "/exp/recording/t3/B2/GFP/fov_0_z0.ome.zarr"
+    )
 
 
 def test_record_multi_plane_writes_one_zarr_per_plane(tmp_path):
@@ -951,16 +943,18 @@ def test_record_multi_plane_writes_one_zarr_per_plane(tmp_path):
     import json
 
     scope, live_controller, channels, worker, aborted = _build_worker_harness(
-        tmp_path, recording_enabled=True, zstack_enabled=False
+        tmp_path,
+        recording_enabled=True,
+        zstack_enabled=False,
+        recording_Nz=3,
+        recording_dz_um=2.0,
+        recording_bottom_z_offset_um=-2.0,
     )
-    worker.params.recording_Nz = 3
-    worker.params.recording_dz_um = 2.0
-    worker.params.recording_bottom_z_offset_um = -2.0
 
     worker.run()
     assert not aborted["v"]
 
-    rec_dir = Path(tmp_path) / "state_restore" / "recording" / "t0" / "A1"
+    rec_dir = Path(tmp_path) / "state_restore" / "recording" / "t0" / "A1" / channels[0].name.replace(" ", "_")
     names = sorted(p.name for p in rec_dir.glob("*.ome.zarr"))
     assert names == ["fov_0_z0.ome.zarr", "fov_0_z1.ome.zarr", "fov_0_z2.ome.zarr"]
 
@@ -968,7 +962,7 @@ def test_record_multi_plane_writes_one_zarr_per_plane(tmp_path):
         meta = json.load(open(rec_dir / name / "zarr.json"))
         squid_attrs = meta["attributes"]["_squid"]
         assert squid_attrs["plane_index"] == j
-        assert squid_attrs["n_planes"] == 3
+        assert squid_attrs["n_planes"] == 3 and squid_attrs["stack_planes"] == 3
         assert abs(squid_attrs["plane_z_offset_um"] - (-2.0 + j * 2.0)) < 1e-9
         assert squid_attrs["acquisition_complete"] is True
         assert squid_attrs["shape"][1:3] == [1, 1]  # (T,1,1,Y,X) per plane
@@ -980,10 +974,8 @@ def test_record_multi_plane_abort_between_planes(tmp_path):
     pytest.importorskip("tensorstore")
 
     scope, live_controller, channels, worker, aborted = _build_worker_harness(
-        tmp_path, recording_enabled=True, zstack_enabled=False
+        tmp_path, recording_enabled=True, zstack_enabled=False, recording_Nz=3, recording_dz_um=1.0
     )
-    worker.params.recording_Nz = 3
-    worker.params.recording_dz_um = 1.0
 
     orig = worker._record_one_plane
 
@@ -995,7 +987,7 @@ def test_record_multi_plane_abort_between_planes(tmp_path):
     worker._record_one_plane = record_then_abort
     worker.run()
 
-    rec_dir = Path(tmp_path) / "state_restore" / "recording" / "t0" / "A1"
+    rec_dir = Path(tmp_path) / "state_restore" / "recording" / "t0" / "A1" / channels[0].name.replace(" ", "_")
     names = sorted(p.name for p in rec_dir.glob("*.ome.zarr"))
     assert names == ["fov_0_z0.ome.zarr"], f"expected only plane 0 after abort, got {names}"
     assert (Path(tmp_path) / "state_restore" / ".done").exists()
@@ -1015,10 +1007,8 @@ def test_record_moves_to_first_plane_before_illumination(tmp_path):
     pytest.importorskip("tensorstore")
 
     scope, live_controller, channels, worker, aborted = _build_worker_harness(
-        tmp_path, recording_enabled=True, zstack_enabled=False
+        tmp_path, recording_enabled=True, zstack_enabled=False, recording_Nz=3, recording_dz_um=1.0
     )
-    worker.params.recording_Nz = 3
-    worker.params.recording_dz_um = 1.0
 
     events = []
     call_count = {"n": 0}
@@ -1054,7 +1044,7 @@ def test_record_moves_to_first_plane_before_illumination(tmp_path):
     live_controller.turn_off_illumination = off_spy
 
     z_ref = scope.stage.get_pos().z_mm
-    total = worker.record(0, "A1", 0, z_ref)
+    total = _record(worker, z_ref)
 
     assert call_count["n"] == 3, "all three planes must still be recorded"
     assert total == 0
@@ -1076,10 +1066,8 @@ def test_record_restores_camera_mode_and_stage_z_when_plane_raises(tmp_path):
     from squid.abc import CameraAcquisitionMode
 
     scope, live_controller, channels, worker, aborted = _build_worker_harness(
-        tmp_path, recording_enabled=True, zstack_enabled=False
+        tmp_path, recording_enabled=True, zstack_enabled=False, recording_Nz=3, recording_dz_um=1.0
     )
-    worker.params.recording_Nz = 3
-    worker.params.recording_dz_um = 1.0
 
     events = []
     call_count = {"n": 0}
@@ -1112,7 +1100,7 @@ def test_record_restores_camera_mode_and_stage_z_when_plane_raises(tmp_path):
     z_ref = scope.stage.get_pos().z_mm
 
     with pytest.raises(RuntimeError, match="simulated fail-fast"):
-        worker.record(0, "A1", 0, z_ref)
+        _record(worker, z_ref)
 
     assert events == ["illum_off"], "illumination must still be turned off on the raising path"
     assert restore_calls and restore_calls[-1] == pytest.approx(
@@ -1159,72 +1147,147 @@ def test_build_objective_info_handles_missing_camera():
     assert info["pixel_size_um"] is None
 
 
-def test_save_record_zstack_yaml_writes_full_schema(tmp_path):
-    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, _save_record_zstack_yaml
+def _yaml_channel(name="BF LED matrix full", exposure=50.0):
     from control.models.acquisition_config import AcquisitionChannel, CameraSettings, IlluminationSettings
 
-    channel = AcquisitionChannel(
-        name="BF LED matrix full",
-        camera_settings=CameraSettings(exposure_time_ms=50.0, gain_mode=0.0),
+    return AcquisitionChannel(
+        name=name,
+        camera_settings=CameraSettings(exposure_time_ms=exposure, gain_mode=0.0),
         illumination_settings=IlluminationSettings(intensity=50.0),
     )
+
+
+def test_save_record_zstack_yaml_writes_full_schema(tmp_path):
+    """The file a Time at XY run (or Save Settings) leaves behind, key for key."""
+    from control.core.record_zstack_controller import _save_record_zstack_yaml
+
     params = RecordZStackAcquisitionParameters(
         base_path=str(tmp_path),
         experiment_id="my_exp",
         Nt=3,
         dt_s=5.0,
         use_laser_af=True,
-        recording_enabled=True,
-        recording_channel=channel,
-        fps=15.0,
-        duration_s=2.0,
-        recording_bottom_z_offset_um=1.5,
-        recording_Nz=3,
-        recording_dz_um=0.8,
-        zstack_enabled=True,
-        zstack_channels=[channel],
-        z_min_um=-2.0,
-        z_max_um=2.0,
-        z_step_um=0.5,
+        use_contrast_af=True,
+        use_focus_map=True,
+        focus_map=object(),  # never serialised
+        region_laser_af_offsets={"A1": 2.0},  # never serialised
+        channels=[
+            ChannelPlan(
+                channel=_yaml_channel(),
+                fps=15.0,
+                duration_s=2.0,
+                zi=True,
+                r=True,
+                zf=False,
+                geometry=CameraGeometry(binning=2, crop_w=1024, crop_h=512, pixel_format="MONO8"),
+            ),
+            ChannelPlan(channel=_yaml_channel("Fluorescence 488 nm Ex"), zf=True),
+        ],
+        zstack=ZStackPlan(mode="Relative", dz_um=0.5, nz=9, z_range_um=4.0, z_min_mm=1.0, z_max_mm=1.2),
+        record_slices=RecordSliceSelection(roles=["top", "bottom"], indices=[5, 2]),
         xy_mode="Select Wells",
         scan_size_mm=1.2,
         overlap_percent=10.0,
     )
-
     scan_coordinates = type(
         "FakeScanCoordinates", (), {"region_centers": {"A1": [1.0, 2.0, 0.1]}, "region_shapes": {"A1": "Square"}}
     )()
-
     yaml_path = tmp_path / "acquisition.yaml"
-    _save_record_zstack_yaml(params, str(yaml_path), scan_coordinates, {"name": "20x"})
+    objective_info = {"name": "20x", "magnification": 20.0, "pixel_size_um": 0.376, "camera_binning": [1, 1]}
+
+    _save_record_zstack_yaml(params, str(yaml_path), scan_coordinates, objective_info)
 
     import yaml as pyyaml
 
+    assert yaml_path.read_text().startswith("# Time at XY Acquisition Parameters - my_exp\n\n")
     data = pyyaml.safe_load(yaml_path.read_text())
-
+    assert list(data) == [
+        "acquisition",
+        "objective",
+        "time_series",
+        "autofocus",
+        "channels",
+        "record_slices",
+        "z_stack",
+        "wellplate_scan",
+    ]
+    assert list(data["acquisition"]) == ["experiment_id", "start_time", "widget_type", "xy_mode"]
     assert data["acquisition"]["widget_type"] == "record_zstack"
     assert data["acquisition"]["xy_mode"] == "Select Wells"
-    assert data["objective"]["name"] == "20x"
+    assert data["objective"] == objective_info
     assert data["time_series"] == {"nt": 3, "delta_t_s": 5.0}
-    assert data["autofocus"] == {"laser_af": True}
-    assert data["recording"]["enabled"] is True
-    assert data["recording"]["channel"]["name"] == "BF LED matrix full"
-    assert data["recording"]["fps"] == 15.0
-    assert data["recording"]["duration_s"] == 2.0
-    assert data["recording"]["bottom_z_offset_um"] == 1.5
-    assert data["recording"]["nz"] == 3
-    assert data["recording"]["dz_um"] == 0.8
-    assert data["z_stack"]["enabled"] is True
-    assert len(data["z_stack"]["channels"]) == 1
-    assert data["z_stack"]["z_min_um"] == -2.0
-    assert data["z_stack"]["z_max_um"] == 2.0
-    assert data["z_stack"]["z_step_um"] == 0.5
+    assert data["autofocus"] == {"laser_af": True, "contrast_af": True, "use_focus_map": True}
+    first, second = data["channels"]
+    assert list(first) == ["channel", "fps", "duration_s", "zi", "r", "zf", "camera"]
+    assert first["channel"]["name"] == "BF LED matrix full"
+    assert first["channel"]["camera_settings"]["exposure_time_ms"] == 50.0
+    assert (first["fps"], first["duration_s"], first["zi"], first["r"], first["zf"]) == (15.0, 2.0, True, True, False)
+    assert first["camera"] == {
+        "binning": 2,
+        "crop_width": 1024,
+        "crop_height": 512,
+        "pixel_format": "MONO8",
+        "pixel_size_um": pytest.approx(0.752),  # the objective's pixel size at this row's binning
+    }
+    assert list(second) == ["channel", "fps", "duration_s", "zi", "r", "zf"]  # no camera key when nothing is pinned
+    assert data["record_slices"] == {"roles": ["bottom", "top"], "indices": [2, 5]}
+    assert data["z_stack"] == {
+        "mode": "Relative",
+        "dz_um": 0.5,
+        "nz": 9,
+        "z_range_um": 4.0,
+        "z_min_mm": 1.0,
+        "z_max_mm": 1.2,
+    }
     assert data["wellplate_scan"]["scan_size_mm"] == 1.2
     assert data["wellplate_scan"]["regions"] == [{"name": "A1", "center_mm": [1.0, 2.0, 0.1], "shape": "Square"}]
 
 
+def test_save_record_zstack_yaml_round_trips_through_the_loader(tmp_path):
+    """Save -> parse -> rebuild gives back the same rows, z plan and record planes."""
+    from control.acquisition_yaml_loader import parse_acquisition_yaml
+    from control.core.record_zstack_controller import _save_record_zstack_yaml
+
+    params = RecordZStackAcquisitionParameters(
+        base_path=str(tmp_path),
+        experiment_id="rt",
+        Nt=2,
+        dt_s=30.0,
+        use_contrast_af=True,
+        channels=[
+            ChannelPlan(channel=_yaml_channel(), fps=40.0, duration_s=6.0, r=True, geometry=CameraGeometry(binning=2)),
+            ChannelPlan(channel=_yaml_channel("Fluorescence 488 nm Ex", 80.0), zi=True, zf=True),
+        ],
+        zstack=ZStackPlan(mode="Set Range", dz_um=2.0, nz=6, z_range_um=4.0, z_min_mm=1.0, z_max_mm=1.01),
+        record_slices=RecordSliceSelection(roles=["mid"], indices=[4]),
+        xy_mode="Current Position",
+    )
+    path = tmp_path / "acquisition.yaml"
+    _save_record_zstack_yaml(params, str(path), None, {"name": "20x", "pixel_size_um": 0.4, "camera_binning": [1, 1]})
+
+    parsed = parse_acquisition_yaml(str(path))
+
+    assert parsed.legacy_schema is False
+    assert [ChannelPlan.from_yaml_dict(row) for row in parsed.channels] == params.channels
+    assert (
+        ZStackPlan(
+            mode=parsed.z_mode,
+            dz_um=parsed.z_dz_um,
+            nz=parsed.z_nz,
+            z_range_um=parsed.z_range_um,
+            z_min_mm=parsed.z_min_mm,
+            z_max_mm=parsed.z_max_mm,
+        )
+        == params.zstack
+    )
+    assert (parsed.record_slice_roles, parsed.record_slice_indices) == (["mid"], [4])
+    assert (parsed.nt, parsed.delta_t_s) == (2, 30.0)
+    assert (parsed.laser_af, parsed.contrast_af, parsed.use_focus_map) == (False, True, False)
+    assert parsed.xy_mode == "Current Position" and parsed.wellplate_regions is None
+
+
 def test_save_record_zstack_yaml_omits_wellplate_scan_for_current_position(tmp_path):
-    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, _save_record_zstack_yaml
+    from control.core.record_zstack_controller import _save_record_zstack_yaml
 
     params = RecordZStackAcquisitionParameters(
         base_path=str(tmp_path), experiment_id="my_exp", xy_mode="Current Position"
@@ -1245,7 +1308,7 @@ def test_save_record_zstack_yaml_raises_on_write_failure(tmp_path):
     Save Settings button handler) each already have their own appropriate
     try/except one level up; swallowing here just made the button handler's
     warning dialog unreachable."""
-    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, _save_record_zstack_yaml
+    from control.core.record_zstack_controller import _save_record_zstack_yaml
 
     params = RecordZStackAcquisitionParameters(base_path=str(tmp_path), experiment_id="my_exp")
     # Parent directory doesn't exist -> open() raises FileNotFoundError (an OSError).
@@ -1298,7 +1361,9 @@ def test_run_acquisition_survives_snapshot_write_failure(tmp_path, monkeypatch):
         scan_coordinates=None,
         callbacks=callbacks,
     )
-    params = rzc.RecordZStackAcquisitionParameters(base_path=str(tmp_path), experiment_id="my_exp")
+    params = rzc.RecordZStackAcquisitionParameters(
+        base_path=str(tmp_path), experiment_id="my_exp", channels=[ChannelPlan(channel=_yaml_channel(), zf=True)]
+    )
 
     # Must not raise, even though _save_record_zstack_yaml raises internally.
     controller.run_acquisition(params)
@@ -1358,7 +1423,9 @@ def test_run_acquisition_writes_both_yaml_files(tmp_path, monkeypatch):
         scan_coordinates=None,
         callbacks=callbacks,
     )
-    params = rzc.RecordZStackAcquisitionParameters(base_path=str(tmp_path), experiment_id="my_exp")
+    params = rzc.RecordZStackAcquisitionParameters(
+        base_path=str(tmp_path), experiment_id="my_exp", channels=[ChannelPlan(channel=_yaml_channel(), zf=True)]
+    )
     controller.run_acquisition(params)
     controller.join(timeout=5.0)
 
@@ -1467,15 +1534,14 @@ def test_zstack_phase_invokes_signal_new_image(tmp_path):
     assert len(new_image_calls) == 3 * 2  # planes x channels x 1 FOV x 1 timepoint
 
 
-def test_controller_rejects_recording_without_a_channel():
-    """V8: a recording phase with no channel would let the z-stack phase's last channel set
-    the exposure for later FOVs while the cached fps/pacing assume the recording channel."""
-    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, RecordZStackController
+def test_controller_rejects_a_run_with_nothing_ticked():
+    """A table with no Zi / R / Zf ticked would start an acquisition that visits every FOV and does nothing."""
+    from control.core.record_zstack_controller import RecordZStackController
 
     params = RecordZStackAcquisitionParameters(
-        base_path="/tmp", experiment_id="x", recording_enabled=True, recording_channel=None
+        base_path="/tmp", experiment_id="x", channels=[ChannelPlan(channel=_yaml_channel())]
     )
-    with pytest.raises(ValueError, match="recording_channel"):
+    with pytest.raises(ValueError, match="Zi, R, or Zf"):
         RecordZStackController.run_acquisition(object(), params)
 
 
@@ -1503,11 +1569,7 @@ def test_controller_resolves_effective_fps_before_the_run_and_records_it(tmp_pat
     import control._def
     import tests.control.test_stubs as ts
     from control.core.multi_point_controller import NoOpCallbacks
-    from control.core.record_zstack_controller import (
-        RecordZStackAcquisitionParameters,
-        RecordZStackController,
-        frame_count,
-    )
+    from control.core.record_zstack_controller import RecordZStackController
     from control.core.scan_coordinates import ScanCoordinates
 
     control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
@@ -1533,30 +1595,34 @@ def test_controller_resolves_effective_fps_before_the_run_and_records_it(tmp_pat
         scan_coordinates=scan,
         callbacks=NoOpCallbacks,
     )
+    fast_channel = channels[1].model_copy(deep=True)
+    fast_channel.camera_settings.exposure_time_ms = 1.0
     params = RecordZStackAcquisitionParameters(
         base_path=str(tmp_path),
         experiment_id="resolved",
-        recording_enabled=True,
-        recording_channel=rec_channel,
-        fps=30.0,
-        duration_s=1.0,
+        channels=[
+            ChannelPlan(channel=rec_channel, fps=30.0, duration_s=1.0, r=True),
+            ChannelPlan(channel=fast_channel, fps=30.0, duration_s=0.2, r=True),  # within the camera's reach
+        ],
     )
     expected = scope.camera.get_max_frame_rate(200.0)
     assert expected < 30.0  # precondition: the sim camera cannot do 30 fps at 200 ms
     controller.run_acquisition(params)
-    assert params.effective_fps == pytest.approx(expected)  # resolved before the worker ran
+    # resolved per row, before the worker ran
+    assert params.channels[0].effective_fps == pytest.approx(expected)
+    assert params.channels[1].effective_fps == pytest.approx(30.0)
     controller.join(timeout=120)
     assert not controller.acquisition_in_progress()
     controller.close()
 
     exp_dir = next(d for d in tmp_path.iterdir() if d.is_dir())
     saved = yaml.safe_load(open(exp_dir / "acquisition.yaml"))
-    assert saved["recording"]["fps"] == 30.0
-    assert saved["recording"]["effective_fps"] == pytest.approx(expected)
-    import json
+    assert saved["channels"][0]["fps"] == 30.0
+    assert saved["channels"][0]["effective_fps"] == pytest.approx(expected)
+    assert saved["channels"][1]["effective_fps"] == pytest.approx(30.0)
 
-    zarr_json = next(exp_dir.glob("recording/**/zarr.json"))
-    sq = json.load(open(zarr_json))["attributes"]["_squid"]
+    slow_dir = exp_dir / "recording" / "t0" / "A1" / rec_channel.name.replace(" ", "_")
+    sq = _recording_attrs(slow_dir / "fov_0_z0.ome.zarr")
     assert sq["shape"][0] == max(1, frame_count(expected, 1.0))
     assert sq["requested_fps"] == 30.0 and sq["effective_fps"] == pytest.approx(expected)
     # The store's spacing is the resolved one unless the simulated camera delivered more than 2%
@@ -1582,7 +1648,7 @@ def test_zstack_uses_the_in_process_runner_and_seals_the_store(tmp_path):
     )
     assert isinstance(worker._job_runners[0][1], InProcessZarrRunner)
     worker.run()
-    assert _zstack_squid_attrs(Path(tmp_path) / "state_restore" / "zarr")["acquisition_complete"] is True
+    assert _zstack_squid_attrs(Path(tmp_path) / "state_restore" / "zstack_final")["acquisition_complete"] is True
 
 
 def test_abort_mid_zstack_seals_store_aborted(tmp_path):
@@ -1603,7 +1669,7 @@ def test_abort_mid_zstack_seals_store_aborted(tmp_path):
 
     worker.acquire_camera_image = abort_after_first
     worker.run()
-    attrs = _zstack_squid_attrs(Path(tmp_path) / "state_restore" / "zarr")
+    attrs = _zstack_squid_attrs(Path(tmp_path) / "state_restore" / "zstack_final")
     assert attrs["acquisition_complete"] is False and attrs.get("aborted") is True
 
 
@@ -1621,7 +1687,7 @@ def test_zarr_write_error_aborts_the_acquisition(tmp_path, monkeypatch, caplog):
         worker.run()
     assert aborted["v"] is True and worker._abort_cause == "error"
     assert any("disk full" in r.getMessage() for r in caplog.records)
-    assert _zstack_squid_attrs(Path(tmp_path) / "state_restore" / "zarr")["acquisition_complete"] is False
+    assert _zstack_squid_attrs(Path(tmp_path) / "state_restore" / "zstack_final")["acquisition_complete"] is False
 
 
 def test_three_record_zstack_acquisitions_all_sealed(tmp_path, monkeypatch):
@@ -1644,7 +1710,8 @@ def test_three_record_zstack_acquisitions_all_sealed(tmp_path, monkeypatch):
             controller.join(timeout=120)
             assert not controller.acquisition_in_progress(), f"acquisition {i} did not finish"
             (experiment_dir,) = [d for d in base.iterdir() if d.is_dir()]
-            assert _zstack_squid_attrs(experiment_dir / "zarr")["acquisition_complete"] is True, f"acquisition {i}"
+            attrs = _zstack_squid_attrs(experiment_dir / "zstack_final")
+            assert attrs["acquisition_complete"] is True, f"acquisition {i}"
     finally:
         controller.close()
     assert started == []
@@ -1756,7 +1823,7 @@ def test_zstack_stops_streaming_when_callback_registration_fails(tmp_path, monke
 
     monkeypatch.setattr(scope.camera, "add_frame_callback", refuse)
     with pytest.raises(RuntimeError, match="no callback slot"):
-        worker.zstack(0, "A1", 0, scope.stage.get_pos().z_mm)
+        worker.zstack(0, "A1", 0, scope.stage.get_pos().z_mm, phase="final")
     assert not scope.camera.get_is_streaming()
 
 
@@ -1783,13 +1850,13 @@ def test_record_restores_z_and_camera_mode_when_illumination_fails(tmp_path, mon
     monkeypatch.setattr(live_controller, "turn_on_illumination", fail)
     z_ref = scope.stage.get_pos().z_mm
     with pytest.raises(RuntimeError, match="illumination"):
-        worker.record(0, "A1", 0, z_ref)
+        _record(worker, z_ref)
     assert moves and moves[-1] == pytest.approx(z_ref), "stage-Z restore must run when illumination fails"
     assert scope.camera.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER
 
 
 def test_record_zstack_run_writes_the_watchdog_breadcrumb(tmp_path):
-    """Record + Z-Stack leaves the run.json the multipoint acquisition does, started before the worker and
+    """Time at XY leaves the run.json the multipoint acquisition does, started before the worker and
     ended with the run's reason, so the acquisition watchdog covers it."""
     pytest.importorskip("tensorstore")
     import squid.acquisition_state as ast
@@ -1806,7 +1873,496 @@ def test_record_zstack_run_writes_the_watchdog_breadcrumb(tmp_path):
         controller.close()
     (experiment_dir,) = [d for d in base.iterdir() if d.is_dir()]
     rec = ast.read_run(os.environ["SQUID_WATCHDOG_STATE_DIR"])  # the autouse fixture's per-test state dir
-    assert rec is not None, "no run.json written for a Record + Z-Stack run"
+    assert rec is not None, "no run.json written for a Time at XY run"
     assert rec["status"] == "ended" and rec["reason"] == "completed"
     assert Path(rec["output_path"]) == experiment_dir
     assert rec["expected"] == {"timepoints": 1, "regions": 1, "fovs": 1, "channels": 2, "z": 3}
+
+
+# ---------------------------------------------------------------------------
+# Time at XY: per-FOV order, per-channel camera settings, focus, frame-rate test
+# ---------------------------------------------------------------------------
+
+
+def _build_plan_worker(tmp_path, rows_fn, zstack=None, record_slices=None, n_fovs=1, **worker_kwargs):
+    """A worker on the simulated setup for the rows rows_fn(channels) builds; returns
+    (scope, live_controller, channels, worker, aborted)."""
+    from control.core.multi_point_controller import NoOpCallbacks
+    from control.core.record_zstack_worker import RecordZStackWorker
+
+    param_fields = {
+        k: worker_kwargs.pop(k) for k in list(worker_kwargs) if k in ("Nt", "use_laser_af", "use_contrast_af")
+    }
+    param_fields.update(worker_kwargs.pop("param_fields", {}))
+    scope, live_controller, laser_af, channels, (x0, y0) = _build_simulated_setup()
+    params = RecordZStackAcquisitionParameters(
+        base_path=str(tmp_path),
+        experiment_id="plan",
+        channels=rows_fn(channels),
+        zstack=zstack or ZStackPlan(nz=2, dz_um=1.0),
+        record_slices=record_slices or RecordSliceSelection(roles=["bottom"]),
+        **param_fields,
+    )
+    aborted = {"v": False}
+    worker = RecordZStackWorker(
+        scope=scope,
+        live_controller=live_controller,
+        laser_auto_focus_controller=laser_af,
+        objective_store=scope.objective_store,
+        params=params,
+        callbacks=NoOpCallbacks,
+        abort_requested_fn=lambda: aborted["v"],
+        request_abort_fn=lambda: aborted.__setitem__("v", True),
+        scan_region_fov_coords={"A1": [(x0 + 0.5 * i, y0) for i in range(n_fovs)]},
+        **worker_kwargs,
+    )
+    return scope, live_controller, channels, worker, aborted
+
+
+def test_per_fov_order_is_initial_stack_then_recordings_in_table_order_then_final_stack(tmp_path):
+    """At every FOV of every timepoint: reference, Zi, one recording per R row in table order, Zf."""
+    scope, live_controller, channels, worker, aborted = _build_plan_worker(
+        tmp_path,
+        lambda ch: [
+            ChannelPlan(channel=ch[1], fps=20.0, duration_s=0.1, r=True),
+            ChannelPlan(channel=ch[0], fps=10.0, duration_s=0.1, zi=True, r=True, zf=True),
+            ChannelPlan(channel=ch[2], zi=True),
+        ],
+        n_fovs=2,
+        Nt=2,
+    )
+    events = []
+    worker.establish_reference = lambda region_id=None: events.append("ref") or scope.stage.get_pos().z_mm
+    worker.zstack = lambda t, region, fov, z_ref, phase: events.append((t, fov, f"stack:{phase}"))
+    worker.record = lambda t, region, fov, z_ref, plan, rec_idx: events.append((t, fov, f"rec{rec_idx}:{plan.name}"))
+
+    worker.run()
+
+    per_fov = lambda t, fov: [  # noqa: E731
+        "ref",
+        (t, fov, "stack:initial"),
+        (t, fov, f"rec0:{channels[1].name}"),
+        (t, fov, f"rec1:{channels[0].name}"),
+        (t, fov, "stack:final"),
+    ]
+    assert events == per_fov(0, 0) + per_fov(0, 1) + per_fov(1, 0) + per_fov(1, 1)
+    assert [c.name for c in worker.zi_channels] == [channels[0].name, channels[2].name]
+    assert [c.name for c in worker.zf_channels] == [channels[0].name]
+    assert worker.end_reason == "completed"
+
+
+def test_a_camera_that_cannot_deliver_recording_frames_fails_the_run_before_anything_is_acquired(tmp_path):
+    """The recordings are sized from a probe frame per camera setting at the start of the run: a colour
+    frame (or none) must end the run there, not after the first FOV's initial z-stack."""
+    scope, live_controller, channels, worker, aborted = _build_plan_worker(
+        tmp_path, lambda ch: [ChannelPlan(channel=ch[0], fps=10.0, duration_s=0.1, zi=True, r=True)]
+    )
+    events = []
+    worker.zstack = lambda *args, **kwargs: events.append("stack")
+    real_move_xy = worker._move_xy
+    worker._move_xy = lambda coord: events.append("move") or real_move_xy(coord)
+
+    def colour_frame():
+        raise ValueError("recording supports monochrome frames only")
+
+    worker._probe_frame_shape = colour_frame
+    worker.run()
+    assert events == []
+    assert aborted["v"] and worker.end_reason == "error"
+    assert os.path.exists(os.path.join(worker.experiment_path, ".done")) is os.path.isdir(worker.experiment_path)
+
+
+def test_recording_frames_are_probed_once_per_camera_setting(tmp_path):
+    binned = CameraGeometry(binning=2)
+    scope, live_controller, channels, worker, aborted = _build_plan_worker(
+        tmp_path,
+        lambda ch: [
+            ChannelPlan(channel=ch[0], fps=10.0, duration_s=0.1, r=True),
+            ChannelPlan(channel=ch[1], fps=10.0, duration_s=0.1, r=True, geometry=binned),
+            ChannelPlan(channel=ch[2], fps=10.0, duration_s=0.1, r=True),  # same settings as the first row
+        ],
+        n_fovs=2,
+    )
+    probes = []
+    real_probe = worker._probe_frame_shape
+    worker._probe_frame_shape = lambda: probes.append(tuple(scope.camera.get_binning())) or real_probe()
+    worker._record_one_plane = lambda *args, **kwargs: 0
+    worker.run()
+    assert probes == [(1, 1), (2, 2)]
+    assert [shape[:2] for shape in worker._frame_shapes.values()] == [(48, 64), (24, 32)]
+
+
+def test_abort_between_phases_stops_before_the_next_one(tmp_path):
+    scope, live_controller, channels, worker, aborted = _build_plan_worker(
+        tmp_path, lambda ch: [ChannelPlan(channel=ch[0], fps=10.0, duration_s=0.1, zi=True, r=True, zf=True)]
+    )
+    events = []
+    worker.zstack = lambda t, region, fov, z_ref, phase: events.append(phase)
+
+    def record_then_stop(*args):
+        events.append("rec")
+        aborted["v"] = True
+
+    worker.record = record_then_stop
+    worker.run()
+    assert events == ["initial", "rec"]
+    assert worker.end_reason == "user_abort"
+
+
+def test_set_range_stack_visits_absolute_planes_whatever_the_reference(tmp_path):
+    scope, live_controller, laser_af, channels, fov = _build_simulated_setup()
+    z_mid = scope.stage.get_pos().z_mm
+    scope, live_controller, channels, worker, aborted = _build_plan_worker(
+        tmp_path,
+        lambda ch: [ChannelPlan(channel=ch[0], zf=True)],
+        zstack=ZStackPlan(mode="Set Range", dz_um=2.0, z_min_mm=z_mid + 0.010, z_max_mm=z_mid + 0.014),
+    )
+    z_ref = scope.stage.get_pos().z_mm  # not on any plane of the range
+    moves = []
+    real_move = worker.move_to_z_level
+    worker.move_to_z_level = lambda z_mm: moves.append(z_mm) or real_move(z_mm)
+
+    worker.zstack(0, "A1", 0, z_ref, phase="final")
+
+    assert moves == pytest.approx([z_mid + 0.010, z_mid + 0.012, z_mid + 0.014, z_ref])
+
+
+def test_stack_channels_are_grouped_by_camera_settings_into_separate_stores(tmp_path):
+    """Rows with different binning / crop / pixel format can't share a (T, C, Z, Y, X) store: one store
+    per group, under an extra <group> directory, only in a phase that has more than one group."""
+    pytest.importorskip("tensorstore")
+    import tensorstore as tstore
+
+    binned = CameraGeometry(binning=2)
+    scope, live_controller, channels, worker, aborted = _build_plan_worker(
+        tmp_path,
+        lambda ch: [
+            ChannelPlan(channel=ch[0], zi=True),
+            ChannelPlan(channel=ch[1], zi=True, zf=True, geometry=binned),
+            ChannelPlan(channel=ch[2], zi=True),
+        ],
+    )
+    from control.core.camera_geometry import resolve, snapshot_camera
+
+    # A group's directory names its resolved settings: the run-start ROI for rows that pin nothing
+    # ("roi"), and that ROI scaled to the new binning for a row that only pins binning.
+    snapshot = snapshot_camera(scope.camera)
+    fmt = snapshot.pixel_format.lower()
+    native = f"bin1_roi_{fmt}"
+    half = f"bin2_{snapshot.roi[2] // 2}x{snapshot.roi[3] // 2}_{fmt}"
+    assert resolve(binned, snapshot).dir_name() == half
+    assert [(g.subdir.replace(os.sep, "/"), [c.name for c in g.channels]) for g in worker._zi_groups] == [
+        (f"zstack_initial/{native}", [channels[0].name, channels[2].name]),  # in order of first appearance
+        (f"zstack_initial/{half}", [channels[1].name]),
+    ]
+    assert [(g.subdir, [c.name for c in g.channels]) for g in worker._zf_groups] == [
+        ("zstack_final", [channels[1].name])  # a single group keeps the plain layout
+    ]
+    # The binned group's pixels are twice the size.
+    assert worker._zi_groups[1].info.pixel_size_um == pytest.approx(2 * worker._zi_groups[0].info.pixel_size_um)
+
+    worker.run()
+
+    assert not aborted["v"] and worker.end_reason == "completed"
+    base = Path(worker.experiment_path)
+    assert _stack_dirs(base, "initial") == [
+        f"zstack_initial/{native}/zarr/A1/fov_0.ome.zarr",
+        f"zstack_initial/{half}/zarr/A1/fov_0.ome.zarr",
+    ]
+    assert _stack_dirs(base, "final") == ["zstack_final/zarr/A1/fov_0.ome.zarr"]
+
+    def shape(store):
+        spec = {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(base / store / "0")}}
+        return tuple(tstore.open(spec).result().shape)
+
+    assert shape(f"zstack_initial/{native}/zarr/A1/fov_0.ome.zarr") == (1, 2, 2, 48, 64)
+    assert shape(f"zstack_initial/{half}/zarr/A1/fov_0.ome.zarr") == (1, 1, 2, 24, 32)
+    assert shape("zstack_final/zarr/A1/fov_0.ome.zarr") == (1, 1, 2, 24, 32)
+    import tests.control.test_stubs as ts
+
+    assert all(attrs["acquisition_complete"] is True for attrs in ts.zarr_squid_attrs(base))
+
+
+@pytest.mark.parametrize("outcome", ["completed", "aborted", "failed"])
+def test_camera_settings_are_restored_after_the_run(tmp_path, outcome):
+    """A row's binning / crop / pixel format are applied for that row only; the camera is back the way
+    the user had it when the run ends, however it ends."""
+    pytest.importorskip("tensorstore")
+    from control.core.camera_geometry import snapshot_camera
+
+    pinned = CameraGeometry(binning=2, crop_w=16, crop_h=16)
+    scope, live_controller, channels, worker, aborted = _build_plan_worker(
+        tmp_path,
+        lambda ch: [
+            ChannelPlan(channel=ch[0], fps=10.0, duration_s=0.2, r=True, geometry=pinned),
+            ChannelPlan(channel=ch[1], zf=True),
+        ],
+    )
+    before = snapshot_camera(scope.camera)
+    live_controller.set_microscope_mode(channels[2])  # what the user was looking at
+    seen = []
+    real = worker._record_one_plane
+
+    def record_one_plane(*args, **kwargs):
+        seen.append(snapshot_camera(scope.camera))
+        if outcome == "failed":
+            raise RuntimeError("simulated write failure")
+        emitted = real(*args, **kwargs)
+        if outcome == "aborted":
+            aborted["v"] = True
+        return emitted
+
+    worker._record_one_plane = record_one_plane
+
+    worker.run()
+
+    assert seen and seen[0].binning == (2, 2) and seen[0].roi[2:] == (16, 16)  # the row did get its settings
+    assert snapshot_camera(scope.camera) == before
+    assert live_controller.currentConfiguration.name == channels[2].name
+    assert worker.end_reason == {"completed": "completed", "aborted": "user_abort", "failed": "error"}[outcome]
+    if outcome != "failed":
+        (store,) = (Path(worker.experiment_path) / "recording").rglob("*.ome.zarr")
+        attrs = _recording_attrs(store)
+        # Sized from a frame delivered at the row's settings.  (The simulated camera bins its frames
+        # but does not crop them to the hardware ROI, so the crop shows in the ROI readback above.)
+        assert attrs["shape"][3:] == [24, 32]
+        assert attrs["pixel_size_um"] == pytest.approx(2 * worker._pixel_size_um)
+    if outcome == "completed":
+        # The stack row inherits the user's settings, so its store has the full frame.
+        assert _stack_dirs(worker.experiment_path, "final") == ["zstack_final/zarr/A1/fov_0.ome.zarr"]
+        assert _zstack_squid_attrs(Path(worker.experiment_path) / "zstack_final")["shape"][3:] == [48, 64]
+
+
+def test_a_row_with_its_own_camera_settings_resolves_its_rate_once_the_camera_is_in_them(tmp_path, monkeypatch):
+    """get_max_frame_rate answers for the camera's current geometry, so such a row cannot be resolved
+    before the run; the worker asks when the row first records, with the row's settings applied."""
+    pytest.importorskip("tensorstore")
+    pinned = CameraGeometry(binning=2)
+    scope, live_controller, channels, worker, aborted = _build_plan_worker(
+        tmp_path, lambda ch: [ChannelPlan(channel=ch[0], fps=30.0, duration_s=0.5, r=True, geometry=pinned)]
+    )
+    asked_at = []
+
+    def max_rate(self, exposure_time_ms=None):
+        asked_at.append(tuple(self.get_binning()))
+        return 12.0 if tuple(self.get_binning()) == (2, 2) else 1000.0
+
+    monkeypatch.setattr(type(scope.camera), "get_max_frame_rate", max_rate)
+    worker.run()
+    assert not aborted["v"]
+    assert (2, 2) in asked_at
+    (store,) = (Path(worker.experiment_path) / "recording").rglob("*.ome.zarr")
+    attrs = _recording_attrs(store)
+    assert attrs["requested_fps"] == 30.0 and attrs["effective_fps"] == pytest.approx(12.0)
+    assert attrs["shape"][0] == 6
+
+
+class _FakeLaserAF:
+    def __init__(self, ok=True, has_reference=True):
+        from types import SimpleNamespace
+
+        self.laser_af_properties = SimpleNamespace(has_reference=has_reference)
+        self.ok = ok
+        self.calls = []
+
+    def move_to_target(self, target_um):
+        self.calls.append(("move_to_target", target_um))
+        if isinstance(self.ok, Exception):
+            raise self.ok
+        return self.ok
+
+    def apply_relative_offset_um(self, offset_um):
+        self.calls.append(("offset", offset_um))
+
+
+def test_laser_af_reference_applies_the_regions_offset(tmp_path):
+    """Laser AF to the reference, then the region's captured offset as a relative move (the multipoint rule)."""
+    scope, live_controller, channels, worker, aborted = _build_plan_worker(
+        tmp_path,
+        lambda ch: [ChannelPlan(channel=ch[0], zf=True)],
+        use_laser_af=True,
+        param_fields={"region_laser_af_offsets": {"A1": 1.5}},
+    )
+    worker.laser_af = _FakeLaserAF()
+    z = worker.establish_reference("A1")
+    assert worker.laser_af.calls == [("move_to_target", 0.0), ("offset", 1.5)]
+    assert z == pytest.approx(scope.stage.get_pos().z_mm)
+    worker.laser_af.calls.clear()
+    worker.establish_reference("B7")  # no offset captured for this region
+    assert worker.laser_af.calls == [("move_to_target", 0.0)]
+    assert worker.laser_af_fallbacks == 0
+
+
+@pytest.mark.parametrize("failure", [False, RuntimeError("no spot")])
+def test_laser_af_failure_falls_back_to_the_current_z_and_is_counted(tmp_path, failure, caplog):
+    import logging
+
+    scope, live_controller, channels, worker, aborted = _build_plan_worker(
+        tmp_path,
+        lambda ch: [ChannelPlan(channel=ch[0], zf=True)],
+        use_laser_af=True,
+        param_fields={"region_laser_af_offsets": {"A1": 1.5}},
+    )
+    worker.laser_af = _FakeLaserAF(ok=failure)
+    worker.zstack = lambda *args, **kwargs: None
+    with caplog.at_level(logging.WARNING):
+        worker.run()
+    assert worker.laser_af.calls == [("move_to_target", 0.0)]  # no offset from an unanchored z
+    assert worker.laser_af_fallbacks == 1
+    assert any("fell back to the current Z at 1 FOV visit" in r.getMessage() for r in caplog.records)
+    assert worker.end_reason == "completed"
+
+
+def test_laser_af_without_a_reference_is_not_attempted(tmp_path):
+    scope, live_controller, channels, worker, aborted = _build_plan_worker(
+        tmp_path, lambda ch: [ChannelPlan(channel=ch[0], zf=True)], use_laser_af=True
+    )
+    worker.laser_af = _FakeLaserAF(has_reference=False)
+    worker.establish_reference("A1")
+    assert worker.laser_af.calls == []
+
+
+class _FakeContrastAF:
+    def __init__(self, camera):
+        self.camera = camera
+        self.calls = []
+
+    def autofocus(self, focus_map_override=False):
+        self.calls.append(("autofocus", focus_map_override, self.camera.get_is_streaming()))
+
+    def wait_till_autofocus_has_completed(self):
+        self.calls.append(("wait",))
+
+
+@pytest.mark.parametrize(
+    "zstack, use_laser_af, runs",
+    [
+        (ZStackPlan(nz=1), False, True),
+        (ZStackPlan(mode="Relative", dz_um=1.0, z_range_um=2.0), False, True),
+        (ZStackPlan(nz=3, dz_um=1.0), False, False),  # only with one plane or a centred stack
+        (ZStackPlan(nz=1), True, False),  # laser AF takes precedence
+    ],
+)
+def test_contrast_af_runs_only_when_it_applies(tmp_path, zstack, use_laser_af, runs):
+    import control._def
+    from control._def import TriggerMode
+
+    scope, live_controller, laser_af, channels, fov = _build_simulated_setup()
+    contrast_af = _FakeContrastAF(scope.camera)
+    scope, live_controller, channels, worker, aborted = _build_plan_worker(
+        tmp_path,
+        lambda ch: [ChannelPlan(channel=ch[1], zf=True)],
+        zstack=zstack,
+        use_contrast_af=True,
+        use_laser_af=use_laser_af,
+        auto_focus_controller=None,
+    )
+    contrast_af.camera = scope.camera
+    worker.autofocusController = contrast_af
+    worker.laser_af = _FakeLaserAF()
+    live_controller.set_trigger_mode(TriggerMode.CONTINUOUS)
+
+    worker.establish_reference("A1")
+
+    if runs:
+        # The sweep runs on the AF channel, software-triggered, with the camera streaming; stopped again after.
+        assert contrast_af.calls == [("autofocus", True, True), ("wait",)]
+        assert live_controller.trigger_mode == TriggerMode.SOFTWARE
+        assert live_controller.currentConfiguration.name == control._def.MULTIPOINT_AUTOFOCUS_CHANNEL
+        assert not scope.camera.get_is_streaming()
+    else:
+        assert contrast_af.calls == []
+
+
+def test_focus_map_z_is_put_into_the_fov_coordinates():
+    """Use Focus Map: every FOV gets the fitted surface's z; a region the map does not know falls back
+    to the global surface, and a FOV the map cannot answer for keeps its own coordinate."""
+    scope, live_controller, channels, controller = _build_controller_harness()
+
+    class _Map:
+        def interpolate(self, x, y, region_id=None):
+            if region_id == "current":
+                raise ValueError("no fit for this region")
+            if x > 100:
+                raise RuntimeError("outside the fitted area")
+            return 1.0 + 0.1 * x + (0.5 if region_id == "A1" else 0.0)
+
+    coords = {"A1": [(1.0, 2.0), (2.0, 2.0, 9.9)], "current": [(3.0, 2.0)], "far": [(500.0, 2.0, 0.7)]}
+    out = controller._apply_focus_map(_Map(), coords)
+
+    assert out["A1"] == [(1.0, 2.0, pytest.approx(1.6)), (2.0, 2.0, pytest.approx(1.7))]
+    assert out["current"] == [(3.0, 2.0, pytest.approx(1.3))]  # the global surface
+    assert out["far"] == [(500.0, 2.0, 0.7)]
+    # Only the acquisition's own copy is rewritten: what was passed in is untouched.
+    assert coords["A1"] == [(1.0, 2.0), (2.0, 2.0, 9.9)]
+    controller.close()
+
+
+def test_run_acquisition_moves_each_fov_to_the_focus_map_z(tmp_path):
+    pytest.importorskip("tensorstore")
+    scope, live_controller, channels, controller = _build_controller_harness()
+    z_mid = scope.stage.get_pos().z_mm
+
+    class _Map:
+        def interpolate(self, x, y, region_id=None):
+            return z_mid + 0.02
+
+    params = RecordZStackAcquisitionParameters(
+        base_path=str(tmp_path),
+        experiment_id="focus_map",
+        use_focus_map=True,
+        focus_map=_Map(),
+        channels=[ChannelPlan(channel=channels[0], zf=True)],
+    )
+    z_moves = []
+    real_move_z_to = scope.stage.move_z_to
+    scope.stage.move_z_to = lambda z_mm, *a, **kw: z_moves.append(z_mm) or real_move_z_to(z_mm, *a, **kw)
+    try:
+        controller.run_acquisition(params)
+        controller.join(timeout=120)
+    finally:
+        controller.close()
+    assert controller.last_end_reason == "completed"
+    assert z_moves[0] == pytest.approx(z_mid + 0.02)  # the surface z, before the reference is taken
+
+
+def test_frame_rate_test_measures_the_free_run_rate_and_puts_the_camera_back():
+    """Test FR: stream the channel free-run at the row's camera settings, report what was delivered,
+    and restore the camera's settings, acquisition mode and channel."""
+    from control.core.camera_geometry import snapshot_camera
+    from squid.abc import CameraAcquisitionMode
+
+    scope, live_controller, channels, controller = _build_controller_harness()
+    live_controller.set_microscope_mode(channels[1])
+    scope.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+    before = snapshot_camera(scope.camera)
+    channel = channels[0].model_copy(deep=True)
+    channel.exposure_time = 5.0
+    results = []
+
+    controller.run_frame_rate_test(channel, 0.5, on_finished=results.append, geometry=CameraGeometry(binning=2))
+    assert controller.frame_rate_test_in_progress()
+    with pytest.raises(RuntimeError, match="already running"):
+        controller.run_frame_rate_test(channel, 0.5, on_finished=results.append)
+    controller._fps_test_thread.join(timeout=30)
+
+    (result,) = results
+    assert result.error is None and result.channel_name == channel.name
+    assert (result.exposure_ms, result.duration_s) == (5.0, 0.5)
+    assert result.frame_count > 5 and result.mean_fps > 10 and 0 < result.min_fps <= result.mean_fps * 1.01
+    # The rate the camera reported for the absurd request, read with the stream running.
+    assert result.requested_fps == pytest.approx(scope.camera.get_max_frame_rate(5.0), rel=0.05)
+    assert "fps (min" in result.summary()
+    assert snapshot_camera(scope.camera) == before
+    assert scope.camera.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER
+    assert not scope.camera.get_is_streaming()
+    assert live_controller.currentConfiguration.name == channels[1].name
+    controller.close()
+
+
+def test_frame_rate_test_is_refused_while_acquiring(monkeypatch):
+    scope, live_controller, channels, controller = _build_controller_harness()
+    monkeypatch.setattr(controller, "acquisition_in_progress", lambda: True)
+    with pytest.raises(RuntimeError, match="acquisition is running"):
+        controller.run_frame_rate_test(channels[0], 0.5, on_finished=lambda result: None)
+    controller.close()
