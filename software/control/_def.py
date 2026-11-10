@@ -961,6 +961,11 @@ USE_OVERLAP_FOR_FLEXIBLE = True
 ENABLE_WELLPLATE_MULTIPOINT = True
 ENABLE_RECORDING = False
 
+# Smart acquisition: let image analysis of a completed survey choose the next set of stage coordinates
+# (survey at low magnification, image the detected targets at high magnification).
+# See docs/smart-acquisition.md.
+ENABLE_SMART_ACQUISITION = False
+
 # Throttled live preview during Record + Z-Stack acquisitions: frames/s shown in
 # the live display during the recording phase. When preview is enabled, z-stack
 # planes display unthrottled (like multipoint). 0 disables the preview for both

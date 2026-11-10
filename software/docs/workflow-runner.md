@@ -2,8 +2,6 @@
 
 The Workflow Runner allows you to automate sequences of external scripts and acquisitions. This is useful for integrating Squid with external hardware such as liquid handling systems, fluidics controllers, or robotic arms.
 
-Fluidics rounds on the integrated fluidics system are run by the protocol runner (see [fluidics-protocol.md](fluidics-protocol.md)), not by workflow scripts.
-
 ## Accessing the Workflow Runner
 
 Open the Workflow Runner from the menu: **Utils > Workflow Runner**
@@ -61,10 +59,65 @@ If both Python Path and Conda Env are left empty, the script runs with the same 
 Fill in the dialog:
 - **Name**: A descriptive name (e.g., "Brightfield Scan")
 - **Config File** (optional): Path to an `acquisition.yaml` file
+- **Use the targets from the Analyze step** (optional): run whatever the most recent
+  [Analyze sequence](#analyze-sequences) produced; the config becomes `{last_targets}`
+- **Wells** (optional): a typed well list such as `C5, C6, D5`, which replaces the wells
+  stored in a wellplate config file (the file's scan size and overlap still apply)
 
-If no config file is specified, the acquisition uses the current GUI settings. If a config file is provided, settings are loaded from that file before starting the acquisition.
+If no config file is specified, the acquisition uses the current GUI settings of the current
+tab. If a config file is provided, **the file chooses the tab**: a `wellplate` file runs in
+Wellplate Multipoint, a `flexible` file in Flexible Multipoint and a `record_zstack` file in
+Time at XY, whichever tab was focused. Settings are loaded from the file before starting.
 
-**Note**: Config file loading requires the Wellplate or Flexible Multipoint tab. If using a tab that doesn't support YAML loading, either switch tabs or leave the config file empty.
+When a workflow runs, nothing asks for confirmation: a config that cannot be loaded (hardware
+mismatch, wells not on the plate, missing saving directory, laser AF requested without a
+reference) fails the step with the reason in the log instead of showing a dialog, and the
+time-lapse pacing and disk-space dialogs are skipped.
+
+### Objective Sequences
+
+- **Objective**: the objective to switch to (rotates the turret when the machine has one)
+- **Require a laser-AF reference**: fail the step unless a laser-AF reference is stored for
+  that objective (`user_profiles/<profile>/laser_af_configs/<objective>.yaml`)
+
+Switching reloads that objective's laser-AF reference, exactly as choosing it in the Objective
+Lens dropdown does. If the objective is already selected nothing moves, but the reference is
+still checked. A failed objective step always stops the workflow.
+
+### Analyze Sequences
+
+Turns the acquisition that ran before it into a new set of stage coordinates and writes a
+runnable `acquisition.yaml` (see [Smart Acquisition](smart-acquisition.md)):
+
+- **Analyzer** and **Parameters** (`key = value` lines; the analyzer's main parameters are
+  pre-filled)
+- **Template**: the follow-up run's `acquisition.yaml` (channels, recording, time series come
+  from here; only the coordinates are new)
+- **Survey** (optional): analyse this folder instead of the previous acquisition of the run
+- **Output** (optional): where to write; default `<survey>/smart_targets`
+- **Objective offset** dx, dy, dz in mm: follow-up position = survey position + offset
+- **Carry survey Z** (+ dz), **Sweep z-stack**, **Write overlays**
+
+The step runs inside Squid (no script, no conda environment). A survey in which nothing is
+found fails the step, which always stops the workflow; the overlays are still written for
+inspection. The path of the emitted `acquisition.yaml` is available to later acquisition
+sequences as `{last_targets}` and to scripts as `SQUID_LAST_TARGETS_PATH`.
+
+### Stop at the first failed step
+
+The checkbox next to **Cycles**. Without it a failed script or acquisition is logged and the
+next sequence still runs (the original behaviour). Objective and Analyze sequences stop the
+workflow when they fail whatever the setting, since nothing after them could be right.
+
+### New Smart Ring Workflow...
+
+Builds the survey -> analyze -> switch objective -> image-every-target recipe from six
+inputs (wells, survey `acquisition.yaml`, survey objective, follow-up `acquisition.yaml`,
+follow-up objective, objective offset). The five sequences land in the table with stop on
+failure set; Save the workflow, then Run. The dialog shows whether each objective has a
+laser-AF reference and warns about a survey file recorded with a different objective, and
+about a Time at XY template that ticks Use Focus Map, uses Set Range planes or has Laser AF
+unticked (see [Smart Acquisition](smart-acquisition.md), "Making the Time at XY template").
 
 ## Using Cycle Arguments
 
@@ -163,6 +216,32 @@ Scripts should:
 1. Accept command-line arguments (use `argparse`)
 2. Exit with code 0 on success, non-zero on failure
 3. Print status messages to stdout (displayed in the log)
+
+### Environment variables
+
+Every script sequence receives two environment variables:
+
+| Variable | Meaning |
+|----------|---------|
+| `SQUID_LAST_ACQUISITION_PATH` | Folder of the most recent acquisition in this workflow run (empty if none yet) |
+| `SQUID_LAST_TARGETS_PATH` | `acquisition.yaml` written by the most recent Analyze sequence (empty if none yet) |
+| `SQUID_CYCLE` | The current cycle number |
+
+This is how a script acts on data that was just acquired without anyone pasting a
+timestamped path into the workflow. They are passed through the environment
+rather than appended to **Arguments** because arguments are parsed with
+`shlex.split`, which eats the backslashes in a Windows path and splits it on
+spaces.
+
+```python
+import os
+acquisition = os.environ.get("SQUID_LAST_ACQUISITION_PATH")
+if not acquisition:
+    raise SystemExit("no acquisition to analyse yet")
+```
+
+See [Smart Acquisition](smart-acquisition.md) for a worked
+`Acquisition -> Analyze -> Acquisition` workflow built on this.
 
 **Example script**:
 

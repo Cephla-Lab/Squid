@@ -26,6 +26,16 @@ import numpy as np
 import serial
 
 
+def _accepts_keyword(func, name: str) -> bool:
+    """Whether *func* takes a keyword argument called *name* (tabs may predate an argument)."""
+    import inspect
+
+    try:
+        return name in inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 class NDViewerMode(Enum):
     """NDViewer acquisition mode for tracking active viewer state."""
 
@@ -752,6 +762,8 @@ class HighContentScreeningGui(QMainWindow):
         self.slackSettingsDialog: Optional[SlackSettingsDialog] = None
         self.workflowRunnerDialog = None
         self.workflowRunner = None
+        self._workflow_active_widget = None  # the tab the workflow's last acquisition step ran in
+        self.smartAcquisitionWidget = None  # widgets_smart.SmartAcquisitionWidget when ENABLE_SMART_ACQUISITION
 
         # Load Slack settings from cache
         load_slack_settings_from_cache()
@@ -1240,6 +1252,9 @@ class HighContentScreeningGui(QMainWindow):
         if self.fluidics is not None:
             self._setup_fluidics_widgets()
 
+        if ENABLE_SMART_ACQUISITION:
+            self._setup_smart_acquisition_widget()
+
         self.setupRecordTabWidget()
         self.setupCameraTabWidget()
 
@@ -1395,6 +1410,17 @@ class HighContentScreeningGui(QMainWindow):
 
             self.imageDisplayTabs.addTab(laserfocus_dockArea, self.LASER_BASED_FOCUS_TAB_NAME)
 
+    def _setup_smart_acquisition_widget(self):
+        """Build the smart acquisition tab (analysis-driven stage coordinates)."""
+        from control import widgets_smart
+
+        self.smartAcquisitionWidget = widgets_smart.SmartAcquisitionWidget(
+            multipointController=self.multipointController,
+            flexibleMultiPointWidget=self.flexibleMultiPointWidget if ENABLE_FLEXIBLE_MULTIPOINT else None,
+            tab_widget=self.recordTabWidget,
+            recordZStackWidget=self.recordZStackWidget if ENABLE_RECORDING else None,
+        )
+
     def setupRecordTabWidget(self):
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.recordTabWidget.addTab(self.wellplateMultiPointWidget, "Wellplate Multipoint")
@@ -1408,6 +1434,8 @@ class HighContentScreeningGui(QMainWindow):
             self.recordTabWidget.addTab(self.trackingControlWidget, "Tracking")
         if ENABLE_RECORDING:
             self.recordTabWidget.addTab(self.recordZStackWidget, "Record + Z-Stack")
+        if self.smartAcquisitionWidget is not None:
+            self.recordTabWidget.addTab(self.smartAcquisitionWidget, "Smart Acquisition")
         self.recordTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.recordTabWidget))
         self.resizeCurrentTab(self.recordTabWidget)
 
@@ -2231,7 +2259,13 @@ class HighContentScreeningGui(QMainWindow):
         from control.workflow_runner import WorkflowRunner
 
         if self.workflowRunnerDialog is None:
-            self.workflowRunnerDialog = WorkflowRunnerDialog(parent=self)
+            self.workflowRunnerDialog = WorkflowRunnerDialog(
+                parent=self,
+                objective_names=list(self.objectiveStore.objectives_dict.keys()),
+                laser_af_reference_status=self._laser_af_reference_status,
+                camera_binning=self._camera_binning,
+                camera_image_size=self._camera_image_size,
+            )
             self.workflowRunnerDialog.signal_run_workflow.connect(self._start_workflow)
             self.workflowRunnerDialog.signal_pause_workflow.connect(self._pause_workflow)
             self.workflowRunnerDialog.signal_resume_workflow.connect(self._resume_workflow)
@@ -2268,7 +2302,13 @@ class HighContentScreeningGui(QMainWindow):
             )
 
     def _get_actual_acquisition_path(self) -> str:
-        """Get the actual acquisition path (base_path + experiment_ID with timestamp)."""
+        """Get the actual acquisition path (base_path + experiment_ID with timestamp).
+
+        The Record + Z-Stack tab has its own controller, so the answer depends on
+        which tab the workflow last started an acquisition in.
+        """
+        if self._workflow_used_record_tab():
+            return getattr(self.recordZStackController, "last_experiment_path", None)
         if hasattr(self, "multipointController") and self.multipointController:
             base = self.multipointController.base_path
             exp_id = self.multipointController.experiment_ID
@@ -2276,27 +2316,106 @@ class HighContentScreeningGui(QMainWindow):
                 return os.path.join(base, exp_id)
         return None
 
+    def _get_last_acquisition_end_reason(self) -> Optional[str]:
+        """How the workflow's last acquisition ended, from whichever controller ran it."""
+        if self._workflow_used_record_tab():
+            return getattr(self.recordZStackController, "last_end_reason", None)
+        return getattr(self.multipointController, "last_end_reason", None)
+
+    def _workflow_used_record_tab(self) -> bool:
+        widget = getattr(self, "_workflow_active_widget", None)
+        record_widget = getattr(self, "recordZStackWidget", None)
+        return widget is not None and record_widget is not None and widget is record_widget
+
+    def _laser_af_reference_status(self, objective: str) -> Optional[bool]:
+        """Whether a laser-AF reference is stored for *objective* (None when laser AF is unsupported)."""
+        if not SUPPORT_LASER_AUTOFOCUS:
+            return None
+        try:
+            config = self.microscope.config_repo.get_laser_af_config(objective)
+        except Exception as e:
+            self.log.warning(f"Could not read the laser AF config for {objective}: {e}")
+            return False
+        return bool(config is not None and getattr(config, "has_reference", False))
+
+    def _camera_binning(self) -> Optional[Tuple[int, int]]:
+        """The camera's binning now (the Camera tab's), or None when it cannot be read."""
+        try:
+            return tuple(self.camera.get_binning())
+        except Exception as e:
+            self.log.warning(f"Could not read the camera binning: {e}")
+            return None
+
+    def _camera_image_size(self) -> Optional[Tuple[int, int]]:
+        """The camera's frame size after the Camera tab's crop now, or None when it cannot be read."""
+        try:
+            _x, _y, width, height = (int(v) for v in self.camera.get_region_of_interest())
+        except Exception as e:
+            self.log.warning(f"Could not read the camera ROI: {e}")
+            return None
+        try:
+            crop_width, crop_height = self.camera.get_crop_size()
+        except Exception:
+            crop_width = crop_height = None
+        # The software crop is centred and only ever makes the frame smaller.
+        if crop_width:
+            width = min(width, int(crop_width))
+        if crop_height:
+            height = min(height, int(crop_height))
+        return width, height
+
+    def _acquisition_widget_for_type(self, widget_type: str):
+        """The record tab that runs acquisition.yaml files of *widget_type*, or None."""
+        widget_type = (widget_type or "").lower()
+        if widget_type == "wellplate" and ENABLE_WELLPLATE_MULTIPOINT:
+            return self.wellplateMultiPointWidget
+        if widget_type == "flexible" and ENABLE_FLEXIBLE_MULTIPOINT:
+            return self.flexibleMultiPointWidget
+        if widget_type == "record_zstack" and getattr(self, "recordZStackWidget", None) is not None:
+            return self.recordZStackWidget
+        return None
+
+    def _preflight_workflow(self, workflow) -> List[str]:
+        """Everything about *workflow* that can be checked before it starts. Returns errors."""
+        from control.acquisition_yaml_loader import parse_acquisition_yaml
+
+        errors = list(workflow.validate())
+        for seq in workflow.get_included_sequences():
+            prefix = f"Sequence '{seq.name}':"
+            if seq.is_acquisition():
+                if seq.uses_last_targets():
+                    continue  # the analyze step decides the type; checked when it runs
+                if seq.config_path:
+                    try:
+                        widget_type = parse_acquisition_yaml(seq.config_path).widget_type
+                    except Exception as e:
+                        errors.append(f"{prefix} cannot read {seq.config_path}: {e}")
+                        continue
+                    if self._acquisition_widget_for_type(widget_type) is None:
+                        errors.append(f"{prefix} no '{widget_type}' acquisition tab is enabled in this build")
+                elif self._first_acquisition_tab() is None:
+                    errors.append(f"{prefix} no acquisition tab is available")
+            elif seq.is_objective():
+                if seq.objective not in self.objectiveStore.objectives_dict:
+                    errors.append(f"{prefix} objective '{seq.objective}' is not in the objective list")
+                if seq.require_laser_af_reference and not SUPPORT_LASER_AUTOFOCUS:
+                    errors.append(f"{prefix} laser AF is not supported here; untick 'require laser AF reference'")
+        return errors
+
     def _start_workflow(self, workflow):
         """Start executing a workflow."""
         from control.workflow_runner import WorkflowRunner
 
-        # Validate: if any acquisition has config_path, current widget must support YAML loading
-        has_config_path = any(seq.is_acquisition() and seq.config_path for seq in workflow.get_included_sequences())
-        if has_config_path:
-            widget = self.recordTabWidget.currentWidget()
-            if not hasattr(widget, "_load_acquisition_yaml"):
-                from qtpy.QtWidgets import QMessageBox
+        # Config files pick their own tab (by widget_type), so the only things to
+        # check up front are the ones that would fail every time: missing files,
+        # unknown objectives, a tab this build does not have.
+        errors = self._preflight_workflow(workflow)
+        if errors:
+            from qtpy.QtWidgets import QMessageBox
 
-                QMessageBox.warning(
-                    self,
-                    "Incompatible Tab",
-                    f"This workflow has acquisition sequences with config files, but the current "
-                    f"tab ({type(widget).__name__}) does not support loading YAML settings.\n\n"
-                    f"Either:\n"
-                    f"• Switch to Wellplate or Flexible Multipoint tab, or\n"
-                    f"• Edit the acquisition sequences to remove config file paths",
-                )
-                return
+            QMessageBox.warning(self, "Workflow Cannot Start", "\n".join(errors))
+            return
+        self._workflow_active_widget = None
 
         # Create runner if needed
         if self.workflowRunner is None:
@@ -2308,13 +2427,19 @@ class HighContentScreeningGui(QMainWindow):
             self.workflowRunner.signal_sequence_started.connect(self._on_sequence_started)
             self.workflowRunner.signal_sequence_finished.connect(self._on_sequence_finished)
             self.workflowRunner.signal_request_acquisition.connect(self._run_acquisition_for_workflow)
+            self.workflowRunner.signal_request_objective.connect(self._switch_objective_for_workflow)
+            self.objectivesWidget.signal_unattended_switch_finished.connect(self._on_workflow_objective_switched)
             self.workflowRunner.signal_error.connect(self._on_workflow_error)
             self.workflowRunner.signal_script_output.connect(self._on_script_output)
             # Connect acquisition finished signal (permanent connection)
             self.multipointController.acquisition_finished.connect(self.workflowRunner.on_acquisition_finished)
+            # The Record + Z-Stack tab has its own controller and its own signal.
+            if getattr(self, "recordZStackController", None) is not None:
+                self.recordZStackController.acquisition_finished.connect(self.workflowRunner.on_acquisition_finished)
 
         self.workflowRunner.set_workflow(workflow)
         self.workflowRunner.set_acquisition_path_getter(self._get_actual_acquisition_path)
+        self.workflowRunner.set_acquisition_result_getter(self._get_last_acquisition_end_reason)
 
         # Enable running state immediately (before thread starts)
         # This ensures Pause/Stop buttons are enabled right away
@@ -2543,36 +2668,125 @@ class HighContentScreeningGui(QMainWindow):
             if widget:
                 widget.setEnabled(enabled)
 
-        # Disable tab switching and current tab content
+        # Disable tab switching and every record tab: a workflow may switch tabs
+        # between acquisitions, and the tab it left must not stay disabled.
         record_tab = getattr(self, "recordTabWidget", None)
         if record_tab:
             record_tab.tabBar().setEnabled(enabled)
-            current_widget = record_tab.currentWidget()
-            if current_widget:
-                current_widget.setEnabled(enabled)
+            for tab_index in range(record_tab.count()):
+                record_tab.widget(tab_index).setEnabled(enabled)
 
     def _fail_workflow_acquisition(self, error_msg: str):
-        """Fail the current workflow acquisition step with an error."""
+        """Fail the current workflow acquisition step with an error (the step, not just a log line)."""
         self.log.error(error_msg)
         if self.workflowRunner:
-            self.workflowRunner.signal_error.emit(error_msg)
-            self.workflowRunner.on_acquisition_finished()
+            self.workflowRunner.on_acquisition_failed(error_msg)
 
-    def _run_acquisition_for_workflow(self, config_path: str = ""):
+    def _switch_objective_for_workflow(self, objective_name: str, require_reference: bool):
+        """Workflow objective step: switch (moving the changer), then check the laser-AF reference.
+
+        The changer moves off the GUI thread, so the answer to the runner comes from
+        _on_workflow_objective_switched once ObjectivesWidget reports the switch ended.
+        """
+        self._workflow_objective_request = (objective_name, bool(require_reference))
+        try:
+            self.objectivesWidget.select_objective_unattended(objective_name)
+        except Exception as e:
+            self._workflow_objective_request = None
+            self.log.exception("Workflow objective step failed")
+            self.workflowRunner.on_objective_finished(False, str(e))
+
+    def _on_workflow_objective_switched(self, success: bool, message: str):
+        request = getattr(self, "_workflow_objective_request", None)
+        self._workflow_objective_request = None
+        if request is None or self.workflowRunner is None:
+            return
+        objective_name, require_reference = request
+        if success and require_reference:
+            # signal_objective_changed has already reloaded this objective's laser-AF config.
+            controller = getattr(self, "laserAutofocusController", None) if SUPPORT_LASER_AUTOFOCUS else None
+            if controller is None:
+                success = False
+                message = "laser AF is not available; untick 'require laser AF reference' on the objective step"
+            elif not getattr(getattr(controller, "laser_af_properties", None), "has_reference", False):
+                success = False
+                message = (
+                    f"no laser AF reference for '{objective_name}'. Set one in the Laser-Based Focus tab "
+                    f"(stored as user_profiles/<profile>/laser_af_configs/{objective_name}.yaml)"
+                )
+            else:
+                message += ", laser AF reference present"
+        if success:
+            self.log.info(f"Workflow objective step: {message}")
+        else:
+            self.log.error(f"Workflow objective step failed: {message}")
+        self.workflowRunner.on_objective_finished(success, message)
+
+    def _run_acquisition_for_workflow(self, request=""):
         """Called by workflow runner to start acquisition.
 
         Args:
-            config_path: Optional path to acquisition.yaml file. If provided,
-                        settings are loaded from the file before starting acquisition.
+            request: an AcquisitionRequest (config_path + wells); a bare config
+                path string is accepted for compatibility.
         """
-        self.log.info(f"Workflow requesting acquisition start (config_path={config_path or 'None'})")
-        widget = self.recordTabWidget.currentWidget()
+        from control.acquisition_yaml_loader import parse_acquisition_yaml
 
-        # Check if current tab supports acquisition
+        config_path = getattr(request, "config_path", request) or ""
+        wells = list(getattr(request, "wells", None) or [])
+        step_name = str(getattr(request, "name", "") or "")
+        save_dir = str(getattr(request, "save_dir", "") or "").strip()
+        self.log.info(f"Workflow requesting acquisition start (config_path={config_path or 'None'}, wells={wells})")
+
+        yaml_data = None
+        if config_path:
+            # The file decides which tab runs it.
+            try:
+                yaml_data = parse_acquisition_yaml(config_path)
+            except Exception as e:
+                self._fail_workflow_acquisition(f"Cannot read '{config_path}': {e}")
+                return
+            widget = self._acquisition_widget_for_type(yaml_data.widget_type)
+            if widget is None:
+                self._fail_workflow_acquisition(
+                    f"No '{yaml_data.widget_type}' acquisition tab is enabled in this build (for '{config_path}')"
+                )
+                return
+            if self.recordTabWidget.currentWidget() is not widget:
+                self.log.info(f"Switching to the {yaml_data.widget_type} tab for the workflow acquisition.")
+                self.recordTabWidget.setCurrentWidget(widget)
+        else:
+            widget = self.recordTabWidget.currentWidget()
+            # The Smart Acquisition tab only generates coordinates; it never runs an
+            # acquisition itself. Leaving it focused should not fail the workflow, so
+            # fall back to a tab that can acquire.
+            if self.smartAcquisitionWidget is not None and widget is self.smartAcquisitionWidget:
+                fallback = self._first_acquisition_tab()
+                if fallback is not None:
+                    self.log.info("Smart Acquisition tab is focused; switching to an acquisition tab for the workflow.")
+                    self.recordTabWidget.setCurrentWidget(fallback)
+                    widget = fallback
+
+        # Check if the tab supports acquisition
         has_acquisition = hasattr(widget, "btn_startAcquisition") and hasattr(widget, "toggle_acquisition")
         if not has_acquisition:
             self._handle_acquisition_tab_error()
             return
+        self._workflow_active_widget = widget
+
+        # The step's own saving folder (the smart-ring wizard's recording folder) replaces the
+        # tab's for this run. The tab's remembered folder (cache/last_saving_path.txt) is untouched.
+        if save_dir:
+            problem = self._set_workflow_save_dir(widget, save_dir)
+            if problem:
+                self._fail_workflow_acquisition(problem)
+                return
+
+        # Unattended pre-checks: fail the step with a reason instead of a dialog.
+        if yaml_data is not None:
+            problem = self._workflow_acquisition_precheck(widget, config_path, yaml_data, wells)
+            if problem:
+                self._fail_workflow_acquisition(problem)
+                return
 
         # Load settings from YAML if provided
         if config_path:
@@ -2583,18 +2797,106 @@ class HighContentScreeningGui(QMainWindow):
                 return
             try:
                 self.log.info(f"Loading acquisition settings from: {config_path}")
-                if not widget._load_acquisition_yaml(config_path):
-                    self._fail_workflow_acquisition(f"Failed to load settings from '{config_path}'")
+                if _accepts_keyword(widget._load_acquisition_yaml, "wells"):
+                    loaded = widget._load_acquisition_yaml(config_path, wells=wells or None, interactive=False)
+                elif wells:
+                    # A tab whose loader predates the wells argument cannot apply one.
+                    self._fail_workflow_acquisition(f"{type(widget).__name__} cannot apply a well list")
+                    return
+                else:
+                    loaded = widget._load_acquisition_yaml(config_path)
+                if not loaded:
+                    self._fail_workflow_acquisition(f"Failed to load settings from '{config_path}' (see the log)")
                     return
             except Exception as e:
                 self._fail_workflow_acquisition(f"Error loading '{config_path}': {e}")
                 return
 
+        # A recipe run names its output folders after the step ("Survey_4x_<timestamp>")
+        # rather than after whatever experiment ID the tab last had.
+        experiment_id = getattr(widget, "lineEdit_experimentID", None)
+        if config_path and step_name and experiment_id is not None:
+            experiment_id.setText(re.sub(r"[^A-Za-z0-9_.-]+", "_", step_name).strip("_") or "workflow")
+
         # Re-enable widget and start acquisition
         widget.setEnabled(True)
         if not widget.btn_startAcquisition.isChecked():
             widget.btn_startAcquisition.setChecked(True)
-            widget.toggle_acquisition(True)
+            if _accepts_keyword(widget.toggle_acquisition, "interactive"):
+                widget.toggle_acquisition(True, interactive=False)
+            else:
+                widget.toggle_acquisition(True)
+            # Every tab un-checks its own Start button when it refuses to start
+            # (no base path, no channel, not enough disk...). Without this the
+            # runner would wait for a finished signal that never comes.
+            if not widget.btn_startAcquisition.isChecked():
+                self._fail_workflow_acquisition(
+                    f"The {type(widget).__name__} did not start the acquisition (see the log for the reason)"
+                )
+
+    def _set_workflow_save_dir(self, widget, save_dir: str) -> Optional[str]:
+        """Point *widget*'s saving folder at *save_dir*, creating it. Returns a reason on failure."""
+        saving_dir = getattr(widget, "lineEdit_savingDir", None)
+        if saving_dir is None:
+            return f"{type(widget).__name__} has no saving folder to set to '{save_dir}'"
+        try:
+            os.makedirs(save_dir, exist_ok=True)
+        except OSError as e:
+            return f"cannot create the saving folder '{save_dir}': {e}"
+        saving_dir.setText(save_dir)
+        if hasattr(widget, "base_path_is_set"):
+            widget.base_path_is_set = True
+        self.log.info(f"Workflow step saves to {save_dir}")
+        return None
+
+    def _workflow_acquisition_precheck(self, widget, config_path: str, yaml_data, wells) -> Optional[str]:
+        """Reasons an unattended acquisition would refuse to start, found before loading the file."""
+        base_path_flag = getattr(widget, "base_path_is_set", None)
+        saving_dir = getattr(widget, "lineEdit_savingDir", None)
+        saving_text = str(saving_dir.text()).strip() if saving_dir is not None else ""
+        if base_path_flag is False or not saving_text:
+            return "no saving directory is set in the acquisition tab"
+
+        if wells:
+            plate_in_file = self._wellplate_format_in_file(config_path)
+            plate_now = getattr(getattr(self, "wellSelectionWidget", None), "format", None)
+            if plate_in_file and plate_now and str(plate_in_file) != str(plate_now):
+                return (
+                    f"the survey file was made for a '{plate_in_file}' but the GUI plate format is '{plate_now}'; "
+                    f"wells would land in the wrong place"
+                )
+
+        if getattr(yaml_data, "laser_af", False):
+            controller = getattr(self, "laserAutofocusController", None) if SUPPORT_LASER_AUTOFOCUS else None
+            if controller is None:
+                return f"'{config_path}' asks for laser AF but laser AF is not available on this system"
+            if not getattr(getattr(controller, "laser_af_properties", None), "has_reference", False):
+                objective = self.objectiveStore.current_objective
+                return (
+                    f"'{config_path}' asks for laser AF but no reference is set for '{objective}' "
+                    f"(user_profiles/<profile>/laser_af_configs/{objective}.yaml)"
+                )
+        return None
+
+    @staticmethod
+    def _wellplate_format_in_file(config_path: str) -> Optional[str]:
+        try:
+            import yaml as _yaml
+
+            path = os.path.join(config_path, "acquisition.yaml") if os.path.isdir(config_path) else config_path
+            with open(path, "r", encoding="utf-8") as f:
+                data = _yaml.safe_load(f) or {}
+            return (data.get("sample") or {}).get("wellplate_format")
+        except Exception:
+            return None
+
+    def _first_acquisition_tab(self):
+        """First tab in the record tab bar that can actually run an acquisition."""
+        for index in range(self.recordTabWidget.count()):
+            candidate = self.recordTabWidget.widget(index)
+            if hasattr(candidate, "btn_startAcquisition") and hasattr(candidate, "toggle_acquisition"):
+                return candidate
+        return None
 
     def _handle_acquisition_tab_error(self):
         """Handle error when current tab does not support acquisition."""

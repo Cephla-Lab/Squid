@@ -102,7 +102,10 @@ def error_dialog(message: str, title: str = "Error"):
 
 
 def check_space_available_with_error_dialog(
-    multi_point_controller: MultiPointController, logger: logging.Logger, factor_of_safecty: float = 1.03
+    multi_point_controller: MultiPointController,
+    logger: logging.Logger,
+    factor_of_safecty: float = 1.03,
+    show_dialog: bool = True,
 ) -> bool:
     # To check how much disk space is required, we need to have the MultiPointController all configured.  That is
     # a precondition of this function.
@@ -122,7 +125,8 @@ def check_space_available_with_error_dialog(
             f" require {megabytes_required:,} [MB], but '{save_directory}' only has {megabytes_available:,} [MB] available."
         )
         logger.error(error_message)
-        error_dialog(error_message, title="Not Enough Disk Space")
+        if show_dialog:
+            error_dialog(error_message, title="Not Enough Disk Space")
         return False
     return True
 
@@ -132,6 +136,7 @@ def check_ram_available_with_error_dialog(
     logger: logging.Logger,
     factor_of_safety: float = 1.15,
     performance_mode: bool = False,
+    show_dialog: bool = True,
 ) -> bool:
     """Check if enough RAM is available for mosaic view."""
     import psutil
@@ -155,7 +160,8 @@ def check_ram_available_with_error_dialog(
             f"Consider enabling Performance Mode to disable mosaic view during acquisition."
         )
         logger.error(error_message)
-        error_dialog(error_message, title="Not Enough RAM")
+        if show_dialog:
+            error_dialog(error_message, title="Not Enough RAM")
         return False
     return True
 
@@ -1122,8 +1128,56 @@ class AcquisitionYAMLDropMixin:
         """
         return getattr(self.multipointController, "camera", None)
 
-    def _load_acquisition_yaml(self, file_path: str) -> bool:
+    def _refuse_start(self, message: str, interactive: bool = True) -> None:
+        """Un-check Start and say why: a dialog for a person, the log for an unattended workflow."""
+        self.btn_startAcquisition.setChecked(False)
+        if interactive:
+            QMessageBox.warning(self, "Warning", message)
+        else:
+            log = getattr(self, "_log", None)
+            if log is not None:
+                log.error(f"Cannot start acquisition: {message}")
+
+    def _report_load_problem(self, interactive: bool, title: str, message: str) -> None:
+        """Tell the user (dialog) or the log (unattended workflow) why a load was refused."""
+        if interactive:
+            QMessageBox.warning(self, title, message)
+        else:
+            log = getattr(self, "_log", None)
+            if log is not None:
+                log.error(f"{title}: {message}")
+
+    def _validate_wells(self, wells) -> Optional[str]:
+        """Return an error when a requested well is not on the current plate, else None.
+
+        Uses the shared well-selection grid when the widget has one; without a
+        grid (glass slide, tests) every syntactically valid well name is accepted.
+        """
+        bad = [w for w in wells if _parse_well_name(str(w)) == (None, None)]
+        if bad:
+            return f"Not valid well names: {', '.join(bad)}"
+        grid = getattr(self, "well_selection_widget", None)
+        if grid is None or not hasattr(grid, "rowCount"):
+            return None
+        outside = []
+        for well in wells:
+            row, col = _parse_well_name(str(well))
+            if row >= grid.rowCount() or col >= grid.columnCount():
+                outside.append(str(well))
+        if outside:
+            return f"Wells not on the current plate: {', '.join(outside)}"
+        return None
+
+    def _load_acquisition_yaml(self, file_path: str, wells=None, interactive: bool = True) -> bool:
         """Load acquisition settings from YAML file.
+
+        Args:
+            file_path: acquisition.yaml (or a saved acquisition folder).
+            wells: optional well names that replace the file's ``wellplate_scan``
+                regions (wellplate-type files only), e.g. ``["C5", "D5"]``.
+            interactive: show dialogs on problems (default). An unattended
+                caller (the Workflow Runner) passes False so every failure is
+                logged and returned instead of blocking on a modal dialog.
 
         Returns:
             True if settings were loaded successfully, False otherwise.
@@ -1133,19 +1187,43 @@ class AcquisitionYAMLDropMixin:
         try:
             yaml_data = parse_acquisition_yaml(file_path)
         except Exception as e:
-            QMessageBox.warning(self, "Load Error", f"Failed to parse YAML file:\n{e}")
+            self._report_load_problem(interactive, "Load Error", f"Failed to parse YAML file:\n{e}")
             return False
 
         # Check widget type
         expected_type = self._get_expected_widget_type()
         if yaml_data.widget_type != expected_type:
-            QMessageBox.warning(
-                self,
+            self._report_load_problem(
+                interactive,
                 "Widget Type Mismatch",
                 f"This YAML is for '{yaml_data.widget_type}' mode.\n"
                 f"Please drop this file on the {self._get_other_widget_name(yaml_data.widget_type)} widget instead.",
             )
             return False
+
+        if wells:
+            wells = [str(w).strip().upper() for w in wells if str(w).strip()]
+            if yaml_data.widget_type != "wellplate":
+                self._report_load_problem(
+                    interactive, "Wells Not Applicable", "A well list can only be applied to a wellplate acquisition."
+                )
+                return False
+            problem = self._validate_wells(wells)
+            if problem:
+                self._report_load_problem(interactive, "Invalid Wells", problem)
+                return False
+            # Replace the file's regions: FOVs are regenerated from scan size/overlap on load.
+            yaml_data.wellplate_regions = [{"name": w} for w in wells]
+            yaml_data.xy_mode = "Select Wells"
+        elif (
+            yaml_data.widget_type == "wellplate" and yaml_data.xy_mode == "Select Wells" and yaml_data.wellplate_regions
+        ):
+            # The file's own wells (Save Settings, the smart-ring survey): a well off the
+            # current plate would otherwise be skipped silently by _load_well_regions.
+            problem = self._validate_wells([str(r.get("name", "")) for r in yaml_data.wellplate_regions])
+            if problem:
+                self._report_load_problem(interactive, "Invalid Wells", problem)
+                return False
 
         # Validate hardware
         current_binning = (1, 1)
@@ -1163,8 +1241,20 @@ class AcquisitionYAMLDropMixin:
         validation = validate_hardware(yaml_data, self.objectiveStore.current_objective, current_binning)
 
         if not validation.is_valid:
-            dialog = AcquisitionYAMLMismatchDialog(validation, self)
-            dialog.exec_()
+            if interactive:
+                dialog = AcquisitionYAMLMismatchDialog(validation, self)
+                dialog.exec_()
+            else:
+                log = getattr(self, "_log", None)
+                if log is not None:
+                    problems = []
+                    if validation.objective_mismatch:
+                        problems.append(
+                            f"objective '{validation.yaml_objective}' in file, '{validation.current_objective}' mounted"
+                        )
+                    if validation.binning_mismatch:
+                        problems.append(f"camera binning differs (current {validation.current_binning})")
+                    log.error(f"Hardware mismatch loading {file_path}: {'; '.join(problems) or 'see validation'}")
             return False
 
         # Apply settings with signal blocking. Subclasses (currently only
@@ -1177,7 +1267,8 @@ class AcquisitionYAMLDropMixin:
             self._apply_yaml_settings(yaml_data)
         except Exception as e:
             self._log.error(f"Failed to apply YAML settings from {file_path}: {e}")
-            QMessageBox.warning(self, "Load Error", f"Failed to apply YAML settings:\n{e}")
+            if interactive:
+                QMessageBox.warning(self, "Load Error", f"Failed to apply YAML settings:\n{e}")
             return False
         self._log.info(f"Loaded acquisition settings from: {file_path}")
         return True
@@ -4051,6 +4142,8 @@ class ObjectivesWidget(QWidget):
     # True from the start of a manual (servo-off) swap until it fully ends, through both stage
     # phases and the confirmation dialog: the GUI blocks every other stage / focus control meanwhile.
     signal_swap_active = Signal(bool)
+    # (success, message): the end of a switch started by select_objective_unattended.
+    signal_unattended_switch_finished = Signal(bool, str)
 
     def __init__(
         self,
@@ -4087,6 +4180,7 @@ class ObjectivesWidget(QWidget):
         self._swap_return_z = True  # False: the user chose to leave Z retracted after the swap
         self._swap_z_cleared = False  # after servo-on, Z moved clear of where it drifted (see below)
         self._changer_swap_guarded = False
+        self._unattended_switch = False  # the running changer switch reports by signal, not by dialog
         self.init_ui()
         # Show the store's current objective without driving the changer: nothing is
         # connected yet and the hardware already sits there.
@@ -4153,6 +4247,53 @@ class ObjectivesWidget(QWidget):
             return
         if not self._claim_lift():
             return
+        self._start_changer_move(objective_name)
+
+    def select_objective_unattended(self, objective_name: str) -> None:
+        """Switch to *objective_name* with no dialogs, for the Workflow Runner's objective step.
+
+        Always answers through signal_unattended_switch_finished(success, message), possibly before
+        this returns. A success has already emitted signal_objective_changed, which is what reloads
+        the laser-AF reference. A manual (servo-off) swap needs an operator and is refused.
+        """
+
+        def refuse(message: str):
+            self._log.error(f"Unattended objective switch to '{objective_name}' refused: {message}")
+            self.signal_unattended_switch_finished.emit(False, message)
+
+        if objective_name not in self.objectiveStore.objectives_dict:
+            return refuse(f"objective '{objective_name}' is not in the objective list")
+        if self._unattended_switch or not self.dropdown.isEnabledTo(self):
+            return refuse("another objective change is still running")
+        if self.objectiveStore.current_objective == objective_name:
+            self.signal_unattended_switch_finished.emit(True, f"already at {objective_name}")
+            return
+        if self.objective_changer is None and self.focus_servo is not None:
+            return refuse("this microscope changes objectives by hand; a workflow cannot switch them")
+        self._swap_lowers_lift = self._lowers_lift(objective_name)
+        self._swap_lift_lowered = False
+        if self.objective_changer is None:
+            # No changer to move: the same bookkeeping-only switch the dropdown does.
+            self._show_objective(objective_name)
+            self.objectiveStore.set_current_objective(objective_name)
+            self.signal_objective_changed.emit()
+            self.signal_unattended_switch_finished.emit(True, f"switched to {objective_name} (no objective changer)")
+            return
+        if self.lift_motion_guard is not None:
+            if not self.lift_motion_guard.claim():
+                return refuse("the Z lift is moving (the loading position or a lift move)")
+            self._lift_claimed = True
+        self._unattended_switch = True
+        self._show_objective(objective_name)
+        self._start_changer_move(objective_name)
+
+    def _show_objective(self, objective_name: str) -> None:
+        """Put *objective_name* in the dropdown without starting a switch."""
+        self.dropdown.blockSignals(True)
+        self.dropdown.setCurrentText(objective_name)
+        self.dropdown.blockSignals(False)
+
+    def _start_changer_move(self, objective_name):
         # A switch blocks for seconds (Z retract, changer motion, Z restore): run it off
         # the GUI thread, with the dropdown disabled as the re-entry guard until it ends.
         self.dropdown.setEnabled(False)
@@ -4185,16 +4326,19 @@ class ObjectivesWidget(QWidget):
     @Slot(bool, str)
     def _on_objective_move_finished(self, success, error_msg):
         objective_name = self.dropdown.currentText()  # unchanged since the move started: disabled meanwhile
+        unattended = self._unattended_switch
+        self._unattended_switch = False
         if success:
             self.objectiveStore.set_current_objective(objective_name)
             self.signal_objective_changed.emit()
         else:
-            QMessageBox.warning(
-                self, "Objective Change Failed", f"Failed to switch to '{objective_name}':\n{error_msg}"
-            )
+            if not unattended:
+                QMessageBox.warning(
+                    self, "Objective Change Failed", f"Failed to switch to '{objective_name}':\n{error_msg}"
+                )
             # Revert the dropdown so it matches the store / actual changer state.
             self._revert_dropdown()
-        if self._swap_lift_lowered:
+        if self._swap_lift_lowered and not unattended:
             QMessageBox.information(
                 self,
                 "Z Lift Lowered",
@@ -4206,6 +4350,14 @@ class ObjectivesWidget(QWidget):
             self._changer_swap_guarded = False
             self.signal_swap_active.emit(False)
         self._release_lift()
+        if unattended:
+            if not success:
+                message = f"the objective changer failed to move to '{objective_name}': {error_msg}"
+            else:
+                message = f"switched to {objective_name}"
+                if self._swap_lift_lowered:
+                    message += "; the Z lift was lowered for the change and stays lowered"
+            self.signal_unattended_switch_finished.emit(success, message)
 
     def _swap_objective_with_servo_off(self, objective_name):
         """Manual swap: retract Z, disengage the focus servo, wait for the user to confirm the new
@@ -7394,15 +7546,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
         return None
 
-    def toggle_acquisition(self, pressed):
+    def toggle_acquisition(self, pressed, interactive: bool = True):
+        """Start or stop. ``interactive=False`` (an unattended workflow) logs a refusal instead of showing a dialog."""
         self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
         if self.base_path_is_set == False:
-            self.btn_startAcquisition.setChecked(False)
-            error_dialog("Please choose base saving directory first")
+            self._refuse_start("Please choose base saving directory first", interactive)
             return
         if not self.list_configurations.selectedItems():  # no channel selected
-            self.btn_startAcquisition.setChecked(False)
-            error_dialog("Please select at least one imaging channel first")
+            self._refuse_start("Please select at least one imaging channel first", interactive)
             return
         if pressed:
             if self.multipointController.acquisition_in_progress():
@@ -7417,20 +7568,21 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
             problem = self.configure_controller_from_ui()
             if problem:
-                error_dialog(problem)
-                self.btn_startAcquisition.setChecked(False)
+                self._refuse_start(problem, interactive)
                 return
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
             if self.checkbox_skipSaving.isChecked():
                 self._log.info("Skipping disk space check - image saving is disabled")
-            elif not check_space_available_with_error_dialog(self.multipointController, self._log):
+            elif not check_space_available_with_error_dialog(
+                self.multipointController, self._log, show_dialog=interactive
+            ):
                 self._log.error("Failed to start acquisition.  Not enough disk space available.")
                 self.btn_startAcquisition.setChecked(False)
                 return
 
             if not check_ram_available_with_error_dialog(
-                self.multipointController, self._log, performance_mode=self.performance_mode
+                self.multipointController, self._log, performance_mode=self.performance_mode, show_dialog=interactive
             ):
                 self._log.error("Failed to start acquisition.  Not enough RAM available.")
                 self.btn_startAcquisition.setChecked(False)
@@ -9827,16 +9979,15 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
         return None
 
-    def toggle_acquisition(self, pressed):
+    def toggle_acquisition(self, pressed, interactive: bool = True):
+        """Start or stop. ``interactive=False`` (an unattended workflow) logs a refusal instead of showing a dialog."""
         self._log.debug(f"WellplateMultiPointWidget.toggle_acquisition, {pressed=}")
         if not self.base_path_is_set:
-            self.btn_startAcquisition.setChecked(False)
-            QMessageBox.warning(self, "Warning", "Please choose base saving directory first")
+            self._refuse_start("Please choose base saving directory first", interactive)
             return
 
         if not self.list_configurations.selectedItems():
-            self.btn_startAcquisition.setChecked(False)
-            QMessageBox.warning(self, "Warning", "Please select at least one imaging channel")
+            self._refuse_start("Please select at least one imaging channel", interactive)
             return
 
         if pressed:
@@ -9847,20 +9998,21 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             problem = self.configure_controller_from_ui()
             if problem:
-                QMessageBox.warning(self, "Warning", problem)
-                self.btn_startAcquisition.setChecked(False)
+                self._refuse_start(problem, interactive)
                 return
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
             if self.checkbox_skipSaving.isChecked():
                 self._log.info("Skipping disk space check - image saving is disabled")
-            elif not check_space_available_with_error_dialog(self.multipointController, self._log):
+            elif not check_space_available_with_error_dialog(
+                self.multipointController, self._log, show_dialog=interactive
+            ):
                 self.btn_startAcquisition.setChecked(False)
                 self._log.error("Failed to start acquisition.  Not enough disk space available.")
                 return
 
             if not check_ram_available_with_error_dialog(
-                self.multipointController, self._log, performance_mode=self.performance_mode
+                self.multipointController, self._log, performance_mode=self.performance_mode, show_dialog=interactive
             ):
                 self.btn_startAcquisition.setChecked(False)
                 self._log.error("Failed to start acquisition.  Not enough RAM available.")
