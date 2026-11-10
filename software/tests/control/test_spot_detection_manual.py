@@ -25,18 +25,18 @@ def check_image_from_disk(image_path: str):
     # Test parameters to try
     param_sets = [
         {
-            "y_window": 96,
-            "x_window": 20,
-            "min_peak_width": 10,
-            "min_peak_distance": 10,
-            "min_peak_prominence": 0.25,
+            "threshold": 8,
+            "min_area": 5,
+            "max_area": 5000,
+            "row_tolerance": 50,
+            "max_aspect_ratio": 2.5,
         },
         {
-            "y_window": 96,
-            "x_window": 20,
-            "min_peak_width": 5,
-            "min_peak_distance": 20,
-            "min_peak_prominence": 0.25,
+            "threshold": 20,
+            "min_area": 20,
+            "max_area": 5000,
+            "row_tolerance": 100,
+            "max_aspect_ratio": 4.0,
         },
     ]
 

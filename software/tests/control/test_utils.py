@@ -75,15 +75,23 @@ def test_multi_spot_detection():
     spots = [(200, 240), (280, 240), (360, 240)]
     image = create_test_image(spots)
 
-    # Test rightmost spot detection
-    result = find_spot_location(image, mode=SpotDetectionMode.MULTI_RIGHT)
+    # Selection is positional: the rightmost and leftmost of however many spots are in frame
+    result = find_spot_location(image, mode=SpotDetectionMode.DUAL_RIGHT)
     assert result
     detected_x, detected_y = result
     assert abs(detected_x - spots[2][0]) < 5
 
-    # Test second from right spot detection
-    with pytest.raises(NotImplementedError):
-        result = find_spot_location(image, mode=SpotDetectionMode.MULTI_SECOND_RIGHT)
+    result = find_spot_location(image, mode=SpotDetectionMode.DUAL_LEFT)
+    assert result
+    assert abs(result[0] - spots[0][0]) < 5
+
+    # SINGLE refuses to choose between several spots
+    with pytest.raises(ValueError):
+        find_spot_location(image, mode=SpotDetectionMode.SINGLE)
+
+    # The multi-spot modes were retired (old configs naming them are migrated to dual_right)
+    assert not hasattr(SpotDetectionMode, "MULTI_RIGHT")
+    assert not hasattr(SpotDetectionMode, "MULTI_SECOND_RIGHT")
 
 
 def test_invalid_inputs():
@@ -100,8 +108,8 @@ def test_invalid_inputs():
         find_spot_location(np.zeros((480, 640), dtype=np.uint8), mode="invalid")
 
     # Test unknown parameter
-    with pytest.raises(ValueError, match="peak_width"):
-        find_spot_location(create_test_image([(320, 240)]), params={"peak_width": 5})
+    with pytest.raises(ValueError, match="min_peak_width"):
+        find_spot_location(create_test_image([(320, 240)]), params={"min_peak_width": 5})
 
 
 def test_spot_detection_parameters():
@@ -110,15 +118,19 @@ def test_spot_detection_parameters():
 
     # Test with custom parameters
     params = {
-        "y_window": 50,
-        "x_window": 15,
-        "min_peak_width": 5,
-        "min_peak_distance": 5,
-        "min_peak_prominence": 0.25,
+        "threshold": 20,
+        "min_area": 10,
+        "max_area": 2000,
+        "row_tolerance": 30,
+        "max_aspect_ratio": 1.5,
     }
 
     result = find_spot_location(image, params=params)
     assert result is not None
+
+    # The same spot is rejected once a parameter excludes it
+    with pytest.raises(ValueError):
+        find_spot_location(image, params={**params, "max_area": 20})
 
 
 @pytest.mark.skip("Test debug plot backend conflicts with qt.")

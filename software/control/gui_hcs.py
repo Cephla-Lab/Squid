@@ -1184,8 +1184,22 @@ class HighContentScreeningGui(QMainWindow):
                 self.laserAutofocusController,
                 self.liveController,
                 liveControlWidget=self.liveControlWidget,
+                multipointController=self.multipointController,
+            )
+            self.laserAFSweepWidget = widgets.LaserAFSweepWidget(
+                self.laserAutofocusController,
+                self.liveController,
+                laserAutofocusSettingWidget=self.laserAutofocusSettingWidget,
+                multipointController=self.multipointController,
             )
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(liveController=self.liveController)
+            # Built here rather than in __init__ because the line above replaces the display window
+            # made there, and the overlay has to draw on the one that is actually shown.
+            self.laserAFSpotOverlay = widgets.LaserAFSpotOverlay(
+                self.laserAutofocusController,
+                self.imageDisplayWindow_focus,
+                rate_hz=self.laserAutofocusSettingWidget.detection_rate_spinbox.value(),
+            )
 
         self.imageDisplayWindow = self._create_live_image_display()
         if self.live_only_mode:
@@ -1384,9 +1398,21 @@ class HighContentScreeningGui(QMainWindow):
 
             dock_laserfocus_liveController = dock.Dock("Laser Autofocus Settings", autoOrientation=False)
             dock_laserfocus_liveController.showTitleBar()
-            dock_laserfocus_liveController.addWidget(self.laserAutofocusSettingWidget)
+            # This panel is taller than the dock on a 1080p screen. A QVBoxLayout handed less
+            # height than its contents need squashes every row down toward zero rather than
+            # clipping, which is what makes the spinboxes and their labels unreadable. Scroll
+            # instead of squash.
+            laserfocus_settings_scroll = QScrollArea()
+            laserfocus_settings_scroll.setWidgetResizable(True)
+            laserfocus_settings_scroll.setFrameShape(QFrame.NoFrame)
+            laserfocus_settings_scroll.setWidget(self.laserAutofocusSettingWidget)
+            dock_laserfocus_liveController.addWidget(laserfocus_settings_scroll)
             dock_laserfocus_liveController.setStretch(x=100, y=100)
-            dock_laserfocus_liveController.setFixedWidth(self.laserAutofocusSettingWidget.minimumSizeHint().width())
+            # Widen the pinned column by the scrollbar, so scrolling does not eat into the controls.
+            dock_laserfocus_liveController.setFixedWidth(
+                self.laserAutofocusSettingWidget.minimumSizeHint().width()
+                + laserfocus_settings_scroll.verticalScrollBar().sizeHint().width()
+            )
 
             dock_waveform = dock.Dock("Displacement Measurement", autoOrientation=False)
             dock_waveform.showTitleBar()
@@ -1399,11 +1425,19 @@ class HighContentScreeningGui(QMainWindow):
             dock_displayMeasurement.setStretch(x=100, y=40)
             dock_displayMeasurement.setFixedWidth(self.displacementMeasurementWidget.minimumSizeHint().width())
 
+            # The sweep plot goes under the focus image rather than into the settings dock, whose
+            # width is pinned above -- a plot in there would widen that column permanently.
+            dock_laserfocus_sweep = dock.Dock("Laser AF Sweep", autoOrientation=False)
+            dock_laserfocus_sweep.showTitleBar()
+            dock_laserfocus_sweep.addWidget(self.laserAFSweepWidget)
+            dock_laserfocus_sweep.setStretch(x=100, y=50)
+
             laserfocus_dockArea = dock.DockArea()
             laserfocus_dockArea.addDock(dock_laserfocus_image_display)
             laserfocus_dockArea.addDock(
                 dock_laserfocus_liveController, "right", relativeTo=dock_laserfocus_image_display
             )
+            laserfocus_dockArea.addDock(dock_laserfocus_sweep, "bottom", relativeTo=dock_laserfocus_image_display)
             if SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS:
                 laserfocus_dockArea.addDock(dock_waveform, "bottom", relativeTo=dock_laserfocus_liveController)
                 laserfocus_dockArea.addDock(dock_displayMeasurement, "bottom", relativeTo=dock_waveform)
@@ -1799,7 +1833,44 @@ class HighContentScreeningGui(QMainWindow):
             self.laserAutofocusSettingWidget.signal_apply_settings.connect(
                 self.laserAutofocusControlWidget.update_init_state
             )
-            self.laserAutofocusSettingWidget.signal_laser_spot_location.connect(self.imageDisplayWindow_focus.mark_spot)
+            # Display-only, and scoped to the focus camera view: the main image display keeps its
+            # own contrast handling.
+            self.laserAutofocusSettingWidget.signal_display_lut_changed.connect(
+                self.imageDisplayWindow_focus.set_false_color_lut
+            )
+            self.laserAutofocusSettingWidget.signal_display_autolevel_changed.connect(
+                self.imageDisplayWindow_focus.set_autolevel
+            )
+            self.imageDisplayWindow_focus.set_autolevel(
+                self.laserAutofocusSettingWidget.display_autolevel_checkbox.isChecked()
+            )
+            # The sweep plot lives in its own dock, but it is fired from the settings panel, beside
+            # the z range and step that define its grid. The sweep widget keeps every guard and the
+            # worker thread; these only carry the button presses across, and it mirrors the button
+            # states back through set_sweep_running / set_sweep_slope_available.
+            self.laserAutofocusController.signal_af_sweep_sample.connect(self.laserAFSweepWidget.on_sweep_sample)
+            self.laserAutofocusController.signal_af_sweep_finished.connect(self.laserAFSweepWidget.on_sweep_finished)
+            self.laserAutofocusSettingWidget.signal_run_af_sweep.connect(self.laserAFSweepWidget.start_sweep)
+            self.laserAutofocusSettingWidget.signal_apply_sweep_slope.connect(
+                self.laserAFSweepWidget.apply_fit_as_calibration
+            )
+            # Marks current z on the sweep plot while focusing by hand. movement_updater already
+            # polls the stage at 10 Hz and its `position` signal had no consumers, so this needs no
+            # timer of its own -- and polling from the widget would mean calling stage.get_pos(),
+            # which is free on a Cephla stage but a locked round-trip on a PI one.
+            self.movement_updater.position.connect(self.laserAFSweepWidget.on_stage_position)
+            self.movement_updater.piezo_z_um.connect(self.laserAFSweepWidget.on_piezo_position)
+            # Drag-a-box crop selection. The box reports in pixels of the displayed frame; the
+            # settings widget adds the camera ROI offset to get sensor coordinates.
+            self.laserAutofocusSettingWidget.signal_start_crop_selection.connect(
+                self.imageDisplayWindow_focus.start_roi_selection
+            )
+            self.laserAutofocusSettingWidget.signal_stop_crop_selection.connect(
+                self.imageDisplayWindow_focus.stop_roi_selection
+            )
+            self.imageDisplayWindow_focus.signal_roi_bounds_changed.connect(
+                self.laserAutofocusSettingWidget.on_crop_selection_changed
+            )
             self.laserAutofocusSettingWidget.update_exposure_time(
                 self.laserAutofocusSettingWidget.exposure_spinbox.value()
             )
@@ -1815,6 +1886,23 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.streamHandler_focus_camera.image_to_display.connect(self.imageDisplayWindow_focus.display_image)
 
+            # Live spot detection overlay. Fed from both frame sources, and connected after the
+            # display_image slots above so the frame is on screen before the markers move onto it.
+            # The controller source is the valuable one: those are the frames a real measurement
+            # ran on, including one per FOV of an acquisition, so a failure is visible where and
+            # when it happened rather than only in the log.
+            self.laserAutofocusSettingWidget.signal_live_detection_enabled.connect(self.laserAFSpotOverlay.set_enabled)
+            self.laserAutofocusSettingWidget.signal_live_detection_rate.connect(self.laserAFSpotOverlay.set_rate_hz)
+            self.laserAFSpotOverlay.signal_status.connect(self.laserAutofocusSettingWidget.show_live_detection_status)
+            self.laserAFSpotOverlay.signal_spot_detected.connect(self.laserAutofocusSettingWidget.on_live_spot_detected)
+            self.laserAFSpotOverlay.signal_detection_result.connect(
+                self.laserAutofocusSettingWidget.on_live_detection_result
+            )
+            # The checkbox defaults to on, and the overlay defaults to off, so seed it the way
+            # the autolevel checkbox above is seeded.
+            self.laserAFSpotOverlay.set_enabled(self.laserAutofocusSettingWidget.live_detection_checkbox.isChecked())
+            self.streamHandler_focus_camera.image_to_display.connect(self.laserAFSpotOverlay.on_frame)
+
             self.streamHandler_focus_camera.image_to_display.connect(
                 self.displacementMeasurementController.update_measurement
             )
@@ -1823,6 +1911,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.displacementMeasurementWidget.display_readings
             )
             self.laserAutofocusController.image_to_display.connect(self.imageDisplayWindow_focus.display_image)
+            self.laserAutofocusController.image_to_display.connect(self.laserAFSpotOverlay.on_frame)
 
             # Add connection for piezo position updates
             if self.piezoWidget:
@@ -3035,6 +3124,10 @@ class HighContentScreeningGui(QMainWindow):
 
             if not is_laser_focus_tab:
                 self.laserAutofocusSettingWidget.stop_live()
+                # Leave the checkbox alone -- coming back to the tab should restore what the
+                # operator chose -- but drop the markers, which would otherwise be left sitting
+                # over whatever frame the display last held.
+                self.imageDisplayWindow_focus.clear_spot_overlay()
 
         # Only show well selector in Live View tab if it was previously shown
         if self.imageDisplayTabs.tabText(index) == "Live View":
