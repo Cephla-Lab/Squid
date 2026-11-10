@@ -224,7 +224,11 @@ class MultiPointController:
         self.deltaY = control._def.Acquisition.DY
         self.NZ = 1
         # TODO(imo): Switch all to consistent mm units
-        self.deltaZ = control._def.Acquisition.DZ / 1000
+        # Nyquist-ish for the objective in use; the GUI pushes its own value over this as
+        # soon as a z-step box is touched, but a headless caller gets a sane step.
+        self.deltaZ = (
+            control._def.default_dz_um(self.objectiveStore.current_objective if self.objectiveStore else None) / 1000
+        )
         self.Nt = 1
         self.deltat = 0
 

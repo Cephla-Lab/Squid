@@ -1092,7 +1092,7 @@ class HighContentScreeningGui(QMainWindow):
             # Utils > Stage Utils has its own loading button: it follows the same guard.
             self.stageUtils.set_lift_motion_guard(self.zLiftWidget.motion_guard)
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
-        self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
+        self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController, self.objectiveStore)
         if self.piezo:
             self.piezoWidget = widgets.PiezoWidget(self.piezo)
 
@@ -1691,6 +1691,17 @@ class HighContentScreeningGui(QMainWindow):
         self.cameraSettingWidget.signal_sensor_mode_changed.connect(self.liveControlWidget.refresh_exposure_time_limits)
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.objectivesWidget.signal_objective_changed.connect(self.flexibleMultiPointWidget.update_fov_positions)
+
+        # The default z step is objective-dependent, so re-seed every z-step box when the
+        # objective changes. Widgets that were never built (disabled acquisition modes) are
+        # skipped; the ones that exist all get the new objective's default.
+        for _dz_widget in (
+            self.autofocusWidget,
+            self.flexibleMultiPointWidget if ENABLE_FLEXIBLE_MULTIPOINT else None,
+            self.wellplateMultiPointWidget if ENABLE_WELLPLATE_MULTIPOINT else None,
+        ):
+            if _dz_widget is not None:
+                self.objectivesWidget.signal_objective_changed.connect(_dz_widget.apply_default_dz)
         # TODO(imo): Fix position updates after removal of navigation controller
         self.movement_updater.position_after_move.connect(self.navigationViewer.draw_fov_current_location)
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)

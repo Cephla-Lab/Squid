@@ -1349,6 +1349,38 @@ class _ApplyChannelOffsetMixin:
         self.multipointController.set_apply_channel_offset(checked)
 
 
+class _NyquistDefaultDzMixin:
+    """Mixin giving a widget a z step default that follows the objective in use.
+
+    The default step is Nyquist-ish for the current objective's NA rather than one fixed
+    number for every objective, so a 4x does not start out oversampled and a 40x
+    undersampled. Hosts need ``self.objectiveStore`` (may be None, in which case the default
+    follows DEFAULT_OBJECTIVE) and a z-step spin box named by ``_DZ_ENTRY_ATTR``;
+    ``self.entry_zRange``, if present, follows along.
+    """
+
+    _DZ_ENTRY_ATTR = "entry_deltaZ"
+
+    def default_dz_um(self) -> float:
+        objective = self.objectiveStore.current_objective if getattr(self, "objectiveStore", None) else None
+        return control._def.default_dz_um(objective)
+
+    def apply_default_dz(self):
+        """Reset the z step to the current objective's default (used on objective change).
+
+        This deliberately overwrites a hand-entered step: the step that was right for the
+        old objective is the wrong sampling for the new one, and leaving it silently stale
+        is how a 40x stack ends up sampled for a 4x.
+        """
+        dz = self.default_dz_um()
+        entry_dz = getattr(self, self._DZ_ENTRY_ATTR)
+        if hasattr(self, "entry_zRange"):
+            # Ratio, not absolute: keep however many steps of range the operator set up.
+            steps = self.entry_zRange.value() / entry_dz.value() if entry_dz.value() else 4
+            self.entry_zRange.setValue(max(self.entry_zRange.minimum(), round(dz * steps, 3)))
+        entry_dz.setValue(dz)
+
+
 class AcquisitionYAMLMismatchDialog(QDialog):
     """Dialog shown when hardware configuration doesn't match loaded YAML settings."""
 
@@ -6220,12 +6252,17 @@ class DACControWidget(QFrame):
         self.microcontroller.analog_write_onboard_DAC(1, round(value * 65535 / 100))
 
 
-class AutoFocusWidget(QFrame):
+class AutoFocusWidget(_NyquistDefaultDzMixin, QFrame):
     signal_autoLevelSetting = Signal(bool)
 
-    def __init__(self, autofocusController, main=None, *args, **kwargs):
+    # The contrast-AF search step, not a stack step, but it wants the same sampling.
+    _DZ_ENTRY_ATTR = "entry_delta"
+
+    def __init__(self, autofocusController, objectiveStore=None, main=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.autofocusController = autofocusController
+        # Optional: without it the contrast-AF step defaults for DEFAULT_OBJECTIVE and stays put.
+        self.objectiveStore = objectiveStore
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -6238,10 +6275,11 @@ class AutoFocusWidget(QFrame):
         self.entry_delta.setSingleStep(0.2)
         self.entry_delta.setDecimals(3)
         self.entry_delta.setSuffix(" μm")
-        self.entry_delta.setValue(1.524)
+        default_delta = self.default_dz_um()
+        self.entry_delta.setValue(default_delta)
         self.entry_delta.setKeyboardTracking(False)
         self.entry_delta.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.autofocusController.set_deltaZ(1.524)
+        self.autofocusController.set_deltaZ(default_delta)
 
         self.entry_N = QSpinBox()
         self.entry_N.setMinimum(3)
@@ -6770,7 +6808,7 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _NyquistDefaultDzMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -6905,7 +6943,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.entry_deltaZ.setMinimum(0)
         self.entry_deltaZ.setMaximum(1000)
         self.entry_deltaZ.setSingleStep(0.1)
-        self.entry_deltaZ.setValue(Acquisition.DZ)
+        self.entry_deltaZ.setValue(self.default_dz_um())
         self.entry_deltaZ.setDecimals(3)
         self.entry_deltaZ.setSuffix(" μm")
         self.entry_deltaZ.setKeyboardTracking(False)
@@ -6925,7 +6963,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.entry_zRange.setMinimum(0.1)
         self.entry_zRange.setMaximum(2000)
         self.entry_zRange.setSingleStep(1)
-        self.entry_zRange.setValue(round(Acquisition.DZ * 4, 3))
+        self.entry_zRange.setValue(round(self.default_dz_um() * 4, 3))
         self.entry_zRange.setDecimals(3)
         self.entry_zRange.setSuffix(" μm")
         self.entry_zRange.setToolTip(
@@ -8575,7 +8613,7 @@ def _warn_if_coordinates_stale(widget, stamp):
         QMessageBox.warning(widget, "Coordinates may be stale", stale)
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _NyquistDefaultDzMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
@@ -8748,7 +8786,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_deltaZ.setMinimum(0)
         self.entry_deltaZ.setMaximum(1000)
         self.entry_deltaZ.setSingleStep(0.1)
-        self.entry_deltaZ.setValue(Acquisition.DZ)
+        self.entry_deltaZ.setValue(self.default_dz_um())
         self.entry_deltaZ.setDecimals(3)
         # self.entry_deltaZ.setEnabled(False)
         self.entry_deltaZ.setSuffix(" μm")
@@ -8768,7 +8806,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_zRange.setMinimum(0.1)
         self.entry_zRange.setMaximum(2000)
         self.entry_zRange.setSingleStep(1)
-        self.entry_zRange.setValue(round(Acquisition.DZ * 4, 3))
+        self.entry_zRange.setValue(round(self.default_dz_um() * 4, 3))
         self.entry_zRange.setDecimals(3)
         self.entry_zRange.setSuffix(" μm")
         self.entry_zRange.setToolTip(
@@ -9323,7 +9361,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_overlap.setValue(settings.get("fov_overlap", 10))
             self.entry_dt.setValue(settings.get("dt", 0))
             self.entry_Nt.setValue(settings.get("nt", 1))
-            self.entry_deltaZ.setValue(settings.get("dz", 1.0))
+            # A cached step the operator chose wins; with nothing cached, fall back to the
+            # objective's default rather than a fixed 1 um.
+            self.entry_deltaZ.setValue(settings.get("dz") or self.default_dz_um())
             self.entry_NZ.setValue(settings.get("nz", 1))
             self.entry_zRange.setValue(settings.get("z_range_um", self.entry_zRange.value()))
             z_order_index = self.combobox_z_order.findData(settings.get("z_order", Z_STACK_ORDER))

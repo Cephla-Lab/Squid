@@ -1653,6 +1653,42 @@ SAMPLE_FORMATS_CSV_PATH = "sample_formats.csv"
 
 OBJECTIVES, WELLPLATE_FORMAT_SETTINGS = load_formats()
 
+# Default z step: Nyquist-ish sampling of the depth of field for the objective in use.
+# Deliberately rough - it is the value the z-step boxes start at, not something the
+# acquisition enforces:
+#     axial resolution ~= 3 * (0.61 * lambda / NA), sampled at 2.3 points across it
+# with lambda pinned at a green 525 nm rather than tracked per channel. Coarser objectives
+# (low NA) therefore start with a bigger step, and an oil 40x with a much smaller one.
+NYQUIST_DZ_WAVELENGTH_UM = 0.525
+NYQUIST_DZ_AXIAL_FACTOR = 3.0
+NYQUIST_DZ_SAMPLES_PER_RESEL = 2.3
+
+
+def nyquist_dz_um(numerical_aperture):
+    """Default z step in um for an objective of this NA, or None if the NA is unusable."""
+    try:
+        na = float(numerical_aperture)
+    except (TypeError, ValueError):
+        return None
+    if na <= 0:
+        return None
+
+    axial_resolution_um = NYQUIST_DZ_AXIAL_FACTOR * 0.61 * NYQUIST_DZ_WAVELENGTH_UM / na
+    # 3 decimals to match the z-step spin boxes; they snap to whole microsteps from there.
+    return round(axial_resolution_um / NYQUIST_DZ_SAMPLES_PER_RESEL, 3)
+
+
+def default_dz_um(objective_name=None):
+    """Default z step in um for *objective_name*, defaulting to the current DEFAULT_OBJECTIVE.
+
+    Falls back to the configured Acquisition.DZ for an unknown objective or a bad NA, so a
+    machine whose objectives.csv is missing an NA keeps its old behaviour.
+    """
+    name = objective_name or DEFAULT_OBJECTIVE
+    objective = OBJECTIVES.get(name) if isinstance(OBJECTIVES, dict) else None
+    dz = nyquist_dz_um(objective.get("NA")) if objective else None
+    return dz if dz is not None else Acquisition.DZ
+
 
 def get_wellplate_settings(wellplate_format):
     if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
