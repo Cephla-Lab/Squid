@@ -54,6 +54,7 @@ from control._def import *
 
 # app specific libraries
 from control.laser_engine_widget import LaserEngineWidget
+from control.startup_progress import NULL_REPORTER, StartupReporter
 from control.versalase_widget import VersaLaseWidget
 from control.NL5Widget import NL5Widget
 from control.core.contrast_manager import ContrastManager
@@ -680,12 +681,19 @@ class HighContentScreeningGui(QMainWindow):
         live_only_mode=False,
         skip_init=False,
         *args,
+        reporter: StartupReporter = NULL_REPORTER,
         **kwargs,
     ):
+        # reporter is declared after *args so it stays keyword-only and is never
+        # forwarded into QMainWindow.__init__.
         super().__init__(*args, **kwargs)
 
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self._skip_init = skip_init
+        # A startup window pumps the event loop while this constructor runs, so anything that must only
+        # happen once the window is fully built (stage polling, zero-delay timers) waits for showEvent.
+        self._startup_window_active = reporter is not NULL_REPORTER
+        self._enter_restored_loading_on_show = False
         # Set while a manual V-308 objective swap runs (retract, servo off, confirm, servo on, restore).
         self._objective_swap_active = False
         self._loading_position_locked = False  # a Z lift system at the loading position: nothing moves
@@ -768,9 +776,13 @@ class HighContentScreeningGui(QMainWindow):
         # Load Slack settings from cache
         load_slack_settings_from_cache()
 
-        self.load_objects(is_simulation=is_simulation)
-        self.setup_hardware()
+        with reporter.step("gui_objects", core=True):
+            self.load_objects(is_simulation=is_simulation)
+        with reporter.step("gui_hardware", core=True):
+            self.setup_hardware()
 
+        # Builds movement_updater (make_connections needs it) but leaves its
+        # 100 ms timer stopped - see start_stage_polling.
         self.setup_movement_updater()
 
         # Pre-declare and give types to all our widgets so type hinting tools work.  You should
@@ -821,9 +833,17 @@ class HighContentScreeningGui(QMainWindow):
 
         self.recordTabWidget: QTabWidget = QTabWidget()
         self.cameraTabWidget: QTabWidget = QTabWidget()
-        self.load_widgets()
-        self.setup_layout()
-        self.make_connections()
+        # These three are not pumped from the inside: load_widgets builds the
+        # napari/vispy viewers and make_connections wires ~90 signals one at a
+        # time, and delivering a queued signal into that half-wired graph is far
+        # worse than a few seconds of an unresponsive window. There is no
+        # hardware wait here to abort anyway.
+        with reporter.step("gui_widgets", core=True, interruptible=False):
+            self.load_widgets()
+        with reporter.step("gui_layout", core=True, interruptible=False):
+            self.setup_layout()
+        with reporter.step("gui_connections", core=True, interruptible=False):
+            self.make_connections()
 
         # Emit initial performance mode state to sync widgets
         self.signal_performance_mode_changed.emit(self.performance_mode)
@@ -841,50 +861,63 @@ class HighContentScreeningGui(QMainWindow):
         )
         if self._restored_loading_state is not None and self.zLiftWidget is not None:
             # Once the window is up (make_connections has run: every connection to the loading signal exists)
-            QTimer.singleShot(0, self._enter_restored_loading_position)
+            if self._startup_window_active:
+                self._enter_restored_loading_on_show = True  # a zero timer would fire at the next startup-window pump
+            else:
+                QTimer.singleShot(0, self._enter_restored_loading_position)
 
         # Skip cached position restoration on restart (hardware position hasn't changed),
         # except Z when using Xeryon (Z was retracted during cleanup).
-        if self._skip_init:
-            if USE_XERYON and self.objective_changer:
-                if cached_pos := squid.stage.utils.get_cached_position():
-                    safety_z_mm = int(Z_HOME_SAFETY_POINT) / 1000.0
-                    target_z_mm = max(cached_pos.z_mm, safety_z_mm)
-                    self.log.info(f"Restoring cached Z position after Xeryon restart: {target_z_mm} mm")
-                    self.stage.move_z_to(target_z_mm)
-            else:
-                self.log.info("Skipping cached position restoration (--skip-init flag set)")
-        elif HOMING_ENABLED_X and HOMING_ENABLED_Y and self._restored_loading_state is not None:
-            self.log.info("Squid was closed at the loading position: moving back there (lift lowered, Z retracted).")
-            squid.stage.utils.move_xy_to_loading_position(self.stage, is_wellplate=self.stageUtils.is_wellplate)
-        elif HOMING_ENABLED_X and HOMING_ENABLED_Y:
-            # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
-            cached_pos = squid.stage.utils.get_cached_position()
-            if cached_pos:
-                self.log.info(f"Cache position exists.  Moving X/Y to: ({cached_pos.x_mm},{cached_pos.y_mm}) [mm]")
-                self.stage.move_x_to(cached_pos.x_mm)
-                self.stage.move_y_to(cached_pos.y_mm)
-
-            if squid.stage.utils.z_is_referenced():
-                if not cached_pos:
-                    self.log.info("No cached position.  Moving Z axis to safety position")
-                    squid.stage.utils.move_z_axis_to_safety_position(self.stage)
-                elif USE_PI_FOCUS_STAGE:
-                    # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
-                    # The PI driver clamps every move to the configured Z limits, so a stale
-                    # cached Z cannot command an out-of-range move.
-                    self.stage.move_z_to(cached_pos.z_mm)
+        # Physical stage moves: they block in the microcontroller wait with no
+        # callback, so Abort only lands once they finish.
+        with reporter.step("gui_position", interruptible=False):
+            if self._skip_init:
+                if USE_XERYON and self.objective_changer:
+                    if cached_pos := squid.stage.utils.get_cached_position():
+                        safety_z_mm = int(Z_HOME_SAFETY_POINT) / 1000.0
+                        target_z_mm = max(cached_pos.z_mm, safety_z_mm)
+                        self.log.info(f"Restoring cached Z position after Xeryon restart: {target_z_mm} mm")
+                        self.stage.move_z_to(target_z_mm)
                 else:
-                    safety_z_mm = int(Z_HOME_SAFETY_POINT) / 1000.0
-                    if cached_pos.z_mm < safety_z_mm:
-                        self.log.info(
-                            "Cache z position is smaller than Z_HOME_SAFETY_POINT, move to Z_HOME_SAFETY_POINT"
-                        )
-                    self.stage.move_z_to(max(cached_pos.z_mm, safety_z_mm))
+                    self.log.info("Skipping cached position restoration (--skip-init flag set)")
+            elif HOMING_ENABLED_X and HOMING_ENABLED_Y and self._restored_loading_state is not None:
+                self.log.info(
+                    "Squid was closed at the loading position: moving back there (lift lowered, Z retracted)."
+                )
+                squid.stage.utils.move_xy_to_loading_position(self.stage, is_wellplate=self.stageUtils.is_wellplate)
+            elif HOMING_ENABLED_X and HOMING_ENABLED_Y:
+                # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
+                cached_pos = squid.stage.utils.get_cached_position()
+                if cached_pos:
+                    self.log.info(f"Cache position exists.  Moving X/Y to: ({cached_pos.x_mm},{cached_pos.y_mm}) [mm]")
+                    self.stage.move_x_to(cached_pos.x_mm)
+                    self.stage.move_y_to(cached_pos.y_mm)
 
-                if ENABLE_WELLPLATE_MULTIPOINT:
-                    self.wellplateMultiPointWidget.init_z()
-                self.flexibleMultiPointWidget.init_z()
+                if squid.stage.utils.z_is_referenced():
+                    if not cached_pos:
+                        self.log.info("No cached position.  Moving Z axis to safety position")
+                        squid.stage.utils.move_z_axis_to_safety_position(self.stage)
+                    elif USE_PI_FOCUS_STAGE:
+                        # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
+                        # The PI driver clamps every move to the configured Z limits, so a stale
+                        # cached Z cannot command an out-of-range move.
+                        self.stage.move_z_to(cached_pos.z_mm)
+                    else:
+                        safety_z_mm = int(Z_HOME_SAFETY_POINT) / 1000.0
+                        if cached_pos.z_mm < safety_z_mm:
+                            self.log.info(
+                                "Cache z position is smaller than Z_HOME_SAFETY_POINT, move to Z_HOME_SAFETY_POINT"
+                            )
+                        self.stage.move_z_to(max(cached_pos.z_mm, safety_z_mm))
+
+                    if ENABLE_WELLPLATE_MULTIPOINT:
+                        self.wellplateMultiPointWidget.init_z()
+                    self.flexibleMultiPointWidget.init_z()
+
+        if not self._startup_window_active:
+            # Nothing pumps the event loop while this window is built, so there is no half-built GUI for a
+            # tick to land in: start polling now, shown or not, as this always did.
+            self.start_stage_polling()
 
         # Create the menu bar
         menubar = self.menuBar()
@@ -1883,7 +1916,21 @@ class HighContentScreeningGui(QMainWindow):
         self.movement_update_timer = QTimer()
         self.movement_update_timer.setInterval(100)
         self.movement_update_timer.timeout.connect(self.movement_updater.do_update)
-        self.movement_update_timer.start()
+        # Deliberately not started here: do_update polls stage.get_pos(), and the
+        # startup window pumps the event loop during initialization, so a tick
+        # now would hit a half-built GUI and a stage that may still be homing.
+        # See start_stage_polling().
+
+    def start_stage_polling(self):
+        """Begin polling the stage for movement and position updates.
+
+        Called at the end of the constructor, or from showEvent when a startup window is pumping the event
+        loop during construction. Safe to call more than once.
+        """
+        if not self.movement_update_timer.isActive():
+            self.movement_update_timer.start()
+        if self.navigationWidget is not None:
+            self.navigationWidget.start_polling()
 
     def makeNapariConnections(self):
         """Collect the (signal, slot[, connection_type]) pairs that feed the napari display widgets."""
@@ -3403,6 +3450,12 @@ class HighContentScreeningGui(QMainWindow):
         self._show_event_initialized = True
         self._update_ram_monitor_visibility()
         self._connect_warning_handler()
+        # Started here rather than in __init__ when a startup window is up, so the 100 ms
+        # stage polling cannot fire into a half-built GUI while that window pumps the event loop.
+        self.start_stage_polling()
+        if self._enter_restored_loading_on_show:
+            self._enter_restored_loading_on_show = False
+            QTimer.singleShot(0, self._enter_restored_loading_position)
 
     def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int) -> None:
         """Handle double-click on plate view: navigate NDViewer to FOV and switch tab."""
