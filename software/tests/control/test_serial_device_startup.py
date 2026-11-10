@@ -60,9 +60,10 @@ class Clock:
 
 @pytest.fixture
 def clock(monkeypatch):
+    # Replace the module's reference to `time`, not the functions on the real module: other tests leave
+    # threads behind that sleep, and they must not advance (or be sped up by) this clock.
     clock = Clock()
-    monkeypatch.setattr(serial_peripherals.time, "monotonic", clock.monotonic)
-    monkeypatch.setattr(serial_peripherals.time, "sleep", clock.sleep)
+    monkeypatch.setattr(serial_peripherals, "time", SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep))
     return clock
 
 
