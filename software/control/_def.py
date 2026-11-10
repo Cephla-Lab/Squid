@@ -1263,6 +1263,21 @@ MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
 SAVE_DOWNSAMPLED_OVERVIEW = True
 SAVE_DOWNSAMPLED_WELL_IMAGES = True
 
+# SquidXplorer handoff. SquidXplorer lives in its own repository and its own venv
+# (it needs a newer Python than the acquisition software runs on), so it can only
+# be launched out of process. Point this at that venv's interpreter, e.g.
+#   C:\\path\\to\\SquidXplorer\\.venv\\Scripts\\python.exe
+# Left empty, the launcher falls back to a `squidmip-view` executable on PATH.
+SQUIDXPLORER_PYTHON = ""
+
+# SquidXplorer enforces a single GUI instance with a lock directory that defaults to
+# ~/.cache/squidmip, which every SquidXplorer checkout on a machine shares - so a viewer
+# opened from a desktop shortcut and one opened from here fight over the one slot and the
+# second launch silently no-ops. Set this to the same lock directory the shortcut's launcher
+# uses (it is exported there as SQUIDMIP_GUI_LOCK_DIR) to give this handoff its own slot.
+# Left empty, SquidXplorer's default is used.
+SQUIDXPLORER_GUI_LOCK_DIR = ""
+
 # Plate view zoom limits
 # MIN_VISIBLE_PIXELS: At maximum zoom, ensure at least this many pixels are visible
 # in the smallest dimension. 500 pixels allows inspecting cellular-level details.
@@ -1736,6 +1751,42 @@ SAMPLE_FORMATS_CSV_PATH = "sample_formats.csv"
 
 OBJECTIVES, WELLPLATE_FORMAT_SETTINGS = load_formats()
 
+# Default z step: Nyquist-ish sampling of the depth of field for the objective in use.
+# Deliberately rough - it is the value the z-step boxes start at, not something the
+# acquisition enforces:
+#     axial resolution ~= 3 * (0.61 * lambda / NA), sampled at 2.3 points across it
+# with lambda pinned at a green 525 nm rather than tracked per channel. Coarser objectives
+# (low NA) therefore start with a bigger step, and an oil 40x with a much smaller one.
+NYQUIST_DZ_WAVELENGTH_UM = 0.525
+NYQUIST_DZ_AXIAL_FACTOR = 3.0
+NYQUIST_DZ_SAMPLES_PER_RESEL = 2.3
+
+
+def nyquist_dz_um(numerical_aperture):
+    """Default z step in um for an objective of this NA, or None if the NA is unusable."""
+    try:
+        na = float(numerical_aperture)
+    except (TypeError, ValueError):
+        return None
+    if na <= 0:
+        return None
+
+    axial_resolution_um = NYQUIST_DZ_AXIAL_FACTOR * 0.61 * NYQUIST_DZ_WAVELENGTH_UM / na
+    # 3 decimals to match the z-step spin boxes; they snap to whole microsteps from there.
+    return round(axial_resolution_um / NYQUIST_DZ_SAMPLES_PER_RESEL, 3)
+
+
+def default_dz_um(objective_name=None):
+    """Default z step in um for *objective_name*, defaulting to the current DEFAULT_OBJECTIVE.
+
+    Falls back to the configured Acquisition.DZ for an unknown objective or a bad NA, so a
+    machine whose objectives.csv is missing an NA keeps its old behaviour.
+    """
+    name = objective_name or DEFAULT_OBJECTIVE
+    objective = OBJECTIVES.get(name) if isinstance(OBJECTIVES, dict) else None
+    dz = nyquist_dz_um(objective.get("NA")) if objective else None
+    return dz if dz is not None else Acquisition.DZ
+
 
 def get_wellplate_settings(wellplate_format):
     if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
@@ -2130,6 +2181,12 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                 LIVE_VIEW_Z_STEP_UM = _general_config.getfloat("GENERAL", "live_view_z_step_um")
             if _general_config.has_option("GENERAL", "live_view_z_step_fast_um"):
                 LIVE_VIEW_Z_STEP_FAST_UM = _general_config.getfloat("GENERAL", "live_view_z_step_fast_um")
+            if _general_config.has_option("GENERAL", "squidxplorer_python"):
+                SQUIDXPLORER_PYTHON = _general_config.get("GENERAL", "squidxplorer_python").strip()
+                log.info(f"Loaded SQUIDXPLORER_PYTHON={SQUIDXPLORER_PYTHON} from config")
+            if _general_config.has_option("GENERAL", "squidxplorer_gui_lock_dir"):
+                SQUIDXPLORER_GUI_LOCK_DIR = _general_config.get("GENERAL", "squidxplorer_gui_lock_dir").strip()
+                log.info(f"Loaded SQUIDXPLORER_GUI_LOCK_DIR={SQUIDXPLORER_GUI_LOCK_DIR} from config")
     except Exception as e:
         log.warning(f"Failed to load GENERAL settings from config: {e}")
 

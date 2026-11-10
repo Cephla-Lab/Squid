@@ -1,4 +1,5 @@
 import configparser
+import enum
 import gc
 import os
 import json
@@ -91,6 +92,29 @@ from control.lighting import LightSourceType
 from PIL import Image, ImageDraw, ImageFont
 
 
+# Z-stack modes offered by the multipoint tabs.  The labels and the odd-Nz rule live
+# in the Qt-free control.core.zstack_modes so non-Qt code can share them.
+from control.core.zstack_modes import (  # noqa: E402
+    Z_MODE_FROM_BOTTOM,
+    Z_MODE_SET_RANGE,
+    Z_MODE_RELATIVE,
+    Z_MODES,
+    relative_stack_Nz,
+)
+
+# acquisition.yaml z_stack.config -> GUI z mode ("Relative" is stored as "FROM CENTER")
+_YAML_Z_CONFIG_TO_Z_MODE = {
+    "FROM BOTTOM": Z_MODE_FROM_BOTTOM,
+    "SET RANGE": Z_MODE_SET_RANGE,
+    "FROM CENTER": Z_MODE_RELATIVE,
+}
+
+
+def z_mode_to_stacking_index(z_mode: str) -> int:
+    """Map a GUI z-mode label to a control._def.Z_STACKING_CONFIG_MAP index."""
+    return 1 if z_mode == Z_MODE_RELATIVE else 0  # 1 = "FROM CENTER", 0 = "FROM BOTTOM"
+
+
 def error_dialog(message: str, title: str = "Error"):
     msg = QMessageBox()
     msg.setIcon(QMessageBox.Warning)
@@ -132,20 +156,120 @@ def check_space_available_with_error_dialog(
     return True
 
 
-def check_ram_available_with_error_dialog(
+class PacingChoice(enum.Enum):
+    PROCEED = "proceed"
+    SIMULATE = "simulate"
+    CANCEL = "cancel"
+
+
+def pacing_message(dt: float, estimate, probe_note: str = "") -> str:
+    """One line.  Do not grow this -- the two numbers are what the operator decides on."""
+    if probe_note:
+        return f"{probe_note} Est: {estimate.seconds:.0f} s. Proceed?"
+    label = "Measured" if estimate.measured else "Est"
+    if estimate.seconds > dt:
+        lead = "Measured" if estimate.measured else "Estimated"
+        return f"{lead} loop interval exceeds {dt:.0f} s. {label}: {estimate.seconds:.0f} s. Proceed?"
+    return f"Interval {dt:.0f} s. {label}: {estimate.seconds:.0f} s. Proceed?"
+
+
+def time_lapse_pacing_choice(
+    multi_point_controller: MultiPointController,
+    logger: logging.Logger,
+    parent=None,
+    probe_note: str = "",
+) -> PacingChoice:
+    """Pre-flight pacing dialog, shown for EVERY time lapse (Nt > 1).
+
+    It appears even when the estimate fits inside dt, so the operator always has the option
+    to measure the interval on real hardware instead of trusting the open-loop model.  This
+    is advisory, never a veto: an overrunning time lapse still acquires every requested time
+    point, it just stretches out.
+    """
+    Nt = multi_point_controller.Nt
+    dt = multi_point_controller.deltat
+    if Nt <= 1 or dt <= 0:
+        return PacingChoice.PROCEED  # single time point, or continuous mode - nothing to pace against
+
+    try:
+        estimate = multi_point_controller.get_time_point_estimate()
+    except Exception:
+        logger.exception("Could not estimate time point duration; skipping the time-lapse pacing check.")
+        return PacingChoice.PROCEED
+
+    logger.info(
+        f"Time-lapse pacing check: {'measured' if estimate.measured else 'estimated'} "
+        f"{estimate.seconds:.1f} [s] per time point ({estimate.per_fov_s:.2f} [s]/FOV x {estimate.n_fovs} FOVs), "
+        f"{dt=} [s], {Nt=}"
+    )
+    if estimate.seconds > dt:
+        logger.warning(
+            f"Time point estimate ({estimate.seconds:.1f} s) exceeds dt ({dt:.1f} s) for a {Nt} time point run."
+        )
+
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Warning if estimate.seconds > dt else QMessageBox.Question)
+    box.setWindowTitle("Time-Lapse Pacing")
+    box.setText(pacing_message(dt, estimate, probe_note))
+
+    simulate_button = None
+    refusal = multi_point_controller.timing_probe_refusal_reason()
+    if refusal is None:
+        simulate_button = box.addButton("Re-simulate" if estimate.measured else "Simulate", QMessageBox.ActionRole)
+    else:
+        logger.info(f"Simulate unavailable: {refusal}")
+    proceed_button = box.addButton("Proceed", QMessageBox.AcceptRole)
+    box.addButton("Cancel", QMessageBox.RejectRole)
+    box.setDefaultButton(proceed_button)
+    box.exec_()
+
+    clicked = box.clickedButton()
+    if simulate_button is not None and clicked is simulate_button:
+        return PacingChoice.SIMULATE
+    return PacingChoice.PROCEED if clicked is proceed_button else PacingChoice.CANCEL
+
+
+def probe_note_for(result) -> str:
+    """Short note for a probe whose measurement must not be trusted, else ''."""
+    if result.aborted:
+        return "Simulation stopped."
+    if not result.ok or not result.per_fov_s:
+        return "Simulation failed."
+    if result.laser_af_failures:
+        # A FOV whose autofocus failed did not do the work a real FOV will do.
+        return "Simulation AF failed."
+    return ""
+
+
+def resource_allocation_dialog(parent=None):
+    """Tell the operator that mosaic view is being traded away for this run."""
+    msg = QMessageBox(parent)
+    msg.setIcon(QMessageBox.Information)
+    msg.setText("Mosaic View will be disabled for this Run.")
+    msg.setWindowTitle("Resource Allocation")
+    msg.setStandardButtons(QMessageBox.Ok)
+    msg.setDefaultButton(QMessageBox.Ok)
+    msg.exec_()
+
+
+def mosaic_ram_exceeds_available(
     multi_point_controller: MultiPointController,
     logger: logging.Logger,
     factor_of_safety: float = 1.15,
     performance_mode: bool = False,
-    show_dialog: bool = True,
 ) -> bool:
-    """Check if enough RAM is available for mosaic view."""
+    """True if this acquisition's mosaic view would not fit in available RAM.
+
+    This only reports the condition — it does not veto the acquisition. Only the live
+    mosaic preview is unaffordable in this situation, not the run itself, so the caller
+    turns Performance Mode on for the run instead of refusing to start.
+    """
     import psutil
 
-    # Skip check if performance mode is enabled (mosaic view is disabled)
+    # Mosaic view is already off in performance mode, so there is nothing to fit.
     if performance_mode:
         logger.info("Performance mode enabled, skipping RAM check for mosaic view")
-        return True
+        return False
 
     ram_required = factor_of_safety * multi_point_controller.get_estimated_mosaic_ram_bytes()
     available_ram = psutil.virtual_memory().available
@@ -155,16 +279,13 @@ def check_ram_available_with_error_dialog(
     if ram_required > available_ram:
         mb_required = int(ram_required / 1024 / 1024)
         mb_available = int(available_ram / 1024 / 1024)
-        error_message = (
-            f"This acquisition's mosaic view will require approximately {mb_required:,} MB RAM, "
-            f"but only {mb_available:,} MB is currently available.\n\n"
-            f"Consider enabling Performance Mode to disable mosaic view during acquisition."
+        logger.warning(
+            f"This acquisition's mosaic view would require approximately {mb_required:,} MB RAM, "
+            f"but only {mb_available:,} MB is currently available. "
+            f"Enabling Performance Mode for this run."
         )
-        logger.error(error_message)
-        if show_dialog:
-            error_dialog(error_message, title="Not Enough RAM")
-        return False
-    return True
+        return True
+    return False
 
 
 def get_last_used_saving_path() -> str:
@@ -1310,6 +1431,98 @@ class AcquisitionYAMLDropMixin:
         raise NotImplementedError("Subclass must implement _apply_yaml_settings()")
 
 
+class _TimingSimulationMixin:
+    """Mixin providing the "simulate run to estimate interval timing" round trip.
+
+    Widgets using this mixin must have ``self.multipointController`` (a
+    QtMultiPointController, for its ``timing_probe_finished`` signal), ``self._log``,
+    ``self.btn_startAcquisition``, and ``setEnabled_all(bool)``.  Call
+    ``_init_timing_simulation()`` from __init__ and connect
+    ``multipointController.timing_probe_finished`` to ``_on_timing_probe_finished``.
+    """
+
+    def _init_timing_simulation(self):
+        # Carried into the next pacing dialog so a failed simulation explains itself there
+        # rather than in a separate popup.
+        self._probe_note = ""
+        self._simulation_dialog = None
+        # timing_probe_finished lives on the shared controller, so EVERY multipoint widget
+        # receives it.  Only the one that launched the probe may react -- the same ownership
+        # rule is_current_acquisition_widget enforces for acquisition_finished.  Without it
+        # the other widget also re-enters toggle_acquisition and trips its own start guards.
+        self._timing_simulation_is_mine = False
+
+    def _start_timing_simulation(self):
+        refusal = self.multipointController.timing_probe_refusal_reason()
+        if refusal:
+            error_dialog(f"Cannot simulate: {refusal}", title="Simulate Run")
+            return
+
+        self._timing_simulation_is_mine = True
+        self.setEnabled_all(False)
+        self.btn_startAcquisition.setEnabled(False)
+        self._show_simulation_dialog()
+
+        try:
+            refusal = self.multipointController.run_timing_probe(
+                on_finished=self.multipointController.timing_probe_finished.emit
+            )
+        except Exception:
+            # The probe undid whatever it had set up before raising; without this the tab
+            # would stay disabled behind the progress dialog.
+            self._log.exception("Timing probe could not be started")
+            refusal = "the simulation could not be started"
+        if refusal is not None:
+            # Refused between the check above and the launch (e.g. a run started meanwhile).
+            self._log.warning(f"Timing probe refused at launch: {refusal}")
+            self._on_timing_probe_finished(None)
+
+    def _show_simulation_dialog(self):
+        from qtpy.QtWidgets import QProgressDialog
+        from qtpy.QtCore import Qt
+
+        # Non-modal and always-on-top, matching the laser-engine wait dialog: the operator
+        # must be able to reach the rest of the UI if the probe hangs.
+        self._simulation_dialog = QProgressDialog("Simulating 2 FOVs (no illumination)…", "Stop", 0, 0, self)
+        self._simulation_dialog.setWindowTitle("Simulate Run")
+        self._simulation_dialog.setWindowModality(Qt.NonModal)
+        self._simulation_dialog.setWindowFlags(self._simulation_dialog.windowFlags() | Qt.WindowStaysOnTopHint)
+        self._simulation_dialog.setMinimumDuration(0)
+        self._simulation_dialog.canceled.connect(self.multipointController.request_abort_aquisition)
+        self._simulation_dialog.show()
+
+    def _hide_simulation_dialog(self):
+        if self._simulation_dialog is not None:
+            self._simulation_dialog.close()
+            self._simulation_dialog = None
+
+    def _on_timing_probe_finished(self, result):
+        if not self._timing_simulation_is_mine:
+            return  # another multipoint widget launched this probe; it owns the result
+        self._timing_simulation_is_mine = False
+
+        self._hide_simulation_dialog()
+        self.setEnabled_all(True)
+        self.btn_startAcquisition.setEnabled(True)
+
+        if result is None:
+            self._probe_note = "Simulation failed."
+        else:
+            self._probe_note = probe_note_for(result)
+            if result.usable():
+                self.multipointController.set_measured_per_fov_s(
+                    result.per_fov_s,
+                    context={"n_fovs_probed": result.n_fovs_probed, "note": result.note},
+                )
+                self._log.info(f"Timing simulation measured {result.per_fov_s:.2f} [s] per FOV")
+            else:
+                self._log.warning(f"Timing simulation not usable: {self._probe_note} ({result.note})")
+
+        # Re-open the pacing dialog, now reading "Measured:" (or explaining the failure).
+        self.btn_startAcquisition.setChecked(True)
+        self.toggle_acquisition(True)
+
+
 class _ApplyChannelOffsetMixin:
     """Mixin providing the laser-AF per-channel Z-offset checkbox + handlers.
 
@@ -1356,6 +1569,38 @@ class _ApplyChannelOffsetMixin:
 
     def _on_apply_channel_offset_changed(self, checked: bool):
         self.multipointController.set_apply_channel_offset(checked)
+
+
+class _NyquistDefaultDzMixin:
+    """Mixin giving a widget a z step default that follows the objective in use.
+
+    The default step is Nyquist-ish for the current objective's NA rather than one fixed
+    number for every objective, so a 4x does not start out oversampled and a 40x
+    undersampled. Hosts need ``self.objectiveStore`` (may be None, in which case the default
+    follows DEFAULT_OBJECTIVE) and a z-step spin box named by ``_DZ_ENTRY_ATTR``;
+    ``self.entry_zRange``, if present, follows along.
+    """
+
+    _DZ_ENTRY_ATTR = "entry_deltaZ"
+
+    def default_dz_um(self) -> float:
+        objective = self.objectiveStore.current_objective if getattr(self, "objectiveStore", None) else None
+        return control._def.default_dz_um(objective)
+
+    def apply_default_dz(self):
+        """Reset the z step to the current objective's default (used on objective change).
+
+        This deliberately overwrites a hand-entered step: the step that was right for the
+        old objective is the wrong sampling for the new one, and leaving it silently stale
+        is how a 40x stack ends up sampled for a 4x.
+        """
+        dz = self.default_dz_um()
+        entry_dz = getattr(self, self._DZ_ENTRY_ATTR)
+        if hasattr(self, "entry_zRange"):
+            # Ratio, not absolute: keep however many steps of range the operator set up.
+            steps = self.entry_zRange.value() / entry_dz.value() if entry_dz.value() else 4
+            self.entry_zRange.setValue(max(self.entry_zRange.minimum(), round(dz * steps, 3)))
+        entry_dz.setValue(dz)
 
 
 class AcquisitionYAMLMismatchDialog(QDialog):
@@ -7028,12 +7273,17 @@ class DACControWidget(QFrame):
         self.microcontroller.analog_write_onboard_DAC(1, round(value * 65535 / 100))
 
 
-class AutoFocusWidget(QFrame):
+class AutoFocusWidget(_NyquistDefaultDzMixin, QFrame):
     signal_autoLevelSetting = Signal(bool)
 
-    def __init__(self, autofocusController, main=None, *args, **kwargs):
+    # The contrast-AF search step, not a stack step, but it wants the same sampling.
+    _DZ_ENTRY_ATTR = "entry_delta"
+
+    def __init__(self, autofocusController, objectiveStore=None, main=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.autofocusController = autofocusController
+        # Optional: without it the contrast-AF step defaults for DEFAULT_OBJECTIVE and stays put.
+        self.objectiveStore = objectiveStore
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -7046,10 +7296,11 @@ class AutoFocusWidget(QFrame):
         self.entry_delta.setSingleStep(0.2)
         self.entry_delta.setDecimals(3)
         self.entry_delta.setSuffix(" μm")
-        self.entry_delta.setValue(1.524)
+        default_delta = self.default_dz_um()
+        self.entry_delta.setValue(default_delta)
         self.entry_delta.setKeyboardTracking(False)
         self.entry_delta.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.autofocusController.set_deltaZ(1.524)
+        self.autofocusController.set_deltaZ(default_delta)
 
         self.entry_N = QSpinBox()
         self.entry_N.setMinimum(3)
@@ -7578,11 +7829,18 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class FlexibleMultiPointWidget(
+    AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _TimingSimulationMixin, _NyquistDefaultDzMixin, QFrame
+):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
     signal_acquisition_shape = Signal(int, float)  # Nz, dz
+    # This run's mosaic view will not fit in RAM; ask the GUI to enter Performance Mode
+    # for the duration of the run. Emitted before run_acquisition() so the connection
+    # (direct, same thread) has taken effect by the time the acquisition starts. The
+    # argument is False for an unattended start, which must not be followed by a dialog.
+    signal_request_mosaic_disable = Signal(bool)
 
     def __init__(
         self,
@@ -7620,6 +7878,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.setup_connections()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.is_current_acquisition_widget = False
+        self._init_timing_simulation()
         self.acquisition_in_place = False
 
     def add_components(self):
@@ -7643,7 +7902,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.dropdown_location_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btn_add = QPushButton("Add")
         self.btn_remove = QPushButton("Remove")
-        self.btn_previous = QPushButton("Previous")
+        self.btn_previous = QPushButton("Prev")
         self.btn_next = QPushButton("Next")
         self.btn_clear = QPushButton("Clear")
 
@@ -7658,7 +7917,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.table_location_list.setColumnCount(4)
         header_labels = ["x", "y", "z", "ID"]
         self.table_location_list.setHorizontalHeaderLabels(header_labels)
-        self.btn_update_z = QPushButton("Update Z")
+        self.btn_update_xy = QPushButton("Set XY")
+        self.btn_update_z = QPushButton("Set Z")
 
         self.entry_deltaX = QDoubleSpinBox()
         self.entry_deltaX.setMinimum(0)
@@ -7712,7 +7972,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.entry_deltaZ.setMinimum(0)
         self.entry_deltaZ.setMaximum(1000)
         self.entry_deltaZ.setSingleStep(0.1)
-        self.entry_deltaZ.setValue(Acquisition.DZ)
+        self.entry_deltaZ.setValue(self.default_dz_um())
         self.entry_deltaZ.setDecimals(3)
         self.entry_deltaZ.setSuffix(" μm")
         self.entry_deltaZ.setKeyboardTracking(False)
@@ -7724,6 +7984,24 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.entry_NZ.setSingleStep(1)
         self.entry_NZ.setValue(1)
         self.entry_NZ.setKeyboardTracking(False)
+
+        # "Relative" mode: total z travel the stack covers, centred on whatever plane the
+        # active focus method (laser AF, contrast AF, focus map, stored point z) lands on.
+        self.entry_zRange = QDoubleSpinBox()
+        self.entry_zRange.setKeyboardTracking(False)
+        self.entry_zRange.setMinimum(0.1)
+        self.entry_zRange.setMaximum(2000)
+        self.entry_zRange.setSingleStep(1)
+        self.entry_zRange.setValue(round(self.default_dz_um() * 4, 3))
+        self.entry_zRange.setDecimals(3)
+        self.entry_zRange.setSuffix(" μm")
+        self.entry_zRange.setToolTip(
+            "Total z range the stack covers, centred on the focus plane.\n"
+            "Nz is rounded up to the next odd number so one slice sits exactly on it."
+        )
+        self.label_zRange = QLabel("range")
+        self.label_actual_range = QLabel("")
+        self.label_actual_range.setToolTip("Actual z range covered: (Nz - 1) x dz")
 
         self.entry_dt = QDoubleSpinBox()
         self.entry_dt.setKeyboardTracking(False)
@@ -7800,8 +8078,12 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_skipSaving = QCheckBox("Skip Saving")
         self.checkbox_skipSaving.setChecked(False)
 
-        self.checkbox_set_z_range = QCheckBox("Set Z-range")
-        self.checkbox_set_z_range.toggled.connect(self.toggle_z_range_controls)
+        # Z mode: replaces the old two-state "Set Z-range" checkbox so "Relative"
+        # (stack centred on the focus plane) can be offered alongside it.
+        self.label_z_mode = QLabel("Z mode")
+        self.combobox_z_mode = QComboBox()
+        self.combobox_z_mode.addItems(Z_MODES)
+        self.combobox_z_mode.currentTextChanged.connect(self.on_z_mode_changed)
 
         # Add new components for Z-range
         self.entry_minZ = QDoubleSpinBox()
@@ -7826,9 +8108,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.set_maxZ_button = QPushButton("Set")
         self.set_maxZ_button.clicked.connect(self.set_z_max)
 
-        self.combobox_z_stack = QComboBox()
-        self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
-
         self.combobox_z_order = QComboBox()
         for order in Z_STACK_ORDERS:
             self.combobox_z_order.addItem(order.title(), order)
@@ -7844,6 +8123,12 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        # Writes the acquisition.yaml a run would write (settings + positions) without running.
+        self.btn_saveSettings = QPushButton("Save Settings…")
+        self.btn_saveSettings.setToolTip(
+            "Save these settings and the positions to an acquisition.yaml without acquiring"
+        )
 
         # Add snap images button
         self.btn_snap_images = QPushButton("Snap Images")
@@ -7872,13 +8157,17 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         temp3.addWidget(QLabel("Location List"))
         temp3.addWidget(self.dropdown_location_list)
         self.grid_location_list_line1.addLayout(temp3, 0, 0, 1, 6)  # Span across all columns except the last
-        self.grid_location_list_line1.addWidget(self.btn_update_z, 0, 6, 1, 2)  # Align with other buttons
+        # Set XY / Set Z split the width the single Update Z button used to occupy
+        self.grid_location_list_line1.addWidget(self.btn_update_xy, 0, 6, 1, 1)
+        self.grid_location_list_line1.addWidget(self.btn_update_z, 0, 7, 1, 1)
 
         self.grid_location_list_line2 = QGridLayout()
         # Make all buttons span 2 columns for consistent width
         self.grid_location_list_line2.addWidget(self.btn_add, 1, 0, 1, 2)
         self.grid_location_list_line2.addWidget(self.btn_remove, 1, 2, 1, 2)
-        self.grid_location_list_line2.addWidget(self.btn_next, 1, 4, 1, 2)
+        # Prev / Next split the width the single Next button used to occupy
+        self.grid_location_list_line2.addWidget(self.btn_previous, 1, 4, 1, 1)
+        self.grid_location_list_line2.addWidget(self.btn_next, 1, 5, 1, 1)
         self.grid_location_list_line2.addWidget(self.btn_clear, 1, 6, 1, 2)
 
         self.grid_location_list_line3 = QGridLayout()
@@ -7923,11 +8212,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         # Create second row layouts
         dz_half = QHBoxLayout()
+        dz_half.addWidget(self.label_zRange)
+        dz_half.addWidget(self.entry_zRange)
         dz_half.addWidget(QLabel("dz"))
         dz_half.addWidget(self.entry_deltaZ)
         dz_half.addStretch(1)
         dz_half.addWidget(QLabel("Nz"))
         dz_half.addWidget(self.entry_NZ)
+        dz_half.addWidget(self.label_actual_range)
         dz_half.addWidget(self.combobox_z_order)
         dz_half.addSpacing(EDGE_SPACING)
 
@@ -7977,7 +8269,11 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             if IS_PIEZO_ONLY:
                 self.checkbox_usePiezo.setChecked(True)
                 self.checkbox_usePiezo.setVisible(False)
-        grid_af.addWidget(self.checkbox_set_z_range)
+        z_mode_row = QHBoxLayout()
+        z_mode_row.setContentsMargins(0, 0, 0, 0)
+        z_mode_row.addWidget(self.label_z_mode)
+        z_mode_row.addWidget(self.combobox_z_mode)
+        grid_af.addLayout(z_mode_row)
         grid_af.addWidget(self.checkbox_skipSaving)
 
         grid_config = QHBoxLayout()
@@ -7987,6 +8283,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
+        button_layout.addWidget(self.btn_saveSettings)
 
         grid_acquisition = QHBoxLayout()
         grid_acquisition.addSpacing(EDGE_SPACING)
@@ -8053,9 +8350,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
+        self.btn_saveSettings.clicked.connect(self._on_save_settings_clicked)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
+        self.multipointController.timing_probe_finished.connect(self._on_timing_probe_finished)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
-        # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
@@ -8074,13 +8372,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.table_location_list.cellClicked.connect(self.cell_was_clicked)
         self.table_location_list.cellChanged.connect(self.cell_was_changed)
         self.btn_show_table_location_list.clicked.connect(self.table_location_list.show)
+        self.btn_update_xy.clicked.connect(self.update_xy)
         self.btn_update_z.clicked.connect(self.update_z)
         self.dropdown_location_list.currentIndexChanged.connect(self.go_to)
 
         self.shortcut = QShortcut(QKeySequence(";"), self)
         self.shortcut.activated.connect(self.btn_add.click)
 
-        self.toggle_z_range_controls(False)
+        self._apply_z_mode_ui()  # hides Z-min/Z-max and the Relative range entry initially
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
 
@@ -8141,6 +8440,58 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.updateGeometry()
         self.update()
 
+    def on_z_mode_changed(self, mode):
+        """Handle Z mode dropdown change"""
+        self._apply_z_mode_ui(mode)
+        self._log.debug(f"Z mode changed to: {mode}")
+
+    def _apply_z_mode_ui(self, mode=None):
+        """Bring every z control into the state the given z mode requires."""
+        if mode is None:
+            mode = self.combobox_z_mode.currentText()
+
+        # Z-min/Z-max belong to "Set Range" only.  toggle_z_range_controls also owns the
+        # laser-AF force-off and the Nz enablement for that mode.
+        self.toggle_z_range_controls(mode == Z_MODE_SET_RANGE)
+
+        is_relative = mode == Z_MODE_RELATIVE
+        for widget in (self.label_zRange, self.entry_zRange, self.label_actual_range):
+            widget.setVisible(is_relative)
+
+        # In Relative mode Nz is derived from range and dz, so it is display-only -- but
+        # unlike "Set Range", laser AF is exactly the point of the mode and stays available.
+        if is_relative:
+            self.entry_NZ.setEnabled(False)
+            self.checkbox_withReflectionAutofocus.setEnabled(True)
+        elif mode == Z_MODE_FROM_BOTTOM:
+            self.entry_NZ.setEnabled(True)
+
+        self._connect_relative_z_signals(is_relative)
+        if is_relative:
+            self.update_Nz_relative()
+
+    def _connect_relative_z_signals(self, connect):
+        """Wire (or unwire) the range/dz -> Nz recompute for Relative mode."""
+        for signal in (self.entry_zRange.valueChanged, self.entry_deltaZ.valueChanged):
+            # Always drop first: _apply_z_mode_ui runs from several entry points, and Qt
+            # happily stacks duplicate connections.
+            try:
+                signal.disconnect(self.update_Nz_relative)
+            except TypeError:
+                pass
+            if connect:
+                signal.connect(self.update_Nz_relative)
+
+    def update_Nz_relative(self):
+        """Recompute the read-only Nz for Relative mode, and show the range actually covered."""
+        dz = self.entry_deltaZ.value()
+        if dz <= 0:
+            self.label_actual_range.setText("")
+            return
+        nz = relative_stack_Nz(self.entry_zRange.value(), dz)
+        self.entry_NZ.setValue(nz)
+        self.label_actual_range.setText(f"(± {(nz - 1) * dz / 2:.2f} μm)")
+
     def init_z(self, z_pos_mm=None):
         if z_pos_mm is None:
             z_pos_mm = self.stage.get_pos().z_mm
@@ -8183,22 +8534,103 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         ):
             error_dialog("Failed to set reference for reflection autofocus. Is the laser autofocus initialized?")
 
-    def update_z(self):
-        z_mm = self.stage.get_pos().z_mm
+    @staticmethod
+    def _location_str(x_mm, y_mm, z_mm):
+        """Single source of truth for the location list display string."""
+        return f"x:{round(x_mm,3)} mm  y:{round(y_mm,3)} mm  z:{round(z_mm * 1000,1)} μm"
+
+    def _selected_location_index(self):
+        """Current location list index, or None when there is nothing selected."""
         index = self.dropdown_location_list.currentIndex()
+        if index < 0 or index >= len(self.location_list):
+            return None
+        return index
+
+    def update_z(self):
+        index = self._selected_location_index()
+        if index is None:
+            self._log.error("Cannot update Z, because no location is selected")
+            return
+
+        z_mm = self.stage.get_pos().z_mm
+        region_id = self.location_ids[index]
         self.location_list[index, 2] = z_mm
-        self.scanCoordinates.region_centers[self.location_ids[index]][2] = z_mm
-        self.scanCoordinates.region_fov_coordinates[self.location_ids[index]] = [
-            (coord[0], coord[1], z_mm)
-            for coord in self.scanCoordinates.region_fov_coordinates[self.location_ids[index]]
-        ]
-        location_str = f"x:{round(self.location_list[index,0],3)} mm  y:{round(self.location_list[index,1],3)} mm  z:{round(z_mm * 1000.0,3)} μm"
-        self.dropdown_location_list.setItemText(index, location_str)
+
+        # Z does not change the grid footprint, so the FOVs only need their z rewritten
+        if region_id in self.scanCoordinates.region_centers:
+            self.scanCoordinates.region_centers[region_id][2] = z_mm
+        if region_id in self.scanCoordinates.region_fov_coordinates:
+            self.scanCoordinates.region_fov_coordinates[region_id] = [
+                (coord[0], coord[1], z_mm) for coord in self.scanCoordinates.region_fov_coordinates[region_id]
+            ]
+
+        self.dropdown_location_list.setItemText(
+            index, self._location_str(self.location_list[index, 0], self.location_list[index, 1], z_mm)
+        )
+        # Keep the table in sync without re-entering cell_was_changed
+        self.table_location_list.blockSignals(True)
+        if self.table_location_list.rowCount() > index:
+            self.table_location_list.setItem(index, 2, QTableWidgetItem(str(round(z_mm * 1000, 1))))
+        self.table_location_list.blockSignals(False)
+
+    def update_xy(self):
+        index = self._selected_location_index()
+        if index is None:
+            self._log.error("Cannot update XY, because no location is selected")
+            return
+
+        pos = self.stage.get_pos()
+        x = pos.x_mm
+        y = pos.y_mm
+        z = self.location_list[index, 2]  # Z is left alone, that is what Set Z is for
+        region_id = self.location_ids[index]
+
+        # Erase the old grid rectangles before the region is re-tiled at the new center
+        if region_id in self.scanCoordinates.region_fov_coordinates:
+            self.navigationViewer.deregister_fovs_from_image(self.scanCoordinates.region_fov_coordinates[region_id])
+
+        self.location_list[index, 0] = x
+        self.location_list[index, 1] = y
+
+        # Re-tile the region at the new center; this re-registers its FOVs on the viewer
+        if self.use_overlap:
+            self.scanCoordinates.add_flexible_region(
+                region_id,
+                x,
+                y,
+                z,
+                self.entry_NX.value(),
+                self.entry_NY.value(),
+                overlap_percent=self.entry_overlap.value(),
+            )
+        else:
+            self.scanCoordinates.add_flexible_region_with_step_size(
+                region_id,
+                x,
+                y,
+                z,
+                self.entry_NX.value(),
+                self.entry_NY.value(),
+                self.entry_deltaX.value(),
+                self.entry_deltaY.value(),
+            )
+
+        self.dropdown_location_list.setItemText(index, self._location_str(x, y, z))
+        # Keep the table in sync without re-entering cell_was_changed
+        self.table_location_list.blockSignals(True)
+        if self.table_location_list.rowCount() > index:
+            self.table_location_list.setItem(index, 0, QTableWidgetItem(str(round(x, 3))))
+            self.table_location_list.setItem(index, 1, QTableWidgetItem(str(round(y, 3))))
+        self.table_location_list.blockSignals(False)
+
+        self.refresh_position_labels()
 
     def update_Nz(self):
         z_min = self.entry_minZ.value()
         z_max = self.entry_maxZ.value()
         dz = self.entry_deltaZ.value()
+        if dz <= 0:
+            return  # entry_deltaZ has minimum 0; don't blow up mid-edit
         nz = math.ceil((z_max - z_min) / dz) + 1
         self.entry_NZ.setValue(nz)
 
@@ -8314,6 +8746,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                     self.entry_deltaY.value(),
                 )
 
+        self.refresh_position_labels()
+
     def set_deltaZ(self, value):
         if self.checkbox_usePiezo.isChecked():
             deltaZ = value
@@ -8345,22 +8779,39 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         No dialogs, no start_new_experiment, no run - the Start button and the fluidics protocol's
         "Apply current settings" share this. Returns None, or a reason nothing further should happen.
         """
-        if self.checkbox_set_z_range.isChecked():
-            # Set Z-range (convert from μm to mm)
-            minZ = self.entry_minZ.value() / 1000
-            maxZ = self.entry_maxZ.value() / 1000
-            self.multipointController.set_z_range(minZ, maxZ)
-        else:
-            z = self.stage.get_pos().z_mm
-            dz = self.entry_deltaZ.value()
-            Nz = self.entry_NZ.value()
-            self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
-
         if self.checkbox_useFocusMap.isChecked():
             self.focusMapWidget.fit_surface()
             self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
         else:
             self.multipointController.set_focus_map(None)
+
+        self._push_settings_to_controller()
+        return None
+
+    def _push_settings_to_controller(self):
+        """Copy this tab's settings into the multipoint controller (Start and Save Settings both need them).
+
+        Settings only: the scan coordinates and the focus map are left alone, so saving the settings
+        does not disturb them.
+        """
+        z_mode = self.combobox_z_mode.currentText()
+        if z_mode == Z_MODE_SET_RANGE:
+            # Set Z-range (convert from μm to mm)
+            minZ = self.entry_minZ.value() / 1000
+            maxZ = self.entry_maxZ.value() / 1000
+            self.multipointController.set_z_range(minZ, maxZ)
+        elif z_mode == Z_MODE_RELATIVE:
+            # The stack is centred on whatever plane autofocus / the focus map / the
+            # stored per-point z lands on, so there is no absolute range to set.
+            # z_range[0] is only the per-time-point seed (initialize_z_stack).
+            z = self.stage.get_pos().z_mm
+            self.multipointController.set_z_range(z, z)
+        else:
+            z = self.stage.get_pos().z_mm
+            dz = self.entry_deltaZ.value()
+            Nz = self.entry_NZ.value()
+            self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
+        self.multipointController.set_z_stacking_config(z_mode_to_stacking_index(z_mode))
 
         # Set acquisition parameters
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
@@ -8375,7 +8826,45 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
         self.multipointController.set_widget_type("flexible")
         self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
-        return None
+
+    def _on_save_settings_clicked(self):
+        """Save the current settings and positions to a user-chosen acquisition.yaml (nothing is acquired)."""
+        if not self.list_configurations.selectedItems():
+            QMessageBox.warning(self, "Save Settings", "Please select at least one imaging channel")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Flexible Settings", "acquisition.yaml", "YAML Files (*.yaml *.yml)"
+        )
+        if path:
+            self.save_settings(path)
+
+    def save_settings(self, path: str) -> bool:
+        """Write the acquisition.yaml for the current settings to *path*. Returns True on success.
+
+        With no positions in the list the file carries none: a run would add the
+        current stage position, which is not a reusable setting. The positions come
+        from this tab's list, not the scan coordinates it shares with the other
+        multipoint tabs (those only hold this tab's regions while it is visible).
+        """
+        if self.multipointController.acquisition_in_progress():
+            QMessageBox.warning(self, "Save Settings", "An acquisition is running; save once it has finished")
+            return False
+        from control.core.multi_point_utils import ScanPositionInformation
+
+        self._push_settings_to_controller()
+        positions = ScanPositionInformation(
+            scan_region_coords_mm=[[float(v) for v in loc] for loc in self.location_list],
+            scan_region_names=[str(name) for name in self.location_ids],
+            scan_region_fov_coords_mm={},
+        )
+        try:
+            self.multipointController.save_settings_yaml(path, scan_position_information=positions)
+        except Exception as exc:
+            self._log.error(f"Failed to save settings to {path}: {exc}", exc_info=True)
+            QMessageBox.warning(self, "Save Error", f"Failed to save settings:\n{exc}")
+            return False
+        self._log.info(f"Settings saved to {path}")
+        return True
 
     def toggle_acquisition(self, pressed, interactive: bool = True):
         """Start or stop. ``interactive=False`` (an unattended workflow) logs a refusal instead of showing a dialog."""
@@ -8401,6 +8890,29 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             if problem:
                 self._refuse_start(problem, interactive)
                 return
+
+            # Ahead of start_new_experiment(): cancelling or diverting to a simulation here
+            # must not leave an empty timestamped experiment folder behind. An unattended
+            # start never opens the dialog.
+            choice = (
+                time_lapse_pacing_choice(self.multipointController, self._log, self, self._probe_note)
+                if interactive
+                else PacingChoice.PROCEED
+            )
+            self._probe_note = ""
+            if choice is PacingChoice.CANCEL:
+                self._log.info("User cancelled acquisition at the time-lapse pacing dialog.")
+                self.btn_startAcquisition.setChecked(False)
+                if self.acquisition_in_place:
+                    # Undo the location this start added for an empty list.
+                    self.clear_only_location_list()
+                    self.acquisition_in_place = False
+                return
+            if choice is PacingChoice.SIMULATE:
+                self.btn_startAcquisition.setChecked(False)
+                self._start_timing_simulation()
+                return
+
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
             if self.checkbox_skipSaving.isChecked():
@@ -8412,12 +8924,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 self.btn_startAcquisition.setChecked(False)
                 return
 
-            if not check_ram_available_with_error_dialog(
-                self.multipointController, self._log, performance_mode=self.performance_mode, show_dialog=interactive
+            # Not enough RAM for the live mosaic is not a reason to refuse the run — only
+            # the preview is unaffordable. Trade it away and carry on.
+            if mosaic_ram_exceeds_available(
+                self.multipointController, self._log, performance_mode=self.performance_mode
             ):
-                self._log.error("Failed to start acquisition.  Not enough RAM available.")
-                self.btn_startAcquisition.setChecked(False)
-                return
+                if interactive:
+                    resource_allocation_dialog(self)
+                self.signal_request_mosaic_disable.emit(interactive)
 
             # Update UI to show acquisition is running
             self._set_ui_acquisition_running(self.entry_NZ.value(), self.entry_deltaZ.value())
@@ -8529,6 +9043,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Re-enable signals
             self.table_location_list.blockSignals(False)
             self.dropdown_location_list.blockSignals(False)
+            self.refresh_position_labels()
             print(f"Added Region: {region_id} - x={x}, y={y}, z={z}")
         else:
             print("Invalid Region: Duplicate Location")
@@ -8586,6 +9101,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Re-enable signals
             self.table_location_list.blockSignals(False)
             self.dropdown_location_list.blockSignals(False)
+            self.refresh_position_labels()
 
     def next(self):
         index = self.dropdown_location_list.currentIndex()
@@ -8606,8 +9122,15 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.stage.move_z_to(z)
 
     def previous(self):
+        num_regions = self.dropdown_location_list.count()
+        if num_regions <= 0:
+            self._log.error("Cannot move to previous location, because there are no locations in the list")
+            return
+
         index = self.dropdown_location_list.currentIndex()
-        index = max(index - 1, 0)
+        # With nothing selected, stepping back should land on the last entry, not on
+        # (-1 - 1) % num_regions, which would silently skip to the second to last.
+        index = num_regions - 1 if index < 0 else (index - 1) % num_regions
         self.dropdown_location_list.setCurrentIndex(index)
         x = self.location_list[index, 0]
         y = self.location_list[index, 1]
@@ -8624,6 +9147,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.table_location_list.setRowCount(0)
         self.navigationViewer.clear_overlay()
 
+        self.refresh_position_labels()
         self._log.info("Cleared all locations and overlays.")
 
     def clear_only_location_list(self):
@@ -8631,6 +9155,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.location_ids = np.empty((0,), dtype="<U20")
         self.dropdown_location_list.clear()
         self.table_location_list.setRowCount(0)
+        self.refresh_position_labels()
 
     def go_to(self, index):
         if index != -1:
@@ -8642,6 +9167,22 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 self.stage.move_y_to(y)
                 self.stage.move_z_to(z)
                 self.table_location_list.selectRow(index)
+                self.navigationViewer.set_current_position(index, self._current_region_fovs(index))
+
+    def _current_region_fovs(self, index):
+        """FOV coordinates of the region at index, or None if there is no such region."""
+        if 0 <= index < len(self.location_ids):
+            return self.scanCoordinates.region_fov_coordinates.get(self.location_ids[index])
+        return None
+
+    def refresh_position_labels(self):
+        """Redraw the position number labels on the scan grid. Call after the list changes."""
+        labels = [
+            (self.location_list[i, 0], self.location_list[i, 1], str(i + 1)) for i in range(len(self.location_list))
+        ]
+        index = self.dropdown_location_list.currentIndex()
+        self.navigationViewer.set_position_labels(labels, current_index=index)
+        self.navigationViewer.set_current_position(index, self._current_region_fovs(index))
 
     def cell_was_clicked(self, row, column):
         self.dropdown_location_list.setCurrentIndex(row)
@@ -8697,6 +9238,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         location_str = f"x:{round(self.location_list[row,0],3)} mm  y:{round(self.location_list[row,1],3)} mm  z:{round(1000*self.location_list[row,2],3)} μm"
         self.dropdown_location_list.setItemText(row, location_str)
         self.go_to(row)
+        self.refresh_position_labels()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_A and event.modifiers() == Qt.ControlModifier:
@@ -8811,6 +9353,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                     self._log.warning("Duplicate values not added based on x and y.")
             self.table_location_list.blockSignals(False)
             self.dropdown_location_list.blockSignals(False)
+            self.refresh_position_labels()
             self._log.debug(self.location_list)
 
     def on_snap_images(self):
@@ -8831,6 +9374,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
+        # NZ is 1 here so the stacking config is inert, but the controller keeps it between
+        # runs -- reset it so a snap after a Relative acquisition can't inherit FROM CENTER.
+        self.multipointController.set_z_stacking_config(0)
 
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
@@ -8886,6 +9432,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
     def setEnabled_all(self, enabled, exclude_btn_startAcquisition=True):
         self.btn_setSavingDir.setEnabled(enabled)
+        self.btn_saveSettings.setEnabled(enabled)
         self.lineEdit_savingDir.setEnabled(enabled)
         self.lineEdit_experimentID.setEnabled(enabled)
         self.entry_NX.setEnabled(enabled)
@@ -8906,7 +9453,15 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withAutofocus.setEnabled(enabled)
         self.checkbox_withReflectionAutofocus.setEnabled(enabled)
         self.checkbox_stitchOutput.setEnabled(enabled)
-        self.checkbox_set_z_range.setEnabled(enabled)
+        self.combobox_z_mode.setEnabled(enabled)
+        self.entry_zRange.setEnabled(enabled)
+
+        # Nz is derived (read-only) in "Set Range" and "Relative"; the blanket
+        # entry_NZ.setEnabled(enabled) above would otherwise hand it back to the user.
+        # Deliberately not a full _apply_z_mode_ui() -- this runs after every acquisition,
+        # and re-applying "Set Range" would re-reference the laser AF as a side effect.
+        if enabled and self.combobox_z_mode.currentText() in (Z_MODE_SET_RANGE, Z_MODE_RELATIVE):
+            self.entry_NZ.setEnabled(False)
 
         if exclude_btn_startAcquisition is not True:
             self.btn_startAcquisition.setEnabled(enabled)
@@ -8963,8 +9518,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             self.entry_NY,
             self.entry_NZ,
             self.entry_deltaZ,
+            self.entry_zRange,
             self.entry_Nt,
             self.entry_dt,
+            self.combobox_z_mode,
             self.list_configurations,
             self.checkbox_withAutofocus,
             self.checkbox_withReflectionAutofocus,
@@ -8997,6 +9554,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
             self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
 
+            z_mode = _YAML_Z_CONFIG_TO_Z_MODE.get(yaml_data.z_stacking_config, Z_MODE_FROM_BOTTOM)
+            self.combobox_z_mode.setCurrentText(z_mode)
+            if z_mode == Z_MODE_RELATIVE:
+                # The YAML carries nz/dz, not a range; derive the range the stack covers so
+                # the (read-only) Nz recompute reproduces the same nz.
+                self.entry_zRange.setValue(max(0.1, (yaml_data.nz - 1) * yaml_data.delta_z_um))
+
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
 
@@ -9020,6 +9584,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Unblock all signals
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+
+            # Signals were blocked, so bring the z controls in line with the loaded mode
+            self._apply_z_mode_ui()
 
             # Update FOV positions to reflect new NX, NY, delta values
             self.update_fov_positions()
@@ -9088,6 +9655,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                     self.entry_deltaY.value(),
                 )
 
+        self.refresh_position_labels()
+
 
 def _warn_if_coordinates_stale(widget, stamp):
     """Shared by both load_coordinates widgets: stamped file + changed placement -> warn, still load."""
@@ -9099,13 +9668,20 @@ def _warn_if_coordinates_stale(widget, stamp):
         QMessageBox.warning(widget, "Coordinates may be stale", stale)
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class WellplateMultiPointWidget(
+    AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _TimingSimulationMixin, _NyquistDefaultDzMixin, QFrame
+):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
     signal_acquisition_shape = Signal(int, float)  # acquisition Nz, dz
     signal_manual_shape_mode = Signal(bool)  # enable manual shape layer on mosaic display
     signal_toggle_live_scan_grid = Signal(bool)  # enable/disable live scan grid
+    # This run's mosaic view will not fit in RAM; ask the GUI to enter Performance Mode
+    # for the duration of the run. Emitted before run_acquisition() so the connection
+    # (direct, same thread) has taken effect by the time the acquisition starts. The
+    # argument is False for an unattended start, which must not be followed by a dialog.
+    signal_request_mosaic_disable = Signal(bool)
     # Signal to set acquisition running state from any thread (used by TCP server)
     signal_set_acquisition_running = Signal(bool, int, float)  # is_running, nz, delta_z_um
 
@@ -9145,6 +9721,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.manual_shape = None
         self.eta_seconds = 0
         self.is_current_acquisition_widget = False
+        self._init_timing_simulation()
 
         self.shapes_mm = None
 
@@ -9162,7 +9739,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.cached_loaded_stamp = None
 
         # Add state tracking for Z parameters
-        self.stored_z_params = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": "From Bottom"}
+        self.stored_z_params = {
+            "dz": None,
+            "nz": None,
+            "z_min": None,
+            "z_max": None,
+            "z_range": None,
+            "z_mode": Z_MODE_FROM_BOTTOM,
+        }
 
         # Add state tracking for Time parameters
         self.stored_time_params = {"dt": None, "nt": None}
@@ -9265,7 +9849,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_deltaZ.setMinimum(0)
         self.entry_deltaZ.setMaximum(1000)
         self.entry_deltaZ.setSingleStep(0.1)
-        self.entry_deltaZ.setValue(Acquisition.DZ)
+        self.entry_deltaZ.setValue(self.default_dz_um())
         self.entry_deltaZ.setDecimals(3)
         # self.entry_deltaZ.setEnabled(False)
         self.entry_deltaZ.setSuffix(" μm")
@@ -9277,6 +9861,25 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_NZ.setSingleStep(1)
         self.entry_NZ.setValue(1)
         self.entry_NZ.setEnabled(False)
+
+        # "Relative" mode: total z travel the stack covers, centred on whatever plane the
+        # active focus method (laser AF, contrast AF, focus map, stored point z) lands on.
+        self.entry_zRange = QDoubleSpinBox()
+        self.entry_zRange.setKeyboardTracking(False)
+        self.entry_zRange.setMinimum(0.1)
+        self.entry_zRange.setMaximum(2000)
+        self.entry_zRange.setSingleStep(1)
+        self.entry_zRange.setValue(round(self.default_dz_um() * 4, 3))
+        self.entry_zRange.setDecimals(3)
+        self.entry_zRange.setSuffix(" μm")
+        self.entry_zRange.setToolTip(
+            "Total z range the stack covers, centred on the focus plane.\n"
+            "Nz is rounded up to the next odd number so one slice sits exactly on it."
+        )
+        self.entry_zRange.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.label_zRange = QLabel("range")
+        self.label_actual_range = QLabel("")
+        self.label_actual_range.setToolTip("Actual z range covered: (Nz - 1) x dz")
 
         self.entry_dt = QDoubleSpinBox()
         self.entry_dt.setKeyboardTracking(False)
@@ -9292,10 +9895,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_Nt.setMaximum(5000)
         self.entry_Nt.setSingleStep(1)
         self.entry_Nt.setValue(1)
-
-        self.combobox_z_stack = QComboBox()
-        self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
-        self.combobox_z_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.combobox_z_order = QComboBox()
         for order in Z_STACK_ORDERS:
@@ -9359,6 +9958,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.btn_startAcquisition.setChecked(False)
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
+        # Writes the acquisition.yaml a run would write (settings + selected wells) without
+        # running: the survey file for the two-magnification workflow, or any reusable settings file.
+        self.btn_saveSettings = QPushButton("Save Settings…")
+        self.btn_saveSettings.setToolTip(
+            "Save these settings and the selected wells to an acquisition.yaml without acquiring"
+        )
+
         self.progress_label = QLabel("Region -/-")
         self.progress_bar = QProgressBar()
         self.eta_label = QLabel("--:--:--")
@@ -9400,7 +10006,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_z.setChecked(False)
 
         self.combobox_z_mode = QComboBox()
-        self.combobox_z_mode.addItems(["From Bottom", "Set Range"])
+        self.combobox_z_mode.addItems(Z_MODES)
         self.combobox_z_mode.setEnabled(False)  # Initially disabled since Z is unchecked
 
         z_layout = QHBoxLayout()
@@ -9487,10 +10093,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.dz_layout = QHBoxLayout()
         self.dz_layout.setContentsMargins(4, 2, 4, 2)
+        self.dz_layout.addWidget(self.label_zRange)
+        self.dz_layout.addWidget(self.entry_zRange)
         self.dz_layout.addWidget(QLabel("dz"))
         self.dz_layout.addWidget(self.entry_deltaZ)
         self.dz_layout.addWidget(QLabel("Nz"))
         self.dz_layout.addWidget(self.entry_NZ)
+        self.dz_layout.addWidget(self.label_actual_range)
         self.dz_layout.addWidget(self.combobox_z_order)
 
         self.z_controls_dz_frame.setLayout(self.dz_layout)
@@ -9588,6 +10197,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
+        button_layout.addWidget(self.btn_saveSettings)
 
         bottom_right = QHBoxLayout()
         bottom_right.addLayout(options_layout)
@@ -9638,6 +10248,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # Connections
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
+        self.btn_saveSettings.clicked.connect(self._on_save_settings_clicked)
         self.entry_deltaZ.valueChanged.connect(self.set_deltaZ)
         self.entry_NZ.valueChanged.connect(self.multipointController.set_NZ)
         self.entry_dt.valueChanged.connect(self.multipointController.set_deltat)
@@ -9658,6 +10269,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
+        self.multipointController.timing_probe_finished.connect(self._on_timing_probe_finished)
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
         self.signal_acquisition_started.connect(self.display_progress_bar)
@@ -9744,6 +10356,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 "nt": self.entry_Nt.value(),
                 "dz": self.entry_deltaZ.value(),
                 "nz": self.entry_NZ.value(),
+                "z_range_um": self.entry_zRange.value(),
                 "z_order": self.combobox_z_order.currentData(),
                 "contrast_af": self.checkbox_withAutofocus.isChecked(),
                 "laser_af": self.checkbox_withReflectionAutofocus.isChecked(),
@@ -9776,6 +10389,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_Nt.blockSignals(True)
             self.entry_deltaZ.blockSignals(True)
             self.entry_NZ.blockSignals(True)
+            self.entry_zRange.blockSignals(True)
             self.combobox_z_order.blockSignals(True)
             self.list_configurations.blockSignals(True)
             self.checkbox_withAutofocus.blockSignals(True)
@@ -9803,16 +10417,19 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             self.checkbox_z.setChecked(settings.get("z_enabled", False))
 
-            z_mode = settings.get("z_mode", "From Bottom")
-            if z_mode in ["From Bottom", "Set Range"]:
+            z_mode = settings.get("z_mode", Z_MODE_FROM_BOTTOM)
+            if z_mode in Z_MODES:
                 self.combobox_z_mode.setCurrentText(z_mode)
 
             self.checkbox_time.setChecked(settings.get("time_enabled", False))
             self.entry_overlap.setValue(settings.get("fov_overlap", 10))
             self.entry_dt.setValue(settings.get("dt", 0))
             self.entry_Nt.setValue(settings.get("nt", 1))
-            self.entry_deltaZ.setValue(settings.get("dz", 1.0))
+            # A cached step the operator chose wins; with nothing cached, fall back to the
+            # objective's default rather than a fixed 1 um.
+            self.entry_deltaZ.setValue(settings.get("dz") or self.default_dz_um())
             self.entry_NZ.setValue(settings.get("nz", 1))
+            self.entry_zRange.setValue(settings.get("z_range_um", self.entry_zRange.value()))
             z_order_index = self.combobox_z_order.findData(settings.get("z_order", Z_STACK_ORDER))
             if z_order_index >= 0:
                 self.combobox_z_order.setCurrentIndex(z_order_index)
@@ -9832,6 +10449,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_Nt.blockSignals(False)
             self.entry_deltaZ.blockSignals(False)
             self.entry_NZ.blockSignals(False)
+            self.entry_zRange.blockSignals(False)
             self.combobox_z_order.blockSignals(False)
             self.list_configurations.blockSignals(False)
             self.checkbox_withAutofocus.blockSignals(False)
@@ -9848,10 +10466,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Ensure Z controls and Z mode combobox are properly enabled based on loaded Z state
             self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
             if self.checkbox_z.isChecked():
+                # show_z_controls defers the per-mode wiring to _apply_z_mode_ui, so the
+                # loaded Z mode is honoured here without a special case per mode.
                 self.show_z_controls(True)
-                # Also ensure Z range controls are properly toggled based on loaded Z mode
-                if self.combobox_z_mode.currentText() == "Set Range":
-                    self.toggle_z_range_controls(True)
 
             # Ensure Time controls are properly shown based on loaded Time state
             if self.checkbox_time.isChecked():
@@ -10171,9 +10788,61 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
     def on_z_mode_changed(self, mode):
         """Handle Z mode dropdown change"""
-        # Show/hide Z-min/Z-max controls based on mode
-        self.toggle_z_range_controls(mode == "Set Range")
+        self._apply_z_mode_ui(mode)
         self._log.debug(f"Z mode changed to: {mode}")
+
+    def _apply_z_mode_ui(self, mode=None):
+        """Bring every z control into the state the given z mode requires.
+
+        Single source of truth for the three-way mode UI, so on_z_mode_changed, the
+        cache-load path and show_z_controls cannot drift apart.  setEnabled_all
+        deliberately re-applies only the Nz enablement -- see the note there.
+        """
+        if mode is None:
+            mode = self.combobox_z_mode.currentText()
+
+        # Z-min/Z-max belong to "Set Range" only.  toggle_z_range_controls also owns the
+        # laser-AF force-off and the Nz enablement for that mode.
+        self.toggle_z_range_controls(mode == Z_MODE_SET_RANGE)
+
+        is_relative = mode == Z_MODE_RELATIVE
+        z_enabled = self.checkbox_z.isChecked()
+        for widget in (self.label_zRange, self.entry_zRange, self.label_actual_range):
+            widget.setVisible(is_relative and z_enabled)
+
+        # In Relative mode Nz is derived from range and dz, so it is display-only -- but
+        # unlike "Set Range", laser AF is exactly the point of the mode and stays available.
+        if is_relative:
+            self.entry_NZ.setEnabled(False)
+            self.checkbox_withReflectionAutofocus.setEnabled(True)
+        elif mode == Z_MODE_FROM_BOTTOM:
+            self.entry_NZ.setEnabled(True)
+
+        self._connect_relative_z_signals(is_relative)
+        if is_relative:
+            self.update_Nz_relative()
+
+    def _connect_relative_z_signals(self, connect):
+        """Wire (or unwire) the range/dz -> Nz recompute for Relative mode."""
+        for signal in (self.entry_zRange.valueChanged, self.entry_deltaZ.valueChanged):
+            # Always drop first: _apply_z_mode_ui runs from several entry points, and Qt
+            # happily stacks duplicate connections.
+            try:
+                signal.disconnect(self.update_Nz_relative)
+            except TypeError:
+                pass
+            if connect:
+                signal.connect(self.update_Nz_relative)
+
+    def update_Nz_relative(self):
+        """Recompute the read-only Nz for Relative mode, and show the range actually covered."""
+        dz = self.entry_deltaZ.value()
+        if dz <= 0:
+            self.label_actual_range.setText("")
+            return
+        nz = relative_stack_Nz(self.entry_zRange.value(), dz)
+        self.entry_NZ.setValue(nz)
+        self.label_actual_range.setText(f"(± {(nz - 1) * dz / 2:.2f} μm)")
 
     def on_time_toggled(self, checked):
         """Handle Time checkbox toggle"""
@@ -10248,6 +10917,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.stored_z_params["nz"] = self.entry_NZ.value()
         self.stored_z_params["z_min"] = self.entry_minZ.value()
         self.stored_z_params["z_max"] = self.entry_maxZ.value()
+        self.stored_z_params["z_range"] = self.entry_zRange.value()
         self.stored_z_params["z_mode"] = self.combobox_z_mode.currentText()
 
     def restore_z_parameters(self):
@@ -10260,6 +10930,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_minZ.setValue(self.stored_z_params["z_min"])
         if self.stored_z_params["z_max"] is not None:
             self.entry_maxZ.setValue(self.stored_z_params["z_max"])
+        if self.stored_z_params["z_range"] is not None:
+            self.entry_zRange.setValue(self.stored_z_params["z_range"])
         self.combobox_z_mode.setCurrentText(self.stored_z_params["z_mode"])
 
     def hide_z_controls(self):
@@ -10277,13 +10949,18 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 if widget:
                     widget.setVisible(False)
 
+        # Relative mode's range entry lives in dz_layout, but the loop above only hides the
+        # widgets it owns directly -- make sure the recompute is unwired while Z is off so a
+        # stray dz edit cannot overwrite the forced Nz=1 below.
+        self._connect_relative_z_signals(False)
+
         # Set single-slice parameters
         current_z = self.stage.get_pos().z_mm * 1000  # Convert to μm
         self.entry_NZ.setValue(1)
         self.entry_minZ.setValue(current_z)
         self.entry_maxZ.setValue(current_z)
         self.combobox_z_mode.blockSignals(True)
-        self.combobox_z_mode.setCurrentText("From Bottom")
+        self.combobox_z_mode.setCurrentText(Z_MODE_FROM_BOTTOM)
         self.combobox_z_mode.blockSignals(False)
 
     def show_z_controls(self, visible):
@@ -10294,10 +10971,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             if widget:
                 widget.setVisible(visible)
 
-        # Show/hide Z-min/Z-max based on dropdown selection AND visibility
-        # Only show range controls if Z is enabled (visible=True) AND mode is "Set Range"
-        show_range = visible and self.combobox_z_mode.currentText() == "Set Range"
-        self.toggle_z_range_controls(show_range)
+        if visible:
+            # Applies Z-min/Z-max visibility, the range entry, Nz enablement and the laser
+            # AF availability for the current mode.
+            self._apply_z_mode_ui()
+        else:
+            self.toggle_z_range_controls(False)
 
     def store_time_parameters(self):
         """Store current Time parameters before hiding controls"""
@@ -10604,6 +11283,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         z_min = self.entry_minZ.value()
         z_max = self.entry_maxZ.value()
         dz = self.entry_deltaZ.value()
+        if dz <= 0:
+            return  # entry_deltaZ has minimum 0; don't blow up mid-edit
         nz = math.ceil((z_max - z_min) / dz) + 1
         self.entry_NZ.setValue(nz)
 
@@ -10771,18 +11452,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.scanCoordinates.sort_coordinates()
 
-        if self.combobox_z_mode.currentText() == "Set Range":
-            # Set Z-range (convert from μm to mm)
-            minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
-            maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
-            self.multipointController.set_z_range(minZ, maxZ)
-            self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
-        else:
-            z = self.stage.get_pos().z_mm
-            dz = self.entry_deltaZ.value()
-            Nz = self.entry_NZ.value()
-            self.multipointController.set_z_range(z, z + dz * (Nz - 1))
-
         if self.checkbox_useFocusMap.isChecked():
             # Try to fit the surface; on success set the surface fitter in the controller
             if self.focusMapWidget.fit_surface():
@@ -10792,6 +11461,37 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         else:
             # If checkbox not checked, set surface fitter to None
             self.multipointController.set_focus_map(None)
+
+        self._push_settings_to_controller()
+        return None
+
+    def _push_settings_to_controller(self):
+        """Copy this tab's settings into the multipoint controller (Start and Save Settings both need them).
+
+        Settings only: the scan coordinates and the focus map are left alone, so saving the settings
+        does not disturb them.
+        """
+        z_mode = self.combobox_z_mode.currentText()
+        if z_mode == Z_MODE_SET_RANGE:
+            # Set Z-range (convert from μm to mm)
+            minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
+            maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
+            self.multipointController.set_z_range(minZ, maxZ)
+            self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
+        elif z_mode == Z_MODE_RELATIVE:
+            # The stack is centred on whatever plane autofocus / the focus map lands on,
+            # so there is no absolute range to set.  z_range[0] is only the per-time-point
+            # seed position (MultiPointWorker.initialize_z_stack); the real centre comes
+            # from perform_autofocus() and prepare_z_stack() offsets half a stack below it.
+            z = self.stage.get_pos().z_mm
+            self.multipointController.set_z_range(z, z)
+            self._log.debug(f"Relative z-stack centred on focus plane, seed z={z} [mm]")
+        else:
+            z = self.stage.get_pos().z_mm
+            dz = self.entry_deltaZ.value()  # μm
+            Nz = self.entry_NZ.value()
+            self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
+        self.multipointController.set_z_stacking_config(z_mode_to_stacking_index(z_mode))
 
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
@@ -10808,7 +11508,39 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.multipointController.set_overlap_percent(self.entry_overlap.value())
         self.multipointController.set_xy_mode(self.combobox_xy_mode.currentText())
         self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
-        return None
+
+    def _on_save_settings_clicked(self):
+        """Save the current settings and selected wells to a user-chosen acquisition.yaml (nothing is acquired)."""
+        if not self.list_configurations.selectedItems():
+            QMessageBox.warning(self, "Save Settings", "Please select at least one imaging channel")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Wellplate Settings", "acquisition.yaml", "YAML Files (*.yaml *.yml)"
+        )
+        if path:
+            self.save_settings(path)
+
+    def save_settings(self, path: str) -> bool:
+        """Write the acquisition.yaml for the current settings to *path*. Returns True on success.
+
+        With XY unchecked the file carries no regions: a run would image wherever the
+        stage happens to be, which is not a reusable setting.
+        """
+        if self.multipointController.acquisition_in_progress():
+            QMessageBox.warning(self, "Save Settings", "An acquisition is running; save once it has finished")
+            return False
+        self._push_settings_to_controller()
+        include_regions = self.checkbox_xy.isChecked()
+        if include_regions:
+            self.scanCoordinates.sort_coordinates()
+        try:
+            self.multipointController.save_settings_yaml(path, include_regions=include_regions)
+        except Exception as exc:
+            self._log.error(f"Failed to save settings to {path}: {exc}", exc_info=True)
+            QMessageBox.warning(self, "Save Error", f"Failed to save settings:\n{exc}")
+            return False
+        self._log.info(f"Settings saved to {path}")
+        return True
 
     def toggle_acquisition(self, pressed, interactive: bool = True):
         """Start or stop. ``interactive=False`` (an unattended workflow) logs a refusal instead of showing a dialog."""
@@ -10831,6 +11563,25 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             if problem:
                 self._refuse_start(problem, interactive)
                 return
+
+            # Ahead of start_new_experiment(): cancelling or diverting to a simulation here
+            # must not leave an empty timestamped experiment folder behind. An unattended
+            # start never opens the dialog.
+            choice = (
+                time_lapse_pacing_choice(self.multipointController, self._log, self, self._probe_note)
+                if interactive
+                else PacingChoice.PROCEED
+            )
+            self._probe_note = ""
+            if choice is PacingChoice.CANCEL:
+                self.btn_startAcquisition.setChecked(False)
+                self._log.info("User cancelled acquisition at the time-lapse pacing dialog.")
+                return
+            if choice is PacingChoice.SIMULATE:
+                self.btn_startAcquisition.setChecked(False)
+                self._start_timing_simulation()
+                return
+
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
             if self.checkbox_skipSaving.isChecked():
@@ -10842,12 +11593,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 self._log.error("Failed to start acquisition.  Not enough disk space available.")
                 return
 
-            if not check_ram_available_with_error_dialog(
-                self.multipointController, self._log, performance_mode=self.performance_mode, show_dialog=interactive
+            # Not enough RAM for the live mosaic is not a reason to refuse the run — only
+            # the preview is unaffordable. Trade it away and carry on.
+            if mosaic_ram_exceeds_available(
+                self.multipointController, self._log, performance_mode=self.performance_mode
             ):
-                self.btn_startAcquisition.setChecked(False)
-                self._log.error("Failed to start acquisition.  Not enough RAM available.")
-                return
+                if interactive:
+                    resource_allocation_dialog(self)
+                self.signal_request_mosaic_disable.emit(interactive)
 
             # Update UI to show acquisition is running
             self._set_ui_acquisition_running(self.entry_NZ.value(), self.entry_deltaZ.value())
@@ -10947,9 +11700,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
             self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
 
-            # Restore Z controls based on Z mode
-            if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() == "Set Range":
-                # In Set Range mode, Nz should be disabled
+            # Restore Z controls based on Z mode (Nz is derived, so read-only, in both
+            # "Set Range" and "Relative")
+            if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() in (
+                Z_MODE_SET_RANGE,
+                Z_MODE_RELATIVE,
+            ):
                 self.entry_NZ.setEnabled(False)
 
             # Restore coverage based on XY mode
@@ -10993,6 +11749,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
+        # NZ is 1 here so the stacking config is inert, but the controller keeps it between
+        # runs -- reset it so a snap after a Relative acquisition can't inherit FROM CENTER.
+        self.multipointController.set_z_stacking_config(0)
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
         self.multipointController.run_acquisition(acquire_current_fov=True)
@@ -11165,6 +11924,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         widgets_to_block = [
             self.entry_NZ,
             self.entry_deltaZ,
+            self.entry_zRange,
             self.entry_Nt,
             self.entry_dt,
             self.entry_overlap,
@@ -11192,12 +11952,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
 
             # Z mode - map YAML config to combobox text
-            z_mode_map = {
-                "FROM BOTTOM": "From Bottom",
-                "SET RANGE": "Set Range",
-            }
-            z_mode = z_mode_map.get(yaml_data.z_stacking_config, "From Bottom")
+            z_mode = _YAML_Z_CONFIG_TO_Z_MODE.get(yaml_data.z_stacking_config, Z_MODE_FROM_BOTTOM)
             self.combobox_z_mode.setCurrentText(z_mode)
+            if z_mode == Z_MODE_RELATIVE:
+                # The YAML carries nz/dz, not a range; derive the range the stack covers so
+                # the (read-only) Nz recompute reproduces the same nz.
+                self.entry_zRange.setValue(max(0.1, (yaml_data.nz - 1) * yaml_data.delta_z_um))
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)

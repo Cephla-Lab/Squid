@@ -17,7 +17,7 @@ import control.widgets
 from control.core import core as core_module
 from control.core.scan_coordinates import ScanCoordinates
 from control.widgets import (
-    check_ram_available_with_error_dialog,
+    mosaic_ram_exceeds_available,
     FocusMapWidget,
     NDViewerTab,
     SurfacePlotWidget,
@@ -28,19 +28,19 @@ from squid.config import CameraPixelFormat
 import tests.control.test_stubs as ts
 
 
-def test_check_ram_available_with_error_dialog_performance_mode():
+def test_mosaic_ram_exceeds_available_performance_mode():
     """Test that RAM check is skipped when performance mode is enabled."""
     scope = control.microscope.Microscope.build_from_global_config(True)
     mpc = ts.get_test_multi_point_controller(microscope=scope)
     logger = logging.getLogger("test")
 
-    # When performance mode is enabled, should always return True (skip check)
-    result = check_ram_available_with_error_dialog(mpc, logger, performance_mode=True)
-    assert result is True
+    # When performance mode is enabled the mosaic is already off: nothing to fit, never "exceeds"
+    result = mosaic_ram_exceeds_available(mpc, logger, performance_mode=True)
+    assert result is False
 
 
-def test_check_ram_available_with_error_dialog_sufficient_ram():
-    """Test that check passes when sufficient RAM is available."""
+def test_mosaic_ram_exceeds_available_sufficient_ram():
+    """Test that the mosaic fits when sufficient RAM is available."""
     scope = control.microscope.Microscope.build_from_global_config(True)
     mpc = ts.get_test_multi_point_controller(microscope=scope)
     logger = logging.getLogger("test")
@@ -60,16 +60,16 @@ def test_check_ram_available_with_error_dialog_sufficient_ram():
         mpc.scanCoordinates.add_flexible_region(1, x_min, y_min, z_mid, 3, 3, 0)
         mpc.set_selected_configurations(all_configuration_names[0:1])
 
-        # With a small scan area and real available RAM, should pass
-        result = check_ram_available_with_error_dialog(mpc, logger, performance_mode=False)
-        assert result is True
+        # With a small scan area and real available RAM, the mosaic fits
+        result = mosaic_ram_exceeds_available(mpc, logger, performance_mode=False)
+        assert result is False
 
     finally:
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = original_use_napari
 
 
-def test_check_ram_available_with_error_dialog_insufficient_ram():
-    """Test that check fails when insufficient RAM is available."""
+def test_mosaic_ram_exceeds_available_insufficient_ram():
+    """Test that insufficient RAM is reported, without a dialog: the caller decides what to do."""
     scope = control.microscope.Microscope.build_from_global_config(True)
     mpc = ts.get_test_multi_point_controller(microscope=scope)
     logger = logging.getLogger("test")
@@ -94,16 +94,20 @@ def test_check_ram_available_with_error_dialog_insufficient_ram():
         mock_vmem.available = 1024  # Only 1KB available
 
         with patch("psutil.virtual_memory", return_value=mock_vmem):
-            with patch("control.widgets.error_dialog"):  # Mock dialog to avoid GUI
-                result = check_ram_available_with_error_dialog(mpc, logger, performance_mode=False)
-                assert result is False
+            with patch("control.widgets.error_dialog") as error_dialog:
+                with patch("control.widgets.resource_allocation_dialog") as resource_dialog:
+                    result = mosaic_ram_exceeds_available(mpc, logger, performance_mode=False)
+                    assert result is True
+                    # Report-only: low RAM no longer blocks a run, and this function shows nothing.
+                    error_dialog.assert_not_called()
+                    resource_dialog.assert_not_called()
 
     finally:
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = original_use_napari
 
 
-def test_check_ram_available_with_error_dialog_zero_estimate():
-    """Test that check passes when RAM estimate is 0 (no regions or napari disabled)."""
+def test_mosaic_ram_exceeds_available_zero_estimate():
+    """Test that a RAM estimate of 0 (no regions or napari disabled) always fits."""
     scope = control.microscope.Microscope.build_from_global_config(True)
     mpc = ts.get_test_multi_point_controller(microscope=scope)
     logger = logging.getLogger("test")
@@ -111,12 +115,12 @@ def test_check_ram_available_with_error_dialog_zero_estimate():
     # Clear regions so estimate returns 0
     mpc.scanCoordinates.clear_regions()
 
-    # Should pass since 0 bytes required
-    result = check_ram_available_with_error_dialog(mpc, logger, performance_mode=False)
-    assert result is True
+    # Fits, since 0 bytes are required
+    result = mosaic_ram_exceeds_available(mpc, logger, performance_mode=False)
+    assert result is False
 
 
-def test_check_ram_available_with_error_dialog_factor_of_safety():
+def test_mosaic_ram_exceeds_available_factor_of_safety():
     """Test that factor of safety is applied to RAM estimate."""
     scope = control.microscope.Microscope.build_from_global_config(True)
     mpc = ts.get_test_multi_point_controller(microscope=scope)
@@ -142,24 +146,19 @@ def test_check_ram_available_with_error_dialog_factor_of_safety():
             return  # Skip test if no estimate available
 
         # Mock psutil to return RAM that's exactly equal to base estimate
-        # With factor_of_safety > 1, this should fail
+        # With factor_of_safety > 1, this should not fit
         mock_vmem = MagicMock()
         mock_vmem.available = base_estimate  # Exactly equal to base estimate
 
         with patch("psutil.virtual_memory", return_value=mock_vmem):
-            with patch("control.widgets.error_dialog"):
-                # With default factor_of_safety=1.15, should fail (needs 15% more)
-                result = check_ram_available_with_error_dialog(
-                    mpc, logger, factor_of_safety=1.15, performance_mode=False
-                )
-                assert result is False
+            # With default factor_of_safety=1.15, exceeds (needs 15% more)
+            result = mosaic_ram_exceeds_available(mpc, logger, factor_of_safety=1.15, performance_mode=False)
+            assert result is True
 
-                # With factor_of_safety=1.0, should pass (exact match)
-                mock_vmem.available = base_estimate
-                result = check_ram_available_with_error_dialog(
-                    mpc, logger, factor_of_safety=1.0, performance_mode=False
-                )
-                assert result is True
+            # With factor_of_safety=1.0, fits (exact match)
+            mock_vmem.available = base_estimate
+            result = mosaic_ram_exceeds_available(mpc, logger, factor_of_safety=1.0, performance_mode=False)
+            assert result is False
 
     finally:
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = original_use_napari
@@ -2724,7 +2723,7 @@ def _wellplate_ui_fake(fit_ok=True, use_focus_map=False):
 
     focus_map = MagicMock()
     focus_map.fit_surface.return_value = fit_ok
-    return SimpleNamespace(
+    fake = SimpleNamespace(
         checkbox_xy=widget(isChecked=True),
         scanCoordinates=MagicMock(),
         combobox_z_mode=widget(currentText="Set Range"),
@@ -2751,6 +2750,11 @@ def _wellplate_ui_fake(fit_ok=True, use_focus_map=False):
         _log=MagicMock(),
         set_coordinates_to_current_position=MagicMock(),
     )
+    # configure_controller_from_ui() delegates the plain settings to this method.
+    fake._push_settings_to_controller = lambda: control.widgets.WellplateMultiPointWidget._push_settings_to_controller(
+        fake
+    )
+    return fake
 
 
 def test_wellplate_configure_controller_from_ui_pushes_every_setting_without_starting(monkeypatch):

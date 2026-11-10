@@ -120,6 +120,9 @@ class MultiPointWorkerBase:
         self.request_abort_fn: Callable[[], None] = request_abort_fn
         self._abort_cause = None  # set to "error" by auto-abort paths (timeout / failed jobs)
         self.end_reason: Optional[str] = None  # set in run()'s finally; read by the controller
+        # Dry run (timing probe): pay the per-frame latency without illuminating.  MultiPointWorker
+        # overrides this from its acquisition parameters; other workers never dry-run.
+        self._dry_run = False
         # Acquisition watchdog breadcrumb (run.json); the null writer when none is wired (tests, side paths).
         self._run_state = run_state_writer or squid.acquisition_state.NullRunStateWriter()
 
@@ -197,6 +200,35 @@ class MultiPointWorkerBase:
             and config == self._applied_config
             and self.liveController.currentConfiguration == config
         )
+
+    def _illumination_on_for_frame(self):
+        """Open the illumination for one frame -- or, in a dry run, issue the equal-cost
+        NON-illuminating twin of that command so the per-frame latency is still paid.
+
+        The twin is the same command with the opposite polarity:
+
+          * ShutterControlMode.TTL and LED matrix:
+                microcontroller.turn_off_illumination()
+            instead of
+                microcontroller.turn_on_illumination()
+            Identical packet shape (bytearray(tx_buffer_length), only cmd[1] differs),
+            identical send_command() path, and the caller's existing
+            wait_till_operation_is_completed() blocks on the same ack.  The firmware
+            handlers are mirror images of each other.
+          * ShutterControlMode.Software (LDI): set_shutter_state(ch, on=False) instead of
+            on=True -- one write_and_check either way.  Known bias: on a channel switch the
+            real path also closes the previously active channel first, so it costs one extra
+            serial round trip (~2-5 ms) that we do not.  Negligible against the ~250 ms
+            emission filter move that IS measured.
+
+        Do NOT substitute microcontroller.set_illumination(source, 0): the firmware ends
+        set_illumination() with `if (illumination_is_on) turn_on_illumination();`, which
+        would drive the gate pin HIGH whenever that global happens to be set.
+        """
+        if self._dry_run:
+            self.liveController.turn_off_illumination()
+            return
+        self.liveController.turn_on_illumination()
 
     def _scan_unit_triggers_camera(self) -> bool:
         # With an NL5/AION and NL5_USE_DOUT, camera.send_trigger() runs one confocal scan and returns once the
@@ -515,7 +547,7 @@ class MultiPointWorkerBase:
             }
         )
 
-    def _end_run_state(self, duration_s: float) -> str:
+    def _end_run_state(self, duration_s: float, extra_stats: Optional[dict] = None) -> str:
         """Settle why the run ended, close the watchdog breadcrumb with the run's stats, return the reason."""
         self.end_reason = self._compute_end_reason()
         self._run_state.end(
@@ -525,6 +557,7 @@ class MultiPointWorkerBase:
                 "total_timepoints": self.time_point,
                 "total_duration_seconds": duration_s,
                 "errors_encountered": self._acquisition_error_count,
+                **(extra_stats or {}),
             },
         )
         return self.end_reason
@@ -647,8 +680,21 @@ class MultiPointWorkerBase:
         # trigger acquisition (including turning on the illumination) and read frame
         camera_illumination_time = self.camera.get_exposure_time()
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-            self.liveController.turn_on_illumination()
+            self._illumination_on_for_frame()
             self.wait_till_operation_is_completed()
+            camera_illumination_time = None
+        elif self._dry_run and self.liveController.trigger_mode == TriggerMode.HARDWARE:
+            if self._scan_unit_triggers_camera():
+                # camera.send_trigger() below runs a confocal scan, which fires the laser and triggers
+                # the camera together, so there is no dry-run-safe variant.
+                # MultiPointController.timing_probe_refusal_reason() refuses this case up front; this
+                # is the tripwire if a future entry point forgets to ask.
+                raise RuntimeError("A confocal scan unit that triggers the camera has no dry-run-safe path")
+            # HARDWARE + EDGE only.  illumination_time=None makes the hardware trigger fn
+            # send control_illumination=False, clearing the strobe-control MSB, while the
+            # camera trigger pulse keeps its fixed TRIGGER_PULSE_LENGTH_us width.  Under
+            # HardwareTriggerMode.LEVEL the pulse width IS this value, so zeroing it would
+            # destroy the trigger -- LEVEL is refused before the probe ever starts.
             camera_illumination_time = None
         # In HARDWARE mode with an NL5/AION (NL5_USE_DOUT), camera.send_trigger() below starts the confocal
         # scan through the camera's hardware trigger function. Do not also start one here: that second scan
@@ -820,6 +866,11 @@ class MultiPointWorker(MultiPointWorkerBase):
         )
 
         self.time_point = 0  # also set in base __init__; re-set here for clarity
+        # Time-lapse pacing diagnostics.  We never skip a time point: when a round runs past
+        # its dt interval we start the next one immediately and record the overrun here.
+        self._late_time_points = 0
+        self._max_lateness_s = 0.0
+        self._total_lateness_s = 0.0
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
@@ -846,6 +897,9 @@ class MultiPointWorker(MultiPointWorkerBase):
         # are initialized in MultiPointWorkerBase.__init__.
 
         self.skip_saving = acquisition_parameters.skip_saving
+        self._dry_run = acquisition_parameters.dry_run
+        if self._dry_run:
+            self._log.warning("DRY RUN: illumination will not be opened for this acquisition.")
         # self._save_settings is initialized in MultiPointWorkerBase.__init__.
         file_saving_option = self._save_settings.file_saving_option
         use_ome_tiff = file_saving_option == FileSavingOption.OME_TIFF
@@ -1031,7 +1085,9 @@ class MultiPointWorker(MultiPointWorkerBase):
             start_time = time.perf_counter_ns()
             self.camera.start_streaming()
             this_image_callback_id = self.camera.add_frame_callback(self._image_callback)
-            sleep_time = min(self.dt / 20.0, 0.5)
+            # Poll often enough to stay abort-responsive and keep the watchdog heartbeat alive,
+            # but never faster than 50 ms -- a tiny dt would otherwise busy-spin the wait loop.
+            sleep_time = min(max(self.dt / 20.0, 0.05), 0.5)
 
             # Send Slack acquisition start notification
             if self._slack_notifier is not None:
@@ -1060,13 +1116,20 @@ class MultiPointWorker(MultiPointWorkerBase):
                     self._log.debug("In run, abort_acquisition_requested=True")
                     break
                 self._run_state_beat()
+                time_point_start = time.time()
 
                 # The time point uses its channels (wakes the lines, keeps the 560 on, opens its mechanical shutter),
                 # released for the wait to the next one. The gate runs inside it, so it sees the shutter open.
-                with self.microscope.illumination_controller.use("acquisition", self._illumination_wavelengths):
+                # A dry run takes no hold and waits for no laser: nothing may open a path to the sample.
+                illumination_hold = (
+                    contextlib.nullcontext()
+                    if self._dry_run
+                    else self.microscope.illumination_controller.use("acquisition", self._illumination_wavelengths)
+                )
+                with illumination_hold:
                     # Gate on laser engine readiness for the channels this acquisition will fire.
                     # Re-checked every timepoint so dt-induced sleep gaps are handled.
-                    if self._laser_engine is not None and self._laser_channels_needed:
+                    if self._laser_engine is not None and self._laser_channels_needed and not self._dry_run:
                         self._wait_for_laser_engine()
                         if self.abort_requested_fn():
                             break
@@ -1075,26 +1138,29 @@ class MultiPointWorker(MultiPointWorkerBase):
                         self.run_single_time_point()
 
                 self.time_point = self.time_point + 1
-                if self.dt == 0:  # continous acquisition
-                    pass
-                else:  # timed acquisition
 
-                    # check if the aquisition has taken longer than dt or integer multiples of dt, if so skip the next time point(s)
-                    while time.time() > self.timestamp_acquisition_started + self.time_point * self.dt:
-                        self._log.info("skip time point " + str(self.time_point + 1))
-                        self.time_point = self.time_point + 1
+                if self.dt == 0:  # continous acquisition - start the next round immediately
+                    continue
 
-                    # check if it has reached Nt
-                    if self.time_point == self.Nt:
-                        break  # no waiting after taking the last time point
+                # Timed acquisition.  dt is a START-TO-START period.  We never skip a time point:
+                # if a round overran dt we start the next one immediately and the run just
+                # stretches out.  Dropping requested time points silently was the old behaviour
+                # and it cost whole acquisitions whenever a round was slower than dt.
+                next_start = self.timestamp_acquisition_started + self.time_point * self.dt
+                self._record_time_point_lateness(next_start, time_point_start, time.time())
 
-                    # wait until it's time to do the next acquisition
-                    while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
-                        if self.abort_requested_fn():
-                            self._log.debug("In run wait loop, abort_acquisition_requested=True")
-                            break
-                        self._run_state_beat()
-                        self._sleep(sleep_time)
+                # check if it has reached Nt
+                if self.time_point >= self.Nt:
+                    break  # no waiting after taking the last time point
+
+                # Wait until it's time to do the next acquisition.  If we are already late this
+                # loop is a no-op and the next round starts right away.
+                while time.time() < next_start:
+                    if self.abort_requested_fn():
+                        self._log.debug("In run wait loop, abort_acquisition_requested=True")
+                        break
+                    self._run_state_beat()
+                    self._sleep(sleep_time)
 
             elapsed_time = time.perf_counter_ns() - start_time
             self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
@@ -1122,7 +1188,19 @@ class MultiPointWorker(MultiPointWorkerBase):
 
             # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
             total_duration = time.time() - self.timestamp_acquisition_started
-            reason = self._end_run_state(total_duration)
+            if self._late_time_points:
+                self._log.warning(
+                    f"{self._late_time_points} of {self.time_point} acquired time point(s) ran past the "
+                    f"{self.dt:g} [s] interval (worst overrun {self._max_lateness_s:.1f} [s], "
+                    f"total {self._total_lateness_s:.1f} [s]).  No time points were skipped."
+                )
+            reason = self._end_run_state(
+                total_duration,
+                {
+                    "late_timepoints": self._late_time_points,
+                    "max_lateness_seconds": round(self._max_lateness_s, 3),
+                },
+            )
 
             # Send Slack acquisition finished notification via callback (ensures ordering with timepoint notifications)
             if self._slack_notifier is not None:
@@ -1134,12 +1212,33 @@ class MultiPointWorker(MultiPointWorkerBase):
                         errors_encountered=self._acquisition_error_count,
                         experiment_id=self.experiment_ID or "unknown",
                         reason=reason,
+                        late_timepoints=self._late_time_points,
                     )
                     self.callbacks.signal_slack_acquisition_finished(stats)
                 except Exception as e:
                     self._log.warning(f"Failed to send Slack acquisition finished notification: {e}")
 
             self.callbacks.signal_acquisition_finished()
+
+    def _record_time_point_lateness(self, next_start: float, time_point_start: float, now: float) -> float:
+        """Account for the time point that just finished (self.time_point of them are done) running
+        past the start time of the next one. Returns how late it was, in seconds (<= 0: on time)."""
+        lateness_s = now - next_start
+        if lateness_s > 0:
+            round_s = now - time_point_start
+            self._late_time_points += 1
+            self._total_lateness_s += lateness_s
+            self._max_lateness_s = max(self._max_lateness_s, lateness_s)
+            tail = (
+                f"Starting time point {self.time_point + 1}/{self.Nt} immediately; no time points are skipped."
+                if self.time_point < self.Nt
+                else "This was the last time point."
+            )
+            self._log.warning(
+                f"Time point {self.time_point}/{self.Nt} overran its {self.dt:g} [s] interval by "
+                f"{lateness_s:.1f} [s] (the round took {round_s:.1f} [s]). {tail}"
+            )
+        return lateness_s
 
     def _compute_illumination_wavelengths(self) -> List[int]:
         """The wavelengths this acquisition images with: its channels, and the contrast autofocus channel when it runs."""
@@ -1148,8 +1247,9 @@ class MultiPointWorker(MultiPointWorkerBase):
             return []
         configs = list(self.selected_configurations)
         if self.do_autofocus and not self.do_reflection_af:
+            # Through the module, like perform_autofocus(): Preferences rebinds control._def's copy.
             config_af = self.liveController.get_channel_by_name(
-                self.objectiveStore.current_objective, MULTIPOINT_AUTOFOCUS_CHANNEL
+                self.objectiveStore.current_objective, control._def.MULTIPOINT_AUTOFOCUS_CHANNEL
             )
             if config_af is not None:
                 configs.append(config_af)
@@ -1492,22 +1592,41 @@ class MultiPointWorker(MultiPointWorkerBase):
 
     def acquire_at_position(self, region_id, current_path, fov):
         self._applied_config = None
-        af_succeeded = self.perform_autofocus(region_id, fov)
+        # Timed so the timing probe can separate the autofocus cost from the rest of the FOV;
+        # records ~0 on FOVs where contrast AF is skipped by the NUMBER_OF_FOVS_PER_AF gate.
+        with self._timing.get_timer("perform_autofocus"):
+            af_succeeded = self.perform_autofocus(region_id, fov)
         if not af_succeeded:
             self._log.error(
                 f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={self.stage.get_pos().z_mm} [mm])"
             )
 
-        if self.NZ > 1:
-            self.prepare_z_stack()
+        # Capture the plane autofocus actually settled on, BEFORE prepare_z_stack() offsets
+        # us to the bottom of the stack.  Under "FROM CENTER" the z_level==0 position is
+        # half a stack range BELOW the focus plane, so seeding the next time point from it
+        # (see move_to_coordinate) would walk z down by half a range per time point and can
+        # push laser AF's displacement measurement outside laser_af_range.  For "FROM
+        # BOTTOM" this is identical to the z_level==0 position.
+        if (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
+            self._last_time_point_z_pos[(region_id, fov)] = self.stage.get_pos().z_mm
 
+        # Sync the piezo cache BEFORE prepare_z_stack(): the "FROM CENTER" pre-move goes
+        # through the piezo when use_piezo, and it works off self.z_piezo_um.
         if self.use_piezo:
             self.z_piezo_um = self.piezo.position
+
+        if self.NZ > 1:
+            self.prepare_z_stack()
 
         if self.z_stack_order == "Z FIRST" and self.NZ > 1:
             z_steps_taken = self._acquire_z_first(region_id, current_path, fov, af_succeeded)
         else:
             z_steps_taken = self._acquire_channel_first(region_id, current_path, fov, af_succeeded)
+
+        # update FOV counter -- once per FOV, NOT once per z level.  Acquisition.
+        # NUMBER_OF_FOVS_PER_AF throttles contrast AF in perform_autofocus(); incrementing
+        # inside the z loop turned it into "once every N images" for any NZ > 1 stack.
+        self.af_fov_count = self.af_fov_count + 1
 
         if self.NZ > 1:
             # Undo only the steps actually taken: an abort leaves the loop before the last plane.
@@ -1547,9 +1666,6 @@ class MultiPointWorker(MultiPointWorkerBase):
             if self.abort_requested_fn():
                 break
 
-            # update FOV counter
-            self.af_fov_count = self.af_fov_count + 1
-
             if z_level < self.NZ - 1:
                 self.move_z_for_stack()
                 z_steps_taken += 1
@@ -1558,7 +1674,7 @@ class MultiPointWorker(MultiPointWorkerBase):
     def _acquire_z_first(self, region_id, current_path, fov, af_succeeded) -> int:
         """For each selected channel, acquire the whole z stack before switching to the next channel.
 
-        Per-z bookkeeping (coordinates.csv row, FOV signal, AF counter) happens during the first
+        Per-z bookkeeping (coordinates.csv row, FOV signal) happens during the first
         channel's pass only. Positions are recorded without the channel z-offset, matching the
         channel-first order. Returns the number of z steps above the first plane where it stopped
         (NZ - 1 unless aborted), so move_z_back_after_stack() applies unchanged.
@@ -1598,8 +1714,6 @@ class MultiPointWorker(MultiPointWorkerBase):
 
                     if first_pass:
                         self._finish_z_level(region_id, fov, z_level, acquire_pos, z_piezo_um)
-                        if not self.abort_requested_fn():
-                            self.af_fov_count = self.af_fov_count + 1
 
                     if z_level < self.NZ - 1 and not self.abort_requested_fn():
                         self.move_z_for_stack()
@@ -1613,9 +1727,6 @@ class MultiPointWorker(MultiPointWorkerBase):
             acquire_pos = self.stage.get_pos()
         metadata = {"x": acquire_pos.x_mm, "y": acquire_pos.y_mm, "z": acquire_pos.z_mm}
         self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
-
-        if z_level == 0 and (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
-            self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
 
         # laser af characterization mode
         if self.laser_auto_focus_controller and self.laser_auto_focus_controller.characterization_mode:
@@ -1659,10 +1770,23 @@ class MultiPointWorker(MultiPointWorkerBase):
                 and (self.do_autofocus)
                 and (self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0)
             ):
-                configuration_name_AF = MULTIPOINT_AUTOFOCUS_CHANNEL
-                config_AF = self.liveController.get_channel_by_name(
-                    self.objectiveStore.current_objective, configuration_name_AF
-                )
+                # Read through the module, NOT the star-imported name.  `from control._def
+                # import *` above bound a snapshot of MULTIPOINT_AUTOFOCUS_CHANNEL into this
+                # module at import time, and Preferences only rebinds control._def's copy
+                # (widgets.py:_apply_live_settings), so the star-imported name would pin the
+                # AF channel to whatever it was at startup.
+                configuration_name_AF = control._def.MULTIPOINT_AUTOFOCUS_CHANNEL
+                objective = self.objectiveStore.current_objective
+                config_AF = self.liveController.get_channel_by_name(objective, configuration_name_AF)
+                if config_AF is None:
+                    # Without this guard a missing channel would not be a visible autofocus
+                    # failure: the acquisition would die inside _select_config() instead.
+                    available = [c.name for c in self.liveController.get_channels(objective)]
+                    self._log.error(
+                        f"Contrast autofocus channel '{configuration_name_AF}' does not exist for objective "
+                        f"'{objective}'; skipping autofocus for this FOV.  Available channels: {available}"
+                    )
+                    return False
                 self._select_config(config_AF)
                 if (
                     self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0
@@ -1700,12 +1824,37 @@ class MultiPointWorker(MultiPointWorkerBase):
             self._laser_af_successes += 1
         return True
 
+    def _center_offset_steps(self) -> int:
+        """Number of deltaZ steps from the focus plane down to the bottom of the stack.
+
+        Zero unless z_stacking_config is "FROM CENTER".  The GUI forces NZ odd in Relative
+        mode so this is exactly (NZ - 1) / 2 and the stack straddles the focus plane
+        symmetrically; for an even NZ the extra slice lands above the plane.
+        """
+        if self.z_stacking_config != "FROM CENTER":
+            return 0
+        return round((self.NZ - 1) / 2.0)
+
     def prepare_z_stack(self):
         # move to bottom of the z stack
-        if self.z_stacking_config == "FROM CENTER":
-            self.stage.move_z(-self.deltaZ * round((self.NZ - 1) / 2.0))
+        steps = self._center_offset_steps()
+        if steps:
+            # Must go through the same actuator the z loop steps with: move_z_for_stack()
+            # drives the piezo when use_piezo, so pre-moving the stage here would leave the
+            # stage half a stack range low at every FOV with nothing to undo it.
+            self._move_z_for_stack_actuator(-self.deltaZ * steps)
             self._sleep(squid.stage.utils.z_stabilization_time_s())
         self._sleep(squid.stage.utils.z_stabilization_time_s())
+
+    def _move_z_for_stack_actuator(self, delta_mm: float) -> None:
+        """Relative z move on whichever actuator the z stack steps with."""
+        if self.use_piezo:
+            self.z_piezo_um = self.z_piezo_um + delta_mm * 1000
+            self.piezo.move_to(self.z_piezo_um)
+            if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+        else:
+            self.stage.move_z(delta_mm)
 
     def _move_z_for_offset(self, delta_um: float) -> float:
         """Dispatch a relative z move via piezo when use_piezo, otherwise via stage.
@@ -1852,11 +2001,13 @@ class MultiPointWorker(MultiPointWorkerBase):
                 # trigger acquisition (including turning on the illumination)
                 if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
                     # TODO(imo): use illum controller
-                    self.liveController.turn_on_illumination()
+                    self._illumination_on_for_frame()
                     self.wait_till_operation_is_completed()
 
-                # read camera frame
-                self.camera.send_trigger(illumination_time=self.camera.get_exposure_time())
+                # read camera frame.  In a dry run illumination_time=None clears the hardware
+                # strobe-control bit; see acquire_camera_image() for the EDGE/LEVEL caveat.
+                rgb_illumination_time = None if self._dry_run else self.camera.get_exposure_time()
+                self.camera.send_trigger(illumination_time=rgb_illumination_time)
                 image = self.camera.read_frame()
                 if image is None:
                     self._log.warning("self.camera.read_frame() returned None")
@@ -1998,15 +2149,9 @@ class MultiPointWorker(MultiPointWorkerBase):
         self._wait_for_outstanding_callback_images()
 
     def move_z_for_stack(self):
-        if self.use_piezo:
-            self.z_piezo_um += self.deltaZ * 1000
-            self.piezo.move_to(self.z_piezo_um)
-            if (
-                self.liveController.trigger_mode == TriggerMode.SOFTWARE
-            ):  # for hardware trigger, delay is in waiting for the last row to start exposure
-                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-        else:
-            self.stage.move_z(self.deltaZ)
+        # for hardware trigger, the piezo delay is in waiting for the last row to start exposure
+        self._move_z_for_stack_actuator(self.deltaZ)
+        if not self.use_piezo:
             self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def _move_z_to_stack_start(self, stack_start: float):
@@ -2029,17 +2174,8 @@ class MultiPointWorker(MultiPointWorkerBase):
         """Return Z to where the stack started, undoing steps_taken z steps (default: a full stack)."""
         if steps_taken is None:
             steps_taken = self.NZ - 1
-        if self.use_piezo:
-            self.z_piezo_um = self.z_piezo_um - self.deltaZ * 1000 * steps_taken
-            self.piezo.move_to(self.z_piezo_um)
-            if (
-                self.liveController.trigger_mode == TriggerMode.SOFTWARE
-            ):  # for hardware trigger, delay is in waiting for the last row to start exposure
-                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-        else:
-            if self.z_stacking_config == "FROM CENTER":
-                rel_z_to_start = -self.deltaZ * steps_taken + self.deltaZ * round((self.NZ - 1) / 2)
-            else:
-                rel_z_to_start = -self.deltaZ * steps_taken
-
-            self.stage.move_z(rel_z_to_start)
+        # Undo the steps taken by the z loop, then undo the "FROM CENTER" pre-move from
+        # prepare_z_stack() so we land back on the focus plane rather than the stack bottom.
+        # Both terms must go through the same actuator the loop stepped with.
+        rel_z_to_start = -self.deltaZ * steps_taken + self.deltaZ * self._center_offset_steps()
+        self._move_z_for_stack_actuator(rel_z_to_start)

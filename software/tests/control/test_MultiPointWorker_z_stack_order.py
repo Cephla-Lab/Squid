@@ -125,7 +125,7 @@ def test_z_first_records_one_coordinates_row_per_z_level_without_channel_offset(
 
     assert list(w.coordinates_pd["z_level"]) == [0, 1, 2]
     assert list(w.coordinates_pd["z (um)"]) == pytest.approx([start_z_um, start_z_um + 2, start_z_um + 4])
-    assert w.af_fov_count == 3
+    assert w.af_fov_count == 1  # counted once per FOV, not once per z level
 
 
 def test_z_first_applies_channel_offset_across_the_stack_and_resets_it():

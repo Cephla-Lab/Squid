@@ -60,6 +60,9 @@ class AcquisitionParameters:
 
     apply_channel_offset: bool = True
     skip_saving: bool = False
+    # Dry run: every real hardware step (stage, autofocus, camera, disk) runs, but the
+    # illumination is never opened.  See MultiPointWorker._illumination_on_for_frame().
+    dry_run: bool = False
 
     # "CHANNEL FIRST" (all channels at each z level) or "Z FIRST" (full z stack per channel)
     z_stack_order: str = "CHANNEL FIRST"

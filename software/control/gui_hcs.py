@@ -207,6 +207,9 @@ class QtAutoFocusController(AutoFocusController, QObject):
 
 class QtMultiPointController(MultiPointController, QObject):
     acquisition_finished = Signal()
+    # TimingProbeResult from run_timing_probe().  Emitted from the probe thread; Qt's auto
+    # connection queues it onto the GUI thread for the widget that launched the probe.
+    timing_probe_finished = Signal(object)
     signal_acquisition_start = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
@@ -754,6 +757,15 @@ class HighContentScreeningGui(QMainWindow):
         self.is_live_scan_grid_on = False
         self.live_scan_grid_was_on = None
         self.performance_mode = False
+        # Resource-allocation handoff: state for a run whose mosaic view did not fit in RAM.
+        # _performance_mode_forced records whether *we* turned Performance Mode on, so a run
+        # started with it already on manually is left alone when the run ends.
+        self._mosaic_disabled_for_run = False
+        self._performance_mode_forced = False
+        # False for an unattended start (the Workflow Runner): no dialog when that run ends.
+        self._resource_limited_run_interactive = True
+        self._squidxplorer_prompt_suppressed = False
+        self._last_acquisition_save_target = None
         self.napari_connections = []
         self.well_selector_visible = False  # Add this line to track well selector visibility
 
@@ -1125,7 +1137,7 @@ class HighContentScreeningGui(QMainWindow):
             # Utils > Stage Utils has its own loading button: it follows the same guard.
             self.stageUtils.set_lift_motion_guard(self.zLiftWidget.motion_guard)
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
-        self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
+        self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController, self.objectiveStore)
         if self.piezo:
             self.piezoWidget = widgets.PiezoWidget(self.piezo)
 
@@ -1407,6 +1419,12 @@ class HighContentScreeningGui(QMainWindow):
                 self.log.debug("Mosaic/plate view not available, FOV click navigation disabled")
             elif self.ndviewerTab is None:
                 self.log.debug("NDViewer tab not available, FOV click navigation disabled")
+
+            # "Open in SquidXplorer" bottom-bar button. Connected here rather than in
+            # napari_connections so it survives Performance Mode, which tears that dict
+            # down — a RAM-limited run is precisely when the operator needs the handoff.
+            if self.unifiedMosaicWidget is not None:
+                self.unifiedMosaicWidget.signal_open_in_squidxplorer.connect(self._on_open_in_squidxplorer_requested)
 
             # z plot
             self.zPlotWidget = widgets.SurfacePlotWidget()
@@ -1717,11 +1735,13 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.flexibleMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.signal_performance_mode_changed.connect(self.flexibleMultiPointWidget.set_performance_mode)
+            self.flexibleMultiPointWidget.signal_request_mosaic_disable.connect(self.enterPerformanceModeForRun)
 
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellplateMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.wellplateMultiPointWidget.signal_toggle_live_scan_grid.connect(self.toggle_live_scan_grid)
             self.signal_performance_mode_changed.connect(self.wellplateMultiPointWidget.set_performance_mode)
+            self.wellplateMultiPointWidget.signal_request_mosaic_disable.connect(self.enterPerformanceModeForRun)
 
         if self.fluidicsProtocolWidget is not None:
             # widget-to-widget wiring lives in wire_fluidics; only GUI-owned objects here
@@ -1758,6 +1778,17 @@ class HighContentScreeningGui(QMainWindow):
         self.cameraSettingWidget.signal_sensor_mode_changed.connect(self.liveControlWidget.refresh_exposure_time_limits)
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.objectivesWidget.signal_objective_changed.connect(self.flexibleMultiPointWidget.update_fov_positions)
+
+        # The default z step is objective-dependent, so re-seed every z-step box when the
+        # objective changes. Widgets that were never built (disabled acquisition modes) are
+        # skipped; the ones that exist all get the new objective's default.
+        for _dz_widget in (
+            self.autofocusWidget,
+            self.flexibleMultiPointWidget if ENABLE_FLEXIBLE_MULTIPOINT else None,
+            self.wellplateMultiPointWidget if ENABLE_WELLPLATE_MULTIPOINT else None,
+        ):
+            if _dz_widget is not None:
+                self.objectivesWidget.signal_objective_changed.connect(_dz_widget.apply_default_dz)
         # TODO(imo): Fix position updates after removal of navigation controller
         self.movement_updater.position_after_move.connect(self.navigationViewer.draw_fov_current_location)
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
@@ -1770,6 +1801,15 @@ class HighContentScreeningGui(QMainWindow):
         # signals over here, where self.unifiedMosaicWidget is reachable.
         self.multipointController.signal_acquisition_save_target.connect(self._on_acquisition_save_target)
         self.multipointController.timepoint_finished.connect(self._on_timepoint_finished)
+
+        # Gate the mosaic's "Open in SquidXplorer" button on run state — the folder is
+        # still being written while a run is in progress.
+        self.multipointController.signal_acquisition_start.connect(self._on_mosaic_acquisition_started)
+        self.multipointController.acquisition_finished.connect(self._on_mosaic_acquisition_finished)
+
+        # Resource-allocation handoff: restore Performance Mode and offer SquidXplorer after
+        # a run whose mosaic view was traded away.
+        self.multipointController.acquisition_finished.connect(self._on_resource_limited_run_finished)
 
         # Laser engine readiness gate — modal progress dialog while waiting at timepoint boundaries.
         self.multipointController.signal_laser_engine_waiting.connect(self._show_laser_engine_dialog)
@@ -2130,14 +2170,189 @@ class HighContentScreeningGui(QMainWindow):
         self.signal_performance_mode_changed.emit(self.performance_mode)
         print(f"Performance mode {'enabled' if self.performance_mode else 'disabled'}")
 
+    def setPerformanceMode(self, enabled: bool):
+        """Drive the Performance Mode toggle programmatically.
+
+        QPushButton.setChecked() does not emit clicked(), so togglePerformanceMode has to
+        be invoked explicitly — otherwise the button changes appearance and nothing else
+        happens.
+        """
+        toggle = getattr(self, "performanceModeToggle", None)
+        if toggle is None:
+            # live_only_mode never builds the toggle.
+            return
+        if toggle.isChecked() == enabled:
+            return
+        toggle.setChecked(enabled)
+        self.togglePerformanceMode()
+
+    def enterPerformanceModeForRun(self, interactive: bool = True):
+        """A run whose mosaic view will not fit in RAM is starting.
+
+        Remember whether Performance Mode was ours to turn on, force it on, and flag the
+        run so the finish handler can restore the toggle and offer SquidXplorer.
+        ``interactive=False`` (an unattended start) restores the toggle but offers nothing.
+        """
+        self._mosaic_disabled_for_run = True
+        self._resource_limited_run_interactive = bool(interactive)
+        self._performance_mode_forced = not self.performance_mode
+        self.setPerformanceMode(True)
+        self.log.info("Mosaic view disabled for this run; Performance Mode enabled.")
+
     def _on_acquisition_save_target(self, save_target):
         """Route the controller's per-run save dir to the unified widget."""
+        # Also stash it: the finish handler needs this run's output folder to hand to
+        # SquidXplorer, and this is the one signal that already carries it.
+        self._last_acquisition_save_target = save_target
         if self.unifiedMosaicWidget is not None:
             self.unifiedMosaicWidget.set_acquisition_save_target(save_target)
 
     def _on_timepoint_finished(self, time_point: int):
         if self.unifiedMosaicWidget is not None:
             self.unifiedMosaicWidget.save_for_timepoint(time_point)
+
+    def _on_mosaic_acquisition_started(self):
+        if self.unifiedMosaicWidget is not None:
+            self.unifiedMosaicWidget.set_acquisition_running(True)
+
+    def _on_mosaic_acquisition_finished(self):
+        if self.unifiedMosaicWidget is not None:
+            self.unifiedMosaicWidget.set_acquisition_running(False)
+
+    def _on_open_in_squidxplorer_requested(self, run_dir):
+        """The mosaic's bottom-bar button. Confirms the folder, then hands it over.
+
+        Not gated by _squidxplorer_prompt_suppressed: that flag is the opt-out for the
+        automatic post-run prompt, and an explicit button press is a fresh request.
+        """
+        reply = QMessageBox.question(
+            self,
+            "Open in SquidXplorer",
+            f"Open this acquisition in SquidXplorer?\n\n{run_dir}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            self._launch_squidxplorer(run_dir)
+
+    def _on_resource_limited_run_finished(self):
+        """A run that traded away mosaic view has ended."""
+        if not self._mosaic_disabled_for_run:
+            return
+        self._mosaic_disabled_for_run = False
+        interactive = self._resource_limited_run_interactive
+        self._resource_limited_run_interactive = True
+
+        # Restored here, not deferred with the prompt: an unattended workflow starts its next
+        # acquisition as soon as this signal has been delivered, and that start's RAM check
+        # must see the toggle as the operator left it, not as this run forced it.
+        if self._performance_mode_forced:
+            self._performance_mode_forced = False
+            self.setPerformanceMode(False)
+            self.log.info("Run finished; Performance Mode restored.")
+
+        if not interactive:
+            return  # an unattended run is never followed by a dialog
+        # Anything but a run that reached its end: "Run complete" would not be true.
+        completed = self.multipointController.last_end_reason in ("completed", "completed_with_errors")
+        run_dir = self._last_acquisition_save_target
+        # Defer past the rest of the acquisition_finished slots. A modal exec_() here would
+        # spin a nested event loop while the z-plot, NDViewer and the monitor widgets are
+        # still queued behind us on the same signal.
+        QTimer.singleShot(0, lambda: self._offer_squidxplorer_after_run(run_dir, completed))
+
+    def _offer_squidxplorer_after_run(self, run_dir, completed):
+        if not completed:
+            return
+        if self._squidxplorer_prompt_suppressed:
+            return
+        if not run_dir or not os.path.isdir(run_dir):
+            self.log.warning(f"Skipping the SquidXplorer prompt: no run folder at {run_dir!r}.")
+            return
+
+        # The instance form, not QMessageBox.question — only it carries a checkbox.
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Run Complete")
+        box.setText("Run complete — open in SquidXplorer?")
+        box.setInformativeText(run_dir)
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.Yes)
+        dont_ask = QCheckBox("Don't ask again this session")
+        box.setCheckBox(dont_ask)
+        reply = box.exec_()
+
+        # Honored whichever button was pressed.
+        if dont_ask.isChecked():
+            self._squidxplorer_prompt_suppressed = True
+            self.log.info("SquidXplorer prompt suppressed for the rest of this session.")
+
+        if reply == QMessageBox.Yes:
+            self._launch_squidxplorer(run_dir)
+
+    def _launch_squidxplorer(self, run_dir):
+        """Open a finished run in SquidXplorer, reporting anything that goes wrong."""
+        from control.squidxplorer_launcher import launch_squidxplorer
+
+        try:
+            process, stderr_path = launch_squidxplorer(run_dir)
+        except FileNotFoundError:
+            self._squidxplorer_failure_dialog(
+                run_dir,
+                "SquidXplorer could not be found.\n\n"
+                "Set 'squidxplorer_python' under [GENERAL] in the configuration file to the "
+                "Python interpreter of the SquidXplorer virtual environment, or put "
+                "'squidmip-view' on PATH.",
+            )
+            return
+        except Exception as e:
+            self.log.error(f"Failed to launch SquidXplorer: {e}")
+            self._squidxplorer_failure_dialog(run_dir, f"Failed to launch SquidXplorer:\n\n{e}")
+            return
+
+        # SquidXplorer allows only one window at a time and exits 1 when a second is asked
+        # for, so a launch that dies within a few seconds is the case worth reporting.
+        QTimer.singleShot(3000, lambda: self._check_squidxplorer_launch(process, stderr_path, run_dir))
+
+    def _check_squidxplorer_launch(self, process, stderr_path, run_dir):
+        returncode = process.poll()
+        if returncode is None or returncode == 0:
+            if returncode == 0:
+                self._cleanup_launch_log(stderr_path)
+            return
+
+        from control.squidxplorer_launcher import read_launch_error
+
+        details = read_launch_error(stderr_path)
+        self._cleanup_launch_log(stderr_path)
+        self.log.error(f"SquidXplorer exited with code {returncode}. {details}")
+        message = "SquidXplorer did not open."
+        if "GuiAlreadyOpen" in details or "already" in details.lower():
+            message = "A SquidXplorer window is already open.\n\nOpen this run from that window instead."
+        elif details:
+            message = f"SquidXplorer did not open.\n\n{details}"
+        self._squidxplorer_failure_dialog(run_dir, message)
+
+    def _cleanup_launch_log(self, stderr_path):
+        try:
+            os.unlink(stderr_path)
+        except OSError as e:
+            self.log.debug(f"Could not remove SquidXplorer launch log {stderr_path}: {e}")
+
+    def _squidxplorer_failure_dialog(self, run_dir, message):
+        """Report a failed handoff and leave the run folder on the clipboard.
+
+        SquidXplorer accepts a dropped folder, so a path on the clipboard is a working
+        recovery path whether it is already open or not yet installed.
+        """
+        clipboard_note = ""
+        try:
+            QApplication.clipboard().setText(run_dir)
+            clipboard_note = f"\n\nThe run folder has been copied to the clipboard:\n{run_dir}"
+        except Exception as e:
+            self.log.debug(f"Could not copy the run folder to the clipboard: {e}")
+            clipboard_note = f"\n\nRun folder:\n{run_dir}"
+        QMessageBox.warning(self, "SquidXplorer", message + clipboard_note)
 
     def _on_live_controller_warning(self, message: str) -> None:
         """Non-modal warning from LiveController. 5s rate-limit; one popup max."""
@@ -2484,21 +2699,7 @@ class HighContentScreeningGui(QMainWindow):
 
     def _camera_image_size(self) -> Optional[Tuple[int, int]]:
         """The camera's frame size after the Camera tab's crop now, or None when it cannot be read."""
-        try:
-            _x, _y, width, height = (int(v) for v in self.camera.get_region_of_interest())
-        except Exception as e:
-            self.log.warning(f"Could not read the camera ROI: {e}")
-            return None
-        try:
-            crop_width, crop_height = self.camera.get_crop_size()
-        except Exception:
-            crop_width = crop_height = None
-        # The software crop is centred and only ever makes the frame smaller.
-        if crop_width:
-            width = min(width, int(crop_width))
-        if crop_height:
-            height = min(height, int(crop_height))
-        return width, height
+        return squid.camera.utils.image_size_px(self.camera)
 
     def _acquisition_widget_for_type(self, widget_type: str):
         """The record tab that runs acquisition.yaml files of *widget_type*, or None."""
