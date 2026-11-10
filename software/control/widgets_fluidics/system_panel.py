@@ -232,7 +232,7 @@ class DeviceStatusGroup(QGroupBox):
         fault = self._robot_fault
         label = self.labels["Robot fault"]
         label.setText(f"{fault} (Reset fault in the Sipper group)" if fault else "none")
-        label.setStyleSheet("color: #b00020; font-weight: bold;" if fault else "")
+        theme.set_role(label, "alert-bold" if fault else "status-neutral")
 
     def refresh(self, run_line: str = "—") -> None:
         self.labels["Run"].setText(run_line)

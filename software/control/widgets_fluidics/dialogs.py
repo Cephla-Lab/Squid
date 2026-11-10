@@ -116,7 +116,7 @@ class AddRoundsDialog(QDialog):
             "and can get the next port and the next well. Hover over a field for details."
         )
         self.help_label.setWordWrap(True)
-        self.help_label.setStyleSheet("color: gray;")
+        theme.set_role(self.help_label, "note-gray")
 
         form = QFormLayout()
         form.addRow("Copy round", self.template_combo)
