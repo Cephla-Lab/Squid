@@ -1,0 +1,98 @@
+# Record/Z-Stack Acquisition Parameters - legacy_both
+
+acquisition:
+  experiment_id: legacy_both
+  start_time: '2026-11-10 13:37:36'
+  widget_type: record_zstack
+  xy_mode: Select Wells
+objective:
+  name: 20x
+  magnification: 20.0
+  pixel_size_um: 0.376
+  camera_binning:
+  - 2
+  - 2
+time_series:
+  nt: 3
+  delta_t_s: 60.0
+autofocus:
+  laser_af: false
+recording:
+  enabled: true
+  channel:
+    name: BF LED matrix full
+    enabled: true
+    display_color: '#FFFFFF'
+    camera: null
+    camera_settings:
+      exposure_time_ms: 20.0
+      gain_mode: 10.0
+      pixel_format: null
+    filter_wheel: null
+    filter_position: 1
+    z_offset_um: 0.0
+    illumination_settings:
+      illumination_channel: BF LED matrix full
+      intensity: 5.0
+    confocal_hardware_settings: null
+    confocal_override: null
+  fps: 30.0
+  effective_fps: 24.5
+  duration_s: 5.0
+  bottom_z_offset_um: 0.0
+  nz: 1
+  dz_um: 1.0
+z_stack:
+  enabled: true
+  channels:
+  - name: DF LED matrix
+    enabled: true
+    display_color: '#FFFFFF'
+    camera: null
+    camera_settings:
+      exposure_time_ms: 35.0
+      gain_mode: 10.0
+      pixel_format: null
+    filter_wheel: null
+    filter_position: 1
+    z_offset_um: 0.0
+    illumination_settings:
+      illumination_channel: DF LED matrix
+      intensity: 5.0
+    confocal_hardware_settings: null
+    confocal_override: null
+  - name: Fluorescence 405 nm Ex
+    enabled: true
+    display_color: '#20ADF8'
+    camera: null
+    camera_settings:
+      exposure_time_ms: 50.0
+      gain_mode: 10.0
+      pixel_format: null
+    filter_wheel: null
+    filter_position: 1
+    z_offset_um: 0.0
+    illumination_settings:
+      illumination_channel: Fluorescence 405 nm Ex
+      intensity: 100.0
+    confocal_hardware_settings: null
+    confocal_override: null
+  z_min_um: -3.0
+  z_max_um: 3.0
+  z_step_um: 1.0
+wellplate_scan:
+  scan_size_mm: 0.5
+  overlap_percent: 15.0
+  regions:
+  - name: B2
+    center_mm:
+    - 10.0
+    - 12.0
+    - 1.5
+    shape: Square
+  - name: B3
+    center_mm:
+    - 19.0
+    - 12.0
+    - 1.5
+    shape: Square
