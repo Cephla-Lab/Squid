@@ -518,9 +518,13 @@ def test_piezo_stack_undoes_only_the_steps_taken(steps_taken, expected_um):
         z_piezo_um=100.0,
         deltaZ=0.010,  # mm
         NZ=10,
+        z_stacking_config="FROM BOTTOM",
         piezo=PiezoStub(),
         liveController=types.SimpleNamespace(trigger_mode=TriggerMode.HARDWARE),
     )
+    # move_z_back_after_stack() goes through these shared helpers; bind them onto the stand-in worker.
+    worker._center_offset_steps = types.MethodType(MultiPointWorker._center_offset_steps, worker)
+    worker._move_z_for_stack_actuator = types.MethodType(MultiPointWorker._move_z_for_stack_actuator, worker)
     MultiPointWorker.move_z_back_after_stack(worker, steps_taken)
     assert worker.piezo.moves == [pytest.approx(expected_um)]
 

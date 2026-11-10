@@ -69,6 +69,9 @@ def test_z_stack_moves_pause_for_the_stage_specific_stabilization_time(monkeypat
     )
     sleeps = []
     worker._sleep = sleeps.append
+    # The z-stack moves share these helpers; bind them onto the stand-in worker.
+    worker._center_offset_steps = types.MethodType(MultiPointWorker._center_offset_steps, worker)
+    worker._move_z_for_stack_actuator = types.MethodType(MultiPointWorker._move_z_for_stack_actuator, worker)
 
     MultiPointWorker.move_z_for_stack(worker)
     MultiPointWorker.prepare_z_stack(worker)

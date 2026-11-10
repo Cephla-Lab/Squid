@@ -1498,11 +1498,22 @@ class MultiPointWorker(MultiPointWorkerBase):
                 f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={self.stage.get_pos().z_mm} [mm])"
             )
 
-        if self.NZ > 1:
-            self.prepare_z_stack()
+        # Capture the plane autofocus actually settled on, BEFORE prepare_z_stack() offsets
+        # us to the bottom of the stack.  Under "FROM CENTER" the z_level==0 position is
+        # half a stack range BELOW the focus plane, so seeding the next time point from it
+        # (see move_to_coordinate) would walk z down by half a range per time point and can
+        # push laser AF's displacement measurement outside laser_af_range.  For "FROM
+        # BOTTOM" this is identical to the z_level==0 position.
+        if (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
+            self._last_time_point_z_pos[(region_id, fov)] = self.stage.get_pos().z_mm
 
+        # Sync the piezo cache BEFORE prepare_z_stack(): the "FROM CENTER" pre-move goes
+        # through the piezo when use_piezo, and it works off self.z_piezo_um.
         if self.use_piezo:
             self.z_piezo_um = self.piezo.position
+
+        if self.NZ > 1:
+            self.prepare_z_stack()
 
         if self.z_stack_order == "Z FIRST" and self.NZ > 1:
             z_steps_taken = self._acquire_z_first(region_id, current_path, fov, af_succeeded)
@@ -1614,9 +1625,6 @@ class MultiPointWorker(MultiPointWorkerBase):
         metadata = {"x": acquire_pos.x_mm, "y": acquire_pos.y_mm, "z": acquire_pos.z_mm}
         self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
 
-        if z_level == 0 and (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
-            self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
-
         # laser af characterization mode
         if self.laser_auto_focus_controller and self.laser_auto_focus_controller.characterization_mode:
             image = self.laser_auto_focus_controller.get_image()
@@ -1700,12 +1708,37 @@ class MultiPointWorker(MultiPointWorkerBase):
             self._laser_af_successes += 1
         return True
 
+    def _center_offset_steps(self) -> int:
+        """Number of deltaZ steps from the focus plane down to the bottom of the stack.
+
+        Zero unless z_stacking_config is "FROM CENTER".  The GUI forces NZ odd in Relative
+        mode so this is exactly (NZ - 1) / 2 and the stack straddles the focus plane
+        symmetrically; for an even NZ the extra slice lands above the plane.
+        """
+        if self.z_stacking_config != "FROM CENTER":
+            return 0
+        return round((self.NZ - 1) / 2.0)
+
     def prepare_z_stack(self):
         # move to bottom of the z stack
-        if self.z_stacking_config == "FROM CENTER":
-            self.stage.move_z(-self.deltaZ * round((self.NZ - 1) / 2.0))
+        steps = self._center_offset_steps()
+        if steps:
+            # Must go through the same actuator the z loop steps with: move_z_for_stack()
+            # drives the piezo when use_piezo, so pre-moving the stage here would leave the
+            # stage half a stack range low at every FOV with nothing to undo it.
+            self._move_z_for_stack_actuator(-self.deltaZ * steps)
             self._sleep(squid.stage.utils.z_stabilization_time_s())
         self._sleep(squid.stage.utils.z_stabilization_time_s())
+
+    def _move_z_for_stack_actuator(self, delta_mm: float) -> None:
+        """Relative z move on whichever actuator the z stack steps with."""
+        if self.use_piezo:
+            self.z_piezo_um = self.z_piezo_um + delta_mm * 1000
+            self.piezo.move_to(self.z_piezo_um)
+            if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+        else:
+            self.stage.move_z(delta_mm)
 
     def _move_z_for_offset(self, delta_um: float) -> float:
         """Dispatch a relative z move via piezo when use_piezo, otherwise via stage.
@@ -1998,15 +2031,9 @@ class MultiPointWorker(MultiPointWorkerBase):
         self._wait_for_outstanding_callback_images()
 
     def move_z_for_stack(self):
-        if self.use_piezo:
-            self.z_piezo_um += self.deltaZ * 1000
-            self.piezo.move_to(self.z_piezo_um)
-            if (
-                self.liveController.trigger_mode == TriggerMode.SOFTWARE
-            ):  # for hardware trigger, delay is in waiting for the last row to start exposure
-                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-        else:
-            self.stage.move_z(self.deltaZ)
+        # for hardware trigger, the piezo delay is in waiting for the last row to start exposure
+        self._move_z_for_stack_actuator(self.deltaZ)
+        if not self.use_piezo:
             self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def _move_z_to_stack_start(self, stack_start: float):
@@ -2029,17 +2056,8 @@ class MultiPointWorker(MultiPointWorkerBase):
         """Return Z to where the stack started, undoing steps_taken z steps (default: a full stack)."""
         if steps_taken is None:
             steps_taken = self.NZ - 1
-        if self.use_piezo:
-            self.z_piezo_um = self.z_piezo_um - self.deltaZ * 1000 * steps_taken
-            self.piezo.move_to(self.z_piezo_um)
-            if (
-                self.liveController.trigger_mode == TriggerMode.SOFTWARE
-            ):  # for hardware trigger, delay is in waiting for the last row to start exposure
-                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-        else:
-            if self.z_stacking_config == "FROM CENTER":
-                rel_z_to_start = -self.deltaZ * steps_taken + self.deltaZ * round((self.NZ - 1) / 2)
-            else:
-                rel_z_to_start = -self.deltaZ * steps_taken
-
-            self.stage.move_z(rel_z_to_start)
+        # Undo the steps taken by the z loop, then undo the "FROM CENTER" pre-move from
+        # prepare_z_stack() so we land back on the focus plane rather than the stack bottom.
+        # Both terms must go through the same actuator the loop stepped with.
+        rel_z_to_start = -self.deltaZ * steps_taken + self.deltaZ * self._center_offset_steps()
+        self._move_z_for_stack_actuator(rel_z_to_start)
