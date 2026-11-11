@@ -392,24 +392,32 @@ static const char *function_body(const char *src, const char *sig, const char **
     return fn;
 }
 
-/* `guard` must appear inside the body starting at `sig` and before `motion` inside the same body. */
+/* `at` (inside the text starting at `from`) is code, not a line comment. */
+static void assert_not_commented_out(const char *from, const char *at, const char *msg)
+{
+    const char *line = at;
+    while (line > from && line[-1] != '\n') line--;
+    const char *comment = strstr(line, "//");
+    TEST_ASSERT_TRUE_MESSAGE(comment == NULL || comment > at, msg);
+}
+
+/* `guard` must appear inside the body starting at `sig` and before `motion` inside the same body. Neither may be
+   commented out: a commented-out line must not satisfy the pin. */
 static void assert_in_body_before(const char *src, const char *file, const char *sig, const char *guard, const char *motion)
 {
     const char *end = NULL;
     const char *fn = function_body(src, sig, &end);
-    char msg[256];
+    char msg[384];
     snprintf(msg, sizeof msg, "%s: %s not found or unbounded", file, sig);
     TEST_ASSERT_NOT_NULL_MESSAGE(fn, msg);
     const char *g = strstr(fn, guard);
     const char *m = strstr(fn, motion);
     snprintf(msg, sizeof msg, "%s: %s must contain %s before %s", file, sig, guard, motion);
     TEST_ASSERT_TRUE_MESSAGE(g != NULL && g < end && m != NULL && m < end && g < m, msg);
-    /* A commented-out guard must not satisfy the pin: nothing on the guard's own line before it
-       may be a line comment. */
-    const char *line = g;
-    while (line > fn && line[-1] != '\n') line--;
     snprintf(msg, sizeof msg, "%s: %s: the guard %s is commented out", file, sig, guard);
-    TEST_ASSERT_TRUE_MESSAGE(strstr(line, "//") == NULL || strstr(line, "//") > g, msg);
+    assert_not_commented_out(fn, g, msg);
+    snprintf(msg, sizeof msg, "%s: %s: %s is commented out", file, sig, motion);
+    assert_not_commented_out(fn, m, msg);
 }
 
 void test_stage_commands_guards_every_move_entry_point(void)
@@ -813,15 +821,6 @@ static unsigned count_in_range(const char *from, const char *to, const char *nee
     for (const char *p = strstr(from, needle); p != NULL && p < to; p = strstr(p + len, needle))
         n++;
     return n;
-}
-
-/* `at` (inside the text starting at `from`) is code, not a line comment. */
-static void assert_not_commented_out(const char *from, const char *at, const char *msg)
-{
-    const char *line = at;
-    while (line > from && line[-1] != '\n') line--;
-    const char *comment = strstr(line, "//");
-    TEST_ASSERT_TRUE_MESSAGE(comment == NULL || comment > at, msg);
 }
 
 /* In [region, region_end): the switch case `label` holds `hook` before the case's first "break;". */
