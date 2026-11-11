@@ -2036,12 +2036,20 @@ class MultiPointWorker:
     def _log_unpaired_frame(self, camera_frame: CameraFrame) -> None:
         """A frame no capture was waiting for is ignored; say why."""
         current_run = self.camera.stream_generation()
+        queued_run = self._pending_captures.stream_generation
         if camera_frame.stream_generation != current_run:
             # The driver had already read it when the stream was restarted (a failed burst's resync): a
             # frame of the run before, delivered after. Nothing of that run may be paired with a capture.
             self._log.warning(
                 f"Ignoring frame {camera_frame.frame_id}: it is from run {camera_frame.stream_generation} of the "
                 f"camera stream, which was restarted since (now run {current_run})."
+            )
+        elif queued_run is not None and queued_run != camera_frame.stream_generation:
+            # The stream was restarted under a queued burst, and not by the worker (the camera or its driver
+            # recovered on its own). The burst's frames are suspect: it times out and is retried.
+            self._log.warning(
+                f"Ignoring frame {camera_frame.frame_id} of run {camera_frame.stream_generation} of the camera "
+                f"stream: the queued captures are for run {queued_run}, and the stream was restarted under them."
             )
         elif self._ready_for_next_trigger.is_set():
             self._log.warning("Got an image in the image callback, but we didn't send a trigger.  Ignoring the image.")
@@ -2165,9 +2173,11 @@ class MultiPointWorker:
                 configuration_idx=config_idx,
                 time_point=self.time_point,
             )
-            self._pending_captures.expect(
-                [current_capture_info], stream_generation=self.camera.stream_generation(), deliver=self._dispatch_frame
-            )
+            # Queued for no particular run of the camera stream: an ordinary capture follows the camera. The
+            # trigger below may restart the stream under it (a confocal unit re-arms the camera after a stalled
+            # scan, then scans again, and the frame comes from the new run). Only a hardware-sequenced burst,
+            # which the worker itself gives up and retries after a restart, is pinned to its run.
+            self._pending_captures.expect([current_capture_info], stream_generation=None, deliver=self._dispatch_frame)
         with self._timing.get_timer("send_trigger"):
             try:
                 self.camera.send_trigger(illumination_time=camera_illumination_time)
