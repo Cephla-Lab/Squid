@@ -1357,6 +1357,49 @@ class TestZMotorConfigNotInPreferences:
         assert not saved.has_option("GENERAL", "z_motor_config")
 
 
+class TestIlluminationIntensityFactorIsReadOnly:
+    """illumination_intensity_factor matches the light source hardware (0.6 Squid LEDs, 0.8 laser engine, 1.0 full
+    range) and reaches the controller only at start-up: Preferences shows the value in effect and never changes it."""
+
+    def test_the_factor_in_effect_is_shown(self, qtbot, sample_config, temp_config_file, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "ILLUMINATION_INTENSITY_FACTOR", 0.8)
+        sample_config.set("GENERAL", "illumination_intensity_factor", "0.6")  # edited since start-up
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        assert dialog.illumination_factor_label.text() == "0.8"
+        assert "illumination_intensity_factor" in dialog.illumination_factor_label.toolTip()
+
+    def test_saving_leaves_the_factor_as_written(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "illumination_intensity_factor", "0.8  # laser engine")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        dialog.binning_spinbox.setValue(4)
+        assert dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "illumination_intensity_factor") == "0.8  # laser engine"
+
+    def test_saving_does_not_add_the_factor(self, preferences_dialog, temp_config_file):
+        preferences_dialog.binning_spinbox.setValue(4)
+        assert preferences_dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert not saved.has_option("GENERAL", "illumination_intensity_factor")
+
+    def test_saving_does_not_change_the_factor_in_effect(self, qtbot, sample_config, temp_config_file, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "ILLUMINATION_INTENSITY_FACTOR", 0.8)
+        sample_config.set("GENERAL", "illumination_intensity_factor", "0.6")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        assert not [c for c in dialog._get_changes() if "Illumination Intensity Factor" in c[0]]
+        assert dialog._apply_settings()
+        assert control._def.ILLUMINATION_INTENSITY_FACTOR == 0.8
+
+
 class TestZStackOrderDropdownPreference:
     """The opt-in Z-stack order dropdown (Channel First / Z First) is switched from Preferences, live."""
 

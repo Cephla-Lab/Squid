@@ -1811,11 +1811,17 @@ class PreferencesDialog(QDialog):
         self.led_b_factor.setValue(self._get_config_float("GENERAL", "led_matrix_b_factor", 1.0))
         hw_layout.addRow("LED Matrix B Factor:", self.led_b_factor)
 
-        self.illumination_factor = QDoubleSpinBox()
-        self.illumination_factor.setRange(0.0, 1.0)
-        self.illumination_factor.setSingleStep(0.1)
-        self.illumination_factor.setValue(self._get_config_float("GENERAL", "illumination_intensity_factor", 0.6))
-        hw_layout.addRow("Illumination Intensity Factor:", self.illumination_factor)
+        # Read-only: the factor matches the light source hardware and reaches the controller only at start-up, so it
+        # is set in the machine's config file; this shows the value in effect
+        self.illumination_factor_label = QLabel(f"{control._def.ILLUMINATION_INTENSITY_FACTOR:g}")
+        self.illumination_factor_label.setToolTip(
+            "Scales every controller DAC illumination output to the light source's input range\n"
+            "(0.6 = Squid LEDs, 0.8 = Squid laser engine, 1.0 = the full 2.5 V).\n"
+            "It matches the hardware, so it is set in the machine's config file (illumination_intensity_factor\n"
+            "in [GENERAL]) and sent to the controller at start-up. A higher value can overdrive the light source,\n"
+            "and changing it makes illumination power calibrations stale."
+        )
+        hw_layout.addRow("Illumination Intensity Factor:", self.illumination_factor_label)
 
         hw_group.content.addLayout(hw_layout)
         layout.addWidget(hw_group)
@@ -2494,7 +2500,6 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "led_matrix_r_factor", str(self.led_r_factor.value()))
         self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
-        self.config.set("GENERAL", "illumination_intensity_factor", str(self.illumination_factor.value()))
 
         # Advanced - Development Settings
         self.config.set(
@@ -2669,9 +2674,6 @@ class PreferencesDialog(QDialog):
         control._def.LED_MATRIX_R_FACTOR = self.led_r_factor.value()
         control._def.LED_MATRIX_G_FACTOR = self.led_g_factor.value()
         control._def.LED_MATRIX_B_FACTOR = self.led_b_factor.value()
-
-        # Illumination intensity factor
-        control._def.ILLUMINATION_INTENSITY_FACTOR = self.illumination_factor.value()
 
         # Development settings - simulated disk I/O
         control._def.SIMULATED_DISK_IO_ENABLED = self.simulated_io_checkbox.isChecked()
@@ -2979,11 +2981,6 @@ class PreferencesDialog(QDialog):
         new_val = self.led_b_factor.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("LED Matrix B Factor", str(old_val), str(new_val), False))
-
-        old_val = self._get_config_float("GENERAL", "illumination_intensity_factor", 0.6)
-        new_val = self.illumination_factor.value()
-        if not self._floats_equal(old_val, new_val):
-            changes.append(("Illumination Intensity Factor", str(old_val), str(new_val), False))
 
         # Advanced - Development Settings
         # Enable/disable requires restart (for warning banner/dialog), but speed/compression
