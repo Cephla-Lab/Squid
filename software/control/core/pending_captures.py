@@ -27,20 +27,28 @@ class PendingCaptures(Generic[T]):
     That frame is refused by take() under the same lock that replaced the batch, so it can neither
     consume the retry's captures nor, if it was paired before the batch was given up, be delivered
     anywhere but to the sink of its own batch.
+
+    An ordinary capture's batch is queued for no particular run instead: it follows the camera. The
+    trigger itself may restart the stream under it (a confocal unit re-arming the camera after a
+    stalled scan, then scanning again) and the frame then arrives from the new run. The worker never
+    restarts the stream under an ordinary capture, so no frame of an earlier run can be waiting for it.
     """
 
     def __init__(self):
         self._lock = threading.Lock()
         self._queue: Deque[T] = deque()
-        self._stream_generation = 0
+        self._stream_generation: Optional[int] = None
         self._deliver: Optional[Callable[[Any, T], None]] = None
         self._next_frame_id: Optional[int] = None
         self._first_gap: Optional[Tuple[int, int]] = None
 
-    def expect(self, captures: Sequence[T], *, stream_generation: int, deliver: Callable[[Any, T], None]) -> None:
+    def expect(
+        self, captures: Sequence[T], *, stream_generation: Optional[int], deliver: Callable[[Any, T], None]
+    ) -> None:
         """Queue the captures the next frames belong to. Called before the trigger / SEQ_RUN.
 
-        stream_generation: the run of the camera stream the frames will be read in.
+        stream_generation: the run of the camera stream the frames will be read in, or None for a batch
+            that follows the camera and pairs frames of whichever run they come from.
         deliver: where each (frame, capture) pair goes.
         """
         if not captures:
@@ -65,7 +73,9 @@ class PendingCaptures(Generic[T]):
         stream than the one the frame was read in (it does not count as a gap either).
         """
         with self._lock:
-            if not self._queue or stream_generation != self._stream_generation:
+            if not self._queue:
+                return None
+            if self._stream_generation is not None and stream_generation != self._stream_generation:
                 return None
             if self._next_frame_id is not None and frame_id != self._next_frame_id and self._first_gap is None:
                 self._first_gap = (self._next_frame_id, frame_id)
@@ -87,6 +97,12 @@ class PendingCaptures(Generic[T]):
     def __len__(self) -> int:
         with self._lock:
             return len(self._queue)
+
+    @property
+    def stream_generation(self) -> Optional[int]:
+        """The run of the camera stream the queued batch is for; None when nothing is queued or it follows the camera."""
+        with self._lock:
+            return self._stream_generation if self._queue else None
 
     @property
     def gap_detected(self) -> bool:

@@ -6,7 +6,8 @@ that is one capture at a time; for a hardware-sequenced burst it is N captures q
 with N frames arriving back-to-back and no host action in between. A pairing mistake does not
 crash anything — it saves the right pixels under the wrong channel or z — so gaps must be
 detected, not tolerated, and a frame of another run of the camera stream than the batch's is
-refused at the moment of pairing.
+refused at the moment of pairing - unless the batch was queued for no particular run and follows
+the camera, as an ordinary capture's is.
 """
 
 import threading
@@ -122,6 +123,27 @@ def test_a_frame_of_another_stream_run_than_the_batch_is_refused():
     assert _take(pending, frame_id=4, stream_generation=2) == "retry-z0"
     assert _take(pending, frame_id=5, stream_generation=2) == "retry-z1"
     assert not pending.gap_detected
+
+
+def test_a_batch_queued_for_no_particular_run_pairs_frames_of_any_run():
+    # An ordinary capture follows the camera: the trigger itself may restart the stream under it (a
+    # confocal unit re-arming the camera after a stalled scan) and the frame then comes from the new run.
+    pending = PendingCaptures()
+    _expect(pending, ["capture-a", "capture-b"], stream_generation=None)
+    assert pending.stream_generation is None
+    assert _take(pending, frame_id=3, stream_generation=1) == "capture-a"
+    assert _take(pending, frame_id=4, stream_generation=2) == "capture-b"
+    assert pending.empty
+    assert not pending.gap_detected
+
+
+def test_the_run_a_batch_is_for_is_known_while_it_is_queued():
+    pending = PendingCaptures()
+    assert pending.stream_generation is None
+    _expect(pending, ["capture-a"], stream_generation=2)
+    assert pending.stream_generation == 2
+    assert _take(pending, frame_id=3, stream_generation=2) == "capture-a"
+    assert pending.stream_generation is None  # nothing queued any more
 
 
 def test_a_pairing_comes_with_the_sink_of_its_own_batch():

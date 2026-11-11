@@ -8,6 +8,9 @@ driver had already read (the Hamamatsu read thread publishes a batch AFTER its D
 capture lock) is delivered afterwards stamped with the run of the stream it was read in, which the
 worker refuses.
 
+An ordinary capture is the opposite case: its batch follows the camera, because the trigger itself
+may restart the stream under it (a confocal unit re-arming the camera after a stalled scan).
+
 Worker-level: a bare MultiPointWorker with the camera, controller and timing faked.
 """
 
@@ -141,3 +144,36 @@ def test_a_burst_the_controller_refused_also_resynchronizes_the_camera():
 
     assert frames is None and "interlock" in reason
     assert w.camera.stream_restarts == 1
+
+
+def test_an_ordinary_capture_pairs_its_frame_after_the_trigger_restarted_the_stream():
+    """AION/NL5: a stalled confocal scan is aborted inside send_trigger(), the camera re-armed (stream
+    restart) and the scan retried. The retried scan's frame is this capture's, whatever run it is from."""
+    w = _bare_worker()
+    camera = w.camera
+    w._ready_for_next_trigger.clear()
+    w._pending_captures.expect(_captures(1), stream_generation=None, deliver=w._dispatch_frame)
+    camera.start_streaming()  # the re-arm, inside the trigger
+    camera.emit(7, "retried-scan")
+    w._dispatch_frame.assert_called_once()
+    assert w._dispatch_frame.call_args.args[0].frame == "retried-scan"
+    assert w._ready_for_next_trigger.is_set()
+    w._log.warning.assert_not_called()
+
+
+def test_a_stream_restart_under_a_queued_burst_is_named_when_its_frame_is_refused():
+    """The camera (or its driver) restarted its own stream under a queued burst. The burst's frames
+    are suspect, so a frame of the new run is refused - the burst times out and is retried - and
+    the log says what happened rather than that the capture was given up."""
+    w = _bare_worker()
+    camera = w.camera
+    w._ready_for_next_trigger.clear()
+    w._pending_captures.expect(_captures(3), stream_generation=camera.generation, deliver=w._dispatch_frame)
+    camera.start_streaming()  # not the worker's doing
+    camera.emit(7, "run2-z0")
+    w._dispatch_frame.assert_not_called()
+    assert not w._ready_for_next_trigger.is_set()
+    assert len(w._pending_captures) == 3
+    assert any(
+        "frame 7" in str(call) and "for run 1" in str(call) for call in w._log.warning.call_args_list
+    ), w._log.warning.call_args_list
