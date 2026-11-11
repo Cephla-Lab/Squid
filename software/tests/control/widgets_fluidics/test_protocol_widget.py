@@ -360,3 +360,23 @@ def test_progress_bar_falls_back_to_steps_without_an_estimate(qtbot, widget):
     )
     w._refresh()
     assert w.progress_bar.maximum() == 4 and w.progress_bar.value() == 2
+
+
+def test_run_lifecycle_signals(qtbot, widget):
+    w, _fluidics, _imaging, save_to = widget
+    fluidics = FakeFluidicsPort(script=[("hold",)])
+    w.set_fluidics_port(fluidics)
+    started, finished = [], []
+    w.signal_run_started.connect(lambda run_dir, run_name: started.append((run_dir, run_name)))
+    w.signal_run_finished.connect(lambda run_dir, outcome: finished.append((run_dir, outcome)))
+
+    w.start_run()
+    run_dir = str(next(save_to.glob("liver_*")))
+    assert started == [(run_dir, "liver")]
+    assert finished == []
+
+    assert wait_until(lambda: len(fluidics.starts) == 1, timeout=10)
+    w._abort_run_clicked()
+    assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)
+    qtbot.waitUntil(lambda: finished == [(run_dir, "stopped")], timeout=5000)
+    assert started == [(run_dir, "liver")]

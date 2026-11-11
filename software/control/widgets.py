@@ -8,7 +8,7 @@ import logging
 import sys
 from functools import partial
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import psutil
 
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from control.core.memory_profiler import MemoryMonitor
+    from control.microscope import StageHomingClaim
 
 import squid.logging
 from control.core.config import ConfigRepository
@@ -25,6 +26,7 @@ from control.core.mosaic_utils import format_well_id
 from control.core.geometry_utils import calculate_well_coverage, default_scan_shape, get_effective_well_size
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
+from control.startup_homing import StageHomingRefused
 from control.channel_sequence import enable_channel_sequence
 import control.utils as utils
 from control.core.coordinate_provenance import (
@@ -63,6 +65,7 @@ from squid.stage.utils import (
     objective_is_retracted,
 )
 from squid.config import CameraPixelFormat
+from squid.intensity_calibration import CALIBRATIONS_DIR_NAME, calibration_status, intensity_tooltip
 
 # set QT_API environment variable
 os.environ["QT_API"] = "pyqt5"
@@ -89,6 +92,7 @@ from scipy.spatial import Delaunay
 import shutil
 from control._def import *
 from control.lighting import LightSourceType
+import control.theme as theme
 from control.widgets_homing import confirm_nosepiece_lowered
 from PIL import Image, ImageDraw, ImageFont
 
@@ -522,6 +526,7 @@ class NDViewerTab(QWidget):
 
         try:
             self._viewer.start_acquisition(channels, num_z, height, width, fov_labels)
+            self._dataset_path = None  # the viewer now shows the live run, not a folder it was pointed at
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
             self._log.info(
@@ -635,6 +640,7 @@ class NDViewerTab(QWidget):
                 return False
 
             self._viewer.start_zarr_acquisition(fov_paths, channels, num_z, fov_labels, height, width)
+            self._dataset_path = None  # the viewer now shows the live run, not a folder it was pointed at
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
             self._log.info(
@@ -691,6 +697,7 @@ class NDViewerTab(QWidget):
             self._viewer.start_zarr_acquisition_6d(
                 region_paths, channels, num_z, fovs_per_region, height, width, region_labels
             )
+            self._dataset_path = None  # the viewer now shows the live run, not a folder it was pointed at
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
 
@@ -1020,25 +1027,19 @@ class AcquisitionYAMLDropMixin:
                 file_path = url.toLocalFile()
                 if self._is_valid_yaml_drop(file_path):
                     event.accept()
-                    # Visual feedback - dashed border (store original for restore)
-                    if not hasattr(self, "_original_stylesheet"):
-                        self._original_stylesheet = self.styleSheet()
-                    self.setStyleSheet(
-                        self._original_stylesheet + f" {self.__class__.__name__} {{ border: 3px dashed #4a90d9; }}"
-                    )
+                    # Visual feedback - dashed border
+                    theme.set_drop_target_feedback(self, True)
                     return
         event.ignore()
 
     def dragLeaveEvent(self, event):
         """Handle drag leave event."""
-        if hasattr(self, "_original_stylesheet"):
-            self.setStyleSheet(self._original_stylesheet)
+        theme.set_drop_target_feedback(self, False)
         event.accept()
 
     def dropEvent(self, event):
         """Handle drop event for YAML file or folder."""
-        if hasattr(self, "_original_stylesheet"):
-            self.setStyleSheet(self._original_stylesheet)
+        theme.set_drop_target_feedback(self, False)
         paths = [u.toLocalFile() for u in event.mimeData().urls()]
         yaml_paths = [self._resolve_yaml_path(p) for p in paths if self._is_valid_yaml_drop(p)]
         if yaml_paths:
@@ -1285,7 +1286,7 @@ class AcquisitionYAMLMismatchDialog(QDialog):
         # Mismatch details
         message_label = QLabel(validation_result.message)
         message_label.setWordWrap(True)
-        message_label.setStyleSheet("background-color: #fff3cd; padding: 10px; border-radius: 4px;")
+        theme.set_role(message_label, "callout-warning")
         layout.addWidget(message_label)
 
         layout.addSpacing(10)
@@ -1295,7 +1296,7 @@ class AcquisitionYAMLMismatchDialog(QDialog):
             "Please update your hardware settings to match the YAML file, then drag and drop again."
         )
         instruction_label.setWordWrap(True)
-        instruction_label.setStyleSheet("color: #666;")
+        theme.set_role(instruction_label, "note")
         layout.addWidget(instruction_label)
 
         layout.addSpacing(15)
@@ -1308,6 +1309,42 @@ class AcquisitionYAMLMismatchDialog(QDialog):
         button_layout.addStretch()
         button_layout.addWidget(ok_btn)
         layout.addLayout(button_layout)
+
+
+def offer_restart(parent: QWidget, saved_text: str, on_restart: Optional[Callable[[], None]]) -> None:
+    """Ask "Restart Now / Later" after a change that only applies at the next start, and restart on "Now"."""
+    msg = QMessageBox(parent)
+    msg.setWindowTitle("Restart Required")
+    msg.setText(f"{saved_text} This change requires a restart to take effect.")
+    msg.setInformativeText("Would you like to restart now?")
+    msg.setIcon(QMessageBox.Information)
+    restart_btn = msg.addButton("Restart Now", QMessageBox.AcceptRole)
+    msg.addButton("Later", QMessageBox.RejectRole)
+    msg.exec_()
+    if msg.clickedButton() == restart_btn:
+        restart_or_warn(parent, on_restart)
+
+
+def restart_or_warn(parent: QWidget, on_restart: Optional[Callable[[], None]]) -> None:
+    """Call ``on_restart``; if it is missing or fails, tell the operator to restart by hand."""
+    if on_restart:
+        try:
+            on_restart()
+        except Exception as e:
+            logger.exception("Failed to restart application")
+            QMessageBox.warning(
+                parent,
+                "Restart Failed",
+                f"An error occurred while trying to restart the application.\n\n"
+                f"Error: {e}\n\nPlease restart the application manually.",
+            )
+    else:
+        logger.error("No restart callback configured")
+        QMessageBox.warning(
+            parent,
+            "Restart Failed",
+            "Could not trigger automatic restart.\nPlease restart the application manually.",
+        )
 
 
 class PreferencesDialog(QDialog):
@@ -1498,7 +1535,7 @@ class PreferencesDialog(QDialog):
 
         # Restart warning label
         restart_label = QLabel("Note: Camera settings require software restart to take effect.")
-        restart_label.setStyleSheet("color: #666; font-style: italic;")
+        theme.set_role(restart_label, "hint")
         layout.addRow(restart_label)
 
         # Default Binning Factor
@@ -1668,7 +1705,7 @@ class PreferencesDialog(QDialog):
                 "spot and that images are sharp."
             )
             prior_note.setWordWrap(True)
-            prior_note.setStyleSheet("color: #666; font-style: italic;")
+            theme.set_role(prior_note, "hint")
             prior_layout.addRow(prior_note)
 
             prior_group.content.addLayout(prior_layout)
@@ -1774,11 +1811,17 @@ class PreferencesDialog(QDialog):
         self.led_b_factor.setValue(self._get_config_float("GENERAL", "led_matrix_b_factor", 1.0))
         hw_layout.addRow("LED Matrix B Factor:", self.led_b_factor)
 
-        self.illumination_factor = QDoubleSpinBox()
-        self.illumination_factor.setRange(0.0, 1.0)
-        self.illumination_factor.setSingleStep(0.1)
-        self.illumination_factor.setValue(self._get_config_float("GENERAL", "illumination_intensity_factor", 0.6))
-        hw_layout.addRow("Illumination Intensity Factor:", self.illumination_factor)
+        # Read-only: the factor matches the light source hardware and reaches the controller only at start-up, so it
+        # is set in the machine's config file; this shows the value in effect
+        self.illumination_factor_label = QLabel(f"{control._def.ILLUMINATION_INTENSITY_FACTOR:g}")
+        self.illumination_factor_label.setToolTip(
+            "Scales every controller DAC illumination output to the light source's input range\n"
+            "(0.6 = Squid LEDs, 0.8 = Squid laser engine, 1.0 = the full 2.5 V).\n"
+            "It matches the hardware, so it is set in the machine's config file (illumination_intensity_factor\n"
+            "in [GENERAL]) and sent to the controller at start-up. A higher value can overdrive the light source,\n"
+            "and changing it makes illumination power calibrations stale."
+        )
+        hw_layout.addRow("Illumination Intensity Factor:", self.illumination_factor_label)
 
         self.hardware_trigger_global_reset_checkbox = QCheckBox()
         self.hardware_trigger_global_reset_checkbox.setChecked(
@@ -1968,7 +2011,7 @@ class PreferencesDialog(QDialog):
 
         # Legend for restart indicator
         legend_label = QLabel("* Requires software restart to take effect")
-        legend_label.setStyleSheet("color: #666; font-style: italic;")
+        theme.set_role(legend_label, "hint")
         layout.addWidget(legend_label)
 
         layout.addStretch()
@@ -2030,6 +2073,19 @@ class PreferencesDialog(QDialog):
         )
         mosaic_layout.addRow("Save Downsampled Well Images:", self.save_downsampled_checkbox)
 
+        # Z-stack projection (how planes of a z-stack are combined in the mosaic and its saved overview)
+        self.mosaic_z_projection_combo = QComboBox()
+        self.mosaic_z_projection_combo.addItem("Max intensity projection", "mip")
+        self.mosaic_z_projection_combo.addItem("Last plane acquired", "last_plane")
+        self.mosaic_z_projection_combo.setCurrentIndex(
+            max(0, self.mosaic_z_projection_combo.findData(control._def.MOSAIC_Z_PROJECTION.value))
+        )
+        self.mosaic_z_projection_combo.setToolTip(
+            "How the mosaic view and its saved overview combine the planes of a z-stack: "
+            "the running maximum, or whichever plane was acquired last."
+        )
+        mosaic_layout.addRow("Z-stack projection:", self.mosaic_z_projection_combo)
+
         mosaic_group.content.addLayout(mosaic_layout)
         layout.addWidget(mosaic_group)
 
@@ -2045,6 +2101,32 @@ class PreferencesDialog(QDialog):
 
         ndviewer_group.content.addLayout(ndviewer_layout)
         layout.addWidget(ndviewer_group)
+
+        # Gallery section
+        gallery_group = CollapsibleGroupBox("Gallery")
+        gallery_layout = QFormLayout()
+
+        # Record snaps in the acquisition history
+        self.record_snaps_checkbox = QCheckBox()
+        self.record_snaps_checkbox.setChecked(control._def.RECORD_SNAPS_IN_HISTORY)
+        self.record_snaps_checkbox.setToolTip(
+            "Record single snaps from the multipoint tabs in the acquisition history (shown in the Gallery tab)."
+        )
+        gallery_layout.addRow("Record snaps in the acquisition history:", self.record_snaps_checkbox)
+
+        # ndviewer_light location
+        self.ndviewer_light_command_edit = QLineEdit()
+        self.ndviewer_light_command_edit.setText(control._def.NDVIEWER_LIGHT_COMMAND)
+        self.ndviewer_light_command_edit.setPlaceholderText("auto-detect (PATH, installed package, submodule)")
+        self.ndviewer_light_command_edit.setToolTip(
+            "Leave empty to find ndviewer_light automatically (the ndviewer-light command on the PATH, "
+            "the package in Squid's Python, or Squid's submodule). Otherwise an executable, a command line, "
+            "or a folder containing the ndviewer_light package."
+        )
+        gallery_layout.addRow("ndviewer_light location:", self.ndviewer_light_command_edit)
+
+        gallery_group.content.addLayout(gallery_layout)
+        layout.addWidget(gallery_group)
 
         layout.addStretch()
         self.tab_widget.addTab(tab, "Views")
@@ -2132,7 +2214,7 @@ class PreferencesDialog(QDialog):
 
         # Legend
         legend_label = QLabel("* Requires software restart to take effect")
-        legend_label.setStyleSheet("color: #666; font-style: italic;")
+        theme.set_role(legend_label, "hint")
         layout.addWidget(legend_label)
 
         layout.addStretch()
@@ -2292,7 +2374,7 @@ class PreferencesDialog(QDialog):
         spinbox.setValue(value)
         spinbox.setToolTip(tooltip)
         physical_label = QLabel()
-        physical_label.setStyleSheet("color: #666;")
+        theme.set_role(physical_label, "note")
 
         def show_physical(steps):
             physical_label.setText(f"≈ {steps * physical_per_step:.1f} {unit}" if physical_per_step else "")
@@ -2447,7 +2529,6 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "led_matrix_r_factor", str(self.led_r_factor.value()))
         self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
-        self.config.set("GENERAL", "illumination_intensity_factor", str(self.illumination_factor.value()))
         self.config.set(
             "GENERAL",
             "hardware_trigger_global_reset",
@@ -2524,6 +2605,13 @@ class PreferencesDialog(QDialog):
             "enable_ndviewer",
             "true" if self.enable_ndviewer_checkbox.isChecked() else "false",
         )
+        self.config.set("VIEWS", "mosaic_z_projection", self.mosaic_z_projection_combo.currentData())
+        self.config.set(
+            "VIEWS",
+            "record_snaps_in_history",
+            "true" if self.record_snaps_checkbox.isChecked() else "false",
+        )
+        self.config.set("VIEWS", "ndviewer_light_command", self.ndviewer_light_command_edit.text().strip())
 
         # Hardware Simulation settings (in [SIMULATION] section)
         self._ensure_section("SIMULATION")
@@ -2626,9 +2714,6 @@ class PreferencesDialog(QDialog):
         control._def.LED_MATRIX_G_FACTOR = self.led_g_factor.value()
         control._def.LED_MATRIX_B_FACTOR = self.led_b_factor.value()
 
-        # Illumination intensity factor
-        control._def.ILLUMINATION_INTENSITY_FACTOR = self.illumination_factor.value()
-
         # Development settings - simulated disk I/O
         control._def.SIMULATED_DISK_IO_ENABLED = self.simulated_io_checkbox.isChecked()
         control._def.SIMULATED_DISK_IO_SPEED_MB_S = self.simulated_io_speed_spinbox.value()
@@ -2662,6 +2747,11 @@ class PreferencesDialog(QDialog):
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = self.display_mosaic_view_checkbox.isChecked()
         control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
         control._def.ENABLE_NDVIEWER = self.enable_ndviewer_checkbox.isChecked()
+        control._def.MOSAIC_Z_PROJECTION = control._def.ZProjectionMode.convert_to_enum(
+            self.mosaic_z_projection_combo.currentData()
+        )
+        control._def.RECORD_SNAPS_IN_HISTORY = self.record_snaps_checkbox.isChecked()
+        control._def.NDVIEWER_LIGHT_COMMAND = self.ndviewer_light_command_edit.text().strip()
 
         # Prior stage speed and acceleration (the stage already has them: _send_prior_motion_settings)
         if self.prior_speed_spinbox is not None:
@@ -2931,11 +3021,6 @@ class PreferencesDialog(QDialog):
         if not self._floats_equal(old_val, new_val):
             changes.append(("LED Matrix B Factor", str(old_val), str(new_val), False))
 
-        old_val = self._get_config_float("GENERAL", "illumination_intensity_factor", 0.6)
-        new_val = self.illumination_factor.value()
-        if not self._floats_equal(old_val, new_val):
-            changes.append(("Illumination Intensity Factor", str(old_val), str(new_val), False))
-
         # Advanced - Development Settings
         # Enable/disable requires restart (for warning banner/dialog), but speed/compression
         # take effect on next acquisition since each acquisition starts a fresh subprocess
@@ -3065,6 +3150,21 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("Enable NDViewer *", str(old_val), str(new_val), True))
 
+        old_val = control._def.MOSAIC_Z_PROJECTION.value
+        new_val = self.mosaic_z_projection_combo.currentData()
+        if old_val != new_val:
+            changes.append(("Z-stack projection", str(old_val), str(new_val), False))
+
+        old_val = control._def.RECORD_SNAPS_IN_HISTORY
+        new_val = self.record_snaps_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Record snaps in history", str(old_val), str(new_val), False))
+
+        old_val = control._def.NDVIEWER_LIGHT_COMMAND
+        new_val = self.ndviewer_light_command_edit.text().strip()
+        if old_val != new_val:
+            changes.append(("ndviewer_light location", str(old_val), str(new_val), False))
+
         # Hardware Simulation settings (require restart)
         old_val = self._get_config_value("SIMULATION", "simulate_camera", "false").lower() == "true"
         new_val = self.sim_camera_checkbox.isChecked()
@@ -3100,37 +3200,11 @@ class PreferencesDialog(QDialog):
 
     def _offer_restart_dialog(self):
         """Show a dialog offering to restart the application now."""
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Restart Required")
-        msg.setText("Settings have been saved. This change requires a restart to take effect.")
-        msg.setInformativeText("Would you like to restart now?")
-        msg.setIcon(QMessageBox.Information)
-        restart_btn = msg.addButton("Restart Now", QMessageBox.AcceptRole)
-        msg.addButton("Later", QMessageBox.RejectRole)
-        msg.exec_()
-        if msg.clickedButton() == restart_btn:
-            self._trigger_restart()
+        offer_restart(self, "Settings have been saved.", self._on_restart)
 
     def _trigger_restart(self):
         """Trigger application restart via callback."""
-        if self._on_restart:
-            try:
-                self._on_restart()
-            except Exception as e:
-                self._log.exception("Failed to restart application")
-                QMessageBox.warning(
-                    self,
-                    "Restart Failed",
-                    f"An error occurred while trying to restart the application.\n\n"
-                    f"Error: {e}\n\nPlease restart the application manually.",
-                )
-        else:
-            self._log.error("No restart callback configured")
-            QMessageBox.warning(
-                self,
-                "Restart Failed",
-                "Could not trigger automatic restart.\nPlease restart the application manually.",
-            )
+        restart_or_warn(self, self._on_restart)
 
     def _save_and_close(self):
         changes = self._get_changes()
@@ -3178,7 +3252,7 @@ class PreferencesDialog(QDialog):
             note_label = QLabel(
                 "Note: Settings marked [restart required] will only take effect after restarting the software."
             )
-            note_label.setStyleSheet("color: #666; font-style: italic;")
+            theme.set_role(note_label, "hint")
             note_label.setWordWrap(True)
             layout.addWidget(note_label)
 
@@ -3216,6 +3290,20 @@ class PreferencesDialog(QDialog):
             # If save failed, dialog stays open (error already shown)
 
 
+def show_homing_failure(parent, title: str, error: str, still_homing: bool) -> None:
+    """A home that raised (Home stage, Home X/Y). still_homing: its claim is still held, as the stage has not
+    reported that it stopped."""
+    if still_homing:
+        QMessageBox.warning(
+            parent,
+            title,
+            f"Homing did not finish ({error}). The stage still reports motion: motion controls stay locked until it "
+            "stops.",
+        )
+    else:
+        QMessageBox.warning(parent, title, f"Homing failed: {error}")
+
+
 def _queued_slot(receiver: QObject, slot_name: str):
     """A threaded_operation_helper callback that delivers (success, error_msg) to a slot of receiver, on the GUI
     thread: the operation's own thread must not touch widgets, live view or dialogs."""
@@ -3238,6 +3326,7 @@ class StageUtils(QDialog):
     signal_threaded_stage_move_started = Signal()
     signal_loading_position_reached = Signal()
     signal_scanning_position_reached = Signal()
+    signal_home_stage_requested = Signal()  # the Home Stage button: the main window runs it (Microscope.home_stage)
 
     def __init__(self, stage: AbstractStage, live_controller: LiveController, is_wellplate: bool, parent=None):
         super().__init__(parent)
@@ -3256,6 +3345,10 @@ class StageUtils(QDialog):
         # returns to its Z once the lift is back up, or stays retracted.
         self.ask_objective_return = False
         self._was_live = False
+        # Home X / Home Y (set_homing_hooks): why the stage must not home now (or None), and the Microscope's homing
+        # claim for a stopped stage, which pauses live and refuses other motion until the stage reports it stopped.
+        self._homing_blocker: Optional[Callable[[], Optional[str]]] = None
+        self._claim: Optional[Callable[[str], "StageHomingClaim"]] = None
 
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
@@ -3276,6 +3369,11 @@ class StageUtils(QDialog):
         self.btn_home_Z.setDefault(False)
         self.btn_home_Z.setEnabled(HOMING_ENABLED_Z)
 
+        # The full startup homing sequence, finishing at the end-of-homing safe position
+        self.btn_home_stage = QPushButton("Home Stage")
+        self.btn_home_stage.setDefault(False)
+        self.btn_home_stage.setEnabled(control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y)
+
         self.btn_zero_X = QPushButton("Zero X")
         self.btn_zero_X.setDefault(False)
 
@@ -3286,12 +3384,13 @@ class StageUtils(QDialog):
         self.btn_zero_Z.setDefault(False)
 
         self.btn_load_slide = QPushButton("Move To Loading Position")
-        self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_load_slide, "action")
 
         # Connect buttons to functions
         self.btn_home_X.clicked.connect(self.home_x)
         self.btn_home_Y.clicked.connect(self.home_y)
         self.btn_home_Z.clicked.connect(self.home_z)
+        self.btn_home_stage.clicked.connect(self.signal_home_stage_requested.emit)
         self.btn_zero_X.clicked.connect(self.zero_x)
         self.btn_zero_Y.clicked.connect(self.zero_y)
         self.btn_zero_Z.clicked.connect(self.zero_z)
@@ -3306,6 +3405,7 @@ class StageUtils(QDialog):
         homing_layout.addWidget(self.btn_home_X)
         homing_layout.addWidget(self.btn_home_Y)
         homing_layout.addWidget(self.btn_home_Z)
+        homing_layout.addWidget(self.btn_home_stage)
         homing_group.setLayout(homing_layout)
 
         # Zero section
@@ -3334,35 +3434,79 @@ class StageUtils(QDialog):
 
         self.setLayout(main_layout)
 
+    def set_homing_hooks(
+        self, blocker: Callable[[], Optional[str]], claim: Callable[[str], "StageHomingClaim"]
+    ) -> None:
+        """Home X / Home Y: blocker() returns why the stage must not home now, or None; claim(operation) takes the
+        Microscope's homing claim for the home once the stage reports it stopped, or raises StageHomingRefused."""
+        self._homing_blocker = blocker
+        self._claim = claim
+
     def home_x(self):
         """Home X axis with confirmation dialog."""
-        self._show_confirmation_dialog(x=True, y=False, z=False, theta=False)
+        self._home_xy_axis("x")
 
     def home_y(self):
         """Home Y axis with confirmation dialog."""
-        self._show_confirmation_dialog(x=False, y=True, z=False, theta=False)
+        self._home_xy_axis("y")
 
     def home_z(self):
         """Home Z axis with confirmation dialog."""
-        self._show_confirmation_dialog(x=False, y=False, z=True, theta=False)
+        if self._confirm_homing():
+            self.stage.home(x=False, y=False, z=True, theta=False)
         move_z_axis_to_safety_position(self.stage)
 
-    def _show_confirmation_dialog(self, x: bool, y: bool, z: bool, theta: bool):
-        """Display a confirmation dialog and home the specified axis if confirmed. An X or Y home on a piezo-only
-        system asks at the stop sign instead: the nosepiece has to be lowered by hand first."""
-        if control._def.IS_PIEZO_ONLY and (x or y):
-            confirmed = confirm_nosepiece_lowered(self, decline_text="Cancel")
+    def _home_xy_axis(self, axis: str):
+        """Home X or Y: refused while something else drives the stage; on a piezo-only system the stop sign (lower the
+        nosepiece) replaces the generic confirmation; the home holds the Microscope's homing claim (live paused, other
+        motion refused), released once the stage reports it stopped. A failure is shown, as Home stage shows it."""
+        operation = f"Home {axis.upper()}"
+        if self._homing_refused():
+            return
+        if control._def.IS_PIEZO_ONLY:
+            objective_lowered = confirm_nosepiece_lowered(self, decline_text="Cancel")
+            confirmed = objective_lowered
         else:
-            msg = QMessageBox()
-            msg.setIcon(QMessageBox.Information)
-            msg.setText("Confirm your action")
-            msg.setInformativeText("Click OK to run homing")
-            msg.setWindowTitle("Confirmation")
-            msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-            msg.setDefaultButton(QMessageBox.Cancel)
-            confirmed = msg.exec_() == QMessageBox.Ok
-        if confirmed:
-            self.stage.home(x=x, y=y, z=z, theta=theta)
+            objective_lowered = False
+            confirmed = self._confirm_homing()
+        if not confirmed:
+            return
+        try:
+            # The claim asks the blocker again: something may have started while the confirmation was open.
+            claim = self._claim(operation)
+        except StageHomingRefused as e:
+            self._refuse_homing(e.reason)
+            return
+        error = None
+        try:
+            self.stage.home(x=axis == "x", y=axis == "y", z=False, theta=False, objective_lowered=objective_lowered)
+        except Exception as e:
+            self.log.exception(f"{operation} failed")
+            error = str(e)
+        finally:
+            claim.release_when_stopped()
+        if error is not None:
+            show_homing_failure(self, "Homing", error, still_homing=not claim.released)
+
+    def _homing_refused(self) -> bool:
+        reason = self._homing_blocker()
+        if reason:
+            self._refuse_homing(reason)
+        return bool(reason)
+
+    def _refuse_homing(self, reason: str):
+        QMessageBox.information(self, "Homing", f"Homing refused: {reason}.")
+
+    def _confirm_homing(self) -> bool:
+        """The generic confirmation (systems that lower the objective themselves). Enter is Cancel."""
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Information)
+        msg.setText("Confirm your action")
+        msg.setInformativeText("Click OK to run homing")
+        msg.setWindowTitle("Confirmation")
+        msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Cancel)
+        return msg.exec_() == QMessageBox.Ok
 
     def zero_x(self):
         """Zero X axis position."""
@@ -3439,7 +3583,7 @@ class StageUtils(QDialog):
     def _callback_loading_position_reached(self, success: bool, error_message: str):
         """The move to the loading position ended (on the GUI thread, from _queued_slot)."""
         self.slide_position = "loading"
-        self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
+        theme.set_role(self.btn_load_slide, "action", on=True)
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live and not self.keep_live_off_at_loading:
@@ -3459,7 +3603,7 @@ class StageUtils(QDialog):
             )
             return
         self.slide_position = "scanning"
-        self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_load_slide, "action")
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live:
@@ -3580,6 +3724,11 @@ class LaserAutofocusSettingWidget(QWidget):
     signal_apply_settings = Signal()
     signal_laser_spot_location = Signal(np.ndarray, float, float)
 
+    def _recolour_background(self):
+        palette = self.palette()
+        palette.setColor(self.backgroundRole(), theme.manager().color("row_disabled"))
+        self.setPalette(palette)
+
     def __init__(self, streamHandler, liveController: LiveController, laserAutofocusController, stretch=True):
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -3594,9 +3743,7 @@ class LaserAutofocusSettingWidget(QWidget):
         self.setAutoFillBackground(True)
 
         # Create and set background color
-        palette = self.palette()
-        palette.setColor(self.backgroundRole(), QColor(240, 240, 240))
-        self.setPalette(palette)
+        self._recolour_background()
 
         self.spinboxes = {}
         self.init_ui()
@@ -3614,7 +3761,7 @@ class LaserAutofocusSettingWidget(QWidget):
         # Live button
         self.btn_live = QPushButton("Start Live")
         self.btn_live.setCheckable(True)
-        self.btn_live.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_live, "primary")
 
         # Exposure time control
         exposure_layout = QHBoxLayout()
@@ -3712,7 +3859,7 @@ class LaserAutofocusSettingWidget(QWidget):
         initialize_group = QFrame()
         initialize_layout = QVBoxLayout()
         self.initialize_button = QPushButton("Initialize")
-        self.initialize_button.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.initialize_button, "action")
         initialize_layout.addWidget(self.initialize_button)
         initialize_group.setLayout(initialize_layout)
 
@@ -5282,6 +5429,35 @@ class ProfileWidget(QFrame):
         return self.dropdown_profiles.currentText()
 
 
+class GappedSpinBox(QDoubleSpinBox):
+    """An intensity box for a source that jumps on from nothing (a laser's threshold, an LED driver's input offset): it gives no power between 0 and
+    its lowest, so a value there - typed, dragged or saved - becomes that lowest power, and stepping down from it
+    goes to 0 (off)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._lowest = 0.0
+
+    def set_lowest(self, lowest: float) -> None:
+        self._lowest = max(0.0, float(lowest))
+        self.setValue(self.value())
+
+    def _snapped(self, value: float) -> float:
+        return self._lowest if 0 < value < self._lowest else value
+
+    def setValue(self, value: float) -> None:
+        super().setValue(self._snapped(value))
+
+    def valueFromText(self, text: str) -> float:
+        return self._snapped(super().valueFromText(text))
+
+    def stepBy(self, steps: int) -> None:
+        if steps < 0 and 0 < self.value() <= self._lowest:
+            self.setValue(0.0)
+        else:
+            self.setValue(self.value() + steps * self.singleStep())
+
+
 class CappedSlider(QSlider):
     """Slider whose usable range can be capped below its full range.
 
@@ -5462,7 +5638,7 @@ class LiveControlWidget(QFrame):
         self.btn_live.setCheckable(True)
         self.btn_live.setChecked(False)
         self.btn_live.setDefault(False)
-        self.btn_live.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_live, "primary")
         self.btn_live.setSizePolicy(sizePolicy)
         self.btn_live.setToolTip("Start/stop continuous live imaging with the current Live Configuration.")
 
@@ -5473,7 +5649,7 @@ class LiveControlWidget(QFrame):
         self.btn_snap = QPushButton("Snap")
         self.btn_snap.setCheckable(False)
         self.btn_snap.setDefault(False)
-        self.btn_snap.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_snap, "action")
         self.btn_snap.setSizePolicy(sizePolicy)
         self.btn_snap.setToolTip("View a single frame with the current Live Configuration, to reduce photobleaching.")
 
@@ -5510,7 +5686,7 @@ class LiveControlWidget(QFrame):
         self.slider_illuminationIntensity.setValue(100)
         self.slider_illuminationIntensity.setSingleStep(2)
 
-        self.entry_illuminationIntensity = QDoubleSpinBox()
+        self.entry_illuminationIntensity = GappedSpinBox()
         self.entry_illuminationIntensity.setKeyboardTracking(False)
         self.entry_illuminationIntensity.setMinimum(0)
         self.entry_illuminationIntensity.setMaximum(100)
@@ -5655,6 +5831,14 @@ class LiveControlWidget(QFrame):
             # sample is already being exposed.
             _sync_live_button(self, "Stop", "Live", self.btn_snap)
 
+    def set_acquisition_running(self, running):
+        """An acquisition stops live on its own and owns the camera and the light while it runs: show the
+        real live state, and lock Live and Snap until it finishes."""
+        _sync_live_button(self, "Stop", "Live", self.btn_snap)
+        self.btn_live.setEnabled(not running)
+        if running:
+            self.btn_snap.setEnabled(False)
+
     def snap(self):
         """Acquire and display one frame with the current live configuration."""
         if self.liveController.is_live:
@@ -5729,6 +5913,12 @@ class LiveControlWidget(QFrame):
                 intensity_cap = self.liveController.get_intensity_cap_percent(self.currentConfiguration)
                 self.slider_illuminationIntensity.set_cap(intensity_cap)
                 self.entry_illuminationIntensity.setMaximum(intensity_cap)
+                # Say in the tooltip what the % means: power (calibrated), DAC output, or the source's own scale
+                description = self.liveController.get_intensity_description(self.currentConfiguration)
+                self.entry_illuminationIntensity.setToolTip(intensity_tooltip(description))
+                # A source that jumps on gives nothing between 0 and its lowest power; the lookup sends a request
+                # there to that power, and the box shows it
+                self.entry_illuminationIntensity.set_lowest(float(description.get("lowest_percent", 0.0)))
                 self.entry_illuminationIntensity.setValue(self.currentConfiguration.illumination_intensity)
                 self.entry_zOffset.setValue(self._safe_z_offset_value(self.currentConfiguration.z_offset_um))
         finally:
@@ -6100,7 +6290,7 @@ class PiezoWidget(QFrame):
     def __init__(self, piezo: PiezoStage, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.piezo = piezo
-        self.piezo_displacement_um = 0.00
+        self.piezo_displacement_um = piezo.position  # after a warm start, where the last session left it
         self.add_components()
 
     def add_components(self):
@@ -6108,7 +6298,7 @@ class PiezoWidget(QFrame):
         self.slider = QSlider(Qt.Horizontal, self)
         self.slider.setMinimum(0)
         self.slider.setMaximum(int(self.piezo.range_um * 100))  # Multiplied by 100 for 0.01 precision
-        self.slider.setValue(int(self.piezo._home_position_um * 100))
+        self.slider.setValue(int(self.piezo_displacement_um * 100))
 
         self.spinBox = QDoubleSpinBox(self)
         self.spinBox.setRange(0.0, self.piezo.range_um)
@@ -6116,7 +6306,7 @@ class PiezoWidget(QFrame):
         self.spinBox.setSingleStep(1)
         self.spinBox.setSuffix(" μm")
         self.spinBox.setKeyboardTracking(False)
-        self.spinBox.setValue(self.piezo._home_position_um)
+        self.spinBox.setValue(self.piezo_displacement_um)
 
         # Row 3: Home Button
         self.home_btn = QPushButton(f" Set to {self.piezo._home_position_um} μm ", self)
@@ -7362,7 +7552,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)  # opt-in
 
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
-        self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_startAcquisition, "primary")
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -8345,8 +8535,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
     # ========== Drag-and-Drop for Loading Acquisition YAML ==========
     # Uses AcquisitionYAMLDropMixin for drag-drop handling
     def dropEvent(self, event):
-        if hasattr(self, "_original_stylesheet"):
-            self.setStyleSheet(self._original_stylesheet)
+        theme.set_drop_target_feedback(self, False)
 
         if not event.mimeData().hasUrls():
             event.ignore()
@@ -8635,7 +8824,8 @@ class WellplateMultiPointWidget(
         self.btn_setSavingDir = QPushButton("Browse")
         self.btn_setSavingDir.setDefault(False)
         self.btn_setSavingDir.setIcon(QIcon("icon/folder.png"))
-        self.btn_setSavingDir.setFixedWidth(btn_width)
+        # Never narrower than its own icon and text (a styled button can need more than the spin box beside it).
+        self.btn_setSavingDir.setFixedWidth(max(btn_width, self.btn_setSavingDir.sizeHint().width()))
 
         self.lineEdit_savingDir = QLineEdit()
         last_path = get_last_used_saving_path()
@@ -8779,7 +8969,7 @@ class WellplateMultiPointWidget(
         self.checkbox_skipSaving.setChecked(False)
 
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
-        self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
+        theme.set_role(self.btn_startAcquisition, "primary")
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -9311,110 +9501,22 @@ class WellplateMultiPointWidget(
     def update_tab_styles(self):
         """Update tab frame styles based on checkbox states"""
         # Active tab styles (checked) - custom colors for each tab
-        xy_active_style = """
-            QFrame {
-                border: 1px solid #FF8C00;
-                border-radius: 2px;
-            }
-        """
-
-        # Orange background with opaque widget backgrounds to prevent color bleed
-        xy_controls_style = """
-            QFrame {
-                background-color: rgba(255, 140, 0, 0.15);
-            }
-            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
-                background-color: white;
-                color: black;
-            }
-            QFrame QComboBox:disabled, QFrame QSpinBox:disabled, QFrame QDoubleSpinBox:disabled {
-                background-color: palette(button);
-                color: palette(disabled-text);
-            }
-            QFrame QComboBox QAbstractItemView {
-                background-color: white;
-                color: black;
-                selection-background-color: palette(highlight);
-                selection-color: palette(highlighted-text);
-            }
-            QFrame QPushButton {
-                background-color: #FFD9B3;
-            }
-            QFrame QLabel {
-                background-color: transparent;
-            }
-        """
-
-        z_active_style = """
-            QFrame {
-                border: 1px solid palette(highlight);
-                border-radius: 2px;
-            }
-        """
-
-        # Blue background for Z controls with opaque widget backgrounds
-        z_controls_style = """
-            QFrame {
-                background-color: rgba(0, 120, 215, 0.15);
-            }
-            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
-                background-color: white;
-            }
-            QFrame QPushButton {
-                background-color: #C2D9FF;
-            }
-            QFrame QLabel {
-                background-color: transparent;
-            }
-        """
-
-        time_active_style = """
-            QFrame {
-                border: 1px solid #00A000;
-                border-radius: 2px;
-            }
-        """
-
-        # Green background for Time controls with opaque widget backgrounds
-        time_controls_style = """
-            QFrame {
-                background-color: rgba(0, 160, 0, 0.15);
-            }
-            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
-                background-color: white;
-            }
-            QFrame QPushButton {
-                background-color: #C2FFC2;
-            }
-            QFrame QLabel {
-                background-color: transparent;
-            }
-        """
-
-        # Inactive tab style (unchecked) - uses default Qt inactive tab colors
-        inactive_style = """
-            QFrame {
-                border: 1px solid palette(mid);
-                border-radius: 2px;
-            }
-        """
-
         # Apply styles based on checkbox states
-        self.xy_frame.setStyleSheet(xy_active_style if self.checkbox_xy.isChecked() else inactive_style)
+        theme.style_group(self.xy_frame, "xy", "frame", self.checkbox_xy.isChecked())
         if hasattr(self, "xy_controls_frame"):
-            self.xy_controls_frame.setStyleSheet(xy_controls_style if self.checkbox_xy.isChecked() else "")
+            theme.style_group(self.xy_controls_frame, "xy", "body", self.checkbox_xy.isChecked())
         if hasattr(self, "load_coordinates_frame"):
-            self.load_coordinates_frame.setStyleSheet(xy_controls_style if self.checkbox_xy.isChecked() else "")
+            theme.style_group(self.load_coordinates_frame, "xy", "body", self.checkbox_xy.isChecked())
 
-        self.z_frame.setStyleSheet(z_active_style if self.checkbox_z.isChecked() else inactive_style)
+        theme.style_group(self.z_frame, "z", "frame", self.checkbox_z.isChecked())
         if hasattr(self, "z_controls_dz_frame"):
-            self.z_controls_dz_frame.setStyleSheet(z_controls_style if self.checkbox_z.isChecked() else "")
+            theme.style_group(self.z_controls_dz_frame, "z", "body", self.checkbox_z.isChecked())
         if hasattr(self, "z_controls_range_frame"):
-            self.z_controls_range_frame.setStyleSheet(z_controls_style if self.checkbox_z.isChecked() else "")
+            theme.style_group(self.z_controls_range_frame, "z", "body", self.checkbox_z.isChecked())
 
-        self.time_frame.setStyleSheet(time_active_style if self.checkbox_time.isChecked() else inactive_style)
+        theme.style_group(self.time_frame, "time", "frame", self.checkbox_time.isChecked())
         if hasattr(self, "time_controls_frame"):
-            self.time_controls_frame.setStyleSheet(time_controls_style if self.checkbox_time.isChecked() else "")
+            theme.style_group(self.time_controls_frame, "time", "body", self.checkbox_time.isChecked())
 
     def on_xy_toggled(self, checked):
         """Handle XY checkbox toggle"""
@@ -15150,7 +15252,7 @@ class WavelengthWidget(QWidget):
         layout.addWidget(self.spinbox)
 
         self.na_label = QLabel("N/A")
-        self.na_label.setStyleSheet("color: gray;")
+        theme.set_role(self.na_label, "note-gray")
         layout.addWidget(self.na_label)
 
         # Set initial state
@@ -15201,11 +15303,15 @@ class IlluminationChannelConfiguratorDialog(QDialog):
     COL_WAVELENGTH = 3
     COL_MAX_OUTPUT = 4
     COL_CALIBRATION = 5
+    COL_CALIBRATION_STATUS = 6
 
-    def __init__(self, config_repo, parent=None):
+    def __init__(self, config_repo, parent=None, engine_drive=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config_repo = config_repo
+        # wavelength -> the laser engine line it drives (IlluminationController.engine_drive), for the status column;
+        # None: the channels are driven through the controller DAC
+        self._engine_drive = engine_drive
         self.illumination_config = None
         self.setWindowTitle("Illumination Channel Configurator")
         self.setMinimumSize(900, 500)
@@ -15222,14 +15328,22 @@ class IlluminationChannelConfiguratorDialog(QDialog):
             "Only change these settings when necessary."
         )
         warning_label.setWordWrap(True)
-        warning_label.setStyleSheet("color: #CC0000; font-weight: bold;")
+        theme.set_role(warning_label, "danger")
         layout.addWidget(warning_label)
 
         # Table for illumination channels
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(
-            ["Name", "Type", "Controller Port", "Wavelength (nm)", "Max Output", "Calibration File"]
+            [
+                "Name",
+                "Type",
+                "Controller Port",
+                "Wavelength (nm)",
+                "Max Output",
+                "Calibration File",
+                "Calibration Status",
+            ]
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -15336,6 +15450,26 @@ class IlluminationChannelConfiguratorDialog(QDialog):
             full_path = self._get_calibration_full_path(channel.intensity_calibration_file)
             calib_item = QTableWidgetItem(full_path)
             self.table.setItem(row, self.COL_CALIBRATION, calib_item)
+
+            # Calibration status (read-only): which file applies and whether it still fits this machine
+            status_item = QTableWidgetItem(self._calibration_status(channel))
+            status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, self.COL_CALIBRATION_STATUS, status_item)
+
+    def _calibration_status(self, channel) -> str:
+        if channel.wavelength_nm is None:
+            return ""
+        engine = self._engine_drive(channel.wavelength_nm) if self._engine_drive is not None else None
+        return calibration_status(
+            self.config_repo.machine_configs_path / CALIBRATIONS_DIR_NAME,
+            channel.intensity_calibration_file,
+            channel.wavelength_nm,
+            control._def.ILLUMINATION_INTENSITY_FACTOR,
+            channel.max_output,
+            controller_port=channel.controller_port,
+            source_code=self.illumination_config.get_source_code(channel),
+            engine=engine,
+        )
 
     def _on_type_changed(self, row, new_type):
         """Handle type change - update wavelength, max output and controller port defaults"""
@@ -15676,7 +15810,7 @@ class ControllerPortMappingDialog(QDialog):
             "USB ports are for LED matrix patterns, D ports are for lasers."
         )
         info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: gray; font-style: italic;")
+        theme.set_role(info_label, "hint-gray")
         layout.addWidget(info_label)
 
         # Table for port mappings
@@ -15718,7 +15852,7 @@ class ControllerPortMappingDialog(QDialog):
             # Controller port (read-only)
             port_item = QTableWidgetItem(port)
             port_item.setFlags(port_item.flags() & ~Qt.ItemIsEditable)
-            port_item.setBackground(QColor(240, 240, 240))
+            port_item.setBackground(theme.manager().row_brush("row_disabled"))
             self.table.setItem(row, 0, port_item)
 
             # Source code (editable spinbox with N/A option)
@@ -15786,7 +15920,7 @@ class SourceCodeWidget(QWidget):
         layout.addWidget(self.spinbox)
 
         self.na_label = QLabel("N/A")
-        self.na_label.setStyleSheet("color: gray;")
+        theme.set_role(self.na_label, "note-gray")
         layout.addWidget(self.na_label)
 
         # Set initial state
@@ -15858,15 +15992,14 @@ class RAMMonitorWidget(QWidget):
         self.label_available = self._create_value_label(fm.horizontalAdvance("888.8 GB"))
 
         # Separator and descriptor labels
-        separator_style = "color: #666;"
         self.label_separator1 = QLabel("|")
-        self.label_separator1.setStyleSheet(separator_style)
+        theme.set_role(self.label_separator1, "note")
         self.label_peak_label = QLabel("peak:")
-        self.label_peak_label.setStyleSheet(separator_style)
+        theme.set_role(self.label_peak_label, "note")
         self.label_separator2 = QLabel("|")
-        self.label_separator2.setStyleSheet(separator_style)
+        theme.set_role(self.label_separator2, "note")
         self.label_available_label = QLabel("available:")
-        self.label_available_label.setStyleSheet(separator_style)
+        theme.set_role(self.label_available_label, "note")
 
         layout.addWidget(self.label_icon)
         layout.addWidget(self.label_current)
@@ -16049,10 +16182,10 @@ class BackpressureMonitorWidget(QWidget):
         self.label_bytes = self._create_value_label(fm.horizontalAdvance("8888.8/8888.8 MB"))
 
         self.label_separator = QLabel("|")
-        self.label_separator.setStyleSheet("color: #666;")
+        theme.set_role(self.label_separator, "note")
 
         self.label_throttled = QLabel("")
-        self.label_throttled.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        theme.set_role(self.label_throttled, "danger-soft")
 
         layout.addWidget(self.label_prefix)
         layout.addWidget(self.label_jobs)
@@ -17103,6 +17236,7 @@ class WarningErrorWidget(QWidget):
         self._handler = None
         self._poll_timer = None
         self._setup_ui()
+        self._restyle()
 
     def connect_handler(self, handler: "BufferingHandler"):
         """Connect to a logging handler and start polling for messages.
@@ -17181,12 +17315,6 @@ class WarningErrorWidget(QWidget):
         self.btn_expand.setFixedHeight(18)
         self.btn_expand.setMinimumWidth(32)  # Allow width to grow for longer text
         self.btn_expand.setCursor(Qt.PointingHandCursor)
-        self.btn_expand.setStyleSheet(
-            "QPushButton { background-color: #666; color: white; border-radius: 9px; "
-            "font-size: 11px; font-weight: bold; padding: 0px 6px; }"
-            "QPushButton:hover { background-color: #444; }"
-            "QPushButton:pressed { background-color: #222; }"
-        )
         self.btn_expand.clicked.connect(self._on_expand_clicked)
         self.btn_expand.setVisible(False)
 
@@ -17194,10 +17322,6 @@ class WarningErrorWidget(QWidget):
         self.btn_dismiss = QPushButton("✕")
         self.btn_dismiss.setFixedSize(18, 18)
         self.btn_dismiss.setCursor(Qt.PointingHandCursor)
-        self.btn_dismiss.setStyleSheet(
-            "QPushButton { background: transparent; border: none; color: #888; font-size: 14px; padding: 0px; }"
-            "QPushButton:hover { color: #000; }"
-        )
         self.btn_dismiss.clicked.connect(self.dismiss_current)
 
         layout.addWidget(self.label_icon)
@@ -17205,6 +17329,25 @@ class WarningErrorWidget(QWidget):
         layout.addWidget(self.btn_expand)
         layout.addWidget(self.btn_dismiss)
         layout.addStretch()  # Push everything to the left
+
+    def _restyle(self):
+        """Build the pill and dismiss button styles from the current theme's tokens, and repaint the message."""
+        t = theme.manager().tokens()
+        self.btn_expand.setStyleSheet(
+            f"QPushButton {{ background-color: {t.pill_bg}; color: white; border-radius: 9px; "
+            "font-size: 11px; font-weight: bold; padding: 0px 6px; }"
+            f"QPushButton:hover {{ background-color: {t.pill_hover}; }}"
+            f"QPushButton:pressed {{ background-color: {t.pill_pressed}; }}"
+        )
+        self.btn_dismiss.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: none; color: {t.icon_button_fg}; font-size: 14px; "
+            "padding: 0px; }"
+            f"QPushButton:hover {{ color: {t.icon_button_hover_fg}; }}"
+        )
+        # The popup is transient (it closes when clicked outside): drop an open one rather than leave it stale.
+        self._cleanup_popup()
+        if self._messages:
+            self._update_display()
 
     def _on_expand_clicked(self):
         """Handle expand button click."""
@@ -17223,7 +17366,10 @@ class WarningErrorWidget(QWidget):
         self._cleanup_popup()
 
         self._popup = QFrame(self.window(), Qt.Popup | Qt.FramelessWindowHint)
-        self._popup.setStyleSheet("QFrame { background-color: white; border: 1px solid #aaa; border-radius: 6px; }")
+        t = theme.manager().tokens()
+        self._popup.setStyleSheet(
+            f"QFrame {{ background-color: {t.popup_bg}; border: 1px solid {t.popup_border}; border-radius: 6px; }}"
+        )
 
         popup_layout = QVBoxLayout(self._popup)
         popup_layout.setContentsMargins(0, 0, 0, 0)
@@ -17231,16 +17377,18 @@ class WarningErrorWidget(QWidget):
 
         # Header with title and Clear All button
         header = QWidget()
-        header.setStyleSheet("background-color: #f5f5f5; border-bottom: 1px solid #ddd;")
+        header.setStyleSheet(
+            f"background-color: {t.popup_header_bg}; border-bottom: 1px solid {t.popup_header_border};"
+        )
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(12, 8, 12, 8)
         header_label = QLabel(f"<b>Warnings & Errors</b> ({len(self._messages)})")
         btn_clear = QPushButton("Clear All")
         btn_clear.setCursor(Qt.PointingHandCursor)
         btn_clear.setStyleSheet(
-            "QPushButton { background-color: #e74c3c; color: white; border: none; "
+            f"QPushButton {{ background-color: {t.clear_bg}; color: white; border: none; "
             "border-radius: 4px; padding: 4px 12px; font-weight: bold; }"
-            "QPushButton:hover { background-color: #c0392b; }"
+            f"QPushButton:hover {{ background-color: {t.clear_hover}; }}"
         )
         btn_clear.clicked.connect(self._clear_all_from_popup)
         header_layout.addWidget(header_label)
@@ -17253,10 +17401,10 @@ class WarningErrorWidget(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setStyleSheet("QScrollArea { border: none; background: white; }")
+        scroll.setStyleSheet(f"QScrollArea {{ border: none; background: {t.popup_bg}; }}")
 
         list_widget = QWidget()
-        list_widget.setStyleSheet("background: white;")
+        list_widget.setStyleSheet(f"background: {t.popup_bg};")
         list_layout = QVBoxLayout(list_widget)
         list_layout.setContentsMargins(0, 0, 0, 0)
         list_layout.setSpacing(0)
@@ -17310,10 +17458,11 @@ class WarningErrorWidget(QWidget):
         dt = msg["datetime"]
         msg_id = msg["id"]
 
+        t = theme.manager().tokens()
         item = QWidget()
         is_error = level >= logging.ERROR
-        bg_color = "#fef2f2" if is_error else "#fefce8"
-        item.setStyleSheet(f"background-color: {bg_color}; border-bottom: 1px solid #eee;")
+        bg_color = t.error_bg if is_error else t.warn_bg
+        item.setStyleSheet(f"background-color: {bg_color}; border-bottom: 1px solid {t.popup_row_border};")
 
         layout = QHBoxLayout(item)
         layout.setContentsMargins(12, 8, 12, 8)
@@ -17321,7 +17470,7 @@ class WarningErrorWidget(QWidget):
 
         # Level indicator
         icon_label = QLabel("⬤")
-        icon_color = "#dc2626" if is_error else "#ca8a04"
+        icon_color = t.error_icon_bg if is_error else t.warn_dot
         icon_label.setStyleSheet(f"color: {icon_color}; font-size: 8px;")
         icon_label.setFixedWidth(14)
         icon_label.setAlignment(Qt.AlignCenter)
@@ -17329,16 +17478,16 @@ class WarningErrorWidget(QWidget):
         # Date/Time - show full date and time
         time_str = dt.strftime("%m/%d %H:%M:%S")
         time_label = QLabel(time_str)
-        time_label.setStyleSheet("color: #666; font-size: 11px; font-family: monospace;")
+        time_label.setStyleSheet(f"color: {t.popup_time_fg}; font-size: 11px; font-family: monospace;")
         time_label.setFixedWidth(90)
 
         # Message (allow wrapping)
         core_msg = self._extract_core_message(message)
         if count > 1:
-            core_msg = f"{core_msg} <b style='color: #666;'>(×{count})</b>"
+            core_msg = f"{core_msg} <b style='color: {t.popup_time_fg};'>(×{count})</b>"
         msg_label = QLabel(core_msg)
         msg_label.setWordWrap(True)
-        msg_label.setStyleSheet("font-size: 12px; color: #333;")
+        msg_label.setStyleSheet(f"font-size: 12px; color: {t.popup_msg_fg};")
         msg_label.setTextFormat(Qt.RichText)
         msg_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
@@ -17347,8 +17496,9 @@ class WarningErrorWidget(QWidget):
         btn_dismiss.setFixedSize(20, 20)
         btn_dismiss.setCursor(Qt.PointingHandCursor)
         btn_dismiss.setStyleSheet(
-            "QPushButton { background: #ddd; border: none; color: #666; border-radius: 10px; font-size: 12px; }"
-            "QPushButton:hover { background: #ccc; color: #333; }"
+            f"QPushButton {{ background: {t.dismiss_bg}; border: none; color: {t.dismiss_fg}; border-radius: 10px; "
+            "font-size: 12px; }"
+            f"QPushButton:hover {{ background: {t.dismiss_hover_bg}; color: {t.dismiss_hover_fg}; }}"
         )
         btn_dismiss.clicked.connect(lambda checked, mid=msg_id: self._dismiss_by_id(mid))
 
@@ -17459,19 +17609,22 @@ class WarningErrorWidget(QWidget):
         is_error = level >= logging.ERROR
 
         # Colors
+        t = theme.manager().tokens()
         if is_error:
-            bg_color = "#fef2f2"
-            text_color = "#b91c1c"
+            bg_color = t.error_bg
+            text_color = t.error_fg
             icon_text = "✕"
             icon_style = (
-                "background-color: #dc2626; color: white; font-weight: bold; font-size: 12px; border-radius: 10px;"
+                f"background-color: {t.error_icon_bg}; color: white; font-weight: bold; font-size: 12px; "
+                "border-radius: 10px;"
             )
         else:
-            bg_color = "#fefce8"
-            text_color = "#a16207"
+            bg_color = t.warn_bg
+            text_color = t.warn_fg
             icon_text = "!"
             icon_style = (
-                "background-color: #eab308; color: white; font-weight: bold; font-size: 14px; border-radius: 10px;"
+                f"background-color: {t.warn_icon_bg}; color: white; font-weight: bold; font-size: 14px; "
+                "border-radius: 10px;"
             )
 
         self.setStyleSheet(f"background-color: {bg_color}; border-radius: 4px;")

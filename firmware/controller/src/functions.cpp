@@ -35,6 +35,12 @@ void set_DAC8050x_config()
 
 void set_DAC8050x_output(int channel, uint16_t value)
 {
+  if (channel >= 0 && channel < 8)
+  {
+    // Kept for the startup reply: a relaunched host learns where the objective piezo is without moving it
+    dac_output_code[channel] = value;
+    dac_output_written |= uint8_t(1 << channel);
+  }
   SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE2));
   digitalWrite(DAC8050x_CS_pin, LOW);
   SPI.transfer(DAC8050x_DAC_ADDR + channel);

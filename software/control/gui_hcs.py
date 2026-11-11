@@ -63,9 +63,16 @@ from control.lighting import LightSourceType, IntensityControlMode, ShutterContr
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.models import AcquisitionChannel
+from control.startup_homing import (
+    StageHomingInProgressError,
+    StageHomingRefused,
+    StartupHoming,
+    home_stage_confirmation_text,
+)
 from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
 import control._def
 import control.lighting
+import control.theme as theme
 import control.utils
 import control.utils_acquisition
 import control.microscope
@@ -79,6 +86,11 @@ import squid.logging
 import squid.stage.utils
 
 log = squid.logging.get_logger(__name__)
+
+# Home stage / Home X / Home Y: once the homing claim has paused live, how long to wait for the controller to report
+# the stage stopped before refusing (a move still under way), and how often to ask.
+HOMING_START_SETTLE_S = 0.5
+HOMING_START_POLL_S = 0.01
 
 if USE_PRIOR_STAGE:
     import squid.stage.prior
@@ -111,6 +123,14 @@ from control.custom_multipoint_widget import TemplateMultiPointWidget
 # Slack notifications
 from control.slack_notifier import SlackNotifier, TimepointStats, AcquisitionStats
 from control.widgets_slack import SlackSettingsDialog, load_slack_settings_from_cache
+
+# Acquisition history (the Gallery tab) and the standalone ndviewer_light window
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from control.acquisition_history_recorder import AcquisitionHistoryRecorder
+from control.ndviewer_launcher import default_log_path, launch_ndviewer_light, read_log_tail, resolve_ndviewer_light
+from squid.acquisition_history import HistoryStore, history_dir, normalize_folder
+from squid.version import software_version
 
 
 class MovementUpdater(QObject):
@@ -194,6 +214,7 @@ class QtAutoFocusController(AutoFocusController, QObject):
 
 class QtMultiPointController(MultiPointController, QObject):
     acquisition_finished = Signal()
+    acquisition_preparing = Signal()
     signal_acquisition_start = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
@@ -203,6 +224,7 @@ class QtMultiPointController(MultiPointController, QObject):
     napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
     signal_set_display_tabs = Signal(list, int, str)  # configs: list, Nz: int, xy_mode: str
     signal_acquisition_save_target = Signal(object)  # Optional[str] — output dir for save view
+    signal_history_run_started = Signal(object, object)  # history entry id or None, run folder or None
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
     signal_coordinates = Signal(float, float, float, int)  # x, y, z, region
@@ -254,6 +276,7 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_overall_progress=self._signal_overall_progress_fn,
                 signal_region_progress=self._signal_region_progress_fn,
                 signal_plate_view_init=self._signal_plate_view_init_fn,
+                signal_acquisition_preparing=self._signal_acquisition_preparing_fn,
                 signal_timepoint_finished=self._signal_timepoint_finished_fn,
                 signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
                 signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
@@ -281,6 +304,23 @@ class QtMultiPointController(MultiPointController, QObject):
         self._ndviewer_mode: NDViewerMode = NDViewerMode.INACTIVE  # Current viewer mode
         self._ndviewer_region_index_map: dict = {}  # {region_name: region_idx} for 6D mode
 
+    def _signal_acquisition_preparing_fn(self):
+        # Live and Snap must be locked before the run touches live or the camera. A run on another thread (the TCP
+        # server's) waits here until the GUI thread has run the slots; a queued emit would let it go on first. A run on
+        # the GUI thread emits directly: a blocking call into its own event loop could never run.
+        # QObject.thread: MultiPointController's acquisition-thread attribute shadows the method.
+        if QThread.currentThread() is QObject.thread(self):
+            self.acquisition_preparing.emit()
+        else:
+            QMetaObject.invokeMethod(self, "_emit_acquisition_preparing", Qt.BlockingQueuedConnection)
+
+    @Slot()
+    def _emit_acquisition_preparing(self):
+        try:  # Qt swallows exceptions in a slot called through BlockingQueuedConnection
+            self.acquisition_preparing.emit()
+        except Exception:
+            self._log.exception("Locking Live and Snap for a run that is preparing failed")
+
     def _signal_acquisition_start_fn(self, parameters: AcquisitionParameters):
         # TODO mpc napari signals
         self._napari_inited_for_this_acquisition = False
@@ -298,6 +338,8 @@ class QtMultiPointController(MultiPointController, QObject):
         exp_id = parameters.experiment_ID
         save_target = os.path.join(base, exp_id) if (base and exp_id) else None
         self.signal_acquisition_save_target.emit(save_target)
+        # The history id is read now, on the starting thread: a short run clears it before a queued slot runs.
+        self.signal_history_run_started.emit(self.history_entry_id, save_target)
 
         # NDViewer push-based API: emit start_acquisition signal
         scan_info = parameters.scan_position_information
@@ -429,6 +471,8 @@ class QtMultiPointController(MultiPointController, QObject):
                 well_row=well_row,
                 well_col=well_col,
                 well_origin_mm=self._well_origins_mm.get(region_id),
+                z_index=info.z_index,
+                time_point=info.time_point or 0,
             )
         )
 
@@ -597,11 +641,29 @@ class QtMultiPointController(MultiPointController, QObject):
         return len(scan_info.scan_region_names) > 0
 
 
+@dataclass(eq=False)
+class _HistoryRun:
+    """One acquisition's gallery-preview timing: its last timepoint, the overview saves seen, the one awaited."""
+
+    entry_id: Optional[str]
+    folder: Optional[str]
+    last_timepoint: Optional[int] = None
+    saved_paths: set = field(default_factory=set)  # normalized mosaic_view dirs saved while it ran
+    awaited_save: Optional[str] = None  # its last timepoint's mosaic_view dir, once it ended without it
+    preview_made: bool = False
+    finished: bool = False
+    timer: Optional[QTimer] = None  # the wait for awaited_save
+
+
 class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
     FLUIDICS_TAB_NAME = "Fluidics"
+    GALLERY_PREVIEW_WAIT_MS = 60_000  # how long a finished run's preview waits for its last mosaic overview save
+    NDVIEWER_LAUNCH_CHECK_MS = 3000  # an ndviewer_light window that has exited by then could not start
     signal_performance_mode_changed = Signal(bool)
+    # (success, error message) of a Home stage run in its worker thread, delivered on the GUI thread
+    signal_home_stage_finished = Signal(bool, str)
 
     def __init__(
         self,
@@ -620,6 +682,13 @@ class HighContentScreeningGui(QMainWindow):
         self._objective_swap_active = False
         self._loading_position_locked = False  # a Z lift system at the loading position: nothing moves
         self._objective_swap_saved_enabled = {}
+        # Follows the Microscope's homing claim, whoever took it (Home stage, Home X/Y, TCP home): nothing moves.
+        self._stage_homing_locked = False
+        self._stage_homing_saved_enabled = {}
+        # Firmware < 1.8 cannot lock the control panel: said once per session, not at every home
+        self._panel_lock_unsupported_logged = False
+        # A transient status-bar message for startup, shown once the window first appears (showEvent)
+        self._startup_status_message: Optional[str] = None
 
         self.microscope: control.microscope.Microscope = microscope
         self.stage: AbstractStage = microscope.stage
@@ -739,6 +808,7 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplayWindow: Optional[core.ImageDisplayWindow] = None
         self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
         self.napariMultiChannelWidget: Optional[widgets.NapariMultiChannelWidget] = None
+        self.acquisitionGalleryWidget = None  # widgets_gallery.AcquisitionGalleryWidget unless live-only mode
         self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
         self.ramMonitorWidget: Optional[widgets.RAMMonitorWidget] = None
         self.backpressureMonitorWidget: Optional[widgets.BackpressureMonitorWidget] = None
@@ -783,8 +853,43 @@ class HighContentScreeningGui(QMainWindow):
             else:
                 self.log.info("Skipping cached position restoration (--skip-init flag set)")
         elif HOMING_ENABLED_X and HOMING_ENABLED_Y and self._restored_loading_state is not None:
-            self.log.info("Squid was closed at the loading position: moving back there (lift lowered, Z retracted).")
-            squid.stage.utils.move_xy_to_loading_position(self.stage, is_wellplate=self.stageUtils.is_wellplate)
+            still_homed = self.microscope.startup_homing is StartupHoming.ALREADY_HOMED
+            if still_homed and squid.stage.utils.is_at_loading_xy(self.stage):
+                # Still homed and still there: no round trip through the clamp to arrive where the stage already is
+                self.log.info("Squid was closed at the loading position and the stage is still there, still homed.")
+            elif still_homed:
+                # Still homed elsewhere (a session that died on its way back to scanning, the lift possibly raised and
+                # the objective lowered): the loading UI needs it there, and nothing homed it, so nothing lowered the
+                # lift or retracted the objective yet. Both happen first, as on a move to the loading position.
+                self.log.info(
+                    "Squid was closed at the loading position and the stage is elsewhere, still homed: moving back "
+                    "there (objective retracted and lift lowered first)."
+                )
+                squid.stage.utils.return_to_loading_position(self.stage, is_wellplate=self.stageUtils.is_wellplate)
+            else:
+                # Homed at startup: homing lowered the lift and retracted the objective first
+                self.log.info(
+                    "Squid was closed at the loading position: moving back there (lift lowered, Z retracted)."
+                )
+                squid.stage.utils.move_xy_to_loading_position(self.stage, is_wellplate=self.stageUtils.is_wellplate)
+        elif (
+            control._def.HOMING_ENABLED_X
+            and control._def.HOMING_ENABLED_Y
+            and self.microscope.startup_homing is StartupHoming.ALREADY_HOMED
+        ):
+            # (The flags read through control._def, as the startup decision, required_homed_axes_mask, reads them.)
+            # The controller vouched that the stage never lost its homing: X/Y stay where the stage stands (after a
+            # crash the cached X/Y is stale anyway). Z comes back as after a homed startup (a clean close retracted
+            # it), but only while X/Y are where the position was cached: the position is cached only at a clean close,
+            # so after a crash, or a panel jog while Squid was closed, the cached Z is another place's focus height.
+            cached_pos = squid.stage.utils.get_cached_position()
+            if cached_pos is not None and not squid.stage.utils.is_at_xy(self.stage, cached_pos.x_mm, cached_pos.y_mm):
+                self.log.info("Cached position was saved at another XY: Z left where it is")
+                if squid.stage.utils.z_is_referenced():
+                    self._init_multipoint_z()
+            else:
+                self.log.info("Stage still homed: X/Y stay where they are, Z is restored")
+                self._restore_cached_z(cached_pos)
         elif HOMING_ENABLED_X and HOMING_ENABLED_Y:
             # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
             cached_pos = squid.stage.utils.get_cached_position()
@@ -793,25 +898,10 @@ class HighContentScreeningGui(QMainWindow):
                 self.stage.move_x_to(cached_pos.x_mm)
                 self.stage.move_y_to(cached_pos.y_mm)
 
-            if squid.stage.utils.z_is_referenced():
-                if not cached_pos:
-                    self.log.info("No cached position.  Moving Z axis to safety position")
-                    squid.stage.utils.move_z_axis_to_safety_position(self.stage)
-                elif USE_PI_FOCUS_STAGE:
-                    # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
-                    # The PI driver clamps every move to the configured Z limits, so a stale
-                    # cached Z cannot command an out-of-range move.
-                    self.stage.move_z_to(cached_pos.z_mm)
-                else:
-                    safety_z_mm = int(Z_HOME_SAFETY_POINT) / 1000.0
-                    if cached_pos.z_mm < safety_z_mm:
-                        self.log.info(
-                            "Cache z position is smaller than Z_HOME_SAFETY_POINT, move to Z_HOME_SAFETY_POINT"
-                        )
-                    self.stage.move_z_to(max(cached_pos.z_mm, safety_z_mm))
-
-                if ENABLE_WELLPLATE_MULTIPOINT:
-                    self.wellplateMultiPointWidget.init_z()
+            self._restore_cached_z(cached_pos)
+        if self.microscope.startup_homing is StartupHoming.ALREADY_HOMED:
+            # Every warm start says so, whichever restore ran above
+            self._startup_status_message = "Stage still homed: startup homing skipped"
 
         # Create the menu bar
         menubar = self.menuBar()
@@ -822,6 +912,7 @@ class HighContentScreeningGui(QMainWindow):
         config_action.setMenuRole(QAction.NoRole)
         config_action.triggered.connect(self.openPreferences)
         settings_menu.addAction(config_action)
+        self._build_appearance_menu(settings_menu)
 
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             led_matrix_action = QAction("LED Matrix", self)
@@ -849,6 +940,12 @@ class HighContentScreeningGui(QMainWindow):
         channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
         advanced_menu.addAction(channel_config_action)
 
+        # Objectives (machine_configs/objectives.yaml; takes effect after a restart)
+        objectives_action = QAction("Objectives...", self)
+        objectives_action.setMenuRole(QAction.NoRole)
+        objectives_action.triggered.connect(self.openObjectivesEditor)
+        advanced_menu.addAction(objectives_action)
+
         # Filter Wheel Configuration (only shown if filter wheel is enabled)
         if USE_EMISSION_FILTER_WHEEL:
             filter_wheel_config_action = QAction("Filter Wheel Configuration", self)
@@ -861,10 +958,12 @@ class HighContentScreeningGui(QMainWindow):
         stage_utils_action = QAction("Stage Utils", self)
         stage_utils_action.triggered.connect(self.stageUtils.show)
         utils_menu.addAction(stage_utils_action)
+        # Kept: the homing lock disables it (the reset drives Z and the turret)
+        self.resetObjectiveTurretAction = None
         if USE_OBJECTIVE_TURRET:
-            reset_turret_action = QAction("Reset Objective Turret", self)
-            reset_turret_action.triggered.connect(self.resetObjectiveTurret)
-            utils_menu.addAction(reset_turret_action)
+            self.resetObjectiveTurretAction = QAction("Reset Objective Turret", self)
+            self.resetObjectiveTurretAction.triggered.connect(self.resetObjectiveTurret)
+            utils_menu.addAction(self.resetObjectiveTurretAction)
         workflow_runner_action = QAction("Workflow Runner...", self)
         workflow_runner_action.triggered.connect(self.openWorkflowRunner)
         utils_menu.addAction(workflow_runner_action)
@@ -878,6 +977,11 @@ class HighContentScreeningGui(QMainWindow):
             filter_wheel_tuning_action.setMenuRole(QAction.NoRole)
             filter_wheel_tuning_action.triggered.connect(self.openFilterWheelTuning)
             utils_menu.addAction(filter_wheel_tuning_action)
+
+        illumination_calibration_action = QAction("Illumination Power Calibration...", self)
+        illumination_calibration_action.setMenuRole(QAction.NoRole)
+        illumination_calibration_action.triggered.connect(self.openIntensityCalibration)
+        utils_menu.addAction(illumination_calibration_action)
 
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
@@ -938,6 +1042,7 @@ class HighContentScreeningGui(QMainWindow):
             scan_coordinates=self.scanCoordinates,
             laser_autofocus_controller=self.laserAutofocusController,
         )
+        self._setup_acquisition_history()
 
     def setup_hardware(self):
         self.camera.add_frame_callback(self.streamHandler.get_frame_callback())
@@ -1029,6 +1134,7 @@ class HighContentScreeningGui(QMainWindow):
             self.microscope.focus_wheel_router.set_enabled_check(
                 lambda: not self._objective_swap_active
                 and not self._loading_position_locked
+                and not self.microscope.stage_homing_in_progress
                 and not self.autofocusController.autofocus_in_progress
                 and not self.multipointController.acquisition_in_progress()
             )
@@ -1268,6 +1374,17 @@ class HighContentScreeningGui(QMainWindow):
             elif self.ndviewerTab is None:
                 self.log.debug("NDViewer tab not available, FOV click navigation disabled")
 
+            # Gallery of the acquisitions saved under the saving folder: one opens in the NDViewer tab, shows
+            # in the file browser, or hands its settings back to the multipoint tab it was run from.
+            from control.widgets_gallery import AcquisitionGalleryWidget
+
+            self.acquisitionGalleryWidget = AcquisitionGalleryWidget(
+                self.historyStore, import_root_provider=self._acquisition_saving_root
+            )
+            self.imageDisplayTabs.addTab(self.acquisitionGalleryWidget, "Gallery")
+            self._set_gallery_open_in_squid(acquiring=False)
+            self._refresh_ndviewer_launcher()
+
             # z plot
             self.zPlotWidget = widgets.SurfacePlotWidget()
             dock_surface_plot = dock.Dock("Z Plot", autoOrientation=False)
@@ -1437,22 +1554,24 @@ class HighContentScreeningGui(QMainWindow):
 
         if control._def.SIMULATED_DISK_IO_ENABLED:
             simulated_io_banner = QLabel("  SIMULATED DISK I/O - Images are encoded but NOT saved to disk  ")
-            simulated_io_banner.setStyleSheet(
-                "background-color: #FF6B6B; color: white; font-weight: bold; padding: 8px;"
-            )
+            theme.set_role(simulated_io_banner, "banner-danger")
             simulated_io_banner.setAlignment(Qt.AlignCenter)
             layout.addWidget(simulated_io_banner)
 
+        theme.set_role(self.profileWidget, "card")
+        theme.set_role(self.liveControlWidget, "card")
         layout.addWidget(self.profileWidget)
         layout.addWidget(self.liveControlWidget)
 
         layout.addWidget(self.cameraTabWidget)
 
         if SHOW_DAC_CONTROL:
+            theme.set_role(self.dacControlWidget, "card")
             layout.addWidget(self.dacControlWidget)
 
         # Create a widget to hold sample settings and navigation viewer
         navigation_section_widget = QWidget()
+        theme.set_role(navigation_section_widget, "card")
         navigation_section_layout = QVBoxLayout()
         navigation_section_layout.setContentsMargins(0, 0, 0, 0)
         navigation_section_layout.setSpacing(0)
@@ -1498,6 +1617,9 @@ class HighContentScreeningGui(QMainWindow):
         # Auto-hides when no messages pending
         if self.warningErrorWidget is not None:
             self.statusBar().addWidget(self.warningErrorWidget)  # Left-aligned
+
+        # A transient message (e.g. "Stage homed") shows the status bar for as long as it is displayed
+        self.statusBar().messageChanged.connect(lambda _message: self._update_status_bar_visibility())
 
     def _getMainWindowMinimumSize(self):
         """
@@ -1570,6 +1692,7 @@ class HighContentScreeningGui(QMainWindow):
         self.liveControlWidget.update_camera_settings()
 
         self.connectSlidePositionController()
+        self._connect_stage_homing()
 
         self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.redraw_fov)
@@ -1608,6 +1731,20 @@ class HighContentScreeningGui(QMainWindow):
         self.multipointController.signal_acquisition_start.connect(self._connect_backpressure_monitor_widget)
         self.multipointController.acquisition_finished.connect(self._disconnect_backpressure_monitor_widget)
 
+        # The controller stops live at the start of every run (GUI, TCP, fluidics) and, only when the INI sets
+        # resume_live_after_acquisition, turns it back on at the end: Live and Snap are locked in between.
+        # The lock lands on preparing, before the run stops live: a TCP run prepares on the server's thread
+        # while the GUI still takes clicks. The start re-syncs the button once live is off.
+        self.multipointController.acquisition_preparing.connect(
+            lambda: self.liveControlWidget.set_acquisition_running(True)
+        )
+        self.multipointController.signal_acquisition_start.connect(
+            lambda: self.liveControlWidget.set_acquisition_running(True)
+        )
+        self.multipointController.acquisition_finished.connect(
+            lambda: self.liveControlWidget.set_acquisition_running(False)
+        )
+
         # NDViewer push-based API connections
         if self.ndviewerTab is not None:
             # TIFF mode signals
@@ -1621,6 +1758,28 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.multipointController.ndviewer_notify_zarr_frame.connect(self.ndviewerTab.notify_zarr_frame)
             self.multipointController.ndviewer_end_zarr_acquisition.connect(self.ndviewerTab.end_zarr_acquisition)
+
+        # Acquisition history: the finished run's preview waits for its last mosaic overview save (live-only too).
+        # No preview work while a run is under way: the recorder queues preview requests until it is over.
+        self.multipointController.signal_acquisition_start.connect(self._on_history_acquisition_start)
+        self.multipointController.signal_history_run_started.connect(self._on_history_run_started)
+        self.multipointController.timepoint_finished.connect(self._on_history_timepoint_finished)
+        self.multipointController.acquisition_finished.connect(self._on_history_acquisition_finished)
+        if self.unifiedMosaicWidget is not None:
+            self.unifiedMosaicWidget.signal_view_saved.connect(self._on_history_view_saved)
+
+        if self.acquisitionGalleryWidget is not None:
+            gallery = self.acquisitionGalleryWidget
+            gallery.signal_open_in_squid.connect(self._open_acquisition_in_ndviewer)
+            gallery.signal_open_in_window.connect(self._open_acquisition_in_window)
+            gallery.signal_load_settings.connect(self._load_acquisition_settings_from_folder)
+            gallery.signal_shown.connect(self._refresh_ndviewer_launcher)
+            self.multipointController.signal_acquisition_start.connect(self._on_gallery_acquisition_start)
+            self.multipointController.acquisition_finished.connect(self._on_gallery_acquisition_finished)
+            self.multipointController.signal_acquisition_progress.connect(self._on_gallery_acquisition_progress)
+            self.multipointController.signal_region_progress.connect(self._on_gallery_region_progress)
+            self.multipointController.acquisition_finished.connect(self._refresh_gallery_after_acquisition)
+            QTimer.singleShot(0, gallery.offer_initial_import)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
@@ -1987,6 +2146,62 @@ class HighContentScreeningGui(QMainWindow):
             dialog = widgets.LedMatrixSettingsDialog(self.liveController.led_array)
             dialog.exec_()
 
+    def _build_appearance_menu(self, settings_menu):
+        """Settings > Appearance: Classic / Dark. Classic <-> Dark changes apply after a restart."""
+        # The theme the machine ini asks for. It differs from the active theme after a deferred Classic
+        # transition or a failed save, and the menu marks that difference "(after restart)".
+        self._saved_theme = theme.load_theme_choice()
+        self.appearance_actions = {}
+        appearance_menu = settings_menu.addMenu("Appearance")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for name in theme.THEMES:
+            action = QAction(name.capitalize(), self)
+            action.setMenuRole(QAction.NoRole)
+            action.setCheckable(True)
+            group.addAction(action)
+            appearance_menu.addAction(action)
+            action.triggered.connect(lambda _=False, c=name: self._on_theme_chosen(c))
+            self.appearance_actions[name] = action
+        self._appearance_group = group
+        self._refresh_appearance_labels()
+
+    def _refresh_appearance_labels(self):
+        active = theme.manager().current
+        pending = self._saved_theme if self._saved_theme != active else None
+        for name, action in self.appearance_actions.items():
+            action.setText(name.capitalize() + (" (after restart)" if name == pending else ""))
+        self.appearance_actions[pending or active].setChecked(True)
+
+    def _on_theme_chosen(self, choice):
+        manager = theme.manager()
+        if choice == manager.current and choice == self._saved_theme:
+            return  # already active and already saved: nothing to do
+        saved = theme.save_theme_choice(control._def.CACHED_CONFIG_FILE_PATH, choice)
+        if saved:
+            self._saved_theme = choice
+        # A failed save leaves the ini (and so _saved_theme) as it was; the labels keep saying so.
+        if manager.needs_restart(choice):
+            self._refresh_appearance_labels()
+            if not saved:
+                QMessageBox.warning(
+                    self,
+                    "Appearance",
+                    "The theme could not be saved to the machine configuration file, so it cannot change at the next start.",
+                )
+                return
+            widgets.offer_restart(self, "The theme has been saved.", self.restart_application)
+            return
+        # Re-picking the active theme: only the saved choice changes (it cancels a pending switch).
+        self._refresh_appearance_labels()
+        if not saved:
+            QMessageBox.warning(
+                self,
+                "Appearance",
+                "The theme could not be saved to the machine configuration file. "
+                f"The next start will use {self._saved_theme.capitalize()}.",
+            )
+
     def openPreferences(self):
         if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             config = ConfigParser()
@@ -2002,6 +2217,8 @@ class HighContentScreeningGui(QMainWindow):
             dialog.signal_config_changed.connect(
                 lambda: self.navigationWidget.set_click_to_move(control._def.ENABLE_CLICK_TO_MOVE)
             )
+            # The ndviewer_light location preference applies live: the gallery re-resolves the launcher.
+            dialog.signal_config_changed.connect(self._refresh_ndviewer_launcher)
             # The Z-stack order dropdown preference applies live: the tabs re-read the flag.
             for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget):
                 if tab is not None:
@@ -2085,6 +2302,9 @@ class HighContentScreeningGui(QMainWindow):
             imaging_port=self.qtImagingPort,
             busy_check=fluidics_busy_check,
         )
+        # Acquisition history: a protocol run is one Gallery entry, its imaging rounds nested under it.
+        self.fluidicsProtocolWidget.signal_run_started.connect(self._on_protocol_run_started)
+        self.fluidicsProtocolWidget.signal_run_finished.connect(self.historyRecorder.protocol_finished)
         wire_fluidics(self.fluidicsDisplayTab, self.fluidicsProtocolWidget)
 
     def _confirm_end_fluidics_run(self, action: str) -> bool:
@@ -2157,6 +2377,13 @@ class HighContentScreeningGui(QMainWindow):
     def resetObjectiveTurret(self):
         """Clear faults, re-enable the motor, re-home, and rotate back to the current objective."""
         if self.objective_changer is None:
+            return
+        if self.microscope.stage_homing_in_progress:
+            # The reset retracts and restores Z and turns the turret: not while a home sweeps the stage.
+            self.log.info("Reset Objective Turret refused: the stage is homing")
+            QMessageBox.information(
+                self, "Stage Homing", "The stage is homing. Reset the objective turret once it has finished."
+            )
             return
         self.log.info("Resetting objective turret")
         try:
@@ -2333,18 +2560,28 @@ class HighContentScreeningGui(QMainWindow):
         """
         self._objective_swap_active = active
         if active:
-            self._objective_swap_saved_enabled = {}
-            for name in self._OBJECTIVE_SWAP_BLOCKED_WIDGETS:
-                widget = getattr(self, name, None)
-                if widget is not None:
-                    self._objective_swap_saved_enabled[name] = widget.isEnabled()
-                    widget.setEnabled(False)
+            self._objective_swap_saved_enabled = self._disable_widgets_saving_state(
+                self._OBJECTIVE_SWAP_BLOCKED_WIDGETS
+            )
         else:
-            for name, was_enabled in self._objective_swap_saved_enabled.items():
-                widget = getattr(self, name, None)
-                if widget is not None:
-                    widget.setEnabled(was_enabled)
+            self._restore_widgets_state(self._objective_swap_saved_enabled)
             self._objective_swap_saved_enabled = {}
+
+    def _disable_widgets_saving_state(self, names) -> dict:
+        """Disable each named widget this window has; returns {name: was enabled} for _restore_widgets_state."""
+        saved = {}
+        for name in names:
+            widget = getattr(self, name, None)
+            if widget is not None:
+                saved[name] = widget.isEnabled()
+                widget.setEnabled(False)
+        return saved
+
+    def _restore_widgets_state(self, saved: dict) -> None:
+        for name, was_enabled in saved.items():
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(was_enabled)
 
     # Controls that move the stage or focus, disabled at the loading position on a Z lift system. Not the Z Lift
     # window or the loading buttons: they hold the toggle back to scanning, and the lift's own moves are refused by
@@ -2387,24 +2624,196 @@ class HighContentScreeningGui(QMainWindow):
             return
         self._loading_position_locked = True
         self.log.info("Loading position: stage, focus, live and lift controls are locked until scanning position")
-        self._loading_position_saved_enabled = {}
-        for name in self._LOADING_POSITION_BLOCKED_WIDGETS:
-            widget = getattr(self, name, None)
-            if widget is not None:
-                self._loading_position_saved_enabled[name] = widget.isEnabled()
-                widget.setEnabled(False)
+        self._loading_position_saved_enabled = self._disable_widgets_saving_state(
+            self._LOADING_POSITION_BLOCKED_WIDGETS
+        )
         self._set_control_panel_lock(True)
 
     def _unlock_stage_after_loading_position(self):
         if not self._loading_position_locked:
             return
         self._loading_position_locked = False
-        self._set_control_panel_lock(False)
-        for name, was_enabled in self._loading_position_saved_enabled.items():
-            widget = getattr(self, name, None)
-            if widget is not None:
-                widget.setEnabled(was_enabled)
+        if not self._stage_homing_locked:
+            self._set_control_panel_lock(False)
+        self._restore_widgets_state(self._loading_position_saved_enabled)
         self._loading_position_saved_enabled = {}
+
+    # The homing lock: the loading-position set, plus the Z lift tab, the loading toggle (a home lowers the lift
+    # and sweeps XY; neither may move under it) and the turret reset (it retracts and restores Z).
+    _STAGE_HOMING_BLOCKED_WIDGETS = _LOADING_POSITION_BLOCKED_WIDGETS + (
+        "zLiftWidget",
+        "zLiftLoadingButton",
+        "resetObjectiveTurretAction",
+    )
+
+    def _relay_stage_homing_changed(self, active: bool) -> None:
+        """Microscope homing listener, called from whichever thread takes or releases the claim. On the GUI thread
+        the lock changes at once; from another thread (a TCP home, a release once the stage stopped) that thread
+        waits until the GUI thread has changed it. So the controls and the control panel lock command are in place
+        before that thread sends any homing command, and the changes apply in the order the Microscope made them."""
+        if QThread.currentThread() == self.thread():
+            self._on_stage_homing_changed(active)
+        else:
+            QMetaObject.invokeMethod(self, "_on_stage_homing_changed", Qt.BlockingQueuedConnection, Q_ARG(bool, active))
+
+    @Slot(bool)
+    def _on_stage_homing_changed(self, active: bool) -> None:
+        """The homing lock follows the claim, whatever took it (Home stage, Home X/Y, TCP home): every stage, focus,
+        live and acquisition control is disabled and the control panel locked from the claim to its release, each
+        control getting back the state it had. Acts on the event itself: while the release's False is delivered the
+        claim is still held, so stage_homing_in_progress is still True."""
+        try:  # called through BlockingQueuedConnection too, where Qt would swallow an exception
+            if active == self._stage_homing_locked:
+                return
+            self._stage_homing_locked = active
+            if active:
+                self.log.info("Stage homing: stage, focus, live and acquisition controls are locked until it stops")
+                self._stage_homing_saved_enabled = self._disable_widgets_saving_state(
+                    self._STAGE_HOMING_BLOCKED_WIDGETS
+                )
+                self._set_control_panel_lock(True)
+            else:
+                if not self._loading_position_locked:
+                    self._set_control_panel_lock(False)
+                self._restore_widgets_state(self._stage_homing_saved_enabled)
+                self._stage_homing_saved_enabled = {}
+                self.log.info("Stage homing ended: controls unlocked")
+        except Exception:
+            self.log.exception(f"Could not {'lock' if active else 'unlock'} the controls for stage homing")
+
+    def _stage_homing_blocker(self) -> Optional[str]:
+        """Why the stage must not home now, or None. The Microscope's homing blocker (set_stage_homing_blocker):
+        every homing claim - Home stage, Home X/Y, a TCP home, a script - is refused while it gives a reason, so the
+        homing lock never starts inside another lock. A claim already held is refused by the claim itself.
+
+        Runs on whichever thread claims (the server's for a TCP home): plain reads of flags only, no widget access."""
+        if self.multipointController.acquisition_in_progress():
+            return "an acquisition is running"
+        if self._objective_swap_active:
+            return "an objective change is in progress"
+        if self._loading_position_locked:
+            return "the stage is at (or moving to or from) the loading position"
+        if self.autofocusController.autofocus_in_progress:
+            return "autofocus is running"
+        if self.zLiftWidget is not None and self.zLiftWidget.motion_guard.busy:
+            return "the Z lift is moving (a lift move, the loading toggle or an objective change)"
+        # Not stage.get_state().busy: that is the host's flag, set by every command (live's included). A move still
+        # under way is refused by _claim_stage_for_homing, on the controller's own report.
+        return None
+
+    def _claim_stage_for_homing(self, operation: str) -> "control.microscope.StageHomingClaim":
+        """Take the homing claim for a home started here (Home stage, Home X/Y): live paused, other motion refused,
+        the controls locked. Then wait up to HOMING_START_SETTLE_S for fresh controller evidence that the stage
+        stopped (AbstractStage.reports_stopped). Raises StageHomingRefused if the homing blocker gives a reason, if
+        the stage is homing already, or if it is still moving: that claim is then released once the stage stops, and
+        live resumes."""
+        try:
+            claim = self.microscope.claim_stage_homing(operation)
+        except StageHomingInProgressError:
+            raise StageHomingRefused(operation, "the stage is homing") from None
+        deadline = time.monotonic() + HOMING_START_SETTLE_S
+        while not self.stage.reports_stopped():
+            if time.monotonic() >= deadline:
+                self.log.info(f"{operation} refused: the controller still reports the stage moving")
+                refusal = "the stage is still moving"
+                claim.release_when_stopped(refusal=refusal)
+                raise StageHomingRefused(operation, refusal)
+            time.sleep(HOMING_START_POLL_S)
+        return claim
+
+    def _on_home_stage_requested(self):
+        """Home stage (Stage Utils): the startup homing sequence, finishing at the end-of-homing safe position, run
+        in a worker thread. Refused while anything else drives the stage; confirmed first; the homing claim (live
+        paused, motion refused, the controls locked) is taken here, once the stage reports it stopped and before the
+        worker starts, and released by Microscope.home_stage once the stage reports it stopped again."""
+        if self._home_stage_refused():
+            return
+        if control._def.IS_PIEZO_ONLY:
+            objective_lowered = widgets.confirm_nosepiece_lowered(self, decline_text="Cancel")
+            confirmed = objective_lowered
+        else:
+            objective_lowered = False
+            confirmed = self._confirm_home_stage()
+        if not confirmed:
+            return
+        try:
+            # The claim asks the blocker again: something may have started while the confirmation was open.
+            claim = self._claim_stage_for_homing("Home stage")
+        except StageHomingRefused as e:
+            self._refuse_home_stage(e.reason)
+            return
+        try:
+            control.utils.threaded_operation_helper(
+                self.microscope.home_stage,
+                lambda ok, err: self.signal_home_stage_finished.emit(ok, err or ""),
+                objective_lowered=objective_lowered,
+                claim=claim,
+            )
+        except Exception:
+            claim.release_when_stopped()  # the worker never got it: nothing moved
+            raise
+
+    def _home_stage_refused(self) -> bool:
+        reason = self._stage_homing_blocker()
+        if reason:
+            self._refuse_home_stage(reason)
+        return bool(reason)
+
+    def _refuse_home_stage(self, reason: str):
+        QMessageBox.information(self, "Home Stage", f"Homing refused: {reason}.")
+
+    def _confirm_home_stage(self) -> bool:
+        """What will move, and that the stage will not come back. Enter is Cancel."""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Question)
+        msg.setWindowTitle("Home Stage")
+        msg.setText(home_stage_confirmation_text(has_z_lift=self.microscope.z_lift is not None))
+        msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Cancel)
+        return msg.exec_() == QMessageBox.Ok
+
+    def _on_home_stage_finished(self, ok: bool, error: str):
+        """Home stage's result. The controls and live come back with the claim's release, not here."""
+        if ok:
+            self.statusBar().showMessage("Stage homed", 10000)
+        else:
+            widgets.show_homing_failure(
+                self, "Home Stage", error, still_homing=self.microscope.stage_homing_in_progress
+            )
+
+    def _restore_cached_z(self, cached_pos: Optional[squid.abc.Pos]) -> None:
+        """Startup's Z restore, once the stage is homed (HOMED) or still homed (ALREADY_HOMED), when Z is referenced:
+        the cached Z, not below Z_HOME_SAFETY_POINT for a stepper Z (a V-308 takes it as is), or the safety position
+        with nothing cached; then the multipoint widgets take the new Z."""
+        if not squid.stage.utils.z_is_referenced():
+            return
+        if not cached_pos:
+            self.log.info("No cached position.  Moving Z axis to safety position")
+            squid.stage.utils.move_z_axis_to_safety_position(self.stage)
+        elif USE_PI_FOCUS_STAGE:
+            # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
+            # The PI driver clamps every move to the configured Z limits, so a stale
+            # cached Z cannot command an out-of-range move.
+            self.stage.move_z_to(cached_pos.z_mm)
+        else:
+            safety_z_mm = int(Z_HOME_SAFETY_POINT) / 1000.0
+            if cached_pos.z_mm < safety_z_mm:
+                self.log.info("Cache z position is smaller than Z_HOME_SAFETY_POINT, move to Z_HOME_SAFETY_POINT")
+            self.stage.move_z_to(max(cached_pos.z_mm, safety_z_mm))
+        self._init_multipoint_z()
+
+    def _init_multipoint_z(self) -> None:
+        """The Wellplate tab takes the stage's current Z as its Z range (startup, once Z is where it stays)."""
+        if ENABLE_WELLPLATE_MULTIPOINT:
+            self.wellplateMultiPointWidget.init_z()
+
+    def _connect_stage_homing(self):
+        """Home stage, Home X/Y, the homing lock, and the one exclusion every homing claim goes through."""
+        self.microscope.set_stage_homing_blocker(self._stage_homing_blocker)
+        self.microscope.add_stage_homing_listener(self._relay_stage_homing_changed)
+        self.stageUtils.set_homing_hooks(self._stage_homing_blocker, self._claim_stage_for_homing)
+        self.stageUtils.signal_home_stage_requested.connect(self._on_home_stage_requested)
+        self.signal_home_stage_finished.connect(self._on_home_stage_finished)
 
     def _claim_lift_for_acquisition(self):
         """MultiPointController.start_blocker on a Z lift system: hold the lift for the acquisition, or say why not."""
@@ -2416,6 +2825,15 @@ class HighContentScreeningGui(QMainWindow):
         self._acquisition_holds_lift = True
         return None
 
+    def _acquisition_start_blocker(self) -> Optional[str]:
+        """MultiPointController.start_blocker: no acquisition while the stage homes; on a Z lift system the
+        acquisition also holds the lift."""
+        if self.microscope.stage_homing_in_progress:
+            return "the stage is homing"
+        if self.zLiftWidget is not None:
+            return self._claim_lift_for_acquisition()
+        return None
+
     def _release_lift_after_acquisition(self):
         if self._acquisition_holds_lift:
             self._acquisition_holds_lift = False
@@ -2423,12 +2841,13 @@ class HighContentScreeningGui(QMainWindow):
 
     def _set_control_panel_lock(self, locked: bool):
         """The control panel's joystick and wheel are driven by the controller firmware on its own: lock them too
-        (firmware >= 1.8; older firmware cannot, which is logged)."""
+        (firmware >= 1.8; older firmware cannot, which is logged once per session: every home locks the panel)."""
         mcu = self.microcontroller
         if mcu is None:
             return
         if not mcu.supports_panel_lock():
-            if locked:
+            if locked and not self._panel_lock_unsupported_logged:
+                self._panel_lock_unsupported_logged = True
                 self.log.warning("This controller firmware cannot lock the control panel: its joystick still moves XY")
             return
         try:
@@ -2437,12 +2856,16 @@ class HighContentScreeningGui(QMainWindow):
             self.log.exception("Could not change the control panel lock")
 
     def _stage_moves_blocked_by_objective_swap(self, what: str) -> bool:
-        """True (and logged) while an objective swap runs, or on a Z lift system at the loading position."""
+        """True (and logged) while an objective swap runs, on a Z lift system at the loading position, or while the
+        stage is homing."""
+        homing = self.microscope.stage_homing_in_progress
         if self._objective_swap_active:
             self.log.info(f"{what} ignored: an objective change is in progress")
         elif self._loading_position_locked:
             self.log.info(f"{what} ignored: the stage is at (or moving to or from) the loading position")
-        return self._objective_swap_active or self._loading_position_locked
+        elif homing:
+            self.log.info(f"{what} ignored: the stage is homing")
+        return self._objective_swap_active or self._loading_position_locked or homing
 
     def _set_workflow_controls_enabled(self, enabled: bool):
         """Enable/disable main window controls during workflow.
@@ -2519,7 +2942,9 @@ class HighContentScreeningGui(QMainWindow):
 
     def openChannelConfigurationEditor(self):
         """Open the illumination channel configurator dialog"""
-        dialog = widgets.IlluminationChannelConfiguratorDialog(self.microscope.config_repo, self)
+        dialog = widgets.IlluminationChannelConfiguratorDialog(
+            self.microscope.config_repo, self, engine_drive=self.microscope.illumination_controller.engine_drive
+        )
         dialog.signal_channels_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 
@@ -2559,10 +2984,66 @@ class HighContentScreeningGui(QMainWindow):
         )
         dialog.exec_()
 
+    def openIntensityCalibration(self):
+        """Open Utils > Illumination Power Calibration...: measure DAC-driven illumination channels or laser engine v2
+        lines with a power meter and make their intensity linear in power. See control/widgets_intensity_calibration.py.
+        """
+        from control.lighting import IntensityControlMode, LightSourceType
+        from control.widgets_intensity_calibration import IntensityCalibrationDialog
+        from squid.intensity_calibration_run import CalibrationSession, measured_in_label
+
+        def busy_reason():
+            if self.liveController is not None and self.liveController.is_live:
+                return "Live view is running. Stop it first: the calibration drives the light itself."
+            if self.liveController_focus_camera is not None and self.liveController_focus_camera.is_live:
+                return "The laser autofocus camera is live. Stop it first: it triggers through the same controller."
+            if self.multipointController is not None and self.multipointController.acquisition_in_progress():
+                return "An acquisition is running."
+            return None
+
+        def restore_live_channel():
+            # A run or the test beam leaves the controller on its last port at DAC 0; live start and snap only turn
+            # the light on. Re-send the live channel (through the new calibration, if one was saved).
+            if self.liveController.currentConfiguration is not None and self.liveController.control_illumination:
+                self.liveController.update_illumination()
+
+        illumination = self.microscope.illumination_controller
+        engine = None
+        if illumination.light_source_type == LightSourceType.CephlaLaserEngineV2:
+            from control.laser_engine_v2_calibration import EngineCalibration
+
+            engine = EngineCalibration(illumination)
+        session = CalibrationSession(
+            self.microcontroller,
+            self.microscope.config_repo,
+            dac_driven=illumination.light_source_type is None
+            and illumination.intensity_control_mode == IntensityControlMode.SquidControllerDAC,
+            engine=engine,
+        )
+        measured_in = measured_in_label(
+            self.microscope.config_repo.has_confocal(), self.liveController.is_confocal_mode()
+        )
+        dialog = IntensityCalibrationDialog(
+            session, measured_in, busy_reason=busy_reason, restore_illumination=restore_live_channel, parent=self
+        )
+        dialog.exec_()
+        if self.liveController.currentConfiguration is not None:
+            # suffix, tooltip and cap of the live intensity control follow a saved calibration
+            self.liveControlWidget.update_ui_for_mode(self.liveController.currentConfiguration)
+
     def openFilterWheelConfigEditor(self):
         """Open the filter wheel configuration dialog"""
         dialog = widgets.FilterWheelConfiguratorDialog(self.microscope.config_repo, self)
         dialog.signal_config_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openObjectivesEditor(self):
+        """Open the Objectives editor (Settings > Advanced > Objectives...)."""
+        from control.widgets_objectives import ObjectivesEditorDialog
+
+        dialog = ObjectivesEditorDialog.for_current_machine(
+            self.microscope.config_repo, on_restart=self.restart_application, parent=self
+        )
         dialog.exec_()
 
     def _refresh_channel_lists(self):
@@ -2700,12 +3181,13 @@ class HighContentScreeningGui(QMainWindow):
 
         self.stageUtils.signal_scanning_position_reached.connect(self.navigationViewer.clear_slide)
 
+        # No acquisition starts while the stage homes. Every start goes through run_acquisition, so the check covers
+        # the GUI widgets, the workflow runner and the server.
+        self.multipointController.start_blocker = self._acquisition_start_blocker
         if self.zLiftWidget is not None:
             # Z lift system: an acquisition holds the lift (no lift move, loading toggle or swap while it images),
-            # and does not start while the lift is moving or the stage is at the loading position. Every start
-            # goes through run_acquisition, so the check covers the GUI widgets, the workflow runner and the server.
+            # and does not start while the lift is moving or the stage is at the loading position.
             self._acquisition_holds_lift = False
-            self.multipointController.start_blocker = self._claim_lift_for_acquisition
             self.multipointController.acquisition_finished.connect(self._release_lift_after_acquisition)
 
             # Z lift system: nothing moves from the start of the move to the loading position until the stage is
@@ -2813,7 +3295,10 @@ class HighContentScreeningGui(QMainWindow):
         """Show or hide status bar based on whether any monitor widgets should be visible."""
         warning_has_messages = self.warningErrorWidget is not None and self.warningErrorWidget.has_messages()
         self.statusBar().setVisible(
-            self._ram_monitor_should_show or self._bp_monitor_should_show or warning_has_messages
+            self._ram_monitor_should_show
+            or self._bp_monitor_should_show
+            or warning_has_messages
+            or bool(self.statusBar().currentMessage())
         )
 
     def _connect_ram_monitor_widget(self):
@@ -2981,6 +3466,10 @@ class HighContentScreeningGui(QMainWindow):
         self._show_event_initialized = True
         self._update_ram_monitor_visibility()
         self._connect_warning_handler()
+        if self._startup_status_message:
+            # After the widgets above: a status-bar widget shown after a transient message is drawn over it. Shown
+            # now, not when built, so its 10 s start when the window appears.
+            self.statusBar().showMessage(self._startup_status_message, 10000)
 
     def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int) -> None:
         """Handle double-click on plate view: navigate NDViewer to FOV and switch tab."""
@@ -2998,6 +3487,325 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self.log.warning("NDViewer tab exists but not found in tab widget")
 
+    # ----- Gallery tab -----
+
+    def _acquisition_saving_root(self) -> Optional[str]:
+        """The folder new acquisitions are saved under: the multipoint tabs' saving directory."""
+        if self.multipointController is not None and self.multipointController.base_path:
+            return self.multipointController.base_path
+        return widgets.get_last_used_saving_path()
+
+    def _open_acquisition_in_ndviewer(self, folder: str) -> None:
+        """Show a saved acquisition folder in the NDViewer tab and switch to it."""
+        if self.ndviewerTab is None:
+            self.log.warning(f"Cannot open {folder}: the NDViewer tab is not available")
+            return
+        self.log.info(f"Opening saved acquisition in NDViewer: {folder}")
+        self.ndviewerTab.set_dataset_path(folder)
+        ndviewer_tab_idx = self.imageDisplayTabs.indexOf(self.ndviewerTab)
+        if ndviewer_tab_idx >= 0:
+            self.imageDisplayTabs.setCurrentIndex(ndviewer_tab_idx)
+
+    def _load_acquisition_settings_from_folder(self, folder: str) -> bool:
+        """Load a saved acquisition's acquisition.yaml into the multipoint tab it was run from.
+
+        The tab is chosen from the file's widget_type, so the user never sees the type-mismatch dialog a drop on
+        the wrong tab shows. Returns True when the settings were applied.
+        """
+        from control.acquisition_yaml_loader import parse_acquisition_yaml
+
+        if self.multipointController is not None and self.multipointController.acquisition_in_progress():
+            QMessageBox.warning(self, "Acquisition Running", "Wait for the running acquisition to finish first.")
+            return False
+        yaml_path = os.path.join(folder, "acquisition.yaml")
+        try:
+            widget_type = parse_acquisition_yaml(yaml_path).widget_type
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", f"Could not read the saved acquisition settings:\n{e}")
+            return False
+        widget = self.wellplateMultiPointWidget if widget_type == "wellplate" else self.flexibleMultiPointWidget
+        if widget is None or self.recordTabWidget.indexOf(widget) < 0:
+            QMessageBox.warning(
+                self,
+                "Tab Not Available",
+                f"These settings are for the {widget_type} multipoint tab, which is not enabled.",
+            )
+            return False
+        self.recordTabWidget.setCurrentWidget(widget)
+        loaded = widget._load_acquisition_yaml(yaml_path)
+        if loaded:
+            self.log.info(f"Loaded acquisition settings from {yaml_path} into {type(widget).__name__}")
+        return loaded
+
+    def _refresh_gallery_after_acquisition(self) -> None:
+        """A finished acquisition appears in the gallery once its last mosaic overview has been written."""
+        if self.acquisitionGalleryWidget is None:
+            return
+        QTimer.singleShot(2000, self.acquisitionGalleryWidget.reload)
+
+    def _setup_acquisition_history(self) -> None:
+        """The history store and the recorder the multipoint controller records every run into (live-only too: runs
+        started over the TCP server are recorded); then close the entries a crashed Squid left running."""
+        self.historyStore = HistoryStore(history_dir())
+        self.historyRecorder = AcquisitionHistoryRecorder(
+            self.historyStore,
+            preview_executor=ThreadPoolExecutor(max_workers=1, thread_name_prefix="history-preview"),
+            software_version=software_version(),
+        )
+        self.multipointController.history_recorder = self.historyRecorder
+        # Per-run preview timing (see _on_history_acquisition_finished).
+        self._history_run: Optional[_HistoryRun] = None  # the latest run
+        self._history_waiting: List[_HistoryRun] = []  # ended runs still waiting for their last overview save
+        self._history_preview_futures: list = []
+        self._history_preview_poll: Optional[QTimer] = None
+        self._gallery_acquisition_progress: Optional[Tuple[int, int, int]] = None  # region, regions, timepoint
+        self._gallery_region_progress: Optional[Tuple[int, int]] = None  # fov, region fovs
+        self._ndviewer_launcher = None  # control.ndviewer_launcher.LauncherResolution once resolved
+        try:
+            closed = self.historyRecorder.reconcile_orphans()
+        except Exception:
+            self.log.exception("Could not close the acquisitions an earlier Squid left running")
+            closed = 0
+        if closed:
+            self.log.info(f"Acquisition history: closed {closed} run(s) left running by a Squid that is gone")
+
+    # Preview timing: the preview is drawn from the last timepoint's mosaic overview, which the save executor may
+    # still be writing when acquisition_finished arrives (or which may never come).
+
+    def _on_history_run_started(self, entry_id: Optional[str], save_target: Optional[str]) -> None:
+        """A run started. The controller emits its history id and folder at start time, from the thread that started
+        it, so a short TCP-started run that is over before this slot runs still gets its preview. A run still waiting
+        for its overview save keeps waiting: it is in _history_waiting with its own timer."""
+        self._history_run = _HistoryRun(entry_id, save_target)
+
+    def _on_history_timepoint_finished(self, time_point: int) -> None:
+        run = self._history_run
+        if run is not None and not run.finished:
+            run.last_timepoint = time_point
+
+    def _overview_save_expected(self, run: _HistoryRun) -> bool:
+        mosaic = self.unifiedMosaicWidget
+        return (
+            mosaic is not None
+            and mosaic.layers_initialized
+            and bool(control._def.SAVE_DOWNSAMPLED_OVERVIEW or control._def.SAVE_DOWNSAMPLED_WELL_IMAGES)
+            and not self.performance_mode
+            and run.last_timepoint is not None
+        )
+
+    def _on_history_acquisition_start(self) -> None:
+        self.historyRecorder.set_busy(True)
+
+    def _on_history_acquisition_finished(self) -> None:
+        """Ask for the finished run's preview, then let the recorder make the previews queued while it ran (this
+        one included, unless it waits for the run's last overview save)."""
+        try:
+            self._request_finished_run_preview()
+        finally:
+            try:
+                futures = self.historyRecorder.set_busy(False)
+            except Exception:
+                self.log.exception("Could not make the gallery previews queued during the acquisition")
+                futures = []
+            for future in futures or []:
+                self._watch_history_preview(future)
+
+    def _request_finished_run_preview(self) -> None:
+        run = self._history_run
+        if run is None or run.finished:
+            return
+        run.finished = True
+        if run.entry_id is None or not run.folder:
+            return
+        if not self._overview_save_expected(run):
+            self._make_history_preview(run, replace=False)
+            return
+        awaited = normalize_folder(
+            os.path.join(run.folder, f"{run.last_timepoint:0{control._def.FILE_ID_PADDING}}", "mosaic_view")
+        )
+        if awaited in run.saved_paths:
+            self._make_history_preview(run, replace=False)
+            return
+        run.awaited_save = awaited
+        run.timer = QTimer(self)
+        run.timer.setSingleShot(True)
+        run.timer.timeout.connect(lambda run=run: self._on_history_preview_wait_over(run))
+        run.timer.start(self.GALLERY_PREVIEW_WAIT_MS)
+        self._history_waiting.append(run)
+
+    def _on_history_view_saved(self, path: str) -> None:
+        """A mosaic overview save finished (queued from the save executor's thread)."""
+        saved = normalize_folder(path)
+        run = self._history_run
+        if run is not None and not run.finished:
+            run.saved_paths.add(saved)
+        for waiting in [w for w in self._history_waiting if w.awaited_save == saved]:
+            self._stop_waiting(waiting)
+            # When the wait ran out first, the final overview replaces the provisional preview.
+            self._make_history_preview(waiting, replace=waiting.preview_made)
+
+    def _on_history_preview_wait_over(self, run: _HistoryRun) -> None:
+        if run not in self._history_waiting:
+            return
+        if run.preview_made:  # the second wait is over too: a save this late is not waited for
+            self._stop_waiting(run)
+            return
+        self.log.info(f"The last mosaic overview of {run.folder} has not reported; making its preview without it")
+        self._make_history_preview(run, replace=False)
+        run.timer.start(self.GALLERY_PREVIEW_WAIT_MS)  # the overview may still land and replace it
+
+    def _stop_waiting(self, run: _HistoryRun) -> None:
+        run.awaited_save = None
+        if run.timer is not None:
+            run.timer.stop()
+            run.timer.deleteLater()
+            run.timer = None
+        if run in self._history_waiting:
+            self._history_waiting.remove(run)
+
+    def _make_history_preview(self, run: _HistoryRun, *, replace: bool) -> None:
+        run.preview_made = True
+        try:
+            future = self.historyRecorder.make_preview(run.entry_id, run.folder, replace=replace)
+        except Exception:
+            self.log.exception(f"Could not schedule the gallery preview of {run.folder}")
+            return
+        if future is not None:
+            self._watch_history_preview(future)
+
+    def _watch_history_preview(self, future) -> None:
+        """Reload the gallery once the preview job is done."""
+        if self.acquisitionGalleryWidget is None:
+            return
+        self._history_preview_futures.append(future)
+        if self._history_preview_poll is None:
+            self._history_preview_poll = QTimer(self)
+            self._history_preview_poll.setInterval(500)
+            self._history_preview_poll.timeout.connect(self._poll_history_previews)
+        self._history_preview_poll.start()
+
+    def _poll_history_previews(self) -> None:
+        """Reload the gallery once a preview job is done (its mtime watcher only runs while the tab is visible)."""
+        done = [f for f in self._history_preview_futures if f.done()]
+        if not done:
+            return
+        self._history_preview_futures = [f for f in self._history_preview_futures if not f.done()]
+        if not self._history_preview_futures and self._history_preview_poll is not None:
+            self._history_preview_poll.stop()
+        if self.acquisitionGalleryWidget is not None:
+            self.acquisitionGalleryWidget.reload()
+
+    # Gallery state during an acquisition
+
+    def _set_gallery_open_in_squid(self, *, acquiring: bool) -> None:
+        if self.acquisitionGalleryWidget is None:
+            return
+        has_viewer = getattr(self, "ndviewerTab", None) is not None
+        if acquiring:
+            available, reason = False, "Wait for the running acquisition to finish"
+        else:
+            available, reason = has_viewer, "The NDViewer tab is off (Settings > Preferences > Views)"
+        self.acquisitionGalleryWidget.set_open_in_squid(available, reason, hidden=not has_viewer)
+
+    def _on_gallery_acquisition_start(self) -> None:
+        self._gallery_acquisition_progress = None
+        self._gallery_region_progress = None
+        self.acquisitionGalleryWidget.set_running_progress(None)
+        self._set_gallery_open_in_squid(acquiring=True)
+        self.acquisitionGalleryWidget.set_acquiring(True)  # no import (and its previews) during the run
+        self.acquisitionGalleryWidget.reload()  # the running entry appears
+
+    def _on_gallery_acquisition_finished(self) -> None:
+        self._set_gallery_open_in_squid(acquiring=False)
+        self.acquisitionGalleryWidget.set_acquiring(False)
+        self.acquisitionGalleryWidget.set_running_progress(None)
+
+    def _on_gallery_acquisition_progress(self, current_region: int, num_regions: int, current_time_point: int):
+        self._gallery_acquisition_progress = (current_region, num_regions, current_time_point)
+        if self._gallery_region_progress is not None:  # a new region starts at FOV 0, as the progress bar does
+            self._gallery_region_progress = (0, self._gallery_region_progress[1])
+        self._on_gallery_progress()
+
+    def _on_gallery_region_progress(self, current_fov: int, num_fovs: int) -> None:
+        self._gallery_region_progress = (current_fov, num_fovs)
+        self._on_gallery_progress()
+
+    def _on_gallery_progress(self) -> None:
+        """The running row's fraction done, counted in FOVs as the multipoint tabs' progress bar and ETA count them."""
+        if self.acquisitionGalleryWidget is None or self._gallery_acquisition_progress is None:
+            return
+        current_region, num_regions, current_time_point = self._gallery_acquisition_progress
+        current_fov, num_fovs = self._gallery_region_progress or (0, 1)
+        num_fovs = max(int(num_fovs), 1)
+        num_regions = max(int(num_regions), 1)
+        nt = max(int(self.multipointController.Nt or 1), 1)
+        processed = (current_region - 1) * num_fovs + current_fov + current_time_point * num_regions * num_fovs
+        fraction = processed / (num_regions * num_fovs * nt)
+        self.acquisitionGalleryWidget.set_running_progress(min(max(fraction, 0.0), 1.0))
+
+    # The standalone ndviewer_light window
+
+    def _refresh_ndviewer_launcher(self) -> None:
+        """Find ndviewer_light again (the Preferences location, the PATH, the package, the submodule)."""
+        if self.acquisitionGalleryWidget is None:
+            return
+        try:
+            resolution = resolve_ndviewer_light(control._def.NDVIEWER_LIGHT_COMMAND)
+        except Exception:
+            self.log.exception("Could not look for ndviewer_light")
+            return
+        self._ndviewer_launcher = resolution
+        self.acquisitionGalleryWidget.set_open_in_window(resolution.command is not None, resolution.reason)
+
+    def _open_acquisition_in_window(self, folder: str) -> None:
+        if self._ndviewer_launcher is None:
+            self._refresh_ndviewer_launcher()
+        resolution = self._ndviewer_launcher
+        log_path = default_log_path()
+        try:
+            if resolution is None:
+                raise RuntimeError("ndviewer_light could not be looked for")
+            process = launch_ndviewer_light(resolution, folder, log_path=log_path)
+        except Exception as e:
+            self.log.exception(f"Could not start ndviewer_light on {folder}")
+            QMessageBox.warning(self, "Cannot open ndviewer_light", str(e) or type(e).__name__)
+            return
+        # A viewer that cannot start (an import error, a wrong Qt binding, a mistyped command) exits at once: look
+        # again shortly and show why from its log. The timer keeps the Popen.
+        check = QTimer(self)
+        check.setSingleShot(True)
+        check.timeout.connect(
+            lambda: self._check_ndviewer_launch(
+                check, process, folder, log_path, f"{resolution.source}: {resolution.reason}"
+            )
+        )
+        check.start(self.NDVIEWER_LAUNCH_CHECK_MS)
+
+    def _check_ndviewer_launch(self, timer: QTimer, process, folder: str, log_path: str, how: str) -> None:
+        timer.deleteLater()
+        try:
+            code = process.poll()
+        except Exception:
+            self.log.exception("Could not check the ndviewer_light process")
+            return
+        if code is None:
+            self.log.info(f"Opened {folder} in ndviewer_light ({how})")
+            return
+        tail = read_log_tail(log_path)
+        self.log.warning(f"ndviewer_light exited with code {code} on {folder} ({how}); see {log_path}:\n{tail}")
+        if self.acquisitionGalleryWidget is not None:
+            self.acquisitionGalleryWidget.status_label.setText(f"ndviewer_light exited (code {code}); see {log_path}")
+        text = f"ndviewer_light exited (code {code}) before showing {folder}."
+        text += f"\n\nLast lines of {log_path}:\n{tail}" if tail else f"\n\nIt wrote nothing to {log_path}."
+        QMessageBox.warning(self, "ndviewer_light exited", text)
+
+    # Fluidics protocol runs
+
+    def _on_protocol_run_started(self, run_dir: str, run_name: str) -> None:
+        resolved = getattr(self.fluidicsProtocolWidget, "_resolved", None)
+        protocol_name = getattr(getattr(resolved, "protocol", None), "name", None) or run_name
+        self.historyRecorder.protocol_started(run_dir, run_name, protocol_name)
+
     def restart_application(self):
         """Restart the application with --skip-init flag.
 
@@ -3005,6 +3813,8 @@ class HighContentScreeningGui(QMainWindow):
         then quits the current application. Hardware initialization is skipped in the new
         process since hardware is already in a known state.
         """
+        if self._refuse_to_close_while_homing("Restart"):
+            return
         if not self._confirm_end_fluidics_run("restart"):
             return
 
@@ -3097,6 +3907,22 @@ class HighContentScreeningGui(QMainWindow):
                 self.ndviewerTab.close()
             except Exception:
                 self.log.exception(f"Error closing NDViewer tab during {context}")
+
+        # Stop the history's preview thread, then the gallery's scan and thumbnail threads
+        if getattr(self, "historyRecorder", None) is not None:
+            try:
+                for run in list(self._history_waiting):
+                    self._stop_waiting(run)
+                if self._history_preview_poll is not None:
+                    self._history_preview_poll.stop()
+                self.historyRecorder.shutdown()
+            except Exception:
+                self.log.exception(f"Error shutting down the acquisition history recorder during {context}")
+        if self.acquisitionGalleryWidget is not None:
+            try:
+                self.acquisitionGalleryWidget.shutdown()
+            except Exception:
+                self.log.exception(f"Error shutting down the gallery tab during {context}")
 
         # Close napari viewers — they run background threads that prevent clean exit.
         for widget_name in [
@@ -3293,7 +4119,19 @@ class HighContentScreeningGui(QMainWindow):
         (skipped for turret or manual setups; the turret re-inits cleanly from any position)."""
         self._cleanup_common(for_restart=True)
 
+    def _refuse_to_close_while_homing(self, action: str) -> bool:
+        """True (and said) while the stage homes: the cleanup would cache a position from mid-sweep and send the Z
+        retract from this thread while the homing thread still drives the controller. action: "Close", "Restart"."""
+        if not self.microscope.stage_homing_in_progress:
+            return False
+        self.log.info(f"{action} refused: the stage is homing")
+        QMessageBox.information(self, "Stage Homing", f"The stage is homing. {action} Squid once it has finished.")
+        return True
+
     def closeEvent(self, event):
+        if self._refuse_to_close_while_homing("Close"):
+            event.ignore()
+            return
         if self.fluidicsProtocolWidget is not None and self.fluidicsProtocolWidget.is_run_active():
             # The fluidics question doubles as the exit confirmation.
             if not self._confirm_end_fluidics_run("exit"):

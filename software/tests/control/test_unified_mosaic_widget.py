@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 import control._def
+from control.core.multi_point_utils import MosaicTileUpdate
 from control.widgets_mosaic import DisplayMode, UnifiedMosaicWidget, blit_tiles_to_canvas
 
 
@@ -86,6 +87,8 @@ def _tile_update(image, x_mm, y_mm, channel="BF", **extra):
         well_id=None,
         well_row=0,
         well_col=0,
+        z_index=0,
+        time_point=0,
     )
     for k, v in extra.items():
         setattr(u, k, v)
@@ -155,3 +158,66 @@ class TestFullViewMagnificationPersistence:
         )
         # Integer factor 3 -> 2.22 um, NOT the exact target 2.0 um.
         assert widget.viewer_pixel_size_mm == pytest.approx(0.00222, abs=1e-5)
+
+
+class TestZProjection:
+    def test_mip_keeps_the_brighter_plane(self, mosaic_widget, monkeypatch):
+        monkeypatch.setattr(control._def, "MOSAIC_Z_PROJECTION", control._def.ZProjectionMode.MIP)
+        widget, _ = mosaic_widget
+        widget.updateTile(_tile_update(np.full((100, 100), 200, dtype=np.uint8), 10.0, 10.0, z_index=0))
+        widget.updateTile(_tile_update(np.full((100, 100), 50, dtype=np.uint8), 10.0, 10.0, z_index=1))
+        assert int(widget.viewer.layers["BF"].data.max()) == 200
+        widget.updateTile(_tile_update(np.full((100, 100), 230, dtype=np.uint8), 10.0, 10.0, z_index=2))
+        assert int(widget.viewer.layers["BF"].data.max()) == 230
+
+    def test_last_plane_overwrites(self, mosaic_widget, monkeypatch):
+        monkeypatch.setattr(control._def, "MOSAIC_Z_PROJECTION", control._def.ZProjectionMode.LAST_PLANE)
+        widget, _ = mosaic_widget
+        widget.updateTile(_tile_update(np.full((100, 100), 200, dtype=np.uint8), 10.0, 10.0, z_index=0))
+        widget.updateTile(_tile_update(np.full((100, 100), 50, dtype=np.uint8), 10.0, 10.0, z_index=1))
+        assert int(widget.viewer.layers["BF"].data.max()) == 50
+
+    def test_first_plane_of_the_next_timepoint_replaces(self, mosaic_widget, monkeypatch):
+        monkeypatch.setattr(control._def, "MOSAIC_Z_PROJECTION", control._def.ZProjectionMode.MIP)
+        widget, _ = mosaic_widget
+        widget.updateTile(_tile_update(np.full((100, 100), 200, dtype=np.uint8), 10.0, 10.0, z_index=0, time_point=0))
+        widget.updateTile(_tile_update(np.full((100, 100), 50, dtype=np.uint8), 10.0, 10.0, z_index=0, time_point=1))
+        assert int(widget.viewer.layers["BF"].data.max()) == 50
+
+    def test_blit_max_combines_only_the_overlap(self):
+        canvas = np.zeros((100, 100), dtype=np.uint8)
+        canvas[0:50, 0:50] = 100
+        blit_tiles_to_canvas(canvas, [(np.full((50, 50), 30, dtype=np.uint8), 0, 0)], combine="max")
+        assert int(canvas[0:50, 0:50].max()) == 100 and int(canvas[0:50, 0:50].min()) == 100
+        blit_tiles_to_canvas(canvas, [(np.full((50, 50), 120, dtype=np.uint8), 0, 0)], combine="max")
+        assert int(canvas[0:50, 0:50].min()) == 120
+        assert int(canvas[50:, :].max()) == 0 and int(canvas[:, 50:].max()) == 0
+
+    def test_blit_rejects_unknown_combine(self):
+        with pytest.raises(ValueError):
+            blit_tiles_to_canvas(
+                np.zeros((10, 10), dtype=np.uint8), [(np.ones((2, 2), dtype=np.uint8), 0, 0)], combine="sum"
+            )
+
+
+def test_z_projection_enum_round_trips():
+    assert control._def.ZProjectionMode.convert_to_enum("last_plane") is control._def.ZProjectionMode.LAST_PLANE
+    with pytest.raises(ValueError):
+        control._def.ZProjectionMode.convert_to_enum("middle")
+
+
+def test_mosaic_tile_update_carries_z_and_time():
+    img = np.zeros((4, 4), dtype=np.uint8)
+    u = MosaicTileUpdate(image=img, x_mm=0, y_mm=0, channel_name="BF", z_index=3, time_point=2)
+    assert (u.z_index, u.time_point) == (3, 2)
+    d = MosaicTileUpdate(image=img, x_mm=0, y_mm=0, channel_name="BF")
+    assert (d.z_index, d.time_point) == (0, 0)
+
+
+def test_write_save_snapshot_emits_view_saved(mosaic_widget, qtbot, tmp_path):
+    widget, _ = mosaic_widget
+    widget.updateTile(_tile_update(np.full((100, 100), 200, dtype=np.uint8), 10.0, 10.0))
+    target = str(tmp_path / "v")
+    with qtbot.waitSignal(widget.signal_view_saved, timeout=10000) as blocker:
+        widget._dispatch_save(target)
+    assert blocker.args == [target]

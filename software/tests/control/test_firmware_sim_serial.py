@@ -16,10 +16,14 @@ from crc import CrcCalculator, Crc8
 from control._def import (
     CMD_SET,
     AXIS,
+    HOME_OR_ZERO,
     MicrocontrollerDef,
     CMD_EXECUTION_STATUS,
     LIMIT_SWITCH_CONFIG_MIN_FIRMWARE,
     RESPONSE_BYTE_FIRMWARE_VERSION,
+    STARTUP_STATE_MIN_FIRMWARE,
+    STARTUP_VERDICT_STATUS_BASE,
+    StartupVerdict,
 )
 from control.firmware_sim_serial import (
     FirmwareSimSerial,
@@ -460,3 +464,250 @@ class TestFirmwareSimSerialLimitSwitches:
     def test_z_limits_default_clear(self):
         sim = FirmwareSimSerial(strict=True)
         assert (sim.z_limit_left, sim.z_limit_right) == (False, False)
+
+
+class TestFirmwareSimSerialPositions:
+    """RESET and INITIALIZE as the firmware treats positions."""
+
+    @pytest.mark.parametrize("version", [(0, 0), (1, 8), STARTUP_STATE_MIN_FIRMWARE])
+    def test_reset_keeps_positions(self, version):
+        # callback_reset never writes XACTUAL: a stage that was somewhere is still there after RESET
+        sim = FirmwareSimSerial(strict=True, firmware_version=version)
+        _send(sim, CMD_SET.MOVETO_X, 0, 0, 0x10, 0)
+        _send(sim, CMD_SET.MOVETO_Y, 0, 0, 0x20, 0)
+        _send(sim, CMD_SET.MOVETO_Z, 0, 0, 0x30, 0)
+        _send(sim, CMD_SET.RESET)
+        assert (sim.x, sim.y, sim.z) == (0x1000, 0x2000, 0x3000)
+
+    @pytest.mark.parametrize("version", [(0, 0), (1, 8), STARTUP_STATE_MIN_FIRMWARE])
+    def test_initialize_zeroes_the_stage_axes_and_stops_them(self, version):
+        # INITIALIZE soft-resets each stage axis's TMC4361A: XACTUAL back to 0 and the ramp stopped; the wheels stay
+        sim = FirmwareSimSerial(strict=True, firmware_version=version)
+        _send(sim, CMD_SET.MOVETO_X, 0, 0, 0x10, 0)
+        _send(sim, CMD_SET.MOVETO_Y, 0, 0, 0x20, 0)
+        _send(sim, CMD_SET.MOVETO_Z, 0, 0, 0x30, 0)
+        _send(sim, CMD_SET.MOVETO_W, 0, 0, 0x40, 0)
+        sim.moving_axes |= {AXIS.X, AXIS.Z}
+        _send(sim, CMD_SET.INITIALIZE)
+        assert (sim.x, sim.y, sim.z, sim.w) == (0, 0, 0, 0x4000)
+        assert sim.moving_axes == set()
+
+
+NEW = STARTUP_STATE_MIN_FIRMWARE
+SIG = 0x12345678
+OTHER_SIG = 0x12345679
+
+
+def _query(sim, sig=SIG, fmt=1, mask=0b011):
+    r = _send(sim, CMD_SET.QUERY_STARTUP_STATE, *sig.to_bytes(4, "big"), (fmt << 4) | mask)
+    assert STARTUP_VERDICT_STATUS_BASE <= r[1] <= STARTUP_VERDICT_STATUS_BASE + 5
+    return StartupVerdict(r[1] - STARTUP_VERDICT_STATUS_BASE)
+
+
+def _store(sim, sig=SIG, fmt=1):
+    r = _send(sim, CMD_SET.STORE_CONFIG_SIGNATURE, *sig.to_bytes(4, "big"), fmt << 4)
+    assert r[1] == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+
+
+def _home(sim, axis=AXIS.XY):
+    r = _send(sim, CMD_SET.HOME_OR_ZERO, axis, HOME_OR_ZERO.HOME_NEGATIVE, HOME_OR_ZERO.HOME_NEGATIVE)
+    assert r[1] == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+
+
+def _homed_xy():
+    sim = FirmwareSimSerial(strict=True, firmware_version=NEW)
+    _store(sim)
+    _home(sim)
+    assert _query(sim) is StartupVerdict.WARM
+    return sim
+
+
+# (command, axis, bytes [3..6] first sent, a different [3..6]) for each covered setting
+COVERED_SETTINGS = [
+    (CMD_SET.SET_LEAD_SCREW_PITCH, AXIS.X, (0x0F, 0xA0, 0, 0), (0x07, 0xD0, 0, 0)),
+    (CMD_SET.CONFIGURE_STEPPER_DRIVER, AXIS.Y, (16, 0x03, 0xE8, 0x7F), (32, 0x03, 0xE8, 0x7F)),
+    (CMD_SET.SET_MAX_VELOCITY_ACCELERATION, AXIS.Z, (0x01, 0xF4, 0x00, 0x64), (0x01, 0xF4, 0x00, 0x65)),
+    (CMD_SET.SET_HOME_SAFETY_MERGIN, AXIS.X, (0x00, 0x64, 0, 0), (0x00, 0x65, 0, 0)),
+    (CMD_SET.SET_LIMIT_SWITCH_CONFIG, AXIS.Y, (0x03, 0, 0, 0), (0x01, 0, 0, 0)),
+]
+
+
+class TestFirmwareSimSerialStartupState:
+    """STORE_CONFIG_SIGNATURE (67), QUERY_STARTUP_STATE (68) and the verdict in the status byte (firmware 1.9)."""
+
+    def test_power_up_reports_no_signature(self):
+        assert _query(FirmwareSimSerial(firmware_version=NEW)) is StartupVerdict.NO_SIGNATURE
+
+    def test_query_never_stores(self):
+        sim = FirmwareSimSerial(strict=True, firmware_version=NEW)
+        _query(sim)
+        _home(sim)
+        assert _query(sim) is StartupVerdict.NO_SIGNATURE
+
+    def test_store_home_query_is_warm_and_reset_keeps_it(self):
+        sim = FirmwareSimSerial(firmware_version=NEW)
+        _send(sim, CMD_SET.STORE_CONFIG_SIGNATURE, 0x12, 0x34, 0x56, 0x78, 1 << 4)
+        _send(sim, CMD_SET.HOME_OR_ZERO, AXIS.XY, 0, 0)
+        _send(sim, CMD_SET.MOVETO_X, 0, 0, 0x10, 0)
+        _send(sim, CMD_SET.RESET)
+        assert sim.x == 0x1000 and _query(sim) is StartupVerdict.WARM
+
+    def test_initialize_clears_flags_signature_and_positions(self):
+        sim = _homed_xy()
+        _send(sim, CMD_SET.MOVETO_X, 0, 0, 0x10, 0)
+        _send(sim, CMD_SET.SET_AXIS_DISABLE_ENABLE, AXIS.Z, 0)
+        _send(sim, CMD_SET.INITIALIZE)
+        assert sim.x == 0
+        assert _query(sim) is StartupVerdict.NO_SIGNATURE
+        _store(sim)
+        assert _query(sim) is StartupVerdict.NOT_HOMED  # the homed flags went too, not only the signature
+        _home(sim)
+        assert _query(sim) is StartupVerdict.WARM  # and every driver is enabled again
+
+    @pytest.mark.parametrize("code, axis, first, changed", COVERED_SETTINGS)
+    def test_changed_covered_setting_empties_signature(self, code, axis, first, changed):
+        sim = FirmwareSimSerial(strict=True, firmware_version=NEW)
+        _send(sim, code, axis, *first)
+        _store(sim)
+        _home(sim)
+        _send(sim, code, axis, *changed)
+        assert _query(sim) is StartupVerdict.NO_SIGNATURE
+
+    @pytest.mark.parametrize("code, axis, first, changed", COVERED_SETTINGS)
+    def test_identical_covered_setting_keeps_signature(self, code, axis, first, changed):
+        sim = FirmwareSimSerial(strict=True, firmware_version=NEW)
+        _send(sim, code, axis, *first)
+        _store(sim)
+        _home(sim)
+        _send(sim, code, axis, *first)
+        assert _query(sim) is StartupVerdict.WARM
+
+    @pytest.mark.parametrize("code, axis, first, changed", COVERED_SETTINGS)
+    def test_first_sight_of_a_covered_setting_on_an_axis_empties_signature(self, code, axis, first, changed):
+        sim = FirmwareSimSerial(strict=True, firmware_version=NEW)
+        other_axis = AXIS.Z if axis != AXIS.Z else AXIS.X
+        _send(sim, code, other_axis, *first)  # seen on another axis only
+        _store(sim)
+        _home(sim)
+        _send(sim, code, axis, *first)
+        assert _query(sim) is StartupVerdict.NO_SIGNATURE
+
+    def test_refused_and_wheel_settings_are_not_covered(self):
+        sim = _homed_xy()
+        assert _send(sim, CMD_SET.SET_LIMIT_SWITCH_CONFIG, AXIS.Z, 0x10)[1] == CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
+        _send(sim, CMD_SET.CONFIGURE_STEPPER_DRIVER, AXIS.W, 16, 0x03, 0xE8, 0x7F)
+        _send(sim, CMD_SET.SET_OFFSET_VELOCITY, AXIS.X, 0, 0, 0x10, 0)
+        assert _query(sim) is StartupVerdict.WARM
+
+    def test_another_signature_or_format_is_a_mismatch(self):
+        sim = _homed_xy()
+        assert _query(sim, sig=OTHER_SIG) is StartupVerdict.SIGNATURE_MISMATCH
+        assert _query(sim, fmt=2) is StartupVerdict.SIGNATURE_MISMATCH
+
+    def test_storing_the_same_signature_keeps_the_flags_and_another_clears_them(self):
+        sim = _homed_xy()
+        _store(sim)
+        assert _query(sim) is StartupVerdict.WARM
+        _store(sim, sig=OTHER_SIG)
+        assert _query(sim, sig=OTHER_SIG) is StartupVerdict.NOT_HOMED
+
+    @pytest.mark.parametrize(
+        "break_health",
+        [
+            lambda sim: sim.set_power_good(False),
+            lambda sim: setattr(sim, "tmc_config_ok", False),
+            lambda sim: _send(sim, CMD_SET.SET_AXIS_DISABLE_ENABLE, AXIS.Z, 0),
+        ],
+        ids=["power", "tmc_config", "driver_disabled"],
+    )
+    def test_unhealthy(self, break_health):
+        sim = _homed_xy()
+        break_health(sim)
+        assert _query(sim) is StartupVerdict.UNHEALTHY
+
+    def test_a_power_drop_clears_every_homed_flag(self):
+        sim = _homed_xy()
+        sim.set_power_good(False)
+        sim.set_power_good(True)
+        assert _query(sim) is StartupVerdict.NOT_HOMED
+
+    def test_disabling_a_driver_clears_its_homed_flag(self):
+        sim = _homed_xy()
+        _send(sim, CMD_SET.SET_AXIS_DISABLE_ENABLE, AXIS.Y, 0)
+        _send(sim, CMD_SET.SET_AXIS_DISABLE_ENABLE, AXIS.Y, 1)
+        assert _query(sim) is StartupVerdict.NOT_HOMED
+
+    @pytest.mark.parametrize(
+        "break_home, mend",
+        [
+            (lambda sim: sim.set_power_good(False), lambda sim: sim.set_power_good(True)),
+            (
+                lambda sim: _send(sim, CMD_SET.SET_AXIS_DISABLE_ENABLE, AXIS.X, 0),
+                lambda sim: _send(sim, CMD_SET.SET_AXIS_DISABLE_ENABLE, AXIS.X, 1),
+            ),
+        ],
+        ids=["power", "driver"],
+    )
+    def test_a_home_without_power_or_driver_does_not_count(self, break_home, mend):
+        sim = FirmwareSimSerial(strict=True, firmware_version=NEW)
+        _store(sim)
+        break_home(sim)
+        _home(sim)
+        mend(sim)
+        assert _query(sim) is StartupVerdict.NOT_HOMED
+
+    def test_zeroing_an_axis_clears_its_homed_flag(self):
+        sim = _homed_xy()
+        _send(sim, CMD_SET.MOVETO_X, 0, 0, 0x10, 0)
+        _send(sim, CMD_SET.HOME_OR_ZERO, AXIS.X, HOME_OR_ZERO.ZERO)
+        assert sim.x == 0
+        assert _query(sim) is StartupVerdict.NOT_HOMED
+
+    def test_a_moving_axis_is_reported(self):
+        sim = _homed_xy()
+        sim.moving_axes.add(AXIS.Z)
+        assert _query(sim) is StartupVerdict.MOVING
+
+    def test_only_the_required_axes_must_be_homed(self):
+        sim = _homed_xy()
+        assert _query(sim, mask=0b111) is StartupVerdict.NOT_HOMED
+        _home(sim, AXIS.Z)
+        assert _query(sim, mask=0b111) is StartupVerdict.WARM
+
+    def test_the_verdict_answers_only_its_own_query(self):
+        sim = _homed_xy()
+        assert _send(sim, CMD_SET.TURN_OFF_ALL_PORTS)[1] == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+
+    def test_query_answers_while_in_progress(self):
+        sim = FirmwareSimSerial(firmware_version=NEW)
+        sim.in_progress = True
+        sim.moving_axes.add(AXIS.Y)
+        r = _send(sim, CMD_SET.QUERY_STARTUP_STATE, 0, 0, 0, 0, 0b011)
+        # the verdict replaces IN_PROGRESS in its own reply
+        assert r[1] == STARTUP_VERDICT_STATUS_BASE + StartupVerdict.NO_SIGNATURE
+        r2 = _send(sim, CMD_SET.TURN_OFF_ALL_PORTS)
+        assert r2[1] == CMD_EXECUTION_STATUS.IN_PROGRESS  # next command: normal status again
+        _send(sim, CMD_SET.RESET)
+        assert not sim.in_progress
+        assert sim.moving_axes == {AXIS.Y}  # RESET stops no ramp
+
+    @pytest.mark.parametrize("version", [(0, 0), (1, 8)])
+    def test_query_is_a_no_op_before_its_firmware(self, version):
+        sim = FirmwareSimSerial(firmware_version=version)
+        assert _send(sim, CMD_SET.STORE_CONFIG_SIGNATURE, 0x12, 0x34, 0x56, 0x78, 1 << 4)[1] == 0
+        r = _send(sim, CMD_SET.QUERY_STARTUP_STATE, 0, 0, 0, 0, 0)
+        assert r[1] < STARTUP_VERDICT_STATUS_BASE
+        assert sim.validation_errors == []
+
+    def test_command_log_records_every_command_code(self):
+        sim = FirmwareSimSerial(strict=True, firmware_version=NEW)
+        _store(sim)
+        _home(sim)
+        _query(sim)
+        _send(sim, CMD_SET.RESET)
+        assert sim.command_log == [
+            CMD_SET.STORE_CONFIG_SIGNATURE,
+            CMD_SET.HOME_OR_ZERO,
+            CMD_SET.QUERY_STARTUP_STATE,
+            CMD_SET.RESET,
+        ]

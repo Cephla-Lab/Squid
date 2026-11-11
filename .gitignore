@@ -9,8 +9,12 @@
 
 # Machine-specific configs (.example templates are not matched by *.yaml)
 software/machine_configs/*.yaml
+software/machine_configs/*.yaml.bak
 
 # Xeryon stage settings (machine-specific)
 software/control/Xeryon_settings.txt
 software/objective_and_sample_formats/sample_formats_user.yaml
 software/objective_and_sample_formats/sample_formats_disabled.yaml
+
+# superpowers brainstorm/sdd scratch
+.superpowers/

@@ -12,18 +12,22 @@
 // and the joystick as an offset from a zero it takes once at boot. Before this module, the controller
 // took the wheel baseline only at its own boot and on INITIALIZE, so the first packet after a reconnect
 // moved Z by minus the whole session's wheel travel; it never noticed the panel go away, so a stick
-// held when the cable dropped kept X/Y running at that speed; and a packet has no checksum, so noise
-// while the plug goes in can decode as a 10-byte packet with any speed and any wheel count.
+// held when the cable dropped kept X/Y running at that speed; and noise while the plug goes in can
+// decode as a 10-byte packet with any speed and any wheel count.
 //
 // So: a gap of JP_TIMEOUT_MS between valid packets is a disconnect. It forgets the wheel baseline,
 // and the next packet only sets a new one, never moves Z. It also disarms the joystick, which then
 // reads as centred until the panel has reported the stick centred JP_CENTERED_PACKETS times in a row,
 // so a stick held while plugging in, or a panel that took its zero off-centre, cannot drive X/Y. A
-// packet whose last byte is not 0 (the panel always sends 0 there), or whose wheel count jumps more
+// packet whose last byte is neither 0 nor the CRC8-CCITT of bytes 0-8, or whose wheel count jumps more
 // than any hand can turn it between packets, is dropped; the jump also forgets the baseline and
 // disarms the joystick, but leaves the timeout running from the last good packet.
+//
+// THE LAST BYTE: firmware/joystick in this repo sends 0 there ("CRC to be added"), but panels in the
+// field also send CRC8-CCITT of bytes 0-8 (seen 2026-11-07: ff ff f6 c0 00 00 00 00 01 38). Requiring 0
+// dropped every packet from those panels, so their joystick and focus wheel did nothing at all.
 
-static const int JP_MSG_LENGTH = 10;                 // wheel int32, x int16, y int16, buttons, 0 (all big-endian)
+static const int JP_MSG_LENGTH = 10;                 // wheel int32, x int16, y int16, buttons, 0 or CRC8 (big-endian)
 static const uint32_t JP_TIMEOUT_MS = 200;           // the panel sends every ~3-5 ms
 static const uint8_t JP_CENTERED_PACKETS = 5;        // consecutive centred packets that arm the joystick
 static const int32_t JP_MAX_WHEEL_STEP = 65536;      // microsteps; a fast hand turn is ~1000 per packet
@@ -50,7 +54,7 @@ void jp_reset(JoystickPanelLink *link);
 // Forget the wheel baseline only, so the next packet does not move Z (INITIALIZE zeroes the Z target).
 void jp_forget_wheel(JoystickPanelLink *link);
 
-// One decoded packet. False if it is dropped (wrong size, nonzero last byte, implausible wheel jump);
+// One decoded packet. False if it is dropped (wrong size, last byte neither 0 nor the CRC, implausible wheel jump);
 // `in` is then untouched and must not be applied.
 bool jp_on_packet(JoystickPanelLink *link, const uint8_t *buffer, size_t size, uint32_t now_ms, JoystickPanelInput *in);
 

@@ -104,3 +104,12 @@ def test_readbacks_not_up_yet_is_starting_not_fault():
     stat = _stat(FakeEngine())
     stat["in"]["exp_ok"] = 0
     assert parse_status(stat).channels["L1"].state == LineState.STARTING
+
+
+def test_status_reports_the_df_shutter():
+    raw = json.loads(FakeEngine()._stat())
+    assert parse_status(raw).shutter_open is False
+    raw["shutter"]["open"] = 1
+    assert parse_status(raw).shutter_open is True
+    raw["shutter"]["present"] = 0
+    assert parse_status(raw).shutter_open is None  # no shutter on this variant

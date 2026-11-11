@@ -42,6 +42,7 @@ def _send(port: int, command: str, params: dict) -> Optional[dict]:
 def microscope():
     microscope = MagicMock()
     microscope.stage.get_pos.return_value = MagicMock(x_mm=10.0, y_mm=20.0, z_mm=1.0)
+    microscope.stage_homing_in_progress = False  # a MagicMock attribute is truthy: every command would be refused
     return microscope
 
 
@@ -80,7 +81,7 @@ def test_move_relative_with_only_dz_moves_only_z(running_server, microscope):
     assert reply is not None and reply["success"], reply
     microscope.move_x.assert_not_called()
     microscope.move_y.assert_not_called()
-    microscope.stage.move_z.assert_called_once_with(0.5, blocking=True)
+    microscope.move_z.assert_called_once_with(0.5, blocking=True)
 
 
 def test_acquire_image_without_a_save_path_saves_nothing(running_server, microscope):
