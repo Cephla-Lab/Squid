@@ -3,6 +3,7 @@ import enum
 import errno
 import inspect
 import pathlib
+import re
 import sys
 import shutil
 import statistics
@@ -237,8 +238,57 @@ def ensure_directory_exists(raw_string_path: str):
     path.mkdir(parents=True, exist_ok=True)
 
 
+def update_ini_text(text: str, updates: dict, comment: str):
+    """Set `updates` (key -> value) in the [GENERAL] section of an ini file's text, keeping every other line,
+    comment and the file's line endings. An existing key is replaced in place; missing keys are appended to
+    the end of [GENERAL] under `comment`. Returns (new_text, {key: (old_or_None, new)}).
+
+    Sections and keys are found the way ConfigParser finds them (which is how Squid reads the file back): the
+    section name is case-sensitive and may be followed by text (``[GENERAL] # note``), and a key may use ``=`` or
+    ``:``. Matching more loosely would edit a line Squid then ignores, or add a duplicate key it refuses to load."""
+    from configparser import ConfigParser
+
+    nl = "\r\n" if "\r\n" in text else "\n"
+    lines = text.replace("\r\n", "\n").split("\n")
+
+    def section_of(line):
+        mo = ConfigParser.SECTCRE.match(line.strip())
+        return mo.group("header") if mo else None
+
+    start = next((i for i, l in enumerate(lines) if section_of(l) == "GENERAL"), None)
+    if start is None:
+        raise ValueError("no [GENERAL] section in the ini")
+    end = next((i for i in range(start + 1, len(lines)) if section_of(lines[i]) is not None), len(lines))
+    options = {}  # lower-cased key -> (line index, old value), first occurrence wins
+    for i in range(start + 1, end):
+        if lines[i].lstrip().startswith(("#", ";")):
+            continue
+        mo = re.match(r"\s*(?P<key>.*?)\s*[=:]\s*(?P<value>.*)$", lines[i])
+        if mo:
+            options.setdefault(mo.group("key").lower(), (i, mo.group("value").strip()))
+    changes, missing = {}, []
+    for key, value in updates.items():
+        if key.lower() in options:
+            hit, old = options[key.lower()]
+            indent = lines[hit][
+                : len(lines[hit]) - len(lines[hit].lstrip())
+            ]  # an indent change can make it a continuation
+            lines[hit] = f"{indent}{key} = {value}"
+            changes[key] = (old, str(value))
+        else:
+            missing.append(key)
+            changes[key] = (None, str(value))
+    if missing:
+        insert_at = end
+        while insert_at > start + 1 and lines[insert_at - 1].strip() == "":
+            insert_at -= 1
+        block = [f"# {comment}"] + [f"{k} = {updates[k]}" for k in missing]
+        lines[insert_at:insert_at] = block
+    return nl.join(lines), changes
+
+
 def write_ini_atomically(config, path: str):
-    """Write a ConfigParser to path so that a failed write (a full disk, say) leaves the file as it was, rather than
+    """Write a ConfigParser (or ready-made ini text) to path so that a failed write (a full disk, say) leaves the file as it was, rather than
     emptied or cut off: the text goes to a temp file next to it, which then replaces it. Squid reads the machine ini
     at start-up, so a half-written one stops it starting. A read-only file still raises PermissionError, as writing
     it in place did (replacing it would succeed on Linux)."""
@@ -254,7 +304,10 @@ def write_ini_atomically(config, path: str):
         with f:
             if os.path.exists(path):  # before the fsync below, so it covers these too
                 _give_the_access_of(path, tmp_path)
-            config.write(f)
+            if isinstance(config, str):
+                f.write(config)
+            else:
+                config.write(f)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)

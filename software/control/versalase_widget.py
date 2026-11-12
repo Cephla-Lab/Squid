@@ -7,6 +7,7 @@ from qtpy.QtCore import QTimer, Signal
 from qtpy.QtGui import QFontDatabase
 from qtpy.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+import control.theme as theme
 from control.illumination_versalase import HeadStatus
 
 POLL_INTERVAL_MS = 3000
@@ -113,7 +114,7 @@ class VersaLaseWidget(QWidget):
         self._layout.addLayout(top_row)
 
         self._banner = QLabel("")
-        self._banner.setStyleSheet(f"background-color: {RED}; color: white; padding: 4px;")
+        theme.set_role(self._banner, "banner-engine")
         self._banner.setWordWrap(True)
         self._banner.setVisible(False)
         self._layout.addWidget(self._banner)

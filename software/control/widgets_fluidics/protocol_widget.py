@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
 )
 
+import control.theme as theme
 import squid.logging
 from control.core.fluidics_protocol import manifest as manifest_io
 from control.core.fluidics_protocol.manifest import reagent_totals
@@ -58,6 +59,8 @@ class FluidicsProtocolWidget(QFrame):
     signal_show_fluidics_tab = Signal()
     signal_run_notification = Signal(str)  # Slack-worthy: held / finished
     signal_reagent_rows = Signal(list)  # rows for the Reagents table
+    signal_run_started = Signal(str, str)  # run dir, run name: a runner was created and is starting
+    signal_run_finished = Signal(str, str)  # run dir, the runner's outcome word (finished | stopped | failed)
 
     REFRESH_MS = 500
 
@@ -129,9 +132,10 @@ class FluidicsProtocolWidget(QFrame):
         self.resume_button = QPushButton("Resume unfinished run…")
         self.resume_button.clicked.connect(lambda: self.offer_recovery(startup=False))
         self.hint_label = QLabel("")
-        self.hint_label.setStyleSheet("color: gray;")
+        theme.set_role(self.hint_label, "note-gray")
 
         self.idle_box = QGroupBox()
+        theme.set_role(self.idle_box, "group-plain")
         idle_layout = QVBoxLayout()
         idle_layout.addLayout(name_row)
         idle_layout.addWidget(self.summary_label)
@@ -165,12 +169,13 @@ class FluidicsProtocolWidget(QFrame):
         buttons_row.addWidget(self.abort_run_button)
 
         self.held_box = QGroupBox("Attention")
-        self.held_box.setStyleSheet("QGroupBox { color: #b00020; }")
+        theme.set_role(self.held_box, "alert-group")
         self.held_layout = QVBoxLayout()
         self.held_box.setLayout(self.held_layout)
         self.held_box.hide()
 
         self.running_box = QGroupBox()
+        theme.set_role(self.running_box, "group-plain")
         running_layout = QVBoxLayout()
         running_layout.addWidget(self.state_label)
         running_layout.addWidget(self.round_label)
@@ -347,6 +352,7 @@ class FluidicsProtocolWidget(QFrame):
         self.protocol_tab.set_run_locked(True)
         self._set_run_visible(True)
         self.signal_acquisition_started.emit(True)
+        self.signal_run_started.emit(str(runner.run_dir), runner.manifest.run_name)
         runner.start()
 
     def _set_run_visible(self, active: bool) -> None:
@@ -431,7 +437,7 @@ class FluidicsProtocolWidget(QFrame):
             if widget is not None:
                 widget.deleteLater()
         headline = QLabel(f"Held at step {hold.step_index + 1} ({hold.kind}): {hold.reason}")
-        headline.setStyleSheet("font-weight: bold; color: #b00020;")
+        theme.set_role(headline, "alert-bold-first")
         self.held_layout.addWidget(headline)
         if hold.message:
             message = QLabel(hold.message)
@@ -479,6 +485,7 @@ class FluidicsProtocolWidget(QFrame):
         end.clicked.connect(end_clicked)
         buttons.addWidget(end)
         holder = QGroupBox()
+        theme.set_role(holder, "group-plain")
         holder.setFlat(True)
         holder.setLayout(buttons)
         self.held_layout.addWidget(holder)
@@ -520,6 +527,8 @@ class FluidicsProtocolWidget(QFrame):
         self.protocol_tab.highlight_row(None)
         self.state_label.setText(f"Run {outcome}")
         self.signal_acquisition_started.emit(False)
+        if self.runner is not None:
+            self.signal_run_finished.emit(str(self.runner.run_dir), outcome)
         self.signal_run_notification.emit(f"Fluidics protocol run {outcome} ({self.folder_label.text()})")
         self._set_run_visible(False)
         self._refresh_idle()
