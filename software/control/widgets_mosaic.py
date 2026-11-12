@@ -39,7 +39,6 @@ from control.utils import ensure_directory_exists, serialize_for_yaml
 from control.utils_channel import extract_wavelength_from_config_name
 import squid.logging
 
-
 PLATE_VIEW_MIN_VISIBLE_PIXELS = 50
 PLATE_VIEW_MAX_ZOOM_FACTOR = 50.0
 PLATE_BOUNDARIES_LAYER = "_plate_boundaries"
@@ -87,10 +86,14 @@ DISPLAY_MODE_LABELS = {
 def blit_tiles_to_canvas(
     canvas: np.ndarray,
     tiles: List[Tuple[np.ndarray, int, int]],
+    combine: str = "replace",
 ) -> None:
     """Blit tiles into canvas at given positions. Clips both negative and
     out-of-bounds offsets so a misplaced tile is dropped, never wrapped via
-    NumPy negative slicing."""
+    NumPy negative slicing. ``combine`` is "replace" (assign) or "max" (keep the
+    per-pixel maximum of canvas and tile)."""
+    if combine not in ("replace", "max"):
+        raise ValueError(f"Invalid combine mode: {combine!r}. Expected 'replace' or 'max'.")
     canvas_h, canvas_w = canvas.shape[:2]
     for tile, y_px, x_px in tiles:
         tile_h, tile_w = tile.shape[:2]
@@ -104,7 +107,12 @@ def blit_tiles_to_canvas(
         src_x_start = max(-x_px, 0)
         src_y_end = src_y_start + (dst_y_end - dst_y_start)
         src_x_end = src_x_start + (dst_x_end - dst_x_start)
-        canvas[dst_y_start:dst_y_end, dst_x_start:dst_x_end] = tile[src_y_start:src_y_end, src_x_start:src_x_end]
+        src = tile[src_y_start:src_y_end, src_x_start:src_x_end]
+        dst = canvas[dst_y_start:dst_y_end, dst_x_start:dst_x_end]
+        if combine == "max":
+            np.maximum(dst, src, out=dst)
+        else:
+            dst[...] = src
 
 
 class UnifiedMosaicWidget(QWidget):
@@ -122,6 +130,7 @@ class UnifiedMosaicWidget(QWidget):
     signal_coordinates_clicked = Signal(float, float)  # x_mm, y_mm (mosaic mode)
     signal_well_fov_clicked = Signal(str, int)  # well_id, fov_index (plate mode)
     signal_clear_viewer = Signal()
+    signal_view_saved = Signal(str)  # target dir, once its save is done (or failed); from the save executor's thread
     signal_layers_initialized = Signal()
     signal_shape_drawn = Signal(list)
     signal_mode_changed = Signal(object)  # DisplayMode
@@ -452,6 +461,12 @@ class UnifiedMosaicWidget(QWidget):
         x_mm = update.x_mm
         y_mm = update.y_mm
         channel_name = update.channel_name
+        # The first z-plane of a FOV always replaces, so a new timepoint starts fresh.
+        combine = (
+            "max"
+            if control._def.MOSAIC_Z_PROJECTION is control._def.ZProjectionMode.MIP and update.z_index > 0
+            else "replace"
+        )
 
         # Pixel size drives every tile coordinate on the canvas, so all tiles
         # on one canvas must agree on it. The two modes reach that agreement
@@ -515,7 +530,7 @@ class UnifiedMosaicWidget(QWidget):
             self.viewer_extents[2] = min(self.viewer_extents[2], tl_x_mm)
             self.viewer_extents[3] = max(self.viewer_extents[3], tl_x_mm + image.shape[1] * self.viewer_pixel_size_mm)
             self.top_left_coordinate = [self.viewer_extents[0], self.viewer_extents[2]]
-            self._update_mosaic_layer(self.viewer.layers[channel_name], image, tl_x_mm, tl_y_mm, prev_top_left)
+            self._update_mosaic_layer(self.viewer.layers[channel_name], image, tl_x_mm, tl_y_mm, prev_top_left, combine)
         else:
             # well_origin_mm is None when the source acquisition isn't a plate
             # scan (anything other than Select Wells). We can't position the
@@ -534,7 +549,7 @@ class UnifiedMosaicWidget(QWidget):
             x_px = update.well_col * slot_w + fov_offset_x
 
             layer = self.viewer.layers[channel_name]
-            blit_tiles_to_canvas(layer.data, [(image, y_px, x_px)])
+            blit_tiles_to_canvas(layer.data, [(image, y_px, x_px)], combine)
             layer.refresh()
             self._draw_plate_boundaries()
             # The fit-the-whole-plate camera reset only fires when the canvas
@@ -551,7 +566,7 @@ class UnifiedMosaicWidget(QWidget):
             if tuple(layer.contrast_limits) != tuple(new_limits):
                 layer.contrast_limits = new_limits
 
-    def _update_mosaic_layer(self, layer, image, tl_x_mm, tl_y_mm, prev_top_left):
+    def _update_mosaic_layer(self, layer, image, tl_x_mm, tl_y_mm, prev_top_left, combine="replace"):
         """Place tile on the mosaic canvas, expanding and shifting if extents grew."""
         mosaic_height = int(math.ceil((self.viewer_extents[1] - self.viewer_extents[0]) / self.viewer_pixel_size_mm))
         mosaic_width = int(math.ceil((self.viewer_extents[3] - self.viewer_extents[2]) / self.viewer_pixel_size_mm))
@@ -573,7 +588,7 @@ class UnifiedMosaicWidget(QWidget):
 
         y_pos = int(math.floor((tl_y_mm - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
         x_pos = int(math.floor((tl_x_mm - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm))
-        blit_tiles_to_canvas(layer.data, [(image, y_pos, x_pos)])
+        blit_tiles_to_canvas(layer.data, [(image, y_pos, x_pos)], combine)
         layer.refresh()
 
     def _create_channel_layer(self, channel_name, reference_image):
@@ -943,6 +958,8 @@ class UnifiedMosaicWidget(QWidget):
                 yaml.safe_dump(serialize_for_yaml(sidecar), f, sort_keys=False)
         except Exception:
             self._log.exception(f"Mosaic-view save failed for {target_dir}")
+        finally:
+            self.signal_view_saved.emit(target_dir)
 
     def _write_per_well_tiffs(self, target_dir: str, snapshot: dict, res_tag: str) -> None:
         """Plate-mode helper: crop each well's slot from the channel stack and

@@ -15,6 +15,7 @@ same key.
 | Setting | Where it is set | Default |
 |---|---|---|
 | Which engine, its USB serial number | machine ini, `laser_engine`, `laser_engine_sn` | no engine |
+| Intensity calibration per line | Utils > Illumination Power Calibration (files in `machine_configs/intensity_calibrations/`) | linear in the line's drive |
 | DF: 560 nm laser power | Laser Engine tab, kept in `cache/laser_engine_v2.yaml` | the source's minimum |
 | DF: 560 nm idle-off | Laser Engine tab, kept in `cache/laser_engine_v2.yaml` | 30 min |
 | DF: 560 nm shutter mode | Laser Engine tab, kept in `cache/laser_engine_v2.yaml` | On use |
@@ -57,10 +58,13 @@ idle-off and shutter mode are operator settings kept in the cache (section 4).
   to the controller and gets no engine set-point (logged once).
 - The port map is the machine's record of which wavelength is on which engine line: the engine reports its variant
   (its drive electronics), not the wavelengths fitted, so an engine with other wavelengths needs only a port-map edit.
-  Wavelengths on one port share that line and its set-point, as on other multi-line light sources.
-- Intensity is linear in the line's drive: % of its current ceiling (on DF line 3, of the AOM's 0-5 V input).
-  Old calibration files (`machine_configs/intensity_calibrations/<wavelength>.csv`, `560_aom.csv`) are not used:
-  they record nothing about the engine they were measured on.
+  Wavelengths on one port share that line, as on other multi-line light sources: each sends its own set-point
+  when it is used.
+- Intensity is % of optical power once a line is calibrated with Utils > Illumination Power Calibration (see
+  `illumination-power-calibration.md`): the calibration records this engine's serial number, variant, line and
+  firmware ceiling, and applies only while they match. Without one the intensity is linear in the line's drive (% of
+  its current ceiling; on DF line 3, of the AOM's 0-5 V input). Old `<wavelength>.csv` and `560_aom.csv` files are
+  not used. Recalibrate after replacing or realigning a diode: the engine cannot tell.
 
 At start, Squid connects (one fault reset when anything is latched, since the engine latches at every power-up;
 the tab says what it cleared), switches the TECs on, arms and brings every fitted line up, one step per status poll, so the GUI never
@@ -107,7 +111,9 @@ The 560 nm fiber laser sits behind an AOM and a shutter. Each has one job:
   power.
 - **Intensity** in Squid (the 560 channel's intensity) is the AOM amplitude: line 3's set-point, 0-5 V, full scale =
   full transmission. The AOM's on/off input is the controller's D3 TTL, so exposure timing works as for the other
-  lines. The intensity is linear in AOM volts (50 % = 2.5 V).
+  lines. Without a calibration the intensity is linear in AOM volts (50 % = 2.5 V). Calibrated (at the laser power set
+  in this tab), it is % of the power at the AOM's peak transmission, which may be below 5 V. The AOM's output depends
+  on its recent use, and other laser powers are untested: see `illumination-power-calibration.md`.
 - **Shutter**: a mechanical shutter, never moved per exposure and not part of line 3's readiness. Its mode is set in
   the tab:
   - **On use** (default): open while line 3 is READY **and** something uses the 560 (section 2: live view on the 560

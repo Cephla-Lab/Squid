@@ -56,6 +56,15 @@ sudo cp drivers\ and\ libraries/toupcam/linux/udev/99-toupcam.rules /etc/udev/ru
 </details>
 
 <details>
+<summary>Add udev rules for Thorlabs power meters (Illumination Power Calibration)</summary>
+
+```
+sudo cp drivers\ and\ libraries/thorlabs/linux/udev/99-thorlabs-pm16.rules /etc/udev/rules.d
+```
+Then unplug and re-plug the meter. Setup on macOS and Windows: [docs/illumination-power-calibration.md](docs/illumination-power-calibration.md).
+</details>
+
+<details>
 <summary>Installing drivers and libraries for Hamamatsu camera support</summary>
 
 Open the `software/drivers and libraries/hamamatsu` folder in terminal and run the following
@@ -155,6 +164,9 @@ To start the program when no hardware is connected, use
 ```
 python3 main_hcs.py --simulation
 ```
+
+### Appearance
+**Settings > Appearance** offers two looks: **Classic** (the default) and **Dark**. Switching between them takes effect after a restart. The choice is saved in the machine `.ini` as `ui_theme` under `[GENERAL]` (`classic` or `dark`). Developers adding GUI code should read [docs/ui-theme.md](docs/ui-theme.md) for the colour rules every theme relies on.
 
 ## Updating an existing install
 `filter_wheels.yaml`, `illumination_channel_config.yaml`, and

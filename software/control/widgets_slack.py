@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
     QFormLayout,
 )
 
+import control.theme as theme
 import control._def
 from control.slack_notifier import SlackNotifier
 import squid.logging
@@ -127,7 +128,7 @@ class SlackSettingsDialog(QDialog):
             "Channel ID: Right-click channel > View channel details > Copy ID</small>"
         )
         help_label.setWordWrap(True)
-        help_label.setStyleSheet("color: gray;")
+        theme.set_role(help_label, "note-gray")
         api_layout.addRow(help_label)
 
         api_group.setLayout(api_layout)
@@ -170,7 +171,7 @@ class SlackSettingsDialog(QDialog):
 
         # Status label
         self.label_status = QLabel("")
-        self.label_status.setStyleSheet("color: gray;")
+        theme.set_role(self.label_status, "note-gray")
         layout.addWidget(self.label_status)
 
         # Buttons
@@ -289,11 +290,11 @@ class SlackSettingsDialog(QDialog):
             with open(CACHE_FILE, "w") as f:
                 yaml.dump(settings, f, default_flow_style=False)
             self.label_status.setText("Settings saved")
-            self.label_status.setStyleSheet("color: green;")
+            theme.set_role(self.label_status, "status-ok")
             log.info("Slack settings saved to cache")
         except Exception as e:
             self.label_status.setText(f"Failed to save: {e}")
-            self.label_status.setStyleSheet("color: red;")
+            theme.set_role(self.label_status, "status-bad")
             log.error(f"Failed to save Slack settings: {e}")
 
         self.settings_changed.emit()
@@ -323,11 +324,11 @@ class SlackSettingsDialog(QDialog):
 
         if success:
             self.label_status.setText("Test successful!")
-            self.label_status.setStyleSheet("color: green;")
+            theme.set_role(self.label_status, "status-ok")
             QMessageBox.information(self, "Test Successful", "Slack API connection successful!")
         else:
             self.label_status.setText(f"Test failed: {message}")
-            self.label_status.setStyleSheet("color: red;")
+            theme.set_role(self.label_status, "status-bad")
             QMessageBox.warning(self, "Test Failed", f"Connection failed: {message}")
 
     def set_slack_notifier(self, notifier: SlackNotifier):

@@ -11,6 +11,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+import control.theme as theme
 from control.squid_laser_engine import (
     LASER_CHANNEL_ORDER,
     LaserChannelState,
@@ -85,7 +86,7 @@ class LaserEngineWidget(QWidget):
         layout.addLayout(top_row)
 
         self._banner = QLabel("")
-        self._banner.setStyleSheet("background-color: #c0392b; color: white; padding: 4px;")
+        theme.set_role(self._banner, "banner-engine")
         self._banner.setVisible(False)
         layout.addWidget(self._banner)
 

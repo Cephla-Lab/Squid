@@ -44,6 +44,7 @@ unsigned long tmc_test_delay_us_total = 0;   // declared by test_driver_sequence
 #include "utils/focus_wheel.cpp"      // fw_route_delta(): the wheel delta to Z or to the host's count (firmware 1.8)
 #include "utils/panel_lock.cpp"       // pl_apply(): the host's SET_PANEL_LOCK (firmware 1.8)
 #include "utils/crc8.cpp"             // focus_wheel.cpp's power-up record checksum
+#include "utils/homing_validity.cpp"  // hv_home_complete(): finalize_homing_x/y/z's startup-state hook (firmware 1.9)
 
 /* ------------------------------------------------------------------ recorder */
 

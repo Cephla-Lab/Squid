@@ -18,6 +18,7 @@ from qtpy.QtWidgets import (
     QPushButton,
 )
 
+import control.theme as theme
 import control._def
 import squid.logging
 
@@ -100,12 +101,12 @@ class ClaudeApiKeyDialog(QDialog):
         )
         help_label.setWordWrap(True)
         help_label.setOpenExternalLinks(True)
-        help_label.setStyleSheet("color: gray;")
+        theme.set_role(help_label, "note-gray")
         layout.addWidget(help_label)
 
         # Status label
         self.label_status = QLabel("")
-        self.label_status.setStyleSheet("color: gray;")
+        theme.set_role(self.label_status, "note-gray")
         layout.addWidget(self.label_status)
 
         # Buttons
@@ -163,11 +164,11 @@ class ClaudeApiKeyDialog(QDialog):
                 yaml.dump(data, f, default_flow_style=False)
             control._def.ANTHROPIC_API_KEY = key
             self.label_status.setText("Saved" if key else "Cleared")
-            self.label_status.setStyleSheet("color: green;")
+            theme.set_role(self.label_status, "status-ok")
             log.info("Anthropic API key %s in cache", "saved" if key else "cleared")
         except (OSError, yaml.YAMLError) as e:
             self.label_status.setText(f"Failed to save: {e}")
-            self.label_status.setStyleSheet("color: red;")
+            theme.set_role(self.label_status, "status-bad")
             log.error(f"Failed to save Anthropic API key: {e}")
 
     def _clear_key(self):

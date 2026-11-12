@@ -1,0 +1,212 @@
+import os
+import subprocess
+import sys
+
+import pytest
+
+import control._def
+from control.ndviewer_launcher import (
+    LOG_FILE_NAME,
+    LauncherResolution,
+    default_log_path,
+    launch_ndviewer_light,
+    read_log_tail,
+    resolve_ndviewer_light,
+)
+
+PY = "python-for-tests"
+
+
+def _resolve(preference="", *, which=lambda name: None, package=False, submodule="", python=PY):
+    return resolve_ndviewer_light(
+        preference,
+        which=which,
+        package_importable=lambda: package,
+        submodule_main=submodule,
+        python=python,
+    )
+
+
+def test_preference_executable_wins(tmp_path):
+    exe = tmp_path / "ndviewer-light.exe"
+    exe.write_text("")
+    res = _resolve(str(exe), which=lambda name: "/usr/bin/ndviewer-light", package=True)
+    assert res.command == [str(exe)]
+    assert res.source == "preference"
+    assert res.env is None and res.cwd is None
+
+
+def test_preference_directory_runs_the_module_from_it(tmp_path):
+    pkg = tmp_path / "ndviewer_light"
+    pkg.mkdir()
+    (pkg / "__main__.py").write_text("")
+    res = _resolve(str(tmp_path))
+    assert res.command == [PY, "-m", "ndviewer_light"]
+    assert res.source == "preference"
+    assert res.env["PYTHONPATH"].startswith(str(tmp_path))
+
+
+def test_preference_command_line_is_split(tmp_path):
+    res = _resolve("somewhere-not-a-file --flag")
+    assert res.source == "preference"
+    assert res.command[-1] == "--flag"
+
+
+def test_path_command_then_package_then_submodule_then_none(tmp_path):
+    main = tmp_path / "__main__.py"
+    main.write_text("")
+
+    res = _resolve(which=lambda name: "/bin/ndviewer-light" if name == "ndviewer-light" else None, package=True)
+    assert (res.source, res.command) == ("path", ["/bin/ndviewer-light"])
+
+    res = _resolve(package=True, submodule=str(main))
+    assert (res.source, res.command) == ("package", [PY, "-m", "ndviewer_light"])
+
+    res = _resolve(submodule=str(main))
+    assert (res.source, res.command) == ("submodule", [PY, "-m", "control.ndviewer_light"])
+    software = os.path.dirname(os.path.dirname(os.path.abspath(control._def.__file__)))
+    assert res.cwd == software
+
+    res = _resolve(submodule=str(tmp_path / "missing.py"))
+    assert res.source == "none" and res.command is None
+    assert "not installed" in res.reason
+
+
+def test_missing_preference_falls_through_and_is_mentioned(tmp_path):
+    res = _resolve(str(tmp_path / "nope"), package=True)
+    assert res.source == "package"
+    res = _resolve(str(tmp_path / "nope"))
+    assert res.source == "none"
+    assert "Preferences" in res.reason and "not found" in res.reason
+
+
+def test_launch_appends_the_folder_and_detaches(tmp_path):
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return "proc"
+
+    log_path = str(tmp_path / "logs" / LOG_FILE_NAME)
+    res = LauncherResolution(["viewer", "-x"], "path", "ok", env={"A": "1"}, cwd="/soft")
+    assert launch_ndviewer_light(res, "/data/acq", popen=fake_popen, log_path=log_path) == "proc"
+    args, kw = calls[0]
+    assert args == ["viewer", "-x", "/data/acq"]
+    assert kw["cwd"] == "/soft"
+    assert kw["env"]["A"] == "1" and "PATH" in {k.upper() for k in kw["env"]}
+    assert kw["close_fds"] is True
+    assert kw["stdin"] == subprocess.DEVNULL
+    assert kw["stdout"].name == log_path and kw["stderr"] == subprocess.STDOUT
+    if sys.platform == "win32":
+        assert kw["creationflags"] & subprocess.DETACHED_PROCESS
+        assert kw["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert kw["start_new_session"] is True
+
+    calls.clear()
+    launch_ndviewer_light(LauncherResolution(["v"], "path", "ok"), "/d", popen=fake_popen, log_path=log_path)
+    assert calls[0][1]["env"] is None
+
+
+def test_launch_log_is_truncated_per_launch_and_its_tail_readable(tmp_path):
+    log_path = tmp_path / LOG_FILE_NAME
+    log_path.write_text("old run\n" * 50)
+
+    def fake_popen(args, **kwargs):
+        kwargs["stdout"].write(b"".join(b"line %d\n" % i for i in range(20)))
+        return "proc"
+
+    launch_ndviewer_light(LauncherResolution(["v"], "path", "ok"), "/d", popen=fake_popen, log_path=str(log_path))
+    assert "old run" not in log_path.read_text()
+    assert read_log_tail(str(log_path)).splitlines() == [f"line {i}" for i in range(10, 20)]
+    assert read_log_tail(str(tmp_path / "absent.log")) == ""
+
+
+def test_default_log_path_is_in_the_history_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("SQUID_ACQUISITION_HISTORY_DIR", str(tmp_path))
+    assert default_log_path() == os.path.join(str(tmp_path), LOG_FILE_NAME)
+
+
+def test_launch_without_a_command_raises_the_reason():
+    res = LauncherResolution(None, "none", "not installed")
+    with pytest.raises(RuntimeError, match="not installed"):
+        launch_ndviewer_light(res, "/d", popen=lambda *a, **k: None)
+
+
+def test_def_flags_default():
+    assert control._def.NDVIEWER_LIGHT_COMMAND == "" and control._def.RECORD_SNAPS_IN_HISTORY is False
+
+
+# (text, what Windows makes of it): the CommandLineToArgvW examples from Microsoft's documentation, the reported cases
+# and the corner rules; on Windows, test_the_windows_splitter_agrees_with_commandlinetoargvw checks them against the
+# real parser.
+WINDOWS_COMMAND_LINES = [
+    # Microsoft's examples, as arguments (the program name itself is taken literally)
+    (r'"a b c" d e', ["a b c", "d", "e"]),
+    (r'x "ab\"c" "\\" d', ["x", 'ab"c', "\\", "d"]),
+    (r'x a\\\b d"e f"g h', ["x", "a\\\\\\b", "de fg", "h"]),
+    (r"x a\\\"b c d", ["x", 'a\\"b', "c", "d"]),
+    (r'x a\\\\"b c" d e', ["x", "a\\\\b c", "d", "e"]),
+    # the reported cases
+    (r"C:\Users\O'Brien\ndviewer-light.exe --flag", [r"C:\Users\O'Brien\ndviewer-light.exe", "--flag"]),
+    (r'viewer.exe --data="C:\a b"', ["viewer.exe", r"--data=C:\a b"]),
+    (r'viewer.exe --data="C:\data\\"', ["viewer.exe", "--data=C:\\data\\"]),
+    # the program name: literal up to the first blank, or up to the closing quote
+    (r'"C:\Program Files\x\" --flag', ["C:\\Program Files\\x\\", "--flag"]),
+    (r'a"b c" d', ['a"b', "c d"]),
+    # two quotes inside a quoted part are one literal quote; empty, tab-separated and unterminated quotes
+    (r'x "a""b" y', ["x", 'a"b y']),
+    (r'x "" y', ["x", "", "y"]),
+    ('x\ty "z\tw"', ["x", "y", "z\tw"]),
+    (r'x "unterminated', ["x", "unterminated"]),
+    ("", []),
+]
+
+
+@pytest.mark.parametrize("text, expected", WINDOWS_COMMAND_LINES)
+def test_windows_command_lines_are_split_as_windows_splits_them(monkeypatch, text, expected):
+    """A location typed into Preferences means what it would mean in a shortcut or the Run dialog."""
+    from control.ndviewer_launcher import _split_preference
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _split_preference(text) == expected
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="compares with Windows' own CommandLineToArgvW")
+def test_the_windows_splitter_agrees_with_commandlinetoargvw():
+    """The table above and a few hundred random mixes of blanks, quotes and backslashes, parsed by Windows itself."""
+    import ctypes
+    import random
+    from ctypes import wintypes
+
+    from control.ndviewer_launcher import _split_windows_command_line
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+
+    def windows_argv(text):
+        count = ctypes.c_int(0)
+        argv = shell32.CommandLineToArgvW(text, ctypes.byref(count))
+        assert argv, ctypes.get_last_error()
+        try:
+            return [argv[i] for i in range(count.value)]
+        finally:
+            kernel32.LocalFree(argv)
+
+    rng = random.Random(806)
+    texts = [text for text, _ in WINDOWS_COMMAND_LINES]
+    texts += ["".join(rng.choice('ab \t"\\') for _ in range(rng.randint(1, 12))) for _ in range(500)]
+    for text in texts:
+        text = text.lstrip(" \t")  # Windows gives leading blanks an empty program name; the splitter drops them
+        if text:  # an empty command line means "this program" to Windows
+            assert _split_windows_command_line(text) == windows_argv(text), repr(text)
+
+
+def test_an_unparsable_preference_is_ignored_with_a_warning(caplog, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")  # the shell's rules; Windows itself accepts an unterminated quote
+    res = _resolve('"unterminated')
+    assert res.source != "preference"
+    assert "Ignoring the ndviewer_light location" in caplog.text

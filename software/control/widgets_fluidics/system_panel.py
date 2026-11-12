@@ -18,6 +18,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
 )
 
+import control.theme as theme
 import squid.logging
 from control.widgets_fluidics import state
 
@@ -50,7 +51,7 @@ class SystemPanel(QGroupBox):
         self.initialize_button = QPushButton("Initialize")
         self.initialize_button.clicked.connect(self._initialize)
         self.status_label = QLabel("Not initialized")
-        self.status_label.setStyleSheet("color: gray;")
+        theme.set_role(self.status_label, "note-gray")
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Config:"))
