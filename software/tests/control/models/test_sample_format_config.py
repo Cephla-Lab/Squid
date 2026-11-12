@@ -286,3 +286,15 @@ def test_unknown_key_is_damage_not_a_default(tmp_path, caplog):
     with caplog.at_level(logging.ERROR):
         assert load_user_sample_formats(str(path)) is None
     assert "NOT BEING APPLIED" in caplog.text
+
+
+# ------------------------------------------------------------ pitchless 1x1 formats (glass slide, "0")
+
+
+def test_a_pitchless_format_is_never_a_user_definition():
+    """Design rule (see populate_existing_formats): a 1x1 format's only well sits at the stage position, so
+    there is nothing to calibrate and the model refuses to store one."""
+    with pytest.raises(ValueError, match="greater than 0"):
+        SampleFormat(rows=1, cols=1, well_spacing_mm=0, well_size_mm=0)
+    with pytest.raises(ValueError, match="greater than 0"):
+        SampleFormat.from_settings(dict(_def.get_wellplate_settings("glass slide")), measured=a1_touch())
