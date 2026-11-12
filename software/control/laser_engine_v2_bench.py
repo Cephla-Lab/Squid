@@ -38,6 +38,7 @@ from qtpy.QtWidgets import (
 )
 from serial.tools import list_ports
 
+import control.theme as theme
 import squid.logging
 from control._def import port_index_to_source_code
 from control.laser_engine_v2 import EngineOptions, LaserEngineV2, _production_source_factory, options_from_cache
@@ -147,7 +148,7 @@ class LaserEngineV2ServicePanel(QWidget):
 
         self.message_label = QLabel("")  # the last refusal / error from this panel (also logged)
         self.message_label.setWordWrap(True)
-        self.message_label.setStyleSheet("color: #c0392b;")
+        theme.set_role(self.message_label, "danger-text")
         layout.addWidget(self.message_label)
 
         self.source_box: Optional[QGroupBox] = None
@@ -175,14 +176,14 @@ class LaserEngineV2ServicePanel(QWidget):
         raw_row.addWidget(self.raw_send_btn)
         raw_layout.addLayout(raw_row)
         note = QLabel("bench: sent straight to the engine; the hardware permits still apply")
-        note.setStyleSheet("color: gray;")
+        theme.set_role(note, "note-gray")
         raw_layout.addWidget(note)
         self.raw_reply = QLabel("")
         self.raw_reply.setWordWrap(True)
         self.raw_reply.setTextInteractionFlags(Qt.TextSelectableByMouse)
         raw_layout.addWidget(self.raw_reply)
         self.raw_history_label = QLabel("")
-        self.raw_history_label.setStyleSheet("font-family: monospace; color: gray;")
+        theme.set_role(self.raw_history_label, "mono-note")
         self.raw_history_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         raw_layout.addWidget(self.raw_history_label)
         self.raw_send_btn.clicked.connect(lambda _=False: self.send_raw())
@@ -446,7 +447,7 @@ class BenchWindow(QMainWindow):
         bar2 = QHBoxLayout()
         bar2.addStretch(1)
         self.link_label = QLabel("")
-        self.link_label.setStyleSheet("color: #c0392b; font-weight: bold;")
+        theme.set_role(self.link_label, "danger-text-bold")
         bar2.addWidget(self.link_label)
         layout.addLayout(bar2)
 

@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
 )
 
+import control.theme as theme
 from control.models.fluidics_protocol import IMAGING_TYPE, ProtocolFile, expand_rounds, imaging_folder, parse_port_list
 
 _NO_PORT_ROW = "— none —"
@@ -167,10 +168,10 @@ class PreflightDialog(QDialog):
         layout = QVBoxLayout()
         if problems:
             headline = QLabel(f"{len(problems)} problem(s) must be fixed before this protocol can run:")
-            headline.setStyleSheet("color: #b00020; font-weight: bold;")
+            theme.set_role(headline, "alert-bold")
             layout.addWidget(headline)
             text = QPlainTextEdit("\n".join(f"✗ {p}" for p in problems))
-            text.setStyleSheet("color: #b00020;")
+            theme.set_role(text, "alert")
         else:
             layout.addWidget(QLabel("Ready to start:"))
             text = QPlainTextEdit("\n".join(summary_lines))
@@ -204,7 +205,7 @@ class RecoveryDialog(QDialog):
         layout.addWidget(QLabel(f"Run '{manifest.run_name}' was {manifest.status.upper()} at {step_line}."))
         layout.addWidget(QLabel(f"Last written {heartbeat} · {os.path.basename(manifest.run_dir)}"))
         warning = QLabel("Pump and valve state is unknown — check before continuing.")
-        warning.setStyleSheet("color: #b00020;")
+        theme.set_role(warning, "alert")
         layout.addWidget(warning)
         self.buttons = QDialogButtonBox()
         open_button = QPushButton("Open recovery")

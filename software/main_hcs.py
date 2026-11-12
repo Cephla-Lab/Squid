@@ -23,11 +23,13 @@ squid.logging.setup_uncaught_exception_logging()
 import control.gui_hcs as gui
 from control._def import USE_TERMINAL_CONSOLE, ENABLE_MCP_SERVER_SUPPORT, CONTROL_SERVER_HOST, CONTROL_SERVER_PORT
 import control._def
+import control.theme
 import control.utils
 import control.microcontroller
 import control.microscope
 from control.single_instance import acquire_single_instance_lock
-from control.widgets_homing import confirm_nosepiece_lowered, startup_needs_nosepiece_check
+from control.startup_homing import StartupHomingDeclined
+from control.widgets_homing import confirm_nosepiece_lowered
 
 # Import auto-migration function
 from tools.migrate_acquisition_configs import run_auto_migration
@@ -70,6 +72,15 @@ if __name__ == "__main__":
     # QMessageBox before any other startup side effects (logging, migration).
     app = QApplication(["Squid"])
     app.setStyle("Fusion")
+    try:
+        control.theme.install(app, control.theme.load_theme_choice())
+    except Exception:
+        # The look is never a reason not to start: fall back to Classic (no stylesheet, default palette).
+        squid.logging.get_logger("main_hcs").exception("Could not apply the UI theme; starting in Classic")
+        try:
+            control.theme.install(app, "classic")
+        except Exception:
+            squid.logging.get_logger("main_hcs").exception("Could not restore the Classic look either")
     app.setWindowIcon(QIcon("icon/cephla_logo.ico"))
 
     # Single-instance check before file logging or migration so a losing
@@ -119,17 +130,22 @@ if __name__ == "__main__":
     # This allows shutdown via ctrl+C even after the gui has popped up.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    # Piezo-only: the startup home below drives XY to the limit switches with the objective wherever the focus knob
-    # left it. Ask before building the microscope, so declining quits before anything moves.
-    if startup_needs_nosepiece_check(args.skip_init):
-        if not confirm_nosepiece_lowered(None, decline_text="Quit Squid"):
-            log.info("Nosepiece not confirmed lowered before XY homing: quitting before anything moves.")
-            instance_lock.unlock()
-            sys.exit(0)
-        log.info("Nosepiece confirmed lowered: homing.")
-
     try:
-        microscope = control.microscope.Microscope.build_from_global_config(args.simulation, skip_init=args.skip_init)
+        microscope = control.microscope.Microscope.build_from_global_config(
+            args.simulation,
+            skip_init=args.skip_init,
+            # Piezo-only: the stop sign, asked before startup moves anything (only when it will home X and Y, or move an
+            # objective changer)
+            confirm_objective_lowered=lambda stage_homes: confirm_nosepiece_lowered(
+                None, decline_text="Quit Squid", stage_homes=stage_homes
+            ),
+        )
+    except StartupHomingDeclined:
+        # The microscope closed its hardware; nothing homed. os._exit, as at the end: threads may still be winding down.
+        log.info("Startup homing declined at the stop sign: quitting.")
+        instance_lock.unlock()
+        logging.shutdown()
+        os._exit(0)
     except control.microcontroller.LimitSwitchConfigError as e:
         # Invalid [LIMIT_SWITCHES], or firmware too old to apply it: do not start with the limit switches read
         # wrong. The message says which.

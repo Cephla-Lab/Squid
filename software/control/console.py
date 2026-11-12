@@ -8,6 +8,7 @@ from qtpy.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QPus
 from qtpy.QtCore import QThread, Signal, Qt, QObject, QMetaObject
 import sys
 import code
+import control.theme as theme
 
 if sys.platform == "win32":
     from pyreadline3 import Readline
@@ -266,6 +267,7 @@ class JupyterWidget(QWidget):
         self.jupyter_widget = RichJupyterWidget()
         self.jupyter_widget.kernel_manager = self.kernel_manager
         self.jupyter_widget.kernel_client = self.kernel_client
+        self._restyle_console()
 
         # Layout
         layout = QVBoxLayout()
@@ -274,6 +276,11 @@ class JupyterWidget(QWidget):
 
         # Emit signal when kernel is ready
         self.kernel_ready.emit()
+
+    def _restyle_console(self):
+        """Dark console colours in Dark; Classic keeps qtconsole's default."""
+        if not theme.manager().is_classic():
+            self.jupyter_widget.set_default_style(colors="linux")
 
     def execute_command(self, command):
         """Execute a command in the Jupyter kernel"""

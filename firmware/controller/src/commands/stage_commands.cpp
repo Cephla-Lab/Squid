@@ -269,6 +269,7 @@ void callback_set_lim()
 
 void callback_set_home_safety_margin()
 {
+    // Startup state (1.9): a covered setting for X/Y/Z (hv_config_received in those cases); the wheels are not covered
     switch (buffer_rx[2])
     {
         case AXIS_X:
@@ -277,6 +278,7 @@ void callback_set_home_safety_margin()
             float home_safety_margin_mm = float(margin) / 1000.0;
             home_safety_margin[x] = tmc4361A_xmmToMicrosteps(&tmc4361[x], home_safety_margin_mm);
             tmc4361A_enableHomingLimit(&tmc4361[x], limit_switch_homing_polarity(x), TMC4361_homing_sw[x], home_safety_margin[x]);
+            hv_config_received(&homing_validity, HV_CFG_HOME_MARGIN, AXIS_X, &buffer_rx[3]);
             break;
         }
         case AXIS_Y:
@@ -285,6 +287,7 @@ void callback_set_home_safety_margin()
             float home_safety_margin_mm = float(margin) / 1000.0;
             home_safety_margin[y] = tmc4361A_xmmToMicrosteps(&tmc4361[y], home_safety_margin_mm);
             tmc4361A_enableHomingLimit(&tmc4361[y], limit_switch_homing_polarity(y), TMC4361_homing_sw[y], home_safety_margin[y]);
+            hv_config_received(&homing_validity, HV_CFG_HOME_MARGIN, AXIS_Y, &buffer_rx[3]);
             break;
         }
         case AXIS_Z:
@@ -293,6 +296,7 @@ void callback_set_home_safety_margin()
             float home_safety_margin_mm = float(margin) / 1000.0;
             home_safety_margin[z] = tmc4361A_xmmToMicrosteps(&tmc4361[z], home_safety_margin_mm);
             tmc4361A_enableHomingLimit(&tmc4361[z], limit_switch_homing_polarity(z), TMC4361_homing_sw[z], home_safety_margin[z]);
+            hv_config_received(&homing_validity, HV_CFG_HOME_MARGIN, AXIS_Z, &buffer_rx[3]);
             break;
         }
         case AXIS_W:
@@ -317,7 +321,12 @@ void callback_set_home_safety_margin()
 void callback_set_limit_switch_config()
 {
     if (!limit_switches_set(buffer_rx[2], buffer_rx[3]))
+    {
         report_move_error();
+        return;
+    }
+    // Startup state (1.9): a covered setting. Applied, so the axis is X, Y or Z (limit_switches_set refuses the rest).
+    hv_config_received(&homing_validity, HV_CFG_LIMIT_SWITCH, buffer_rx[2], &buffer_rx[3]);
 }
 
 void callback_set_pid_arguments()
@@ -381,6 +390,7 @@ static void configure_axis_current(uint8_t axis, float &current_global, float &h
 
 void callback_configure_stepper_driver()
 {
+    // Startup state (1.9): a covered setting for X/Y/Z (hv_config_received in those cases); the wheels are not covered
     switch (buffer_rx[2])
     {
         case AXIS_X:
@@ -391,6 +401,7 @@ void callback_configure_stepper_driver()
             MICROSTEPPING_X = microstepping_setting == 0 ? 1 : microstepping_setting;
             steps_per_mm_X = FULLSTEPS_PER_REV_X * MICROSTEPPING_X / SCREW_PITCH_X_MM;
             configure_axis_current(x, X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD, SCREW_PITCH_X_MM, FULLSTEPS_PER_REV_X, MICROSTEPPING_X);
+            hv_config_received(&homing_validity, HV_CFG_DRIVER, AXIS_X, &buffer_rx[3]);
             break;
         }
         case AXIS_Y:
@@ -401,6 +412,7 @@ void callback_configure_stepper_driver()
             MICROSTEPPING_Y = microstepping_setting == 0 ? 1 : microstepping_setting;
             steps_per_mm_Y = FULLSTEPS_PER_REV_Y * MICROSTEPPING_Y / SCREW_PITCH_Y_MM;
             configure_axis_current(y, Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD, SCREW_PITCH_Y_MM, FULLSTEPS_PER_REV_Y, MICROSTEPPING_Y);
+            hv_config_received(&homing_validity, HV_CFG_DRIVER, AXIS_Y, &buffer_rx[3]);
             break;
         }
         case AXIS_Z:
@@ -411,6 +423,7 @@ void callback_configure_stepper_driver()
             MICROSTEPPING_Z = microstepping_setting == 0 ? 1 : microstepping_setting;
             steps_per_mm_Z = FULLSTEPS_PER_REV_Z * MICROSTEPPING_Z / SCREW_PITCH_Z_MM;
             configure_axis_current(z, Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD, SCREW_PITCH_Z_MM, FULLSTEPS_PER_REV_Z, MICROSTEPPING_Z);
+            hv_config_received(&homing_validity, HV_CFG_DRIVER, AXIS_Z, &buffer_rx[3]);
             break;
         }
         case AXIS_W:
@@ -443,6 +456,7 @@ void callback_configure_stepper_driver()
 
 void callback_set_max_velocity_acceleration()
 {
+    // Startup state (1.9): a covered setting for X/Y/Z (hv_config_received in those cases); the wheels are not covered
     switch (buffer_rx[2])
     {
         case AXIS_X:
@@ -451,6 +465,7 @@ void callback_set_max_velocity_acceleration()
             MAX_ACCELERATION_X_mm = float(uint16_t(buffer_rx[5]) * 256 + uint16_t(buffer_rx[6])) / 10;
             tmc4361A_setMaxSpeed(&tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], MAX_VELOCITY_X_mm) );
             tmc4361A_setMaxAcceleration(&tmc4361[x], tmc4361A_ammToMicrosteps( &tmc4361[x], MAX_ACCELERATION_X_mm) );
+            hv_config_received(&homing_validity, HV_CFG_VEL_ACC, AXIS_X, &buffer_rx[3]);
             break;
         }
         case AXIS_Y:
@@ -459,6 +474,7 @@ void callback_set_max_velocity_acceleration()
             MAX_ACCELERATION_Y_mm = float(uint16_t(buffer_rx[5]) * 256 + uint16_t(buffer_rx[6])) / 10;
             tmc4361A_setMaxSpeed(&tmc4361[y], tmc4361A_vmmToMicrosteps( &tmc4361[y], MAX_VELOCITY_Y_mm) );
             tmc4361A_setMaxAcceleration(&tmc4361[y], tmc4361A_ammToMicrosteps( &tmc4361[y], MAX_ACCELERATION_Y_mm) );
+            hv_config_received(&homing_validity, HV_CFG_VEL_ACC, AXIS_Y, &buffer_rx[3]);
             break;
         }
         case AXIS_Z:
@@ -467,6 +483,7 @@ void callback_set_max_velocity_acceleration()
             MAX_ACCELERATION_Z_mm = float(uint16_t(buffer_rx[5]) * 256 + uint16_t(buffer_rx[6])) / 10;
             tmc4361A_setMaxSpeed(&tmc4361[z], tmc4361A_vmmToMicrosteps( &tmc4361[z], MAX_VELOCITY_Z_mm) );
             tmc4361A_setMaxAcceleration(&tmc4361[z], tmc4361A_ammToMicrosteps( &tmc4361[z], MAX_ACCELERATION_Z_mm) );
+            hv_config_received(&homing_validity, HV_CFG_VEL_ACC, AXIS_Z, &buffer_rx[3]);
             break;
         }
         case AXIS_W:
@@ -497,24 +514,28 @@ void callback_set_max_velocity_acceleration()
 
 void callback_set_lead_screw_pitch()
 {
+    // Startup state (1.9): a covered setting for X/Y/Z (hv_config_received in those cases); the wheels are not covered
     switch (buffer_rx[2])
     {
         case AXIS_X:
         {
             SCREW_PITCH_X_MM = float(uint16_t(buffer_rx[3]) * 256 + uint16_t(buffer_rx[4])) / 1000;
             steps_per_mm_X = FULLSTEPS_PER_REV_X * MICROSTEPPING_X / SCREW_PITCH_X_MM;
+            hv_config_received(&homing_validity, HV_CFG_PITCH, AXIS_X, &buffer_rx[3]);
             break;
         }
         case AXIS_Y:
         {
             SCREW_PITCH_Y_MM = float(uint16_t(buffer_rx[3]) * 256 + uint16_t(buffer_rx[4])) / 1000;
             steps_per_mm_Y = FULLSTEPS_PER_REV_Y * MICROSTEPPING_Y / SCREW_PITCH_Y_MM;
+            hv_config_received(&homing_validity, HV_CFG_PITCH, AXIS_Y, &buffer_rx[3]);
             break;
         }
         case AXIS_Z:
         {
             SCREW_PITCH_Z_MM = float(uint16_t(buffer_rx[3]) * 256 + uint16_t(buffer_rx[4])) / 1000;
             steps_per_mm_Z = FULLSTEPS_PER_REV_Z * MICROSTEPPING_Z / SCREW_PITCH_Z_MM;
+            hv_config_received(&homing_validity, HV_CFG_PITCH, AXIS_Z, &buffer_rx[3]);
             break;
         }
         case AXIS_W:
@@ -542,20 +563,24 @@ void callback_home_or_zero()
     // zeroing
     if (buffer_rx[3] == HOME_OR_ZERO_ZERO)
     {
+        // Startup state (1.9): a re-zeroed X/Y/Z axis is no longer at its homed origin (hv_invalidate_axis)
         switch (buffer_rx[2])
         {
         case AXIS_X:
             tmc4361A_setCurrentPosition(&tmc4361[x], 0);
             X_pos = 0;
+            hv_invalidate_axis(&homing_validity, AXIS_X);
             break;
         case AXIS_Y:
             tmc4361A_setCurrentPosition(&tmc4361[y], 0);
             Y_pos = 0;
+            hv_invalidate_axis(&homing_validity, AXIS_Y);
             break;
         case AXIS_Z:
             tmc4361A_setCurrentPosition(&tmc4361[z], 0);
             Z_pos = 0;
             focusPosition = 0;
+            hv_invalidate_axis(&homing_validity, AXIS_Z);
             break;
         case AXIS_W:
             if (enable_filterwheel == true) {
@@ -598,9 +623,12 @@ void callback_home_or_zero()
             if (home_axis != 0xFF && !axis_driver_ready(home_axis)) return;
         }
 
+        // Startup state (1.9): each X/Y/Z case starts with hv_home_start - the axis is not homed until this home
+        // finishes, and the home counts only if power is good and the driver enabled from start to finish.
         switch (buffer_rx[2])
         {
         case AXIS_X:
+            hv_home_start(&homing_validity, AXIS_X, digitalRead(pin_PG));
             if (stage_PID_enabled[AXIS_X] == 1)
             tmc4361A_set_PID(&tmc4361[AXIS_X], PID_DISABLE);
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[x], -1);
@@ -641,6 +669,7 @@ void callback_home_or_zero()
             }
             break;
         case AXIS_Y:
+            hv_home_start(&homing_validity, AXIS_Y, digitalRead(pin_PG));
             if (stage_PID_enabled[AXIS_Y] == 1)
             tmc4361A_set_PID(&tmc4361[AXIS_Y], PID_DISABLE);
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[y], -1);
@@ -681,6 +710,7 @@ void callback_home_or_zero()
             }
             break;
         case AXIS_Z:
+            hv_home_start(&homing_validity, AXIS_Z, digitalRead(pin_PG));
             if (stage_PID_enabled[AXIS_Z] == 1)
             tmc4361A_set_PID(&tmc4361[AXIS_Z], PID_DISABLE);
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[z], -1);
@@ -819,6 +849,8 @@ void callback_home_or_zero()
             }
             break;
         case AXES_XY:
+            hv_home_start(&homing_validity, AXIS_X, digitalRead(pin_PG));
+            hv_home_start(&homing_validity, AXIS_Y, digitalRead(pin_PG));
             if (stage_PID_enabled[AXIS_X] == 1)
             tmc4361A_set_PID(&tmc4361[AXIS_X], PID_DISABLE);
             if (stage_PID_enabled[AXIS_Y] == 1)

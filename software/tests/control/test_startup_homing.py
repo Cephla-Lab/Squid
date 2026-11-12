@@ -1,0 +1,1419 @@
+import logging
+import pathlib
+import subprocess
+import sys
+import threading
+import time
+from unittest.mock import MagicMock
+
+import pytest
+
+import control._def
+import control.microcontroller
+import control.microscope
+import squid.config
+import squid.stage.cephla
+import squid.stage.pi
+import squid.stage.prior
+import squid.stage.utils
+import tests.squid.test_stage
+from control._def import AXIS, CMD_SET, STARTUP_STATE_MIN_FIRMWARE, STARTUP_VERDICT_STATUS_BASE, StartupVerdict
+from control.firmware_sim_serial import FirmwareSimSerial
+from control.microcontroller import Microcontroller
+from control.startup_homing import (
+    CONFIG_SIGNATURE_FORMAT,
+    ObjectiveNotLoweredError,
+    StageHomingInProgressError,
+    StageHomingRefused,
+    StartupHoming,
+    StartupHomingDeclined,
+    config_signature,
+    config_signature_text,
+    home_stage_confirmation_text,
+    required_homed_axes_mask,
+    startup_needs_objective_prompt,
+)
+from tests.control.test_microcontroller import get_test_micro
+
+SOFTWARE_DIR = pathlib.Path(__file__).resolve().parents[2]
+NOT_STOPPED_ERROR = "Homing ended without the controller reporting the stage stopped"
+
+
+@pytest.fixture
+def piezo_only(monkeypatch):
+    monkeypatch.setattr(control._def, "IS_PIEZO_ONLY", True)
+
+
+@pytest.fixture
+def closes(monkeypatch):
+    """The Microscopes closed from now on."""
+    closed = []
+    close = control.microscope.Microscope.close
+    monkeypatch.setattr(control.microscope.Microscope, "close", lambda self: closed.append(self) or close(self))
+    return closed
+
+
+def _spy_commands(micro):
+    """The codes of the commands sent from now on, but the watchdog heartbeat's (its own thread, every 2.5 s)."""
+    sent = []
+    real = micro.send_command
+
+    def spy(cmd):
+        if cmd[1] != control._def.CMD_SET.HEARTBEAT:
+            sent.append(cmd[1])
+        return real(cmd)
+
+    micro.send_command = spy
+    return sent
+
+
+def test_xy_homes_refused_without_confirmation_on_piezo_only(piezo_only):
+    micro = get_test_micro()
+    sent = _spy_commands(micro)
+    for home in (micro.home_x, micro.home_y, micro.home_xy):
+        with pytest.raises(ObjectiveNotLoweredError, match="objective_lowered=true"):
+            home()
+    assert sent == []
+
+
+def test_confirmed_xy_home_runs_on_piezo_only(piezo_only):
+    micro = get_test_micro()
+    micro.move_x_to_usteps(1000)
+    micro.wait_till_operation_is_completed()
+    micro.home_x(objective_lowered=True)
+    micro.wait_till_operation_is_completed()
+    assert micro.get_pos()[0] == 0
+
+
+def test_z_home_needs_no_confirmation(piezo_only):
+    micro = get_test_micro()
+    micro.home_z()
+    micro.wait_till_operation_is_completed()
+
+
+def test_xy_homes_unchanged_off_piezo_only(monkeypatch):
+    monkeypatch.setattr(control._def, "IS_PIEZO_ONLY", False)
+    micro = get_test_micro()
+    micro.home_xy()
+    micro.wait_till_operation_is_completed()
+
+
+def test_refused_cephla_home_sends_nothing_even_with_z(piezo_only):
+    micro = get_test_micro()
+    sent = _spy_commands(micro)
+    stage = squid.stage.cephla.CephlaStage(micro, squid.config.get_stage_config())
+    with pytest.raises(ObjectiveNotLoweredError):
+        stage.home(x=True, y=False, z=True, theta=False)
+    assert sent == []
+
+
+def test_stage_confirmation_covers_one_call_only(piezo_only):
+    stage = squid.stage.cephla.CephlaStage(get_test_micro(), squid.config.get_stage_config())
+    stage.home(x=True, y=True, z=False, theta=False, objective_lowered=True)
+    with pytest.raises(ObjectiveNotLoweredError):
+        stage.home(x=False, y=True, z=False, theta=False)
+
+
+def test_prior_home_always_needs_confirmation_on_piezo_only(piezo_only):
+    stage = object.__new__(squid.stage.prior.PriorStage)
+    stage._send_command = MagicMock()
+    stage.wait_for_stop = MagicMock()
+    with pytest.raises(ObjectiveNotLoweredError):
+        stage.home(x=False, y=False, z=True, theta=False)
+    stage._send_command.assert_not_called()
+    stage.home(x=True, y=True, z=False, theta=False, objective_lowered=True)
+    stage._send_command.assert_called_once_with("SIS")
+
+
+def test_combined_stage_checks_before_z_or_lift(piezo_only):
+    stage, _, _ = tests.squid.test_stage._sim_combined_stage()
+    stage._z.home = MagicMock()
+    stage._lower_lift_for_xy_homing = MagicMock()
+    with pytest.raises(ObjectiveNotLoweredError):
+        stage.home(x=True, y=False, z=True, theta=False)
+    stage._z.home.assert_not_called()
+    stage._lower_lift_for_xy_homing.assert_not_called()
+    stage.home(x=True, y=False, z=False, theta=False, objective_lowered=True)
+
+
+def _scope(**kw):
+    return control.microscope.Microscope.build_from_global_config(True, skip_init=True, **kw)
+
+
+def _wait(predicate, timeout_s=3.0):
+    end = time.time() + timeout_s
+    while time.time() < end:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def test_home_stage_finishes_at_the_safe_position(monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    scope = _scope()
+    scope.stage.move_x_to(40)
+    scope.stage.move_y_to(25)
+    scope.home_stage()
+    pos = scope.stage.get_pos()
+    # Where home_xyz ends, not 40/25; within 1 um, as a mm target lands on the nearest microstep.
+    assert pos.x_mm == pytest.approx(50, abs=1e-3) and pos.y_mm == pytest.approx(0, abs=1e-3)
+    assert pos.z_mm == pytest.approx(int(control._def.Z_HOME_SAFETY_POINT) / 1000.0, abs=1e-3)
+    assert not scope.stage_homing_in_progress
+    scope.close()
+
+
+def test_unconfirmed_home_moves_nothing(piezo_only):
+    scope = _scope()
+    sent = _spy_commands(scope.low_level_drivers.microcontroller)
+    for home in (scope.home_xyz, scope.home_stage):
+        with pytest.raises(ObjectiveNotLoweredError):
+            home()
+    assert sent == [] and not scope.stage_homing_in_progress
+    scope.close()
+
+
+def test_claim_refuses_other_motion():
+    scope = _scope()
+    claim = scope.claim_stage_homing("test")
+    for refused in (
+        scope.home_xyz,
+        scope.home_stage,
+        lambda: scope.move_x_to(1.0),
+        lambda: scope.move_y(1.0),
+        lambda: scope.move_z(0.1),
+        lambda: scope.move_z_to(1.0),
+        lambda: scope.set_objective("any"),
+    ):
+        with pytest.raises(StageHomingInProgressError):
+            refused()
+    claim.release_when_stopped()
+    assert not scope.stage_homing_in_progress
+    scope.close()
+
+
+def test_release_is_idempotent():
+    scope = _scope()
+    events = []
+    scope.add_stage_homing_listener(events.append)
+    claim = scope.claim_stage_homing("test")
+    claim.release_when_stopped()
+    claim.release_when_stopped()
+    assert events == [True, False] and not scope.stage_homing_in_progress
+    scope.close()
+
+
+def test_a_failed_live_pause_gives_the_claim_back(monkeypatch):
+    scope = _scope()
+    scope.start_live()
+    monkeypatch.setattr(scope, "stop_live", MagicMock(side_effect=RuntimeError("camera gone")))
+    with pytest.raises(RuntimeError, match="camera gone"):
+        scope.claim_stage_homing("test")
+    assert not scope.stage_homing_in_progress
+    monkeypatch.undo()
+    scope.close()
+
+
+def test_a_claim_taken_the_instant_a_release_ends_sees_live_resumed(monkeypatch):
+    scope = _scope()
+    monkeypatch.setattr(scope.stage, "reports_stopped", lambda: True)  # ordering under test, not stop detection
+    events = []
+    scope.add_stage_homing_listener(events.append)
+    scope.start_live()
+    claim_a = scope.claim_stage_homing("A")
+    real_clear = scope._clear_stage_homing_claim
+    taken = []
+
+    def clear_then_claim(claim):
+        real_clear(claim)
+        if claim is claim_a:  # another client wins the race the moment A's claim is cleared
+            taken.append(scope.claim_stage_homing("B"))
+
+    monkeypatch.setattr(scope, "_clear_stage_homing_claim", clear_then_claim)
+    claim_a.release_when_stopped()
+    (claim_b,) = taken
+    assert events == [True, False, True]  # False(A) before True(B)
+    assert claim_b.was_live  # A resumed live before B could claim, so B paused it and will resume it
+    assert scope.stage_homing_in_progress and not scope.live_controller.is_live  # no live during B's homing
+    claim_b.release_when_stopped()
+    assert events == [True, False, True, False] and scope.live_controller.is_live
+    scope.close()
+
+
+def test_a_claim_from_a_listener_during_the_release_is_refused_without_deadlock(monkeypatch):
+    scope = _scope()
+    monkeypatch.setattr(scope.stage, "reports_stopped", lambda: True)
+    scope.start_live()
+    claim_a = scope.claim_stage_homing("A")
+    outcomes = []
+
+    def claim_on_release(active):
+        if not active:
+            try:
+                scope.claim_stage_homing("B")
+                outcomes.append("claimed")
+            except StageHomingInProgressError:
+                outcomes.append("refused")
+
+    scope.add_stage_homing_listener(claim_on_release)
+    release = threading.Thread(target=claim_a.release_when_stopped, daemon=True)
+    release.start()
+    release.join(5)
+    assert not release.is_alive()  # no lock is held while listeners run
+    assert outcomes == ["refused"]  # A's claim is held until its listeners and the live resume are done
+    assert not scope.stage_homing_in_progress and scope.live_controller.is_live
+    scope.close()
+
+
+def test_homing_pauses_live_and_resumes_only_when_stopped():
+    scope = _scope()
+    events = []
+    scope.add_stage_homing_listener(events.append)
+    scope.start_live()
+    scope.home_stage()
+    assert events == [True, False] and scope.live_controller.is_live
+    scope.stop_live()
+    scope.home_stage()
+    assert not scope.live_controller.is_live  # was not running: not resumed
+    scope.close()
+
+
+def test_timeout_keeps_the_claim_until_the_stage_stops(monkeypatch, caplog):
+    scope = _scope()
+    sim = scope.low_level_drivers.microcontroller._serial
+    monkeypatch.setattr(squid.stage.cephla.CephlaStage, "_calc_move_timeout", staticmethod(lambda d, s: 0.3))
+    scope.start_live()
+    sim.hold_in_progress = True
+    with caplog.at_level(logging.ERROR), pytest.raises(TimeoutError):
+        scope.home_stage()
+    # A real one: still logged, once, after the grace for a late report
+    assert [r.levelno for r in caplog.records if NOT_STOPPED_ERROR in r.getMessage()] == [logging.ERROR]
+    assert scope.stage_homing_in_progress and not scope.live_controller.is_live
+    with pytest.raises(StageHomingInProgressError):
+        scope.move_x_to(1.0)
+    sim.hold_in_progress = False
+    sim.send_status_packet()  # the hardware reports it stopped
+    assert _wait(lambda: not scope.stage_homing_in_progress)
+    assert _wait(lambda: scope.live_controller.is_live)
+    scope.close()
+
+
+def test_host_abort_keeps_the_claim(monkeypatch):
+    scope = _scope()
+    micro = scope.low_level_drivers.microcontroller
+    sim = micro._serial
+    monkeypatch.setattr(squid.stage.cephla.CephlaStage, "_calc_move_timeout", staticmethod(lambda d, s: 0.3))
+    scope.start_live()
+    sim.hold_in_progress = True
+    with pytest.raises(TimeoutError):
+        scope.home_stage()
+    micro.abort_current_command("test: host gives up waiting")
+    assert not scope.stage.get_state().busy  # the host flag now says idle: not evidence
+    sim.send_status_packet()  # the firmware still reports IN_PROGRESS
+    time.sleep(3 * control.microscope.STAGE_STOP_POLL_S)
+    assert scope.stage_homing_in_progress and not scope.live_controller.is_live
+    with pytest.raises(StageHomingInProgressError):
+        scope.move_x_to(1.0)
+    sim.hold_in_progress = False
+    sim.send_status_packet()
+    assert _wait(lambda: not scope.stage_homing_in_progress) and _wait(lambda: scope.live_controller.is_live)
+    scope.close()
+
+
+def test_idle_needs_a_fresh_controller_report():
+    micro = get_test_micro()
+    sim = micro._serial
+    micro.move_x_usteps(10)
+    micro.wait_till_operation_is_completed()
+    assert micro.reported_idle_since_last_command()  # COMPLETED, received after the send
+    sim.drop_responses = True
+    micro.move_x_usteps(10)  # lost link: the old COMPLETED is stale
+    assert not micro.reported_idle_since_last_command()
+    sim.drop_responses = False
+    sim.hold_in_progress = True
+    micro.home_z()
+    time.sleep(0.05)
+    assert not micro.reported_idle_since_last_command()  # IN_PROGRESS
+    sim.hold_in_progress = False
+    sim.send_status_packet()
+    assert _wait(micro.reported_idle_since_last_command)
+
+
+def test_prior_and_pi_report_stopped_only_on_a_fresh_query():
+    prior = object.__new__(squid.stage.prior.PriorStage)
+    prior._send_command = MagicMock(return_value="0")
+    assert prior.reports_stopped()
+    prior._send_command = MagicMock(return_value="1")
+    assert not prior.reports_stopped()
+    prior._send_command = MagicMock(side_effect=OSError("link lost"))
+    assert not prior.reports_stopped()
+    pi = tests.squid.test_stage._sim_pi_stage()
+    pi._c414.is_moving = MagicMock(side_effect=OSError("link lost"))
+    assert not pi.reports_stopped()
+
+
+def test_startup_homes_and_reports_homed():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    assert scope.startup_homing is StartupHoming.HOMED
+    scope.close()
+
+
+def test_skip_init_reports_not_run():
+    scope = _scope()
+    assert scope.startup_homing is StartupHoming.NOT_RUN
+    scope.close()
+
+
+def test_piezo_only_startup_with_no_one_to_ask_refuses_and_closes_the_hardware(piezo_only, closes):
+    """Construction fails, so no caller could close what it opened: the Microscope does."""
+    with pytest.raises(ObjectiveNotLoweredError, match="confirm_objective_lowered"):
+        control.microscope.Microscope.build_from_global_config(True)
+    assert len(closes) == 1
+
+
+@pytest.mark.parametrize(
+    "piezo_only, homing_x, homing_y, expected",
+    [
+        (True, True, True, True),
+        (False, True, True, False),  # the software lowers the objective itself
+        (True, False, True, False),  # startup moves XY only when both axes home
+        (True, True, False, False),
+    ],
+)
+def test_startup_asks_only_when_a_piezo_only_system_homes_xy(monkeypatch, piezo_only, homing_x, homing_y, expected):
+    monkeypatch.setattr(control._def, "IS_PIEZO_ONLY", piezo_only)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", homing_x)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", homing_y)
+    assert startup_needs_objective_prompt() is expected
+
+
+def test_piezo_only_decline_closes_the_hardware_and_raises(piezo_only, monkeypatch, closes):
+    """Declining quits Squid: the Microscope releases what it opened and is never handed out."""
+    home = MagicMock()
+    monkeypatch.setattr(control.microscope.Microscope, "home_xyz", home)
+    with pytest.raises(StartupHomingDeclined):
+        control.microscope.Microscope.build_from_global_config(
+            True, confirm_objective_lowered=lambda stage_homes: False
+        )
+    home.assert_not_called()
+    assert len(closes) == 1
+
+
+@pytest.mark.parametrize("lowered", [True, False])
+def test_piezo_only_stop_sign_comes_before_anything_moves(piezo_only, monkeypatch, lowered):
+    """Startup homes the piezo to OBJECTIVE_PIEZO_HOME_UM, toward the sample: only after the stop sign, as everything
+    else startup sends."""
+    monkeypatch.setattr(control._def, "HAS_OBJECTIVE_PIEZO", True)  # startup also sets the piezo DAC's gain
+    scope = _scope()
+    piezo = MagicMock()
+    scope.addons.piezo_stage = piezo
+    sent = _spy_commands(scope.low_level_drivers.microcontroller)
+    at_stop_sign = []
+    scope._confirm_objective_lowered = lambda stage_homes: (
+        at_stop_sign.append((list(sent), piezo.home.call_count)) or lowered
+    )
+    if lowered:
+        scope._prepare_for_use(skip_init=False)
+    else:
+        with pytest.raises(StartupHomingDeclined):
+            scope._prepare_for_use(skip_init=False)
+    assert at_stop_sign == [([], 0)]  # nothing sent to the controller, the piezo not homed
+    assert piezo.home.call_count == (1 if lowered else 0)
+    scope.close()
+
+
+def test_piezo_only_decline_stops_before_the_objective_changer_moves(piezo_only):
+    """Startup homes and rotates an objective changer after the stage: with the nosepiece still up, that must not run
+    either."""
+    scope = _scope()
+    changer = MagicMock()
+    scope.addons.objective_changer = changer
+    scope._confirm_objective_lowered = lambda stage_homes: False
+    with pytest.raises(StartupHomingDeclined):
+        scope._prepare_for_use(skip_init=False)
+    changer.home.assert_not_called()
+    changer.move_to_objective.assert_not_called()
+
+
+def test_piezo_only_confirm_asks_once_and_homes(piezo_only):
+    asked = []
+    scope = control.microscope.Microscope.build_from_global_config(
+        True, confirm_objective_lowered=lambda stage_homes: asked.append(stage_homes) or True
+    )
+    assert asked == [True] and scope.startup_homing is StartupHoming.HOMED  # the stop sign says the stage homes
+    scope.close()
+
+
+def _record_objective_changer(scope, events):
+    """A stand-in objective changer on scope, recording its calls in events."""
+    changer = MagicMock()
+    changer.home.side_effect = lambda *args, **kwargs: events.append("changer.home")
+    changer.move_to_objective.side_effect = lambda *args, **kwargs: events.append("changer.move_to_objective")
+    scope.addons.objective_changer = changer
+
+
+@pytest.mark.parametrize("xeryon", [True, False])
+def test_a_piezo_only_restart_asks_before_the_objective_changer_moves(piezo_only, monkeypatch, xeryon):
+    """A restart (skip_init) homes no stage axis, but turns an objective changer to the default objective (a Xeryon
+    re-homes first) with no Z motor to clear the objective: the stop sign comes first, about the changer."""
+    scope = _scope()
+    monkeypatch.setattr(control._def, "USE_XERYON", xeryon)  # after the build: it would build a real Xeryon's twin
+    events = []
+    _record_objective_changer(scope, events)
+    scope._confirm_objective_lowered = lambda stage_homes: events.append(("asked", stage_homes)) or True
+    scope._prepare_for_use(skip_init=True)
+    assert events == [("asked", False)] + (["changer.home"] if xeryon else []) + ["changer.move_to_objective"]
+    scope.close()
+
+
+def test_declining_on_a_restart_quits_before_the_objective_changer_moves(piezo_only, monkeypatch, closes):
+    scope = _scope()
+    monkeypatch.setattr(control._def, "USE_XERYON", True)
+    events = []
+    _record_objective_changer(scope, events)
+    scope._confirm_objective_lowered = lambda stage_homes: False
+    with pytest.raises(StartupHomingDeclined):
+        scope._prepare_for_use(skip_init=True)
+    assert events == [] and len(closes) == 1
+
+
+def test_a_startup_that_homes_no_stage_axis_still_asks_before_the_objective_changer(piezo_only, monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", False)
+    scope = _scope()
+    events = []
+    _record_objective_changer(scope, events)
+    scope._confirm_objective_lowered = lambda stage_homes: events.append(("asked", stage_homes)) or True
+    scope._prepare_for_use(skip_init=False)
+    assert events[0] == ("asked", False) and "changer.move_to_objective" in events
+    scope.close()
+
+
+def test_a_piezo_only_restart_without_an_objective_changer_asks_nothing(piezo_only):
+    _scope(confirm_objective_lowered=lambda stage_homes: pytest.fail("asked")).close()
+
+
+# --- One exclusion for every claim (set_stage_homing_blocker) ---
+
+
+def test_a_blocker_refuses_every_claim_with_its_reason_before_anything_moves():
+    scope = _scope()
+    events = []
+    scope.add_stage_homing_listener(events.append)
+    scope.set_stage_homing_blocker(lambda: "an objective change is in progress")
+    sent = _spy_commands(scope.low_level_drivers.microcontroller)
+    with pytest.raises(StageHomingRefused, match="^test refused: an objective change is in progress$") as refused:
+        scope.claim_stage_homing("test")
+    assert refused.value.reason == "an objective change is in progress"
+    for home in (scope.home_xyz, scope.home_stage):
+        with pytest.raises(StageHomingRefused, match="an objective change is in progress"):
+            home()
+    assert sent == [] and events == [] and not scope.stage_homing_in_progress  # no claim taken, nothing moved
+    scope.set_stage_homing_blocker(lambda: None)
+    scope.claim_stage_homing("test").release_when_stopped()
+    scope.set_stage_homing_blocker(None)
+    scope.claim_stage_homing("test").release_when_stopped()
+    assert events == [True, False, True, False]
+    scope.close()
+
+
+# --- No false alarm from a release that the stage confirms a moment later ---
+
+
+def test_startup_without_homing_releases_its_claim_with_no_false_alarm(monkeypatch, caplog):
+    # The last startup command (SET_LIM) is not awaited: its echo can still be in flight when the claim is released.
+    for name in ("HOMING_ENABLED_X", "HOMING_ENABLED_Y", "HOMING_ENABLED_Z"):
+        monkeypatch.setattr(control._def, name, False)
+    for _ in range(3):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            scope = control.microscope.Microscope.build_from_global_config(True)
+        try:
+            assert not scope.stage_homing_in_progress  # released by the time the constructor returns
+            assert not [r for r in caplog.records if NOT_STOPPED_ERROR in r.getMessage()]
+        finally:
+            scope.close()
+
+
+def test_a_refusal_release_logs_no_error(caplog):
+    scope = _scope()
+    sim = scope.low_level_drivers.microcontroller._serial
+    sim.hold_in_progress = True
+    scope.stage.move_x(0.5, blocking=False)  # a move still under way
+    claim = scope.claim_stage_homing("Home X")
+    with caplog.at_level(logging.INFO):
+        claim.release_when_stopped(refusal="the stage is still moving")
+    assert scope.stage_homing_in_progress  # still released only on the controller's report
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert [r.levelno for r in caplog.records if "the stage is still moving" in r.getMessage()] == [logging.INFO]
+    sim.hold_in_progress = False
+    sim.send_status_packet()
+    assert _wait(lambda: not scope.stage_homing_in_progress)
+    scope.close()
+
+
+# --- Wording ---
+
+
+def test_each_home_refuses_under_its_own_name(piezo_only):
+    scope = _scope()
+    with pytest.raises(ObjectiveNotLoweredError, match="^Home XYZ refused"):
+        scope.home_xyz()
+    with pytest.raises(ObjectiveNotLoweredError, match="^Home stage refused"):
+        scope.home_stage()
+    scope.close()
+
+
+@pytest.mark.parametrize(
+    "pi_focus, z_lift, expected",
+    [
+        (False, False, "X and Y move to their limit switches."),
+        (True, False, "The objective retracts, then X and Y move to their limit switches."),
+        (True, True, "The Z lift lowers and the objective retracts, then X and Y move to their limit switches."),
+    ],
+)
+def test_home_stage_confirmation_says_what_moves_first(monkeypatch, pi_focus, z_lift, expected):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", pi_focus)
+    assert home_stage_confirmation_text(has_z_lift=z_lift) == (
+        f"{expected} The stage will not return to where it is now."
+    )
+
+
+def test_home_stage_confirmation_with_a_stepper_z(monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", False)
+    assert home_stage_confirmation_text(has_z_lift=False) == (
+        "X, Y and Z move to their limit switches. The stage will not return to where it is now."
+    )
+
+
+# Startup state protocol (firmware 1.9): STORE_CONFIG_SIGNATURE / QUERY_STARTUP_STATE, verdict in the status byte.
+
+
+@pytest.fixture
+def new_firmware_micro():
+    sim = FirmwareSimSerial(strict=True, firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    micro = Microcontroller(sim, reset_and_initialize=False)
+    yield micro, sim
+    micro.close()
+
+
+def test_startup_state_needs_its_firmware():
+    sim = FirmwareSimSerial(strict=True, firmware_version=(1, 8))
+    micro = Microcontroller(sim, reset_and_initialize=False)
+    try:
+        assert not micro.supports_startup_state()
+        sim.command_log.clear()
+        with pytest.raises(RuntimeError, match="1.8"):
+            micro.store_config_signature(0x12345678, 1)
+        with pytest.raises(RuntimeError, match="1.8"):
+            micro.query_startup_state(0x12345678, 1, 0b011)
+        assert sim.command_log == []
+    finally:
+        micro.close()
+
+
+@pytest.mark.parametrize(
+    "signature, signature_format, mask",
+    [(-1, 1, 0), (1 << 32, 1, 0), (0, -1, 0), (0, 16, 0), (0, 1, -1), (0, 1, 0b1000)],
+)
+def test_startup_state_arguments_must_fit_the_wire(new_firmware_micro, signature, signature_format, mask):
+    micro, sim = new_firmware_micro
+    sim.command_log.clear()
+    with pytest.raises(ValueError):
+        micro.query_startup_state(signature, signature_format, mask)
+    if mask == 0:
+        with pytest.raises(ValueError):
+            micro.store_config_signature(signature, signature_format)
+    assert sim.command_log == []
+
+
+def test_store_home_query_is_warm(new_firmware_micro):
+    micro, sim = new_firmware_micro
+    assert micro.supports_startup_state()
+    micro.store_config_signature(0x12345678, 1)
+    assert sim.command_log[-1] == CMD_SET.STORE_CONFIG_SIGNATURE and not micro.is_busy()  # waited for completion
+    assert micro.query_startup_state(0x12345678, 1, 0b011) is StartupVerdict.NOT_HOMED
+    micro.home_xy()
+    micro.wait_till_operation_is_completed()
+    assert micro.query_startup_state(0x12345678, 1, 0b011) is StartupVerdict.WARM
+    assert micro.query_startup_state(0x12345679, 1, 0b011) is StartupVerdict.SIGNATURE_MISMATCH
+    assert micro.query_startup_state(0x12345678, 2, 0b011) is StartupVerdict.SIGNATURE_MISMATCH
+    assert micro.query_startup_state(0x12345678, 1, 0b111) is StartupVerdict.NOT_HOMED
+
+
+def test_query_never_takes_an_earlier_verdict():
+    micro = Microcontroller(FirmwareSimSerial(firmware_version=(1, 8)), reset_and_initialize=False)
+    try:
+        micro.firmware_version = STARTUP_STATE_MIN_FIRMWARE  # host believes it; the sim sends no verdict
+        micro._startup_verdict_packet = (
+            (micro._cmd_id + 1) % 256,
+            int(StartupVerdict.WARM),
+            None,
+        )  # stale; same id as the next send
+        with pytest.raises(RuntimeError, match="no startup verdict"):
+            micro.query_startup_state(0x12345678, 1, 0b011)
+    finally:
+        micro.close()
+
+
+def test_host_query_returns_during_genuine_in_progress(new_firmware_micro):
+    micro, sim = new_firmware_micro  # constructed first: its tail legitimately waits for completion
+    sim.in_progress = True
+    sim.moving_axes.add(AXIS.X)
+    t0 = time.time()
+    assert micro.query_startup_state(0x12345678, 1, 0b011) is StartupVerdict.NO_SIGNATURE
+    assert time.time() - t0 < 1.0 and micro.is_busy()  # answered without waiting for completion
+
+
+@pytest.mark.parametrize("verdict", list(StartupVerdict))
+def test_a_verdict_status_never_completes_aborts_resends_or_counts_as_idle(new_firmware_micro, verdict):
+    micro, sim = new_firmware_micro
+    micro.LAST_COMMAND_ACK_TIMEOUT = 0.01  # the ack-timeout resend would fire on the next packet
+    assert micro.query_startup_state(0x12345678, 1, 0b011) is StartupVerdict.NO_SIGNATURE
+    sent = list(sim.command_log)
+    time.sleep(0.05)
+    for _ in range(3):  # the firmware repeats the verdict in every packet until the next command
+        parsed = threading.Event()
+        micro.set_callback(lambda m: parsed.set())
+        with sim._update_lock:
+            sim.response_buffer.extend(sim._build_response(micro._cmd_id, STARTUP_VERDICT_STATUS_BASE + verdict))
+            sim._update_internal_state()
+        assert parsed.wait(2)
+        assert micro._startup_verdict_packet == (micro._cmd_id, verdict, None)  # no piezo code written
+        assert micro.is_busy() and micro.last_command_aborted_error is None
+        assert not micro.reported_idle_since_last_command()
+    assert sim.command_log == sent  # nothing resent
+
+
+def test_a_verdict_is_taken_only_from_a_packet_whose_crc_matches(new_firmware_micro):
+    """The read loop also accepts a packet whose last byte is 0 (firmware that sent no CRC), but firmware that answers
+    the query always sends one: a verdict status in such a packet (a misaligned read window, say) is not a verdict."""
+    micro, sim = new_firmware_micro
+    status = STARTUP_VERDICT_STATUS_BASE + StartupVerdict.WARM
+    packet = sim._build_response(micro._cmd_id, status)
+    while packet[-1] == 0:  # a real CRC of 0 would make the forged packet a genuine one
+        sim.x += 1
+        packet = sim._build_response(micro._cmd_id, status)
+
+    def parse(raw):
+        parsed = threading.Event()
+        micro.set_callback(lambda m: parsed.set())
+        with sim._update_lock:
+            sim.response_buffer.extend(raw)
+            sim._update_internal_state()
+        assert parsed.wait(2)
+
+    with micro._received_packet_cv:
+        micro._startup_verdict_packet = None
+    parse(packet[:-1] + b"\x00")
+    assert micro._startup_verdict_packet is None
+    parse(packet)  # the same packet with its CRC is one
+    assert micro._startup_verdict_packet == (micro._cmd_id, StartupVerdict.WARM, None)
+
+
+def test_signature_is_the_same_in_another_process():
+    out = subprocess.run(
+        [sys.executable, "-c", "import control.startup_homing as s; print(s.config_signature())"],
+        cwd=SOFTWARE_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert int(out) == config_signature()
+
+
+def test_signature_text_starts_with_the_format_and_covers_every_axis():
+    lines = config_signature_text().split("\n")
+    assert lines[0] == "format=2"
+    assert len(lines) == 1 + 3 * 13 + 5  # + the objective piezo's DAC
+    assert all("=" in line for line in lines)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SCREW_PITCH_X_MM",
+        "MICROSTEPPING_DEFAULT_Y",
+        "Z_MOTOR_RMS_CURRENT_mA",
+        "X_MOTOR_I_HOLD",
+        "MAX_VELOCITY_Y_mm",
+        "MAX_ACCELERATION_Z_mm",
+        "X_HOME_SAFETY_MARGIN_UM",
+    ],
+)
+def test_each_def_setting_changes_the_signature(monkeypatch, name):
+    before = config_signature()
+    monkeypatch.setattr(control._def, name, getattr(control._def, name) * 2 + 1)
+    assert config_signature() != before
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("MOVEMENT_SIGN", "flip"),
+        ("USE_ENCODER", "flip"),
+        ("ENCODER_SIGN", "flip"),
+        ("ENCODER_STEP_SIZE", 0.123),
+        ("FULL_STEPS_PER_REV", 400.0),
+    ],
+)
+def test_each_host_only_setting_changes_the_signature(monkeypatch, field, value):
+    before = config_signature()
+    config = squid.config.get_stage_config()
+    axis = config.Y_AXIS
+    if value == "flip":
+        current = getattr(axis, field)
+        value = (not current) if isinstance(current, bool) else type(current)(-current.value)
+    new_axis = axis.model_copy(update={field: value})
+    monkeypatch.setattr(squid.config, "_stage_config", config.model_copy(update={"Y_AXIS": new_axis}))
+    assert config_signature() != before
+
+
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("HAS_OBJECTIVE_PIEZO", "flip"),
+        ("OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE", 2.5),
+        ("OBJECTIVE_PIEZO_RANGE_UM", 150),
+        ("OBJECTIVE_PIEZO_FLIP_DIR", "flip"),
+    ],
+)
+def test_each_piezo_dac_setting_changes_the_signature(monkeypatch, name, value):
+    """A warm start keeps the code the piezo's DAC holds: a new gain would move the piezo, a new mapping would misreport
+    where it is."""
+    before = config_signature()
+    monkeypatch.setattr(control._def, name, (not getattr(control._def, name)) if value == "flip" else value)
+    assert config_signature() != before
+
+
+def test_the_dac_reference_divider_changes_the_signature(monkeypatch):
+    before = config_signature()
+    monkeypatch.setattr(control._def.OUTPUT_GAINS, "REFDIV", not control._def.OUTPUT_GAINS.REFDIV)
+    assert config_signature() != before
+
+
+def test_limit_switch_config_changes_the_signature(monkeypatch):
+    before = config_signature()
+    real = control._def.limit_switch_config_byte
+    monkeypatch.setattr(control._def, "limit_switch_config_byte", lambda a: real(a) ^ 0x01 if a == "z" else real(a))
+    assert config_signature() != before
+
+
+def test_equal_values_written_differently_sign_the_same(monkeypatch):
+    monkeypatch.setattr(control._def, "SCREW_PITCH_X_MM", 2.54)
+    a = config_signature()
+    monkeypatch.setattr(control._def, "SCREW_PITCH_X_MM", float("2.540"))
+    assert config_signature() == a
+    monkeypatch.setattr(control._def, "X_MOTOR_I_HOLD", 0.5)
+    b = config_signature()
+    monkeypatch.setattr(control._def, "X_MOTOR_I_HOLD", 0.50)
+    assert config_signature() == b
+
+
+def test_format_version_changes_the_signature(monkeypatch):
+    import control.startup_homing
+
+    before = config_signature()
+    monkeypatch.setattr(control.startup_homing, "CONFIG_SIGNATURE_FORMAT", CONFIG_SIGNATURE_FORMAT + 1)
+    assert config_signature() != before
+
+
+@pytest.mark.parametrize(
+    "z, pi, lift, mask",
+    [(True, False, False, 0b111), (False, False, False, 0b011), (True, True, False, 0b011), (False, True, True, 0b111)],
+)
+def test_required_axes(monkeypatch, z, pi, lift, mask):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", True)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", True)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", z)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", pi)
+    monkeypatch.setattr(control._def, "USE_Z_LIFT_STAGE", lift)
+    assert required_homed_axes_mask() == mask
+
+
+def test_required_axes_needs_both_x_and_y_homing(monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", True)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False)
+    monkeypatch.setattr(control._def, "USE_Z_LIFT_STAGE", False)
+    assert required_homed_axes_mask() == 0
+
+
+# --- The startup decision (B5): warm only when the controller vouches for the homing under this configuration ---
+
+COVERED_SETTINGS = (
+    CMD_SET.SET_LEAD_SCREW_PITCH,
+    CMD_SET.CONFIGURE_STEPPER_DRIVER,
+    CMD_SET.SET_MAX_VELOCITY_ACCELERATION,
+    CMD_SET.SET_HOME_SAFETY_MERGIN,
+    CMD_SET.SET_LIMIT_SWITCH_CONFIG,
+)
+OLDER_FIRMWARE = (STARTUP_STATE_MIN_FIRMWARE[0], STARTUP_STATE_MIN_FIRMWARE[1] - 1)
+
+
+def _reopen(micro, sim):
+    """End a session the way a relaunch finds it: the host closes, the controller stays powered."""
+    micro.close()
+    sim.reconnect(1)
+    sim.command_log.clear()
+
+
+def _homed(sim=None, before_close=None):
+    """A controller that an earlier session started normally (storing the signature) and homed in X, Y and Z."""
+    sim = sim or FirmwareSimSerial(firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    micro = Microcontroller(serial_device=sim)
+    micro.home_xy(objective_lowered=True)
+    micro.wait_till_operation_is_completed()
+    micro.home_z()
+    micro.wait_till_operation_is_completed()
+    if before_close:
+        before_close(micro)
+    _reopen(micro, sim)
+    return sim
+
+
+def test_first_launch_is_normal_and_stores_the_signature_last():
+    sim = FirmwareSimSerial(firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    micro = Microcontroller(serial_device=sim)
+    log = sim.command_log
+    assert micro.startup_verdict is StartupVerdict.NO_SIGNATURE and not micro.startup_was_warm
+    # Nothing but the version detection before the query, and RESET right after it
+    assert log[:3] == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.QUERY_STARTUP_STATE, CMD_SET.RESET]
+    store = log.index(CMD_SET.STORE_CONFIG_SIGNATURE)
+    assert log.index(CMD_SET.INITIALIZE) < log.index(CMD_SET.CONFIGURE_STEPPER_DRIVER) < store
+    assert max(i for i, c in enumerate(log) if c == CMD_SET.SET_LIMIT_SWITCH_CONFIG) < store
+    assert max(i for i, c in enumerate(log) if c in COVERED_SETTINGS) < store  # the last covered step
+    assert log[store + 1 :] == [CMD_SET.SET_FOCUS_WHEEL_MODE, CMD_SET.SET_PANEL_LOCK]
+    assert sim.homing_validity.signature == (config_signature(), CONFIG_SIGNATURE_FORMAT)
+
+
+def test_relaunch_is_warm_and_reconfigures_nothing(caplog):
+    sim = _homed(before_close=lambda m: (m.move_x_to_usteps(1000), m.wait_till_operation_is_completed()))
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=sim)
+    assert micro.startup_verdict is StartupVerdict.WARM and micro.startup_was_warm
+    assert "same configuration: startup homing skipped" in caplog.text
+    assert sim.command_log[:3] == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.QUERY_STARTUP_STATE, CMD_SET.RESET]
+    for code in (
+        CMD_SET.INITIALIZE,
+        CMD_SET.CONFIGURE_STEPPER_DRIVER,
+        CMD_SET.SET_LEAD_SCREW_PITCH,
+        CMD_SET.SET_MAX_VELOCITY_ACCELERATION,
+        CMD_SET.SET_HOME_SAFETY_MERGIN,
+        CMD_SET.STORE_CONFIG_SIGNATURE,
+    ):
+        assert code not in sim.command_log
+    assert sim.x == 1000 and micro.get_pos()[0] == 1000  # the stage kept its position
+    # What the warm start re-sent (the limit-switch config, unchanged) kept the signature: the next relaunch is warm
+    _reopen(micro, sim)
+    assert Microcontroller(serial_device=sim).startup_was_warm
+
+
+@pytest.mark.parametrize(
+    "before_close, after, verdict",
+    [
+        (lambda m: m.zero_x(), None, StartupVerdict.NOT_HOMED),
+        (
+            lambda m: (m.set_axis_enable_disable(AXIS.Y, 0), m.set_axis_enable_disable(AXIS.Y, 1)),
+            None,
+            StartupVerdict.NOT_HOMED,
+        ),
+        (
+            lambda m: m.configure_motor_driver(
+                AXIS.X,
+                2 * control._def.MICROSTEPPING_DEFAULT_X,
+                control._def.X_MOTOR_RMS_CURRENT_mA,
+                control._def.X_MOTOR_I_HOLD,
+            ),
+            None,
+            StartupVerdict.NO_SIGNATURE,
+        ),
+        (None, lambda sim, mp: sim.set_power_good(False), StartupVerdict.UNHEALTHY),
+        (None, lambda sim, mp: setattr(sim, "tmc_config_ok", False), StartupVerdict.UNHEALTHY),
+        (None, lambda sim, mp: sim.moving_axes.add(AXIS.Y), StartupVerdict.MOVING),
+        (
+            None,
+            lambda sim, mp: mp.setattr(control._def, "MAX_VELOCITY_X_mm", control._def.MAX_VELOCITY_X_mm + 1),
+            StartupVerdict.SIGNATURE_MISMATCH,
+        ),
+    ],
+)
+def test_anything_else_is_a_normal_startup(monkeypatch, caplog, before_close, after, verdict):
+    sim = _homed(before_close=before_close)
+    if after:
+        after(sim, monkeypatch)
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=sim)
+    assert micro.startup_verdict is verdict and not micro.startup_was_warm
+    assert CMD_SET.INITIALIZE in sim.command_log
+    assert control.microcontroller._STARTUP_VERDICT_LOG[verdict] in caplog.text  # the reason, one line per verdict
+
+
+@pytest.mark.parametrize("moving, verdict", [({AXIS.Y}, StartupVerdict.MOVING), (set(), StartupVerdict.WARM)])
+def test_in_progress_controller_startup(moving, verdict):
+    sim = _homed()
+    sim.in_progress = True  # a crashed session's command still in progress
+    sim.moving_axes |= moving
+    micro = Microcontroller(serial_device=sim)  # must not time out
+    assert micro.startup_verdict is verdict
+    assert (CMD_SET.INITIALIZE in sim.command_log) == (verdict is not StartupVerdict.WARM)
+    assert not sim.in_progress and not micro.is_busy()  # RESET cleared it on both paths
+
+
+def test_no_verdict_is_a_normal_startup(monkeypatch, caplog):
+    """A query that gets no verdict (lost to another sender, a timeout) is a normal startup."""
+
+    class NoVerdictSim(FirmwareSimSerial):
+        def _query_startup_state(self, cmd):
+            pass  # answers the query as an ordinary command: COMPLETED, no verdict
+
+    real_query = Microcontroller.query_startup_state
+    monkeypatch.setattr(
+        Microcontroller,
+        "query_startup_state",
+        lambda self, *args, **kwargs: real_query(self, *args, **{**kwargs, "timeout_s": 0.2}),
+    )
+    sim = _homed(NoVerdictSim(firmware_version=STARTUP_STATE_MIN_FIRMWARE))
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=sim)
+    assert micro.startup_verdict is None and not micro.startup_was_warm
+    assert CMD_SET.QUERY_STARTUP_STATE in sim.command_log and CMD_SET.INITIALIZE in sim.command_log
+    assert CMD_SET.STORE_CONFIG_SIGNATURE in sim.command_log
+    assert "no startup verdict" in caplog.text and "normal startup" in caplog.text
+
+
+def _actuator_settings_received(sim):
+    """What configure_actuators sent the controller for X, Y and Z, decoded back to control._def's names and units."""
+    received = {}
+    for a in ("X", "Y", "Z"):
+        axis = getattr(AXIS, a)
+        pitch, driver, vel_acc, margin = (
+            sim.homing_validity.config[(code, axis)]
+            for code in (
+                CMD_SET.SET_LEAD_SCREW_PITCH,
+                CMD_SET.CONFIGURE_STEPPER_DRIVER,
+                CMD_SET.SET_MAX_VELOCITY_ACCELERATION,
+                CMD_SET.SET_HOME_SAFETY_MERGIN,
+            )
+        )
+        received.update(
+            {
+                f"SCREW_PITCH_{a}_MM": int.from_bytes(pitch[0:2], "big") / 1000,
+                f"MICROSTEPPING_DEFAULT_{a}": {0: 1, 255: 256}.get(driver[0], driver[0]),
+                f"{a}_MOTOR_RMS_CURRENT_mA": int.from_bytes(driver[1:3], "big"),
+                f"{a}_MOTOR_I_HOLD": driver[3] / 255,
+                f"MAX_VELOCITY_{a}_mm": int.from_bytes(vel_acc[0:2], "big") / 100,
+                f"MAX_ACCELERATION_{a}_mm": int.from_bytes(vel_acc[2:4], "big") / 10,
+                f"{a}_HOME_SAFETY_MARGIN_UM": int.from_bytes(margin[0:2], "big"),
+            }
+        )
+    return received
+
+
+def test_the_controller_holds_what_the_signature_describes(monkeypatch):
+    """configure_actuators sends every covered setting as control._def holds it when it runs, which is what the
+    signature reads: a setting changed in-process after import is both sent and signed, never one without the other.
+    A relaunch under the same settings is warm; under the old ones, a mismatch."""
+    old = {
+        name: getattr(control._def, name)
+        for a in ("X", "Y", "Z")
+        for name in (
+            f"SCREW_PITCH_{a}_MM",
+            f"MICROSTEPPING_DEFAULT_{a}",
+            f"{a}_MOTOR_RMS_CURRENT_mA",
+            f"{a}_MOTOR_I_HOLD",
+            f"MAX_VELOCITY_{a}_mm",
+            f"MAX_ACCELERATION_{a}_mm",
+            f"{a}_HOME_SAFETY_MARGIN_UM",
+        )
+    }
+    # Each new value differs from the old by more than the wire's rounding (at most 0.1 here)
+    new = {}
+    for name, value in old.items():
+        if name.startswith("MICROSTEPPING_DEFAULT_"):
+            new[name] = 32 if value != 32 else 64
+        elif name.endswith("_MOTOR_I_HOLD"):
+            new[name] = 0.5 if value != 0.5 else 0.25
+        elif name.startswith("SCREW_PITCH_"):
+            new[name] = value + 0.5
+        elif name.startswith("MAX_VELOCITY_"):
+            new[name] = value + 7
+        else:  # currents, accelerations, home margins
+            new[name] = value + 100
+    sim = FirmwareSimSerial(firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    for name, value in new.items():
+        monkeypatch.setattr(control._def, name, value)
+    micro = Microcontroller(serial_device=sim)
+    assert _actuator_settings_received(sim) == pytest.approx(new, abs=0.1)
+    assert sim.homing_validity.signature == (config_signature(), CONFIG_SIGNATURE_FORMAT)
+    micro.home_xy(objective_lowered=True)
+    micro.wait_till_operation_is_completed()
+    micro.home_z()
+    micro.wait_till_operation_is_completed()
+    _reopen(micro, sim)
+
+    same = Microcontroller(serial_device=sim)
+    assert same.startup_was_warm
+    _reopen(same, sim)
+    for name, value in old.items():
+        monkeypatch.setattr(control._def, name, value)
+    assert Microcontroller(serial_device=sim).startup_verdict is StartupVerdict.SIGNATURE_MISMATCH
+
+
+def test_reverting_settings_never_restores(monkeypatch):
+    sim = _homed()  # homed under settings A
+    with monkeypatch.context() as m:
+        m.setattr(control._def, "MAX_VELOCITY_X_mm", control._def.MAX_VELOCITY_X_mm + 1)
+        under_b = Microcontroller(serial_device=sim)  # a normal startup: INITIALIZE clears the flags, B is stored
+        assert under_b.startup_verdict is StartupVerdict.SIGNATURE_MISMATCH
+    _reopen(under_b, sim)
+    under_a = Microcontroller(serial_device=sim)  # back under A: a mismatch with B again, so a normal startup again
+    assert under_a.startup_verdict is StartupVerdict.SIGNATURE_MISMATCH and not under_a.startup_was_warm
+    assert CMD_SET.INITIALIZE in sim.command_log
+    _reopen(under_a, sim)
+    # A is stored once more, but the homing done under A before is gone for good
+    assert Microcontroller(serial_device=sim).startup_verdict is StartupVerdict.NOT_HOMED
+
+
+def test_old_firmware_and_skip_init_never_query(caplog):
+    old = FirmwareSimSerial(firmware_version=OLDER_FIRMWARE)
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=old)
+    assert micro.startup_verdict is None and not micro.startup_was_warm
+    assert CMD_SET.INITIALIZE in old.command_log
+    assert CMD_SET.QUERY_STARTUP_STATE not in old.command_log
+    assert CMD_SET.STORE_CONFIG_SIGNATURE not in old.command_log
+    assert f"Firmware {OLDER_FIRMWARE[0]}.{OLDER_FIRMWARE[1]} cannot report homing state: normal startup" in caplog.text
+
+    sim = _homed()
+    micro = Microcontroller(serial_device=sim, reset_and_initialize=False)  # --skip-init
+    assert micro.startup_verdict is None and not micro.startup_was_warm
+    for code in (CMD_SET.QUERY_STARTUP_STATE, CMD_SET.STORE_CONFIG_SIGNATURE, CMD_SET.RESET, CMD_SET.INITIALIZE):
+        assert code not in sim.command_log
+
+
+def test_a_startup_that_homes_no_stage_axis_is_never_warm(monkeypatch, caplog):
+    """With no axis to find homed, the homed check would pass on any controller: such a startup is a normal one,
+    without the query, and still stores the signature as every normal startup on new firmware does."""
+    sim = _homed()  # signature stored, X/Y/Z homed: asked, this controller would vouch for the stage
+    for name in ("HOMING_ENABLED_X", "HOMING_ENABLED_Y", "HOMING_ENABLED_Z", "USE_Z_LIFT_STAGE"):
+        monkeypatch.setattr(control._def, name, False)
+    assert required_homed_axes_mask() == 0
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=sim)
+    assert micro.startup_verdict is None and not micro.startup_was_warm
+    assert CMD_SET.QUERY_STARTUP_STATE not in sim.command_log
+    assert CMD_SET.INITIALIZE in sim.command_log and CMD_SET.CONFIGURE_STEPPER_DRIVER in sim.command_log
+    assert sim.command_log[-3:] == [
+        CMD_SET.STORE_CONFIG_SIGNATURE,
+        CMD_SET.SET_FOCUS_WHEEL_MODE,
+        CMD_SET.SET_PANEL_LOCK,
+    ]
+    assert sim.homing_validity.signature == (config_signature(), CONFIG_SIGNATURE_FORMAT)
+    assert "Startup homes no stage axis: normal startup" in caplog.text
+
+
+@pytest.mark.parametrize("z_homes, verdict", [(False, StartupVerdict.WARM), (True, StartupVerdict.NOT_HOMED)])
+def test_z_not_required_when_z_does_not_home(monkeypatch, z_homes, verdict):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", z_homes)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", False)
+    monkeypatch.setattr(control._def, "USE_Z_LIFT_STAGE", False)
+    sim = _homed(before_close=lambda m: m.zero_z())  # only X and Y homed
+    assert Microcontroller(serial_device=sim).startup_verdict is verdict
+
+
+def _scope_sim():
+    """A 1.9 controller for a whole Microscope, which also sends commands the sim's protocol whitelist lacks
+    (SET_WATCHDOG_TIMEOUT, HEARTBEAT): those are answered, not refused."""
+    return FirmwareSimSerial(strict=False, firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+
+
+def test_microscope_warm_start_skips_homing_and_prompt(monkeypatch, piezo_only):
+    sim = _homed(_scope_sim())
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    home = MagicMock()
+    monkeypatch.setattr(control.microscope.Microscope, "home_xyz", home)
+    asked = []
+    scope = control.microscope.Microscope.build_from_global_config(
+        True, confirm_objective_lowered=lambda stage_homes: asked.append(1)
+    )
+    assert scope.startup_homing is StartupHoming.ALREADY_HOMED and not asked
+    home.assert_not_called()
+    scope.close()
+
+
+@pytest.mark.parametrize("kind", ["xeryon", "turret"])
+def test_a_piezo_only_warm_start_asks_before_the_objective_changer_moves(monkeypatch, piezo_only, kind):
+    """No Z motor clears the objective for the changer, which homes and turns at every startup: the stop sign comes
+    first, about the changer (the stage does not home)."""
+    events = _record_changer(monkeypatch, kind)
+    sim = _homed(_scope_sim())
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    asked = []
+    scope = control.microscope.Microscope.build_from_global_config(
+        True, confirm_objective_lowered=lambda stage_homes: asked.append((stage_homes, list(events))) or True
+    )
+    try:
+        assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+        assert asked == [(False, [])]  # once, before anything moved, saying the stage does not home
+        assert [e[0] for e in events if e[0] in ("home", "move_to_objective")] == ["home", "move_to_objective"]
+    finally:
+        scope.close()
+
+
+def test_declining_the_objective_changer_stop_sign_quits_before_it_moves(monkeypatch, piezo_only, closes):
+    events = _record_changer(monkeypatch, "xeryon")
+    sim = _homed(_scope_sim())
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    with pytest.raises(StartupHomingDeclined):
+        control.microscope.Microscope.build_from_global_config(
+            True, confirm_objective_lowered=lambda stage_homes: False
+        )
+    assert events == [] and len(closes) == 1
+
+
+def test_a_microscope_relaunch_is_warm(monkeypatch):
+    """End to end: nothing a normal Microscope startup sends after the store (stage, addons, homing) empties the
+    signature, so the next launch on the same controller is warm."""
+    sim = _scope_sim()
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    first = control.microscope.Microscope.build_from_global_config(True)
+    assert first.startup_homing is StartupHoming.HOMED
+    first.close()
+    sim.reconnect(1)
+    assert control.microscope.Microscope.build_from_global_config(True).startup_homing is StartupHoming.ALREADY_HOMED
+
+
+# --- A warm start leaves the objective piezo where the last session left it (the controller reports its DAC code) ---
+
+
+def _leave_piezo_at(um):
+    """before_close for _homed: the last session left the piezo at um."""
+    return lambda m: (m.set_piezo_um(um), m.wait_till_operation_is_completed())
+
+
+@pytest.mark.parametrize("flip", [False, True])
+def test_the_startup_reply_says_where_the_last_session_left_the_piezo(monkeypatch, flip):
+    monkeypatch.setattr(control.microcontroller, "OBJECTIVE_PIEZO_FLIP_DIR", flip)  # set_piezo_um's (a star import)
+    micro = Microcontroller(serial_device=_homed(before_close=_leave_piezo_at(150)))
+    try:
+        assert micro.startup_was_warm and micro.startup_piezo_um() == pytest.approx(150, abs=0.01)
+    finally:
+        micro.close()
+
+
+def test_the_startup_reply_has_no_piezo_position_when_none_was_written_since_power_up():
+    micro = Microcontroller(serial_device=_homed())
+    try:
+        assert micro.startup_was_warm and micro.startup_piezo_um() is None
+    finally:
+        micro.close()
+
+
+def test_a_startup_reply_is_not_read_as_focus_wheel_or_encoder_data(new_firmware_micro):
+    """Bytes 14-21 of a startup reply packet are the reply: the wheel count and the encoder fields keep what the last
+    ordinary packet said."""
+    micro, sim = new_firmware_micro
+    micro.set_focus_wheel_mode(control._def.FOCUS_WHEEL_MODE.TO_HOST)
+    micro.wait_till_operation_is_completed()
+    sim.turn_focus_wheel(5)
+    _leave_piezo_at(150)(micro)
+    assert micro.focus_wheel_count == 5
+    micro.query_startup_state(0x12345678, 1, 0b011)  # returns once the reply packet is parsed
+    assert micro.focus_wheel_count == 5 and micro.encoder_flags == 0 and micro.encoder_deviation == 0
+    assert micro.startup_piezo_um() == pytest.approx(150, abs=0.01)
+
+
+def test_a_new_piezo_voltage_range_is_not_a_warm_start(monkeypatch):
+    """The new gain would turn the code the DAC still holds into another voltage: the piezo would move, with no stop
+    sign, while startup reported where it was."""
+    sim = _homed(before_close=_leave_piezo_at(150))
+    monkeypatch.setattr(control._def, "OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE", 10)
+    micro = Microcontroller(serial_device=sim)
+    try:
+        assert micro.startup_verdict is StartupVerdict.SIGNATURE_MISMATCH and not micro.startup_was_warm
+    finally:
+        micro.close()
+
+
+@pytest.fixture
+def has_piezo(monkeypatch):
+    """From the earlier session on: a piezo is part of the signed configuration."""
+    monkeypatch.setattr(control._def, "HAS_OBJECTIVE_PIEZO", True)
+
+
+def _piezo_scope(monkeypatch, sim):
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    return control.microscope.Microscope.build_from_global_config(True)
+
+
+def test_a_warm_start_leaves_the_piezo_where_the_last_session_left_it(monkeypatch, has_piezo):
+    sim = _homed(_scope_sim(), before_close=_leave_piezo_at(150))
+    scope = _piezo_scope(monkeypatch, sim)
+    try:
+        assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+        assert CMD_SET.ANALOG_WRITE_ONBOARD_DAC not in sim.command_log  # nothing sent to the piezo
+        assert scope.addons.piezo_stage.position == pytest.approx(150, abs=0.01)
+    finally:
+        scope.close()
+
+
+def test_a_warm_start_homes_a_piezo_the_controller_has_no_position_for(monkeypatch, has_piezo):
+    """No code written since power-up (the last session had no piezo): nothing says where it is, so it homes."""
+    scope = _piezo_scope(monkeypatch, _homed(_scope_sim()))
+    try:
+        assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+        assert scope.addons.piezo_stage.position == control._def.OBJECTIVE_PIEZO_HOME_UM
+    finally:
+        scope.close()
+
+
+# --- A warm start retracts Z before the Xeryon moves, as a normal startup's Z home does ---
+
+
+def _z_usteps(z_mm):
+    return squid.config.get_stage_config().Z_AXIS.convert_real_units_to_ustep(z_mm)
+
+
+def _left_at_z(z_mm):
+    """before_close for _homed: the last session left Z at z_mm (a crash at focus height, or a clean close)."""
+    return lambda m: (m.move_z_to_usteps(_z_usteps(z_mm)), m.wait_till_operation_is_completed())
+
+
+def _record_changer(monkeypatch, kind):
+    """The objective changer of `kind` ("xeryon" or "turret"), simulated, recording in order each stage Z move
+    (move_z_to's target), each stage home (its axes) and each changer call with the Z the stage stood at when it
+    came."""
+    events = []
+
+    def at_z(stage, call):
+        events.append((call, stage.get_pos().z_mm))
+
+    if kind == "xeryon":
+        from control.objective_changer_2_pos_controller import ObjectiveChanger2PosController_Simulation
+
+        class Changer(ObjectiveChanger2PosController_Simulation):
+            def home(self):
+                at_z(self.stage, "home")
+
+            def move_to_objective(self, objective_name):
+                at_z(self.stage, "move_to_objective")
+                super().move_to_objective(objective_name)
+
+        monkeypatch.setattr(control.microscope, "ObjectiveChanger2PosController_Simulation", Changer, raising=False)
+        # One the changer knows, whatever objective the cache (cache/objective_and_sample_format.txt) last held
+        monkeypatch.setattr(control._def, "DEFAULT_OBJECTIVE", control._def.XERYON_OBJECTIVE_SWITCHER_POS_1[0])
+    else:
+
+        class Changer:  # a turret's own home() retracts Z; this one records only
+            def __init__(self, stage=None, **kwargs):
+                self.stage = stage
+
+            def home(self):
+                at_z(self.stage, "home")
+
+            def move_to_objective(self, objective_name, restore_z=True):
+                at_z(self.stage, "move_to_objective")
+
+        monkeypatch.setattr(control.microscope, "ObjectiveTurret4PosControllerSimulation", Changer, raising=False)
+    monkeypatch.setattr(control._def, "USE_XERYON", kind == "xeryon")
+    monkeypatch.setattr(control._def, "USE_OBJECTIVE_TURRET", kind == "turret")
+
+    for stage_class in (squid.stage.cephla.CephlaStage, squid.stage.pi.CombinedStage):
+
+        def move_z_to(stage, abs_mm, blocking=True, real=stage_class.move_z_to):
+            events.append(("move_z_to", abs_mm))
+            return real(stage, abs_mm, blocking)
+
+        def home(stage, x, y, z, theta, blocking=True, objective_lowered=False, real=stage_class.home):
+            events.append(("stage.home", (x, y, z, theta)))
+            return real(stage, x, y, z, theta, blocking, objective_lowered=objective_lowered)
+
+        monkeypatch.setattr(stage_class, "move_z_to", move_z_to)
+        monkeypatch.setattr(stage_class, "home", home)
+    return events
+
+
+def _warm_scope(monkeypatch, sim):
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+    return scope
+
+
+def test_a_warm_start_retracts_z_before_the_xeryon_moves(monkeypatch):
+    """Nothing homed Z, which a normal startup homes before the Xeryon's sweep: a Z left at focus height (a crash)
+    moves to the retracted position, the loading move's retract, before the changer's first call."""
+    assert squid.stage.utils.z_is_referenced()
+    events = _record_changer(monkeypatch, "xeryon")
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim(), before_close=_left_at_z(1.5)))
+    retracted = control._def.OBJECTIVE_RETRACTED_POS_MM
+    assert events == [
+        ("move_z_to", retracted),
+        ("home", pytest.approx(retracted, abs=1e-3)),
+        ("move_to_objective", pytest.approx(retracted, abs=1e-3)),
+    ]
+    scope.close()
+
+
+def test_a_warm_start_leaves_a_retracted_z_for_the_xeryon(monkeypatch):
+    """Already retracted (a clean close retracts it): no Z move."""
+    events = _record_changer(monkeypatch, "xeryon")
+    retracted = control._def.OBJECTIVE_RETRACTED_POS_MM
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim(), before_close=_left_at_z(retracted)))
+    assert events == [
+        ("home", pytest.approx(retracted, abs=1e-3)),
+        ("move_to_objective", pytest.approx(retracted, abs=1e-3)),
+    ]
+    scope.close()
+
+
+def test_a_warm_start_moves_no_unreferenced_z_for_the_xeryon(monkeypatch):
+    """Z not referenced (a raw step count): no Z move, as a normal startup moves none before the Xeryon either."""
+    for name in ("HOMING_ENABLED_Z", "USE_PI_FOCUS_STAGE", "USE_Z_LIFT_STAGE"):
+        monkeypatch.setattr(control._def, name, False)
+    assert not squid.stage.utils.z_is_referenced()
+    events = _record_changer(monkeypatch, "xeryon")
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim(), before_close=_left_at_z(1.5)))
+    assert events == [("home", pytest.approx(1.5, abs=1e-3)), ("move_to_objective", pytest.approx(1.5, abs=1e-3))]
+    scope.close()
+
+
+def test_a_warm_start_leaves_the_turret_to_retract_z_itself(monkeypatch):
+    """The turret path is unchanged: its home() retracts Z on its own, so startup moves no Z before it."""
+    events = _record_changer(monkeypatch, "turret")
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim(), before_close=_left_at_z(1.5)))
+    assert events == [("home", pytest.approx(1.5, abs=1e-3)), ("move_to_objective", pytest.approx(1.5, abs=1e-3))]
+    scope.close()
+
+
+@pytest.mark.parametrize("to_positive_limit", [True, False])
+def test_a_warm_start_retracts_a_v308_through_its_home_before_the_xeryon_moves(monkeypatch, to_positive_limit):
+    """A V-308 retracts as _home_xyz retracts it on a normal startup, through its own home(z): to the positive travel
+    limit with PI_FOCUS_HOME_TO_POSITIVE_LIMIT (an upright system, where OBJECTIVE_RETRACTED_POS_MM is toward the
+    sample), otherwise to OBJECTIVE_RETRACTED_POS_MM."""
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True)
+    monkeypatch.setattr(control._def, "PI_FOCUS_INVERT_Z", False)
+    monkeypatch.setattr(control._def, "PI_FOCUS_HOME_TO_POSITIVE_LIMIT", to_positive_limit)
+    real_initialize = squid.stage.pi._SimulatedC414.initialize
+
+    def left_at_focus(c414, reference=True, **kwargs):  # still referenced, at the height a crashed session left
+        real_initialize(c414, reference=reference, **kwargs)
+        c414.move_to(1.5)
+
+    monkeypatch.setattr(squid.stage.pi._SimulatedC414, "initialize", left_at_focus)
+    events = _record_changer(monkeypatch, "xeryon")
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim()))
+    # The positive limit as the startup fenced it (Z's MAX_POSITION), or the retracted position
+    retracted = (
+        squid.config.get_stage_config().Z_AXIS.MAX_POSITION
+        if to_positive_limit
+        else control._def.OBJECTIVE_RETRACTED_POS_MM
+    )
+    assert events == [
+        ("stage.home", (False, False, True, False)),
+        ("home", pytest.approx(retracted, abs=1e-3)),
+        ("move_to_objective", pytest.approx(retracted, abs=1e-3)),
+    ]
+    scope.close()

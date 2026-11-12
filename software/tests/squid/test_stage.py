@@ -503,6 +503,30 @@ def test_pi_focus_inverted_home_retracts_to_positive_limit():
     assert abs(stage.get_pos().z_mm - 0.05) < 1e-9
 
 
+@pytest.mark.parametrize("invert_z", [False, True])
+def test_the_z_safety_position_of_a_v308_is_its_configured_retract(monkeypatch, invert_z):
+    """Retracting to the positive limit, OBJECTIVE_RETRACTED_POS_MM is not the objective-clear end (without invert_z it
+    is next to the sample): the safety move leaves Z where home(z) retracts it."""
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True)
+    sim = _referenced_sim_with_travel(0.0, 7.0)
+    stage = squid.stage.pi.PIFocusStage(sim, invert_z=invert_z, home_to_positive_limit=True)
+    stage.move_z_to(3.0)
+    squid.stage.utils.move_z_axis_to_safety_position(stage)
+    assert abs(sim.get_position_mm() - 7.0) < 1e-9  # native upper end: furthest from the sample
+
+
+@pytest.mark.parametrize("invert_z", [False, True])
+def test_a_v308_retracts_the_objective_to_its_configured_retract(monkeypatch, invert_z):
+    """The retract that clears the sample before the lift lowers and XY travels. Retracting to the positive limit,
+    OBJECTIVE_RETRACTED_POS_MM is not the objective-clear end (without invert_z it is next to the sample)."""
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True)
+    sim = _referenced_sim_with_travel(0.0, 7.0)
+    stage = squid.stage.pi.PIFocusStage(sim, invert_z=invert_z, home_to_positive_limit=True)
+    stage.move_z_to(3.0)
+    squid.stage.utils.retract_objective(stage)
+    assert abs(sim.get_position_mm() - 7.0) < 1e-9  # native upper end: furthest from the sample
+
+
 def test_pi_focus_reset_range_limit_restores_travel():
     # On the C-414 qTMN/qTMX ARE the range limit; a prior fence shrinks them. reset_range_limit
     # widens them back (set_travel_limits could not, since it clamps to the shrunk range).
@@ -552,7 +576,9 @@ def test_combined_stage_homes_z_before_xy(monkeypatch):
     combined, xy, z = _sim_combined_stage()
 
     calls = []
-    monkeypatch.setattr(xy, "home", lambda x, y, z, theta, blocking=True: calls.append(("xy", blocking)))
+    monkeypatch.setattr(
+        xy, "home", lambda x, y, z, theta, blocking=True, objective_lowered=False: calls.append(("xy", blocking))
+    )
     monkeypatch.setattr(z, "home", lambda x, y, z, theta, blocking=True: calls.append(("z", blocking)))
 
     combined.home(x=True, y=True, z=True, theta=False, blocking=False)

@@ -30,6 +30,10 @@ If the tab doesn't appear, check the logs for import errors related to `ndviewer
    - **FOV**: Field of view
    - Internal NDV sliders for channel and z-slice
 
+### Opening saved runs from the Gallery
+
+The [Gallery tab](gallery-tab.md) keeps a history of past acquisitions. Its **Open in Squid** action loads a saved run's folder into this tab and switches to it, so the tab is not limited to the latest acquisition. It is unavailable while an acquisition is running, because the tab is showing the live run.
+
 ### Play Button Animation
 
 Both T and FOV sliders have play buttons (▶) for animated playback:
