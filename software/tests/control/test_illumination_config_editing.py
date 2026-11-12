@@ -14,6 +14,9 @@ import control.widgets
 from control.core.config import ConfigRepository
 from control.lighting import IlluminationController
 from tests.tools import get_test_microcontroller
+from squid.intensity_calibration import EngineLineIdentity, write_calibration
+from tests.squid.calibration_fixtures import DAC, make_engine_calibration, master_lookup, write_legacy_csv
+from squid.power_meter import simulated_led_mw
 
 ILLUMINATION_YAML = """\
 version: 1
@@ -194,16 +197,18 @@ def test_set_intensity_sends_exactly_what_resolve_mcu_illumination_returns(repo,
     assert resolved[0] == controller.channel_mappings_TTL[405]
 
 
-def test_resolve_mcu_illumination_applies_the_calibration_lut(repo):
-    import numpy as np
-
+def test_resolve_mcu_illumination_applies_the_channel_calibration(repo):
+    calibrations = repo.machine_configs_path / "intensity_calibrations"
+    calibrations.mkdir(exist_ok=True)
+    path = calibrations / "405.csv"
+    write_legacy_csv(path, DAC, simulated_led_mw(DAC / 100 * 0.45))  # found by wavelength; master's lookup applies
     controller = IlluminationController(get_test_microcontroller(), config_repo=repo)
-    controller.intensity_luts[405] = {"power_percent": np.array([0.0, 100.0]), "dac_percent": np.array([0.0, 50.0])}
     source, dac_percent = controller.resolve_mcu_illumination(405, 40)
     assert source == controller.channel_mappings_TTL[405]
-    assert dac_percent == pytest.approx(20.0)
+    assert dac_percent == pytest.approx(float(master_lookup(path, 40)))
+    assert dac_percent != pytest.approx(40)
 
-    del controller.intensity_luts[405]
+    path.unlink()
     assert controller.resolve_mcu_illumination(405, 40)[1] == 40  # no calibration: percent passes through
 
 
@@ -219,3 +224,37 @@ def test_software_intensity_control_is_not_an_mcu_dac_light_source(repo):
         config_repo=repo,
     )
     assert not software.intensity_is_mcu_dac
+
+
+def test_configurator_shows_calibration_status(qtbot, repo):
+    calibrations = repo.machine_configs_path / "intensity_calibrations"
+    calibrations.mkdir(exist_ok=True)
+    write_legacy_csv(calibrations / "405.csv", DAC, DAC * 3.0)
+    dialog = control.widgets.IlluminationChannelConfiguratorDialog(repo)
+    qtbot.addWidget(dialog)
+
+    header = dialog.table.horizontalHeaderItem(dialog.COL_CALIBRATION_STATUS).text()
+    assert header == "Calibration Status"
+    assert dialog.table.item(0, dialog.COL_CALIBRATION_STATUS).text() == ""  # LED matrix
+    assert dialog.table.item(1, dialog.COL_CALIBRATION_STATUS).text() == "405.csv: legacy"
+
+
+def test_configurator_checks_engine_calibrations_against_the_engine(qtbot, repo):
+    calibrations = repo.machine_configs_path / "intensity_calibrations"
+    calibrations.mkdir(exist_ok=True)
+    channel = next(c for c in repo.get_illumination_config().channels if c.wavelength_nm == 405)
+    c = make_engine_calibration(
+        wavelength_nm=405, port=channel.controller_port, line=1, ceiling=0.541, channel=channel.name
+    )
+    write_calibration(c, calibrations / "405.csv")  # found by wavelength
+    same = control.widgets.IlluminationChannelConfiguratorDialog(
+        repo, engine_drive=lambda wavelength: EngineLineIdentity("SN-1", "DF", 1, 0.541, "A")
+    )
+    qtbot.addWidget(same)
+    assert same.table.item(1, same.COL_CALIBRATION_STATUS).text() == "405.csv: calibrated 2026-10-08"
+    other = control.widgets.IlluminationChannelConfiguratorDialog(
+        repo, engine_drive=lambda wavelength: EngineLineIdentity("SN-2", "DF", 1, 0.541, "A")
+    )
+    qtbot.addWidget(other)
+    text = other.table.item(1, other.COL_CALIBRATION_STATUS).text()
+    assert text.startswith("405.csv: not applied: ") and "SN-2" in text

@@ -32,6 +32,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+import control.theme as theme
 import control.utils as utils
 import squid.logging
 from squid.stage.lift import LiftStage
@@ -39,7 +40,6 @@ from squid.stage.lift import LiftStage
 log = squid.logging.get_logger(__name__)
 
 _COL_FORMAT, _COL_HEIGHT = range(2)
-_TRIGGERED_STYLE = "background-color: #FFB0B0; border: 1px solid #A00; padding: 2px 6px; font-weight: bold;"
 
 
 class LiftMotionGuard(QObject):
@@ -152,7 +152,7 @@ class LoadingPositionButton(QPushButton):
     def refresh(self, *_):
         at_loading = self.stage_utils.slide_position == "loading"
         self.setText("Move To Scanning Position" if at_loading else "Move To Loading Position")
-        self.setStyleSheet("background-color: #C2FFC2" if at_loading else "background-color: #C2C2FF")
+        theme.set_role(self, "action", on=at_loading)
         self.setEnabled(not self.motion_guard.busy)
 
     def _toggle(self):
@@ -219,7 +219,7 @@ class ZLiftWidget(QWidget):
         # Only the top sensor is shown, and only while triggered: the lift is at its upper limit. The bottom one is
         # the home sensor; both are in the position's tooltip.
         self.label_top_warning = QLabel("Top limit sensor triggered")
-        self.label_top_warning.setStyleSheet(_TRIGGERED_STYLE)
+        theme.set_role(self.label_top_warning, "alert-badge")
         self.label_top_warning.hide()
         readout = QHBoxLayout()
         readout.addWidget(QLabel("Lift"))

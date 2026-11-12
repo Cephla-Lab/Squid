@@ -1,0 +1,110 @@
+# Illumination Power Calibration
+
+**Utils > Illumination Power Calibration...** measures each DAC-driven illumination channel, or each line of a Cephla
+laser engine v2, with a Thorlabs power meter at the sample plane and saves a calibration, so that a channel's
+intensity setting means % of its maximum power instead of % of DAC output (or of the engine line's drive). The
+headless equivalent for DAC channels is `tools/generate_intensity_calibrations.py` (run it with the Squid GUI closed;
+`--help` lists its options). Files are described in `machine_configs/README.md`.
+
+## Power meter setup
+
+The calibration talks to the meter over USB through pyvisa. The meter used first is the **PM16-121** (USB ID
+`1313:807B`); other Thorlabs meters that speak the PM SCPI set (PM100D, PM100USB, PM400) are expected to work and are
+reported as "model not validated" until one has been run on a bench.
+
+Close Thorlabs' own software (Optical Power Monitor) before calibrating: it holds the meter.
+
+### Ubuntu 22.04
+
+`setup_22.04.sh` does this. By hand:
+
+```
+pip3 install pyvisa pyvisa-py pyusb
+sudo cp "drivers and libraries/thorlabs/linux/udev/99-thorlabs-pm16.rules" /etc/udev/rules.d
+```
+
+Then unplug and re-plug the meter. The udev rule lets Squid open the meter without root. Another Thorlabs meter needs
+its own product ID in the rule (`lsusb` shows it).
+
+### macOS
+
+```
+brew install libusb
+pip3 install pyvisa pyvisa-py pyusb
+```
+
+### Windows
+
+1. Bind the WinUSB driver to the meter with [Zadig](https://zadig.akeo.ie/) (it needs administrator rights):
+   Options > List All Devices, pick the meter (e.g. PM16-121, USB ID `1313 807B`), select WinUSB, Install Driver.
+   Thorlabs' own software no longer sees the meter until its driver is put back.
+2. `pip install pyvisa pyvisa-py pyusb libusb-package`
+3. Put `libusb-1.0.dll` on PATH. pyusb looks for it only there, so installing libusb-package is not enough by itself:
+   copy `libusb-1.0.dll` from `site-packages\libusb_package\` into a directory on PATH, such as the Python
+   installation directory. In a conda environment, `conda install -c conda-forge libusb` does this instead.
+
+Tested 2026-10-09 with a PM16-121 on Windows, Python 3.12 from python.org.
+
+Alternatively, install NI-VISA and Thorlabs' driver (Optical Power Monitor; its Power Meter Driver Switcher selects
+the NI-VISA driver) and `pip install pyvisa`: pyvisa then uses NI-VISA, and steps 1 and 3 are not needed.
+
+### Check
+
+```
+python -c "import pyvisa; print(pyvisa.ResourceManager().list_resources())"
+```
+
+should list the meter: `USB0::4883::32891::<serial number>::0::INSTR` with pyvisa-py (decimal IDs: 4883 = 0x1313,
+32891 = 0x807B for a PM16-121), `USB0::0x1313::0x807B::<serial number>::INSTR` with NI-VISA. Squid uses the first
+resource with Thorlabs' vendor ID; `--resource` picks another in the headless tool.
+
+## Running a calibration
+
+1. Put the sensor at the sample plane with a low-magnification objective and the beam defocused over the sensor, so
+   the power density stays within the sensor's rating. Follow your laser safety rules.
+2. Open the dialog, **Connect** the meter (it reads the sensor's maximum power and wavelength range; the sensor limit
+   can only be lowered), and use **Test beam** to centre the sensor.
+3. Pick channels and **Run**. The light is pulsed for each reading, on one meter range per channel; after the sweep
+   it stays off for 30 s before the drift check and the verification, so a source that reads low just after full
+   power (a thermal memory) has settled. While it runs, the reading next to **Connect** is each reading the run takes
+   (the dark while the light is off), and the curve of the channel being measured fills in as it goes. The dialog
+   then shows each channel's fitted curve, its verification (every setpoint from 10 % within ±5 %) and any warnings,
+   including the lowest non-zero power of a source that jumps on. About 3 minutes per channel.
+4. **Save** writes the calibration and points the channel at it; it applies at once. A replaced calibration moves to
+   `machine_configs/intensity_calibrations/backup/`.
+
+Live view, laser-AF live view and acquisitions must be stopped first.
+
+## Laser engine v2
+
+On an instrument whose light source is a Cephla laser engine v2 (`laser_engine = v2`), the dialog lists the
+epi-illumination channels on engine lines (ports D1-D5) instead of DAC channels. The **Ceiling** column is the line's
+firmware ceiling (amps, or volts for the DF 560 nm AOM): the sweep goes up to it, and Max Output is not used.
+
+- Each line is woken and must be ready (TEC at temperature; on DF line 3, the 560 nm source at its power and the
+  shutter open) before it runs. The dialog says what it is waiting for. Exposure is the controller's TTL, as in
+  imaging.
+- A reading counts only while the line is ready and holds the set-point Squid sent; otherwise the channel stops with
+  the engine's reason and the light off.
+- The verification sets each requested % through the engine's own intensity call, the one live view and
+  acquisitions use.
+- DF 560 nm: calibrated at the laser power set in the Laser Engine tab. 100 % is the peak transmission, which may be
+  below 5 V. The AOM's output depends on its recent use. On the first unit measured, output at a fixed drive was flat
+  for about 2 s, then rose over the next 20-60 s of continuous drive (about 10 % at low drive, 50-75 % from about 30 %
+  of full drive) and fell back within about a minute of rest. Measured in one held state, the whole curve was about
+  1.7 times brighter warmed up than idle, with the same shape to about 4 %. The sweep warms the AOM as it goes and its
+  checks run partly cooled, so this line can fail verification and the saved curve can be off at mid-range. Whether
+  the % holds at other laser powers is untested beyond one point. The test beam also warms the AOM.
+- A calibration records the engine's serial number, variant, line and ceiling, and applies only while they match: with
+  another engine (or after a firmware change of the ceiling) the line runs linear in its drive and its status says
+  "recalibrate". Recalibrate after replacing or realigning a diode; the engine cannot tell.
+- `tools/generate_intensity_calibrations.py` does not drive the engine: calibrate engine lines from the GUI.
+
+## When the meter is not found
+
+| Message | Cause |
+|---|---|
+| pyvisa is not installed | Install the packages for your OS above |
+| no VISA backend | pyvisa-py (or NI-VISA) is missing, or on Windows/macOS libusb is not found |
+| No Thorlabs power meter found | Cable; on Linux the udev rule; on Windows the WinUSB driver (or NI-VISA's); Thorlabs' software holding the meter |
+| could not open the power meter | On Linux the udev rule (re-plug after installing it); another program holding the meter |

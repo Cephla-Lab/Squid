@@ -1,6 +1,7 @@
+import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Protocol
+from typing import Callable, List, Optional, Protocol
 
 import imageio
 import numpy as np
@@ -13,11 +14,26 @@ from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
 from control.rcm_scan_trigger import ConfocalScanFailedError, RcmScanTrigger
 
-from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
+from control.lighting import (
+    LightSourceType,
+    IntensityControlMode,
+    ShutterControlMode,
+    IlluminationController,
+    external_light_source,
+)
 from control.microcontroller import Microcontroller, SimSerial
 from squid.camera.utils import SimulatedCamera
 from control.piezo import PiezoStage
 from control.serial_peripherals import SciMicroscopyLEDArray
+from control.startup_homing import (
+    StageHomingInProgressError,
+    StageHomingRefused,
+    StartupHoming,
+    StartupHomingDeclined,
+    require_objective_lowered,
+    startup_needs_objective_prompt,
+    ObjectiveNotLoweredError,
+)
 from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage, AbstractFilterWheelController
 from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
@@ -76,6 +92,87 @@ if control._def.ENABLE_NL5:
     import control.NL5 as NL5
 else:
     NL5 = None
+
+
+# How often a homing claim whose operation ended with the stage not reported stopped asks the stage again.
+STAGE_STOP_POLL_S = 0.2
+# How long a claim's release waits for a fresh stop report before it says the stage still moves: the operation's last
+# command may have gone out unawaited (CephlaStage.set_limits does not wait), its echo still in flight. Asked every
+# STAGE_STOP_GRACE_POLL_S meanwhile.
+STAGE_STOP_GRACE_S = 2 * STAGE_STOP_POLL_S
+STAGE_STOP_GRACE_POLL_S = 0.01
+
+
+class StageHomingClaim:
+    """One homing operation's hold on the stage (Microscope.claim_stage_homing).
+
+    While it is held the Microscope refuses other motion and live stays paused until the release resumes it. It is
+    released only once the stage reports that it stopped (AbstractStage.reports_stopped): a timeout, an exception, a
+    host-side abort, a stale status or a lost link keep it held.
+    """
+
+    def __init__(self, microscope: "Microscope", operation: str):
+        self._microscope = microscope
+        self.operation = operation
+        self.was_live = False  # set by claim_stage_homing
+        self._lock = threading.Lock()
+        self._released = False
+        self._releasing = False  # a release_when_stopped call owns the release
+
+    @property
+    def released(self) -> bool:
+        """True once the stage reported it stopped and the claim was released (or is being released)."""
+        return self._released
+
+    def release_when_stopped(self, refusal: Optional[str] = None) -> None:
+        """Release once the stage reports it stopped: before returning if it does within STAGE_STOP_GRACE_S, else
+        from a watcher thread whenever it does. Idempotent.
+
+        refusal: why the operation was refused before it moved anything, when it was (e.g. "the stage is still
+        moving"). The stage's motion is expected then: no grace wait, and the wait for the stop is logged at INFO.
+        Otherwise a stage that has not reported stopped after the grace is logged as an ERROR.
+        """
+        with self._lock:
+            if self._released or self._releasing:
+                return
+            self._releasing = True
+        if refusal is None:
+            stopped = self._stage_reports_stopped_within(STAGE_STOP_GRACE_S)
+        else:
+            stopped = self._microscope._stage_reports_stopped()
+        if stopped:
+            self._release()
+            return
+        if refusal is None:
+            _log.error(
+                "Homing ended without the controller reporting the stage stopped: motion stays refused until it does"
+            )
+        else:
+            _log.info(f"{self.operation} refused ({refusal}): motion stays refused until the stage reports stopped")
+        threading.Thread(target=self._release_once_stopped, daemon=True, name="stage-homing-release").start()
+
+    def _stage_reports_stopped_within(self, timeout_s: float) -> bool:
+        deadline = time.monotonic() + timeout_s
+        closed = self._microscope._closed_event
+        while not self._microscope._stage_reports_stopped():
+            if time.monotonic() >= deadline or closed.wait(STAGE_STOP_GRACE_POLL_S):
+                return False
+        return True
+
+    def _release_once_stopped(self) -> None:
+        closed = self._microscope._closed_event
+        # No time limit: a stage that never reports stopped keeps motion refused. Ends early if the microscope closes.
+        while not closed.wait(STAGE_STOP_POLL_S):
+            if self._microscope._stage_reports_stopped():
+                self._release()
+                return
+
+    def _release(self) -> None:
+        with self._lock:
+            if self._released:
+                return
+            self._released = True
+        self._microscope._end_stage_homing(self)
 
 
 def _should_simulate(global_simulated: bool, component_override: bool) -> bool:
@@ -305,12 +402,14 @@ class MicroscopeAddons:
         self.sci_microscopy_led_array = sci_microscopy_led_array
         self.squid_laser_engine = squid_laser_engine
 
-    def prepare_for_use(self, skip_init: bool = False):
+    def prepare_for_use(self, skip_init: bool = False, piezo_um: Optional[float] = None):
         """
         Prepare all the addon hardware for immediate use.
 
         Args:
             skip_init: If True, skip homing operations (e.g., during restart).
+            piezo_um: Where the controller reports the objective piezo is (a warm start): it stays there instead of
+                homing.
         """
         if self.emission_filter_wheel:
             fw_config = squid.config.get_filter_wheel_config()
@@ -326,7 +425,10 @@ class MicroscopeAddons:
                     if not self.emission_filter_wheel.position_is_known(wheel_index):
                         _home_filter_wheels(self.emission_filter_wheel, wheel_index)
         if self.piezo_stage and not skip_init:
-            self.piezo_stage.home()
+            if piezo_um is None:
+                self.piezo_stage.home()
+            else:
+                self.piezo_stage.adopt_position(piezo_um)
         if self.squid_laser_engine:
             # start() may raise if the USB device is missing — intentional hard fail
             # when a laser engine is configured so we don't silently disable it.
@@ -376,7 +478,11 @@ class LowLevelDrivers:
 
 class Microscope:
     @staticmethod
-    def build_from_global_config(simulated: bool = False, skip_init: bool = False) -> "Microscope":
+    def build_from_global_config(
+        simulated: bool = False,
+        skip_init: bool = False,
+        confirm_objective_lowered: Optional[Callable[[bool], bool]] = None,
+    ) -> "Microscope":
         low_level_devices = LowLevelDrivers.build_from_global_config(simulated, skip_init=skip_init)
 
         # Per-component simulation for camera
@@ -510,13 +616,14 @@ class Microscope:
             # Both ends are simulated, so the sequencer's trigger has somewhere to go.
             link_simulated_sequencer_to_camera(low_level_devices.simulated_serial, camera)
 
-        if control._def.USE_LDI_SERIAL_CONTROL and not simulated:
+        light_source = external_light_source(simulated)  # the tool's guard asks the same question
+        if light_source == LightSourceType.LDI:
             ldi = serial_peripherals.LDI()
 
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller, ldi.intensity_mode, ldi.shutter_mode, LightSourceType.LDI, ldi
             )
-        elif control._def.USE_CELESTA_ETHERNET_CONTROL and not simulated:
+        elif light_source == LightSourceType.CELESTA:
             celesta = control.celesta.CELESTA()
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,
@@ -525,7 +632,7 @@ class Microscope:
                 LightSourceType.CELESTA,
                 celesta,
             )
-        elif control._def.USE_ANDOR_LASER_CONTROL and not simulated:
+        elif light_source == LightSourceType.AndorLaser:
             andor_laser = control.illumination_andor.AndorLaser(
                 control._def.ANDOR_LASER_VID,
                 control._def.ANDOR_LASER_PID,
@@ -538,7 +645,7 @@ class Microscope:
                 LightSourceType.AndorLaser,
                 andor_laser,
             )
-        elif control._def.USE_VORTRAN_LASER_CONTROL and not simulated:
+        elif light_source == LightSourceType.VersaLase:
             if control._def.VORTRAN_SHUTTER_CONTROL_MODE == "TTL":
                 shutter_mode = ShutterControlMode.TTL
             elif control._def.VORTRAN_SHUTTER_CONTROL_MODE == "Software":
@@ -558,7 +665,7 @@ class Microscope:
                 LightSourceType.VersaLase,
                 versalase,
             )
-        elif control._def.LASER_ENGINE == "v2" and addons.squid_laser_engine is not None:
+        elif light_source == LightSourceType.CephlaLaserEngineV2 and addons.squid_laser_engine is not None:
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,
                 IntensityControlMode.Software,
@@ -566,9 +673,9 @@ class Microscope:
                 LightSourceType.CephlaLaserEngineV2,
                 addons.squid_laser_engine.light_source,
             )
-            # the engine line for a wavelength is the port its TTL uses, so intensity and exposure reach the same line;
-            # read live (follows port-map edits and the Microscope.config_repo setter, which replaces its config_repo)
-            addons.squid_laser_engine.ttl_map_provider = lambda: illumination_controller.channel_mappings_TTL
+            # the engine line for a wavelength is the port its TTL uses, so intensity and exposure reach the same line,
+            # and its intensity goes through the calibration the controller resolves; both read live
+            laser_engine_v2.wire_illumination(addons.squid_laser_engine, illumination_controller)
         else:
             illumination_controller = IlluminationController(low_level_devices.microcontroller)
 
@@ -580,6 +687,7 @@ class Microscope:
             low_level_drivers=low_level_devices,
             simulated=simulated,
             skip_init=skip_init,
+            confirm_objective_lowered=confirm_objective_lowered,
         )
 
     def __init__(
@@ -593,9 +701,21 @@ class Microscope:
         simulated: bool = False,
         skip_prepare_for_use: bool = False,
         skip_init: bool = False,
+        confirm_objective_lowered: Optional[Callable[[bool], bool]] = None,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        # Asked once at startup on a piezo-only system (no Qt here: the caller supplies the prompt), with whether the
+        # stage homes (else only an objective changer moves).
+        self._confirm_objective_lowered = confirm_objective_lowered
+        self.startup_homing: StartupHoming = StartupHoming.NOT_RUN
         self._closed = False
+        self._closed_event = threading.Event()  # set by close(): ends a homing claim's wait for the stage to stop
+
+        # The homing claim (claim_stage_homing): at most one at a time; other motion is refused while it is held.
+        self._stage_homing_lock = threading.Lock()
+        self._stage_homing_claim: Optional[StageHomingClaim] = None
+        self._stage_homing_listeners: List[Callable[[bool], None]] = []
+        self._stage_homing_blocker: Optional[Callable[[], Optional[str]]] = None
 
         self.stage: AbstractStage = stage
         self.camera: AbstractCamera = camera
@@ -670,9 +790,39 @@ class Microscope:
         self._config_repo = repo
         self.illumination_controller.config_repo = repo
 
+    def _confirm_startup_homing(self, skip_init: bool, warm: bool) -> bool:
+        """Piezo-only: the stop sign before startup moves what can hit the sample with the nosepiece up - the stage to
+        its X and Y limit switches (not on a restart, skip_init, nor on a warm start), or an objective changer, which
+        every startup turns to the default objective (a Xeryon re-homes first, even on a restart) with no Z motor to
+        clear the objective. True when the nosepiece was confirmed lowered, False when startup needs no confirmation.
+        Declined, or no one to ask: closes the hardware (construction fails, so no caller can) and raises, before
+        anything of startup runs."""
+        stage_homes = not skip_init and not warm and startup_needs_objective_prompt()
+        changer_moves = control._def.IS_PIEZO_ONLY and self.addons.objective_changer is not None
+        if not (stage_homes or changer_moves):
+            return False
+        if self._confirm_objective_lowered is None:
+            self._log.error("Piezo-only: no one to confirm the nosepiece is lowered; closing the hardware")
+            self.close()
+            raise ObjectiveNotLoweredError(
+                "Startup homing refused: piezo-only system and no one to confirm the objective is lowered; pass "
+                "confirm_objective_lowered"
+            )
+        if not self._confirm_objective_lowered(stage_homes):
+            self._log.info("Piezo-only: startup homing declined at the stop sign; closing the hardware")
+            self.close()
+            raise StartupHomingDeclined("Startup homing declined: the nosepiece was not lowered")
+        return True
+
     def _prepare_for_use(self, skip_init: bool = False):
+        mcu = self.low_level_drivers.microcontroller
+        warm = mcu is not None and mcu.startup_was_warm  # a warm start homes no stage axis
+        # Before anything moves: the piezo homes next (toward the sample), then X and Y go to their limit switches, then
+        # an objective changer homes and turns.
+        objective_lowered = self._confirm_startup_homing(skip_init, warm)
         self.low_level_drivers.prepare_for_use(skip_init=skip_init)
-        self.addons.prepare_for_use(skip_init=skip_init)
+        # A warm start leaves the piezo where the controller says it is (and homes it when the controller has no code)
+        self.addons.prepare_for_use(skip_init=skip_init, piezo_um=mcu.startup_piezo_um() if warm else None)
 
         # Configure serial watchdog for illumination safety (requires firmware v1.1+)
         if self.low_level_drivers.microcontroller:
@@ -729,8 +879,15 @@ class Microscope:
                 if self.z_lift is not None:
                     self._log.info(f"Setting Z lift limits: [{self.z_lift.min_mm},{self.z_lift.max_mm}]")
                     self.z_lift.apply_limits()
-                self.home_xyz()
-                self._raise_z_lift_to_sample_height()
+                if warm:
+                    # The controller vouched that the stage is still homed under this configuration (the
+                    # Microcontroller's startup query): no home_xyz and no lift raise. The stage stays where the last
+                    # session left it.
+                    self.startup_homing = StartupHoming.ALREADY_HOMED
+                else:
+                    self.home_xyz(objective_lowered=objective_lowered)
+                    self._raise_z_lift_to_sample_height()
+                    self.startup_homing = StartupHoming.HOMED
             except TimeoutError:
                 self._log.error("Hardware setup timed out, resetting microcontroller")
                 if self.low_level_drivers.microcontroller:
@@ -741,6 +898,15 @@ class Microscope:
             self._start_focus_wheel_router()
 
         if self.addons.objective_changer:
+            if (
+                control._def.USE_XERYON
+                and self.startup_homing is StartupHoming.ALREADY_HOMED
+                and squid.stage.utils.z_is_referenced()
+            ):
+                # A normal startup has homed (a V-308: retracted) Z by now; a warm one homed nothing, so Z is where
+                # the last session left it (after a crash, possibly at focus height). It retracts before the Xeryon
+                # moves. (A turret's home() retracts Z itself.)
+                squid.stage.utils.retract_objective(self.stage)
             # Xeryon always re-homes (findIndex is fast and required). The turret skips
             # homing on a software restart: the controller retains its position counter
             # across close()/re-init (the motor is de-energized but the drive stays
@@ -1097,16 +1263,142 @@ class Microscope:
         self._log.info(f"Acquired {len(saved_paths)} images ({len(configs)} channels x {NZ} z-planes)")
         return saved_paths
 
-    def home_xyz(self) -> None:
-        """Home the X, Y, and Z axes based on configuration settings.
+    @property
+    def stage_homing_in_progress(self) -> bool:
+        """True while a homing claim is held: other motion is refused and live stays paused."""
+        return self._stage_homing_claim is not None
 
-        Homes Z first if enabled, then (for a V-308 focus stage) ensures Z is referenced and
+    def add_stage_homing_listener(self, listener: Callable[[bool], None]) -> None:
+        """Call listener(True) when a homing claim is taken and listener(False) when it is released, from whichever
+        thread takes or releases it. A claim's False always comes before the next claim's True. listener(False) runs
+        just before the claim clears: stage_homing_in_progress is still True then, and a claim taken from the
+        listener is refused."""
+        self._stage_homing_listeners.append(listener)
+
+    def set_stage_homing_blocker(self, blocker: Optional[Callable[[], Optional[str]]]) -> None:
+        """blocker() says why the stage must not home now (e.g. "an acquisition is running"), or returns None.
+        Every claim_stage_homing consults it first, whoever claims (the GUI, the control server, a script): one
+        exclusion for every home. No Qt here: the caller supplies it. It runs on whichever thread claims, with no
+        lock held, so it must only read plain state (flags, thread liveness), never touch a widget or send a
+        command. None removes it."""
+        self._stage_homing_blocker = blocker
+
+    def claim_stage_homing(self, operation: str) -> StageHomingClaim:
+        """Take the stage for one homing operation: pause live and refuse other motion until the claim is released
+        (StageHomingClaim.release_when_stopped). Raises StageHomingRefused, with nothing claimed, while the blocker
+        (set_stage_homing_blocker) gives a reason, and StageHomingInProgressError if a claim is already held."""
+        blocker = self._stage_homing_blocker
+        reason = blocker() if blocker is not None else None
+        if reason:
+            self._log.info(f"{operation} refused: {reason}")
+            raise StageHomingRefused(operation, reason)
+        claim = StageHomingClaim(self, operation)
+        with self._stage_homing_lock:
+            if self._stage_homing_claim is not None:
+                raise StageHomingInProgressError("stage homing in progress")
+            self._stage_homing_claim = claim
+        try:
+            claim.was_live = self.live_controller.is_live
+            if claim.was_live:
+                self.stop_live()
+        except BaseException:
+            # Nothing has moved under this claim, and the caller never gets it to release: give it back now.
+            self._clear_stage_homing_claim(claim)
+            raise
+        self._log.info(f"{operation}: stage homing claimed (live was {'on' if claim.was_live else 'off'})")
+        self._notify_stage_homing_listeners(True)
+        return claim
+
+    def _clear_stage_homing_claim(self, claim: StageHomingClaim) -> None:
+        with self._stage_homing_lock:
+            if self._stage_homing_claim is claim:
+                self._stage_homing_claim = None
+
+    def _end_stage_homing(self, claim: StageHomingClaim) -> None:
+        """StageHomingClaim's release, once the stage reported it stopped: resume live if it was running before, tell
+        the listeners, and only then clear the claim.
+
+        The claim stays held until the end, so a new claim (which is refused until the clear) always finds live as
+        this one left it and is announced after this one's False. No lock is held while start_live() or the listeners
+        run: a claim attempted from them is refused, it cannot deadlock.
+        """
+        try:
+            if claim.was_live and not self._closed:
+                try:
+                    self.start_live()
+                except Exception as e:
+                    self._log.error(f"Could not resume live after {claim.operation}: {e}")
+            self._log.info(f"{claim.operation}: the stage reports stopped; stage homing released")
+            self._notify_stage_homing_listeners(False)
+        finally:
+            self._clear_stage_homing_claim(claim)
+
+    def _notify_stage_homing_listeners(self, active: bool) -> None:
+        for listener in list(self._stage_homing_listeners):
+            try:
+                listener(active)
+            except Exception as e:
+                self._log.error(f"Stage homing listener failed: {e}")
+
+    def _stage_reports_stopped(self) -> bool:
+        try:
+            return self.stage.reports_stopped() is True
+        except Exception as e:
+            self._log.debug(f"Asking the stage whether it stopped failed: {e}")
+            return False
+
+    def _refuse_motion_while_homing(self) -> None:
+        if self.stage_homing_in_progress:
+            raise StageHomingInProgressError("stage homing in progress")
+
+    def home_xyz(self, objective_lowered: bool = False, claim: Optional[StageHomingClaim] = None) -> None:
+        """Home the X, Y, and Z axes based on configuration settings, holding a homing claim (taken here unless one
+        is passed in) while it runs.
+
+        On a piezo-only system an XY home needs objective_lowered=True, checked before anything moves. Taking the
+        claim raises StageHomingRefused, with nothing moved, while the homing blocker gives a reason
+        (set_stage_homing_blocker). A claim passed in belongs to this call: it is released (once the stage reports
+        stopped) on every exit, a refused confirmation included.
+        """
+        try:
+            self._require_home_confirmation(objective_lowered, "Home XYZ")
+            if claim is None:
+                claim = self.claim_stage_homing("Home XYZ")
+            self._home_xyz(objective_lowered)
+        finally:
+            if claim is not None:
+                claim.release_when_stopped()
+
+    def home_stage(self, objective_lowered: bool = False, claim: Optional[StageHomingClaim] = None) -> None:
+        """Home stage: home_xyz, then finish as startup does with no cached position - the Z lift to the sample
+        format's working height and, when Z is referenced, Z to its safety position. Claim and confirmation as
+        home_xyz."""
+        try:
+            self._require_home_confirmation(objective_lowered, "Home stage")
+            if claim is None:
+                claim = self.claim_stage_homing("Home stage")
+            self._home_xyz(objective_lowered)
+            self._raise_z_lift_to_sample_height()
+            if squid.stage.utils.z_is_referenced():
+                squid.stage.utils.move_z_axis_to_safety_position(self.stage)
+        finally:
+            if claim is not None:
+                claim.release_when_stopped()
+
+    @staticmethod
+    def _require_home_confirmation(objective_lowered: bool, operation: str) -> None:
+        # First, before the Z home, the lift, the V-308 retract and the Y +20 mm move.
+        if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:
+            require_objective_lowered(objective_lowered, operation)
+
+    def _home_xyz(self, objective_lowered: bool) -> None:
+        """The homing sequence. Homes Z first if enabled, then (for a V-308 focus stage) ensures Z is referenced and
         retracts it to the objective-clear end before moving XY, then performs a coordinated
         X/Y homing sequence that avoids the plate clamp actuation post by moving Y first,
-        homing X, moving X clear, then homing Y.
+        homing X, moving X clear, then homing Y. Moves through self.stage, never the refusing Microscope methods.
         """
         if control._def.HOMING_ENABLED_Z and not control._def.USE_PI_FOCUS_STAGE:
-            self.stage.home(x=False, y=False, z=True, theta=False)
+            self.stage.home(x=False, y=False, z=True, theta=False, objective_lowered=objective_lowered)
 
         # Z lift: down to its bottom sensor first, taking the sample away from the objective before anything moves.
         if self.z_lift is not None:
@@ -1119,7 +1411,7 @@ class Microscope:
         # behaviour is unchanged.
         if control._def.USE_PI_FOCUS_STAGE:
             self._log.info("Homing Z (V-308) to the retracted position before XY homing.")
-            self.stage.home(x=False, y=False, z=True, theta=False)
+            self.stage.home(x=False, y=False, z=True, theta=False, objective_lowered=objective_lowered)
 
         if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:
             # The plate clamp actuation post can get in the way of homing if we start with
@@ -1133,11 +1425,11 @@ class Microscope:
             # case.
             self._log.info("Moving y+20, then x->home->+50 to make sure system is clear for homing.")
             self.stage.move_y(20)
-            self.stage.home(x=True, y=False, z=False, theta=False)
+            self.stage.home(x=True, y=False, z=False, theta=False, objective_lowered=objective_lowered)
             self.stage.move_x(50)
 
             self._log.info("Homing the Y axis...")
-            self.stage.home(x=False, y=True, z=False, theta=False)
+            self.stage.home(x=False, y=True, z=False, theta=False, objective_lowered=objective_lowered)
 
     def _raise_z_lift_to_sample_height(self) -> None:
         """After homing, raise the Z lift to the working height saved for the sample format; with none it stays
@@ -1181,7 +1473,11 @@ class Microscope:
         Args:
             distance: Distance to move in mm (positive or negative).
             blocking: If True, wait for movement to complete before returning.
+
+        Raises:
+            StageHomingInProgressError: While the stage is homing.
         """
+        self._refuse_motion_while_homing()
         self.stage.move_x(distance, blocking=blocking)
 
     def move_y(self, distance: float, blocking: bool = True) -> None:
@@ -1190,8 +1486,25 @@ class Microscope:
         Args:
             distance: Distance to move in mm (positive or negative).
             blocking: If True, wait for movement to complete before returning.
+
+        Raises:
+            StageHomingInProgressError: While the stage is homing.
         """
+        self._refuse_motion_while_homing()
         self.stage.move_y(distance, blocking=blocking)
+
+    def move_z(self, distance: float, blocking: bool = True) -> None:
+        """Move the stage by a relative distance along the Z axis.
+
+        Args:
+            distance: Distance to move in mm (positive or negative).
+            blocking: If True, wait for movement to complete before returning.
+
+        Raises:
+            StageHomingInProgressError: While the stage is homing.
+        """
+        self._refuse_motion_while_homing()
+        self.stage.move_z(distance, blocking=blocking)
 
     def move_x_to(self, position: float, blocking: bool = True) -> None:
         """Move the stage to an absolute X position.
@@ -1199,7 +1512,11 @@ class Microscope:
         Args:
             position: Target position in mm.
             blocking: If True, wait for movement to complete before returning.
+
+        Raises:
+            StageHomingInProgressError: While the stage is homing.
         """
+        self._refuse_motion_while_homing()
         self.stage.move_x_to(position, blocking=blocking)
 
     def move_y_to(self, position: float, blocking: bool = True) -> None:
@@ -1208,7 +1525,11 @@ class Microscope:
         Args:
             position: Target position in mm.
             blocking: If True, wait for movement to complete before returning.
+
+        Raises:
+            StageHomingInProgressError: While the stage is homing.
         """
+        self._refuse_motion_while_homing()
         self.stage.move_y_to(position, blocking=blocking)
 
     def get_x(self) -> float:
@@ -1258,7 +1579,11 @@ class Microscope:
         Args:
             z_mm: Target position in mm.
             blocking: If True, wait for movement to complete before returning.
+
+        Raises:
+            StageHomingInProgressError: While the stage is homing.
         """
+        self._refuse_motion_while_homing()
         self.stage.move_z_to(z_mm, blocking=blocking)
 
     def start_live(self) -> None:
@@ -1297,6 +1622,7 @@ class Microscope:
         if self._closed:
             return
         self._closed = True
+        self._closed_event.set()  # a homing claim waiting for the stage to stop gives up
 
         try:
             self.stop_live()
@@ -1374,7 +1700,11 @@ class Microscope:
             x: Target X position in mm.
             y: Target Y position in mm.
             z: Target Z position in mm.
+
+        Raises:
+            StageHomingInProgressError: While the stage is homing.
         """
+        self._refuse_motion_while_homing()
         self.move_x_to(x)
         self.move_y_to(y)
         self.move_z_to(z)
@@ -1411,7 +1741,11 @@ class Microscope:
 
         Args:
             objective: Name of the objective to set as current.
+
+        Raises:
+            StageHomingInProgressError: While the stage is homing.
         """
+        self._refuse_motion_while_homing()
         self.objective_store.set_current_objective(objective)
         # Reload laser AF config for the new objective
         if self._laser_af_controller is not None:

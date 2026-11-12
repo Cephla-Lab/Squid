@@ -30,9 +30,9 @@ def main(args):
         log.info("Moving x to 20")
         stage.move_x(20)
         log.info("Homing y")
-        stage.home(x=False, y=True, z=False, theta=False)
+        stage.home(x=False, y=True, z=False, theta=False, objective_lowered=args.objective_lowered)
         log.info("Homing x")
-        stage.home(x=True, y=False, z=False, theta=False)
+        stage.home(x=True, y=False, z=False, theta=False, objective_lowered=args.objective_lowered)
     end_time = time.time() + args.runtime
     start_time = time.time()
     keep_running = threading.Event()
@@ -107,6 +107,11 @@ if __name__ == "__main__":
     ap.add_argument("--no_loop_sleep", action="store_true", help="Do not sleep to yield the test thread.")
     ap.add_argument(
         "--on_thread", action="store_true", help="Run the test on a daemon thread while the main thread spins"
+    )
+    ap.add_argument(
+        "--objective-lowered",
+        action="store_true",
+        help="Confirm the objective has been lowered with the focus knob (required to home X/Y on a piezo-only system).",
     )
     ap.add_argument("--verbose", action="store_true", help="Turn on debug logging.")
     ap.add_argument("--no_wait", action="store_true", help="Turn off waiting for micro to complete commands.")

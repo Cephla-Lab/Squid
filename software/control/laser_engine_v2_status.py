@@ -75,6 +75,7 @@ class EngineV2Status:
     last_event: str
     variant: str
     timestamp_s: float
+    shutter_open: Optional[bool] = None  # the DF shutter as STAT? reports it; None: this variant has no shutter
 
     def is_ready_for(self, keys: Iterable[str]) -> bool:
         return all(k in self.channels and self.channels[k].is_ready for k in keys)
@@ -157,6 +158,7 @@ def parse_status(
             max=float(ln["max"] or 0.0),
             gate=bool(ln.get("gate", 0)),
         )
+    shutter = stat.get("shutter") or {}
     return EngineV2Status(
         channels=channels,
         armed=bool(stat["armed"]),
@@ -166,4 +168,5 @@ def parse_status(
         last_event=str(stat.get("last_event", "")),
         variant=str(stat.get("var", "")),
         timestamp_s=timestamp_s or time.time(),
+        shutter_open=bool(shutter.get("open")) if shutter.get("present") else None,
     )

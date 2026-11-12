@@ -1,4 +1,5 @@
 #include "joystick_panel.h"
+#include "crc8.h"
 
 void jp_reset(JoystickPanelLink *link) {
     link->connected = false;
@@ -14,7 +15,11 @@ void jp_forget_wheel(JoystickPanelLink *link) {
 }
 
 bool jp_on_packet(JoystickPanelLink *link, const uint8_t *buffer, size_t size, uint32_t now_ms, JoystickPanelInput *in) {
-    if (size != (size_t)JP_MSG_LENGTH || buffer[9] != 0)
+    if (size != (size_t)JP_MSG_LENGTH)
+        return false;
+    // Byte 9 is 0 from panels built from firmware/joystick in this repo, and CRC8-CCITT of bytes 0-8 from
+    // panels that ship with the checksum filled in. Accept either; anything else is line noise.
+    if (buffer[9] != 0 && buffer[9] != crc8ccitt(buffer, JP_MSG_LENGTH - 1))
         return false;
 
     int32_t wheel = (int32_t)((uint32_t)buffer[0] << 24 | (uint32_t)buffer[1] << 16 | (uint32_t)buffer[2] << 8 | (uint32_t)buffer[3]);

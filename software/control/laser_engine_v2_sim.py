@@ -354,7 +354,9 @@ def build_simulated_engine(options=None):
     from control.laser_engine_v2_link import EngineLink
 
     fake, source = FakeEngine(tok_delay_polls=3), FakeSource()
-    engine = LaserEngineV2(link_factory=lambda: EngineLink(fake), source_factory=lambda: source, options=options)
+    engine = LaserEngineV2(
+        link_factory=lambda: EngineLink(fake), source_factory=lambda: source, options=options, serial_number="SIMULATED"
+    )
     engine.sim_engine, engine.sim_source = fake, source  # test / demo access
     engine.simulated = True  # the fake source's limits must not overwrite the machine's saved 560 settings
     return engine
