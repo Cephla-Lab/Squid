@@ -7,7 +7,7 @@ from typing import List, Optional, Union
 import json
 import csv
 import squid.logging
-from enum import Enum, auto
+from enum import Enum, IntEnum, auto
 
 log = squid.logging.get_logger(__name__)
 
@@ -214,6 +214,10 @@ class CMD_SET:
     SET_LIMIT_SWITCH_CONFIG = 64
     SET_FOCUS_WHEEL_MODE = 65  # Firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE (see FOCUS_WHEEL_MODE)
     SET_PANEL_LOCK = 66  # Firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE: [2] 1 = the control panel moves nothing
+    # Firmware >= STARTUP_STATE_MIN_FIRMWARE. [2..5] = the configuration signature (big-endian), [6] = (format << 4) |
+    # required axes mask. Neither moves anything.
+    STORE_CONFIG_SIGNATURE = 67  # mask 0; a different signature or format clears every homed flag
+    QUERY_STARTUP_STATE = 68  # mask bit a = protocol axis a must be homed; answered in the status byte (StartupVerdict)
 
 
 class CMD_SET2:
@@ -317,6 +321,23 @@ LIMIT_SWITCH_DEFAULT_CONFIG = 0x03  # both inputs enabled, both active low
 # First firmware with SET_LIMIT_SWITCH_CONFIG. The single source for the Microcontroller's gate, FirmwareSimSerial's
 # cutoff and the tests' versions.
 LIMIT_SWITCH_CONFIG_MIN_FIRMWARE = (1, 7)
+
+
+class StartupVerdict(IntEnum):
+    """QUERY_STARTUP_STATE's answer (firmware >= STARTUP_STATE_MIN_FIRMWARE): may a relaunched host skip startup
+    homing? The first failing check wins, in this order; WARM only if none fails."""
+
+    WARM = 0  # same configuration, healthy, at rest, every required axis homed
+    NO_SIGNATURE = 1  # none stored since power-up or INITIALIZE, or a covered setting changed after the store
+    SIGNATURE_MISMATCH = 2  # the stored signature or format differs from the query's
+    UNHEALTHY = 3  # power not good, a stage TMC4361A lost its configuration, or a stage driver disabled
+    MOVING = 4  # an X/Y/Z ramp has not stopped
+    NOT_HOMED = 5  # a required axis is not homed
+
+
+# First firmware with STORE_CONFIG_SIGNATURE / QUERY_STARTUP_STATE. The single source for the Microcontroller's gate,
+# FirmwareSimSerial's cutoff and the tests' versions.
+STARTUP_STATE_MIN_FIRMWARE = (1, 9)
 
 
 class LIMIT_SWITCHES:
@@ -518,6 +539,17 @@ class CMD_EXECUTION_STATUS:
     ERROR_CODE_EMPTYING_THE_FLUDIIC_LINE_FAILED = 100
 
 
+# Firmware >= STARTUP_STATE_MIN_FIRMWARE: status byte values STARTUP_VERDICT_STATUS_BASE + StartupVerdict (64-69) are
+# QUERY_STARTUP_STATE's reply, sent until the next command arrives, in place of IN_PROGRESS or the last command's
+# status. Not an execution status: never completion, error or idle evidence.
+STARTUP_VERDICT_STATUS_BASE = 64
+# In those packets bytes 14-21 are the startup reply, not the theta, encoder or focus wheel fields: byte 19 bit
+# STARTUP_REPLY_FLAG_PIEZO_DAC_WRITTEN set means bytes 20-21 (big-endian) are the last code written to the objective
+# piezo's DAC channel since the controller powered up.
+OBJECTIVE_PIEZO_DAC_CHANNEL = 7
+STARTUP_REPLY_FLAG_PIEZO_DAC_WRITTEN = 0
+
+
 class SpotDetectionMode(Enum):
     """Specifies which spot to detect when multiple spots are present.
 
@@ -636,11 +668,11 @@ class ZProjectionMode(Enum):
     """Z-projection mode for downsampled view generation.
 
     MIP: Max intensity projection - uses running maximum across all z-levels
-    MIDDLE: Middle layer - uses only the middle z-level (z = NZ // 2)
+    LAST_PLANE: Last plane - each z-plane overwrites the previous one
     """
 
     MIP = "mip"
-    MIDDLE = "middle"
+    LAST_PLANE = "last_plane"
 
     @staticmethod
     def convert_to_enum(option: Union[str, "ZProjectionMode"]) -> "ZProjectionMode":
@@ -650,7 +682,7 @@ class ZProjectionMode(Enum):
         try:
             return ZProjectionMode(option.lower())
         except ValueError:
-            raise ValueError(f"Invalid z-projection mode: '{option}'. Expected 'mip' or 'middle'.")
+            raise ValueError(f"Invalid z-projection mode: '{option}'. Expected 'mip' or 'last_plane'.")
 
 
 class DownsamplingMethod(Enum):
@@ -961,7 +993,9 @@ USE_OVERLAP_FOR_FLEXIBLE = True
 ENABLE_WELLPLATE_MULTIPOINT = True
 ENABLE_RECORDING = False
 
-RESUME_LIVE_AFTER_ACQUISITION = True
+# Live is off after an acquisition, whatever it was before. Set resume_live_after_acquisition = True
+# in the [GENERAL] section of the machine INI to turn live back on when it was on before the run.
+RESUME_LIVE_AFTER_ACQUISITION = False
 
 # When enabled, each multipoint acquisition will write a second log file scoped to that acquisition at:
 #   <base_path>/<experiment_ID>/acquisition.log
@@ -1163,7 +1197,13 @@ LIVE_ONLY_MODE = False
 
 # NDViewer integration
 ENABLE_NDVIEWER = False
+# Location of a standalone ndviewer_light (file, folder holding ndviewer_light/, or command line); empty = auto-detect
+NDVIEWER_LIGHT_COMMAND = ""
+# Also record Snap images in the acquisition history
+RECORD_SNAPS_IN_HISTORY = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
+# How z-planes combine in the mosaic view (and its saved overview): running max, or last plane wins.
+MOSAIC_Z_PROJECTION = ZProjectionMode.MIP
 
 # Downsampled-view auto-save settings. Each flag independently controls one
 # output of the unified mosaic widget's save path:
@@ -1880,6 +1920,8 @@ try:
 except FileNotFoundError:
     CACHED_CONFIG_FILE_PATH = None
 
+UI_THEME = "classic"  # [GENERAL] ui_theme: "classic" or "dark"
+
 config_files = glob.glob("." + "/" + "configuration*.ini")
 if config_files:
     if len(config_files) > 1:
@@ -1944,18 +1986,99 @@ else:
         log.error("machine-specific configuration not present, the program will exit")
         sys.exit(1)
 
+import control.objectives_config as _objectives_config  # leaf module, see its docstring
+
+
+def _apply_objectives_yaml():
+    """Rebind OBJECTIVES and the changer slot maps from machine_configs/objectives.yaml.
+
+    Runs after the machine .ini is applied (its loop rebinds module globals, so anything
+    derived earlier would be overwritten) and before DEFAULT_OBJECTIVE is resolved.
+    Returns the config, or None when the file is absent: objectives.csv and the .ini maps
+    stay in effect, exactly as before.
+    """
+    global OBJECTIVES, OBJECTIVE_TURRET_POSITIONS, XERYON_OBJECTIVE_SWITCHER_POS_1, XERYON_OBJECTIVE_SWITCHER_POS_2
+    path = _objectives_config.OBJECTIVES_YAML_PATH
+    config = _objectives_config.load_objectives_config(path)
+    if config is None:
+        return None
+    _objectives_config.validate_objectives_config(
+        config, use_xeryon=USE_XERYON, use_turret=USE_OBJECTIVE_TURRET, path=path
+    )
+    OBJECTIVES = _objectives_config.to_objectives_dict(config)
+    if config.changer.kind is _objectives_config.ChangerKind.NIMOTION_TURRET:
+        OBJECTIVE_TURRET_POSITIONS = _objectives_config.to_turret_positions(config)
+    elif config.changer.kind is _objectives_config.ChangerKind.XERYON:
+        XERYON_OBJECTIVE_SWITCHER_POS_1, XERYON_OBJECTIVE_SWITCHER_POS_2 = _objectives_config.to_xeryon_lists(config)
+    log.info(f"objectives from {path}: {list(OBJECTIVES)}; the .ini's objective changer maps are ignored")
+    return config
+
+
+try:
+    OBJECTIVES_CONFIG = _apply_objectives_yaml()
+except _objectives_config.ObjectivesConfigError as e:
+    log.error(f"{e}{_objectives_config.restore_hint(_objectives_config.OBJECTIVES_YAML_PATH)}")
+    sys.exit(1)
+
+
+def _default_objective_fallback(reason="the cached default objective is not mounted"):
+    """Today's literal "20x" without objectives.yaml; with it, the lowest-magnification mounted
+    objective. `reason` must be true for the caller's situation (e.g. there may be no cache file
+    at all, in which case nothing was "not mounted")."""
+    if OBJECTIVES_CONFIG is None:
+        return "20x"
+    fallback = min(OBJECTIVES, key=lambda name: OBJECTIVES[name]["magnification"])
+    log.warning(f"{reason}; starting on {fallback}")
+    return fallback
+
+
+def get_mounting(objective_name):
+    """(changer kind, slot): ("nimotion_turret", 1..4 or None), ("xeryon", 1, 2 or None) or ("none", None).
+
+    Raises KeyError for an objective that is not in OBJECTIVES.
+    """
+    if objective_name not in OBJECTIVES:
+        raise KeyError(objective_name)
+    if USE_OBJECTIVE_TURRET:
+        return ("nimotion_turret", OBJECTIVE_TURRET_POSITIONS.get(objective_name))
+    if USE_XERYON:
+        return ("xeryon", xeryon_objective_position(objective_name))
+    return ("none", None)
+
+
+def get_declared(objective_name):
+    """Declared optics, model and serial (model and serial are "" without objectives.yaml).
+
+    Raises KeyError for an objective that is not in OBJECTIVES.
+    """
+    info = OBJECTIVES[objective_name]
+    declared = {
+        "magnification": info["magnification"],
+        "na": info["NA"],
+        "tube_lens_f_mm": info["tube_lens_f_mm"],
+        "model": "",
+        "serial": "",
+    }
+    if OBJECTIVES_CONFIG is not None:
+        entry = next(o for o in OBJECTIVES_CONFIG.objectives if o.name == objective_name)
+        declared["model"], declared["serial"] = entry.model, entry.serial
+    return declared
+
+
 try:
     with open("cache/objective_and_sample_format.txt", "r") as f:
         cached_settings = json.load(f)
         DEFAULT_OBJECTIVE = (
-            cached_settings.get("objective") if cached_settings.get("objective") in OBJECTIVES else "20x"
+            cached_settings.get("objective")
+            if cached_settings.get("objective") in OBJECTIVES
+            else _default_objective_fallback()
         )
         WELLPLATE_FORMAT = str(cached_settings.get("wellplate_format"))
         WELLPLATE_FORMAT = WELLPLATE_FORMAT + " well plate" if WELLPLATE_FORMAT.isdigit() else WELLPLATE_FORMAT
         if WELLPLATE_FORMAT not in WELLPLATE_FORMAT_SETTINGS:
             WELLPLATE_FORMAT = "96 well plate"
 except (FileNotFoundError, json.JSONDecodeError):
-    DEFAULT_OBJECTIVE = "20x"
+    DEFAULT_OBJECTIVE = _default_objective_fallback("no usable cached default objective")
     WELLPLATE_FORMAT = "96 well plate"
 
 NUMBER_OF_SKIP = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT][
@@ -2030,8 +2153,23 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                     )
                 except ValueError:
                     pass
+            if _views_config.has_option("VIEWS", "mosaic_z_projection"):
+                try:
+                    MOSAIC_Z_PROJECTION = ZProjectionMode.convert_to_enum(
+                        _views_config.get("VIEWS", "mosaic_z_projection")
+                    )
+                except ValueError:
+                    pass
             if _views_config.has_option("VIEWS", "enable_ndviewer"):
                 ENABLE_NDVIEWER = _views_config.get("VIEWS", "enable_ndviewer").lower() in ("true", "1", "yes")
+            if _views_config.has_option("VIEWS", "ndviewer_light_command"):
+                NDVIEWER_LIGHT_COMMAND = _views_config.get("VIEWS", "ndviewer_light_command").strip()
+            if _views_config.has_option("VIEWS", "record_snaps_in_history"):
+                RECORD_SNAPS_IN_HISTORY = _views_config.get("VIEWS", "record_snaps_in_history").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
     except Exception as e:
         log.warning(f"Failed to load Views settings from config: {e}")
 

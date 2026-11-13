@@ -427,6 +427,54 @@ def test_stray_status_line_is_skipped(fake):
     assert not stage.get_state().busy
 
 
+def _unreadable_position_replies(ser, bad_reply, count):
+    """Answer the next `count` "P" with `bad_reply`, then normally again."""
+    normal = ser._reply
+    remaining = iter(range(count))
+
+    def reply(cmd):
+        if cmd == "P" and next(remaining, None) is not None:
+            return bad_reply
+        return normal(cmd)
+
+    ser._reply = reply
+
+
+def _wait_for(condition, timeout_s=2.0):
+    deadline = time.monotonic() + timeout_s
+    while not condition():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.005)
+    return True
+
+
+@pytest.mark.parametrize("bad_reply", [b"", b"R\r"], ids=["no reply", "stray line"])
+def test_an_unreadable_position_reply_does_not_stop_the_polling(fake, monkeypatch, bad_reply):
+    monkeypatch.setattr(squid.stage.prior.PriorStage, "POS_POLLING_PERIOD", 0.01)
+    stage, ser = make_stage(fake)
+    ser.timeout = 0.01
+    poller = stage._pos_polling_thread
+    _unreadable_position_replies(ser, bad_reply, 3)
+    ser.x = 12345  # moved by the joystick: only the polling thread sees it
+
+    # get_pos() would restart a dead poller, so look at the position it keeps instead.
+    assert _wait_for(lambda: stage.x_pos == 12345)
+    assert stage._pos_polling_thread is poller and poller.is_alive()
+
+
+def test_a_run_of_unreadable_position_replies_is_logged_once(fake, monkeypatch, caplog):
+    monkeypatch.setattr(squid.stage.prior.PriorStage, "POS_POLLING_PERIOD", 0.01)
+    stage, ser = make_stage(fake)
+    ser.timeout = 0.01
+    with caplog.at_level(logging.INFO, logger=stage._log.name):
+        _unreadable_position_replies(ser, b"", 5)
+        assert _wait_for(lambda: "readable again" in caplog.text)
+    warnings = [r for r in caplog.records if "Unreadable reply to 'P'" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "after 5 unreadable" in caplog.text
+
+
 def test_missing_stage_model_fails_startup_clearly(fake, monkeypatch):
     normal = FakeProScan._reply
     monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"" if cmd == "STAGE" else normal(self, cmd))

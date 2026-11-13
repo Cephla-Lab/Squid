@@ -4,6 +4,7 @@ import threading
 import time
 import re
 
+from control.startup_homing import require_objective_lowered
 import squid.ftdi
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
@@ -87,22 +88,39 @@ class PriorStage(AbstractStage):
         self.set_baudrate(baudrate)
 
         self._pos_polling_thread: Optional[threading.Timer] = None
+        self._unreadable_pos_polls = 0  # in a row, by the polling thread
 
         self._initialize()
 
     def _pos_polling_thread_fn(self):
         last_poll = time.time()
-        self._get_pos_poll_stage()
+        self._poll_pos()
         # We launch this as a Daemon, and have a mechanism for restarting it if needed.  So, just do a while True
-        # and do not worry about exceptions.
+        # and do not worry about exceptions (an unreadable reply is not one: _poll_pos skips it).
         while True:
             time_since_last = time.time() - last_poll
             time_left = PriorStage.POS_POLLING_PERIOD - time_since_last
             if time_left > 0:
                 time.sleep(time_left)
 
-            self._get_pos_poll_stage()
+            self._poll_pos()
             last_poll = time.time()
+
+    def _poll_pos(self):
+        """One background position read. A reply that isn't a position ("" when none came within the read timeout,
+        or a stray line) is skipped, keeping the last position: the next poll reads it again. Raising on it ended
+        this thread with an "Uncaught Exception!" traceback, and the position stood still until a get_pos() call
+        restarted it."""
+        try:
+            self._get_pos_poll_stage()
+        except ValueError as e:
+            self._unreadable_pos_polls += 1
+            if self._unreadable_pos_polls == 1:  # once per run of them, not every poll while it lasts
+                self._log.warning(f"Unreadable reply to 'P' ({e}); keeping the last position and polling again")
+            return
+        if self._unreadable_pos_polls:
+            self._log.info(f"Position replies readable again after {self._unreadable_pos_polls} unreadable")
+            self._unreadable_pos_polls = 0
 
     def _ensure_pos_polling_thread(self):
         if self._pos_polling_thread and self._pos_polling_thread.is_alive():
@@ -420,7 +438,16 @@ class PriorStage(AbstractStage):
     def get_state(self) -> StageStage:
         return StageStage(busy=self.is_busy)
 
-    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+    def reports_stopped(self) -> bool:
+        # A fresh "$,S" query (0: no axis moving), not is_busy, which only wait_for_stop() keeps.
+        try:
+            return int(self._send_command("$,S")) == 0
+        except Exception:
+            return False
+
+    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True, objective_lowered: bool = False):
+        # SIS homes XY whatever the flags say, so every call needs the confirmation.
+        require_objective_lowered(objective_lowered, "Home")
         self._send_command("SIS")
         if blocking:
             self.wait_for_stop()

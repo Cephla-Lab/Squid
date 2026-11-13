@@ -27,6 +27,7 @@ from typing import Callable, Dict, Optional
 import squid.logging
 import control._def as _def
 from control._def import AXIS, ENCODER_REPORTING, RAMP_PROFILE
+from control.utils import update_ini_text  # noqa: F401  (re-exported for tools/filter_wheel_tuner.py)
 
 _log = squid.logging.get_logger(__name__)
 
@@ -170,38 +171,6 @@ def gentlest_as_fast(clean_levels, tol_ms=2.0):
     no time and gives margin away."""
     best = min(ms for _, ms in clean_levels)
     return min(a for a, ms in clean_levels if ms <= best + tol_ms)
-
-
-def update_ini_text(text, updates, comment):
-    """Set `updates` (key -> value) in the [GENERAL] section of an ini file's text, keeping every other line,
-    comment and the file's line endings. An existing key is replaced in place; missing keys are appended to
-    the end of [GENERAL] under `comment`. Returns (new_text, {key: (old_or_None, new)})."""
-    nl = "\r\n" if "\r\n" in text else "\n"
-    lines = text.replace("\r\n", "\n").split("\n")
-    start = next((i for i, l in enumerate(lines) if l.strip().upper() == "[GENERAL]"), None)
-    if start is None:
-        raise ValueError("no [GENERAL] section in the ini")
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip().startswith("[")), len(lines))
-    changes, missing = {}, []
-    for key, value in updates.items():
-        hit = next(
-            (i for i in range(start + 1, end) if lines[i].split("=", 1)[0].strip().lower() == key and "=" in lines[i]),
-            None,
-        )
-        if hit is None:
-            missing.append(key)
-            changes[key] = (None, str(value))
-        else:
-            old = lines[hit].split("=", 1)[1].strip()
-            lines[hit] = f"{key} = {value}"
-            changes[key] = (old, str(value))
-    if missing:
-        insert_at = end
-        while insert_at > start + 1 and lines[insert_at - 1].strip() == "":
-            insert_at -= 1
-        block = [f"# {comment}"] + [f"{k} = {updates[k]}" for k in missing]
-        lines[insert_at:insert_at] = block
-    return nl.join(lines), changes
 
 
 def profile_ini_comment(rec):
