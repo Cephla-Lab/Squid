@@ -2846,6 +2846,7 @@ class HighContentScreeningGui(QMainWindow):
             unlock_panel=lambda: self._panel_lock.remove(PANEL_LOCK_AGENT),
             blocker=self._agent_session_blocker,
             snapshot=snapshot,
+            stop_live=self._stop_live_for_agent_session,
             parent=self,
         )
 
@@ -2853,6 +2854,18 @@ class HighContentScreeningGui(QMainWindow):
         """Give the control of the microscope to the agent: kind is "begin" or "hand_back". Returns None, or why
         it was refused. The control server calls this from its thread; the work is done on the GUI thread."""
         return self._agent_protection.transition(kind, note)
+
+    def _stop_live_for_agent_session(self) -> None:
+        """Stop the live view before the agent gets the control (begin or hand back), through the Live button so it
+        shows the new state. Raises if live is still on. GUI thread."""
+        if self.liveController is None or not self.liveController.is_live:
+            return
+        if self.liveControlWidget is not None:
+            self.liveControlWidget.toggle_live(False)
+        else:
+            self.liveController.stop_live()
+        if self.liveController.is_live:
+            raise RuntimeError("live is still on after stop_live")
 
     def _agent_session_blocker(self) -> Optional[str]:
         """Why the agent must not get the control now, or None. Runs on whichever thread asks: plain reads only."""

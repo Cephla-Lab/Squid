@@ -59,6 +59,21 @@ class Panel:
         self.locked = False
 
 
+class Live:
+    """The live view of the test: stop() as the window gives it to the protection."""
+
+    def __init__(self):
+        self.on = False
+        self.fail = False
+        self.stops = []  # (shield on, panel locked, session state) at each stop
+
+    def stop(self, r):
+        r.live.stops.append((r.shield.is_active(), r.panel.locked, r.session.state))
+        if self.fail:
+            raise RuntimeError("the camera does not stop")
+        self.on = False
+
+
 @pytest.fixture
 def rig(qtbot, monkeypatch):
     monkeypatch.setattr(stop_module, "AGENT_SESSION_STOP_POLL_MS", 5)
@@ -74,7 +89,7 @@ def rig(qtbot, monkeypatch):
     session = AgentSession()
     r = SimpleNamespace(
         window=window, banner=banner, session=session, mpc=FakeController(), stage=FakeStage(), panel=Panel(),
-        blocker_reason=None, snapshots=[], snapshot_fails=False, now=0.0,
+        blocker_reason=None, snapshots=[], snapshot_fails=False, now=0.0, live=Live(),
     )  # fmt: skip
 
     def snapshot(with_position):
@@ -94,6 +109,7 @@ def rig(qtbot, monkeypatch):
         unlock_panel=r.panel.unlock,
         blocker=lambda: r.blocker_reason,
         snapshot=snapshot,
+        stop_live=lambda: r.live.stop(r),
         parent=window,
     )
     yield r
@@ -127,6 +143,35 @@ def test_begin_that_a_blocker_refuses_touches_nothing(rig):
     assert rig.protection.transition("begin") == "the stage is homing"
     assert rig.session.state is SessionState.NONE and not rig.shield.is_active()
     assert rig.panel.calls == [] and rig.panel.lock_threads == []
+
+
+def test_begin_stops_the_live_view_before_the_protection(rig):
+    rig.live.on = True
+    begin(rig)
+    assert not rig.live.on and rig.live.stops == [(False, False, SessionState.NONE)]
+    assert rig.session.state is SessionState.AGENT and protected(rig)
+
+
+def test_hand_back_stops_the_live_view_that_the_human_started(rig, qtbot):
+    begin(rig)
+    take_over_and_wait(rig, qtbot)
+    rig.live.on = True  # the human looked at the sample in live
+    assert rig.protection.transition("hand_back", "focused") is None
+    assert not rig.live.on and rig.live.stops[-1] == (False, False, SessionState.HUMAN)
+    assert rig.session.state is SessionState.AGENT and protected(rig)
+
+
+def test_a_live_view_that_does_not_stop_refuses_and_leaves_no_protection(rig):
+    rig.live.on, rig.live.fail = True, True
+    assert rig.protection.transition("begin") == "could not stop the live view"
+    assert rig.session.state is SessionState.NONE and not rig.shield.is_active() and rig.panel.calls == []
+
+
+def test_a_refused_change_leaves_the_live_view_on(rig):
+    rig.live.on = True
+    rig.blocker_reason = "the stage is homing"
+    assert rig.protection.transition("begin") == "the stage is homing"
+    assert rig.live.on and rig.live.stops == []
 
 
 def test_begin_is_refused_while_a_dialog_is_open(rig, qtbot):
