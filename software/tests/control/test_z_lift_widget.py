@@ -543,11 +543,13 @@ def test_shutdown_unlocks_the_control_panel_before_anything_can_fail():
     fake._panel_lock = PanelLockReasons(lambda locked: None)
     fake._panel_lock.add(PANEL_LOCK_LOADING)
     fake.log = MagicMock()
+    fake._agent_protection = MagicMock()
     fake.stage = MagicMock()
     fake.stage.get_pos.side_effect = RuntimeError("the first cleanup step fails")
     with pytest.raises(RuntimeError):
         Gui._cleanup_common(fake, for_restart=False)
     assert calls == [False]
+    fake._agent_protection.shut_down.assert_called_once()  # after the unlock, before the step that fails
 
     calls.clear()
     fake._loading_position_locked = False  # not at the loading position: nothing sent

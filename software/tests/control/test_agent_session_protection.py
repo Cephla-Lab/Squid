@@ -5,8 +5,8 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from qtpy.QtCore import Qt, QThread
-from qtpy.QtWidgets import QApplication, QDialog, QMainWindow, QMessageBox, QPushButton
+from qtpy.QtCore import Qt, QThread, QTimer
+from qtpy.QtWidgets import QApplication, QDialog, QInputDialog, QMainWindow, QMessageBox, QPushButton
 
 import control.agent_session_stop as stop_module
 from control.agent_session_protection import AgentSessionProtection
@@ -188,6 +188,30 @@ def test_hand_back_from_the_banner_gives_the_control_to_the_agent_with_the_line(
     assert status["state"] == "agent" and protected(rig)
     assert status["handover"]["note"] == "looked at one organism" and status["handover"]["after"] == {"x_mm": 1.0}
     assert rig.banner.label.text() == "The agent is driving."
+
+
+def test_hand_back_from_the_banner_with_the_real_dialog(rig, qtbot):
+    """The dialog for the line of the human is modal. It must be closed for Qt when the change is asked, or the
+    change would be refused with "a dialog or a menu is open in Squid"."""
+    begin(rig)
+    take_over_and_wait(rig, qtbot)
+    answers = QTimer()
+
+    def answer():
+        dialog = QApplication.activeModalWidget()
+        if isinstance(dialog, QInputDialog):
+            answers.stop()
+            dialog.setTextValue("moved the stage")
+            dialog.accept()
+
+    answers.timeout.connect(answer)
+    answers.start(50)
+    try:
+        qtbot.mouseClick(rig.banner.hand_back_button, Qt.LeftButton)  # returns when the dialog is closed
+    finally:
+        answers.stop()
+    status = rig.session.status()
+    assert status["state"] == "agent" and protected(rig) and status["handover"]["note"] == "moved the stage"
 
 
 def test_hand_back_that_is_refused_tells_the_human_why(rig, qtbot, monkeypatch):

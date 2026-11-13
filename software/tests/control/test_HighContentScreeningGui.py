@@ -10,9 +10,9 @@ import control._def
 import control.gui_hcs
 import control.utils
 import control.widgets
-from qtpy.QtCore import QCoreApplication, QEvent
+from qtpy.QtCore import QCoreApplication, QEvent, QObject, Qt
 from qtpy.QtGui import QCloseEvent
-from qtpy.QtWidgets import QMessageBox
+from qtpy.QtWidgets import QMessageBox, QWidget
 
 import control.microcontroller
 import control.microscope
@@ -20,7 +20,9 @@ import squid.abc
 import squid.stage.cephla
 import squid.stage.utils
 from control._def import STARTUP_STATE_MIN_FIRMWARE
+from control.core.agent_session import SessionState
 from control.firmware_sim_serial import FirmwareSimSerial
+from control.panel_lock import PANEL_LOCK_AGENT
 from control.startup_homing import StartupHoming
 
 
@@ -1465,3 +1467,171 @@ def test_previews_wait_for_the_running_acquisition_and_flush_when_it_ends(
     mpc.acquisition_finished.emit()
 
     assert sorted(submitted) == [("a", folder_a), ("b", folder_b)]
+
+
+# --- Agent session: who drives the microscope ---
+
+
+def _begin_agent_session(gui):
+    assert gui.run_agent_session_transition("begin") is None
+    return gui.microscope.agent_session
+
+
+def _agent_has_the_window(gui) -> bool:
+    return gui._agent_shield.is_active() and PANEL_LOCK_AGENT in gui._panel_lock.held()
+
+
+def _wait_for_the_human(gui, qtbot):
+    session = gui.microscope.agent_session
+    qtbot.waitUntil(lambda: session.state is SessionState.HUMAN and not gui._agent_shield.is_active(), timeout=5000)
+    assert PANEL_LOCK_AGENT not in gui._panel_lock.held()
+
+
+class _PressSpy(QObject):
+    """Counts the mouse presses that reach a widget, and stops them there. A filter on a widget runs after the
+    filters of the application, so a press that the input shield dropped is not counted."""
+
+    def __init__(self):
+        super().__init__()
+        self.presses = 0
+
+    def eventFilter(self, receiver, event):
+        if event.type() == QEvent.MouseButtonPress:
+            self.presses += 1
+            return True
+        return False
+
+
+def test_agent_session_shields_the_window_until_the_human_takes_over(qtbot, confirm_exit_yes):
+    gui = _gui(qtbot)
+    assert gui._agent_banner.isHidden() and not gui._agent_shield.is_active()
+    canvases = [w for w in gui.findChildren(QWidget) if type(w).__name__.startswith("CanvasBackend")]
+    assert canvases, "this configuration has no napari canvas"
+    spy = _PressSpy()
+    canvases[0].installEventFilter(spy)
+
+    session = _begin_agent_session(gui)
+    assert _agent_has_the_window(gui) and gui._agent_banner.label.text() == "The agent is driving."
+    qtbot.mouseClick(gui.liveControlWidget.btn_live, Qt.LeftButton)
+    qtbot.mouseClick(canvases[0], Qt.LeftButton)
+    assert not gui.liveController.is_live and spy.presses == 0
+
+    qtbot.mouseClick(gui._agent_banner.take_over_button, Qt.LeftButton)
+    _wait_for_the_human(gui, qtbot)
+    assert gui._agent_banner.label.text() == "You are driving. The agent is waiting."
+    qtbot.mouseClick(canvases[0], Qt.LeftButton)
+    assert spy.presses == 1
+
+    session.end()
+    qtbot.waitUntil(lambda: gui._agent_banner.isHidden(), timeout=2000)
+
+
+def test_agent_session_commands_of_the_server_drive_the_window(qtbot, confirm_exit_yes):
+    """The server's thread asks for the changes; the window does them on the GUI thread and stays alive."""
+    from control.microscope_control_server import MicroscopeControlServer
+
+    gui = _gui(qtbot)
+    server = MicroscopeControlServer(gui.microscope, multipoint_controller=gui.multipointController, gui=gui)
+
+    def call(command, **params):
+        answers = []
+        threading.Thread(target=lambda: answers.append(server._execute(command, params))).start()
+        qtbot.waitUntil(lambda: bool(answers), timeout=5000)
+        return answers[0]
+
+    assert call("begin_agent_session")["result"]["state"] == "agent"
+    assert _agent_has_the_window(gui)
+
+    controller = gui.multipointController
+    running = unittest.mock.patch.object(controller, "acquisition_in_progress", return_value=True)
+    with unittest.mock.patch.object(controller, "request_abort_aquisition") as abort:
+        running.start()
+        try:
+            assert call("take_over") == {"success": True, "result": {"state": "stopping"}}
+            qtbot.waitUntil(lambda: "an acquisition is running" in gui._agent_banner.label.text(), timeout=5000)
+            assert abort.call_count >= 1 and _agent_has_the_window(gui)
+            assert call("turn_off_illumination") == {"success": False, "error": "a stop is in progress"}
+        finally:
+            running.stop()
+    _wait_for_the_human(gui, qtbot)
+    status = call("get_agent_session")["result"]
+    assert status["state"] == "human" and status["handover"]["before"]["objective"]
+
+    assert call("hand_back", note="looked at one organism") == {"success": True, "result": {"state": "agent"}}
+    assert _agent_has_the_window(gui)
+    status = call("get_agent_session")["result"]
+    assert status["handover"]["note"] == "looked at one organism" and status["handover"]["after"]["x_mm"] is not None
+
+    assert call("end_agent_session") == {"success": True, "result": {"state": "stopping"}}
+    qtbot.waitUntil(lambda: gui._agent_banner.isHidden(), timeout=5000)
+    assert gui.microscope.agent_session.state is SessionState.NONE and not gui._agent_shield.is_active()
+    assert PANEL_LOCK_AGENT not in gui._panel_lock.held()
+
+
+def test_agent_session_begin_is_refused_when_the_microscope_is_not_free(qtbot, confirm_exit_yes):
+    gui = _gui(qtbot)
+    with unittest.mock.patch.object(gui.multipointController, "acquisition_in_progress", return_value=True):
+        assert gui.run_agent_session_transition("begin") == "an acquisition is running"
+    claim = gui.microscope.claim_stage_homing("TCP home")
+    assert gui.run_agent_session_transition("begin") == "the stage is homing"
+    claim.release_when_stopped()
+    qtbot.waitUntil(lambda: not gui.microscope.stage_homing_in_progress, timeout=2000)
+    assert gui.microscope.agent_session.state is SessionState.NONE and not gui._agent_shield.is_active()
+    assert gui._panel_lock.held() == frozenset()
+
+
+def test_agent_session_needs_a_panel_lock_that_the_controller_confirms(qtbot, confirm_exit_yes, monkeypatch):
+    gui = _gui(qtbot)
+    mcu = gui.microcontroller
+    session = gui.microscope.agent_session
+    assert not mcu.supports_panel_lock()  # the simulated controller: there is no panel, so a session can begin
+    # A real controller with firmware older than 1.8 cannot lock its panel: no session.
+    monkeypatch.setattr(gui, "_is_simulation", False)
+    assert gui.run_agent_session_transition("begin") == (
+        "this controller cannot lock its control panel (firmware 1.8 or later is necessary)"
+    )
+    # A controller that can: the lock is sent, and the answer of the controller is awaited, before the agent drives.
+    calls = []
+    monkeypatch.setattr(mcu, "supports_panel_lock", lambda: True)
+    monkeypatch.setattr(mcu, "set_panel_lock", lambda locked: calls.append(("lock", locked, session.state.value)))
+    monkeypatch.setattr(mcu, "wait_till_operation_is_completed", lambda *a, **k: calls.append(("wait",)))
+    _begin_agent_session(gui)
+    assert calls == [("lock", True, "none"), ("wait",)]
+    session.request_stop(SessionState.HUMAN, "take over")
+    _wait_for_the_human(gui, qtbot)
+    assert calls[2:] == [("lock", False, "human")]
+
+    # The controller does not confirm the lock: the human keeps the control.
+    def no_answer(*args, **kwargs):
+        raise TimeoutError("no answer from the controller")
+
+    with monkeypatch.context() as patch:  # not for the close at the end of the test: it moves Z and waits
+        patch.setattr(mcu, "wait_till_operation_is_completed", no_answer)
+        assert gui.run_agent_session_transition("hand_back", "") == "could not lock the control panel"
+    assert session.state is SessionState.HUMAN and not gui._agent_shield.is_active()
+    assert PANEL_LOCK_AGENT not in gui._panel_lock.held()
+
+
+def test_homing_inside_an_agent_session_keeps_the_panel_locked(qtbot, confirm_exit_yes):
+    gui = _gui(qtbot)
+    _begin_agent_session(gui)
+    gui._on_stage_homing_changed(True)
+    gui._on_stage_homing_changed(False)
+    assert _agent_has_the_window(gui)
+
+
+def test_close_with_an_agent_session_removes_the_shield_and_unlocks_the_panel(qtbot, confirm_exit_yes, monkeypatch):
+    gui = _gui(qtbot)
+    session = _begin_agent_session(gui)
+    panel = []
+    monkeypatch.setattr(gui, "_set_control_panel_lock", panel.append)
+    gui.close()
+    # Keep the close at the end of the test from a second cleanup of devices that are closed (an instance
+    # attribute: it must stay after monkeypatch is undone).
+    gui.closeEvent = lambda event: event.accept()
+    assert not gui._agent_shield.is_active() and not gui._agent_stop_sequence.is_running()
+    assert panel[:1] == [False]
+    session.request_stop(SessionState.HUMAN, "take over")  # a late change: the closed window does not follow it
+    qtbot.wait(200)
+    assert not gui._agent_shield.is_active() and not gui._agent_stop_sequence.is_running()
+    assert gui.run_agent_session_transition("begin") == "Squid is closing"
