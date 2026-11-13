@@ -45,6 +45,7 @@ from control._def import *
 from control.laser_engine_widget import LaserEngineWidget
 from control.versalase_widget import VersaLaseWidget
 from control.NL5Widget import NL5Widget
+from control.panel_lock import PANEL_LOCK_HOMING, PANEL_LOCK_LOADING, PanelLockReasons
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.multi_point_controller import MultiPointController
@@ -681,6 +682,8 @@ class HighContentScreeningGui(QMainWindow):
         # Set while a manual V-308 objective swap runs (retract, servo off, confirm, servo on, restore).
         self._objective_swap_active = False
         self._loading_position_locked = False  # a Z lift system at the loading position: nothing moves
+        # The control panel stays locked while any feature wants it locked (loading position, homing, agent session).
+        self._panel_lock = PanelLockReasons(self._set_control_panel_lock)
         self._objective_swap_saved_enabled = {}
         # Follows the Microscope's homing claim, whoever took it (Home stage, Home X/Y, TCP home): nothing moves.
         self._stage_homing_locked = False
@@ -2627,14 +2630,13 @@ class HighContentScreeningGui(QMainWindow):
         self._loading_position_saved_enabled = self._disable_widgets_saving_state(
             self._LOADING_POSITION_BLOCKED_WIDGETS
         )
-        self._set_control_panel_lock(True)
+        self._panel_lock.add(PANEL_LOCK_LOADING)
 
     def _unlock_stage_after_loading_position(self):
         if not self._loading_position_locked:
             return
         self._loading_position_locked = False
-        if not self._stage_homing_locked:
-            self._set_control_panel_lock(False)
+        self._panel_lock.remove(PANEL_LOCK_LOADING)
         self._restore_widgets_state(self._loading_position_saved_enabled)
         self._loading_position_saved_enabled = {}
 
@@ -2671,10 +2673,9 @@ class HighContentScreeningGui(QMainWindow):
                 self._stage_homing_saved_enabled = self._disable_widgets_saving_state(
                     self._STAGE_HOMING_BLOCKED_WIDGETS
                 )
-                self._set_control_panel_lock(True)
+                self._panel_lock.add(PANEL_LOCK_HOMING)
             else:
-                if not self._loading_position_locked:
-                    self._set_control_panel_lock(False)
+                self._panel_lock.remove(PANEL_LOCK_HOMING)
                 self._restore_widgets_state(self._stage_homing_saved_enabled)
                 self._stage_homing_saved_enabled = {}
                 self.log.info("Stage homing ended: controls unlocked")
@@ -3859,7 +3860,7 @@ class HighContentScreeningGui(QMainWindow):
 
         # A Z lift system closed at the loading position: unlock the control panel first, before any step below
         # can fail and abort the rest (Microscope.close() unlocks it too), so the joystick works without Squid.
-        if self._loading_position_locked:
+        if self._panel_lock.held():
             self._set_control_panel_lock(False)
 
         # Cache position and settings
