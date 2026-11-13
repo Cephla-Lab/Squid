@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, TypedDict, get_type_hint
 
 import squid.logging
 from control.core.acquisition_settings import apply_acquisition_settings, parse_wells
+from control.core.agent_session import SESSION_COMMANDS, AgentSessionRefused, SessionState
 
 import control._def  # Module import for runtime access to MCP-modifiable settings
 import control.utils
@@ -335,13 +336,24 @@ class MicroscopeControlServer:
         """Run one command and return the response dict."""
         if command not in self._commands:
             return {"success": False, "error": f"Unknown command: {command}"}
-        # While the stage homes, only reads and ping are served: anything else could move
-        # an axis, change the light path or start live under the homing sequence.
-        if self.microscope.stage_homing_in_progress and command != "ping" and not command.startswith("get_"):
-            return {"success": False, "error": "the stage is homing"}
         try:
-            result = self._commands[command](**params)
-            return {"success": True, "result": result}
+            # The agent session admits the command first. While a stop is in progress or a human drives, only reads,
+            # ping and the session commands are served. An action command is counted while it runs, so that a take
+            # over knows when the agent's work ended.
+            with self.microscope.agent_session.admit(command):
+                # While the stage homes, only reads, ping and the session commands are served: anything else could
+                # move an axis, change the light path or start live under the homing sequence.
+                if (
+                    self.microscope.stage_homing_in_progress
+                    and command != "ping"
+                    and not command.startswith("get_")
+                    and command not in SESSION_COMMANDS
+                ):
+                    return {"success": False, "error": "the stage is homing"}
+                result = self._commands[command](**params)
+                return {"success": True, "result": result}
+        except AgentSessionRefused as e:
+            return {"success": False, "error": str(e)}
         except Exception as e:
             self._log.error(f"Command '{command}' failed: {e}\n{traceback.format_exc()}")
             return {"success": False, "error": str(e)}
@@ -621,6 +633,46 @@ class MicroscopeControlServer:
         }
 
         return status
+
+    def _give_control_to_the_agent(self, kind: str, note: str = "") -> None:
+        """Begin and hand back give the control to the agent. The window does them on the GUI thread, so that its
+        input shield and the control panel lock are in place before the agent can send a command."""
+        if self.gui is None:
+            raise AgentSessionRefused("an agent session needs the Squid window")
+        refusal = self.gui.run_agent_session_transition(kind, note)
+        if refusal:
+            raise AgentSessionRefused(refusal)
+
+    @schema_method
+    def _cmd_begin_agent_session(self) -> Dict[str, Any]:
+        """Begin an agent session: the agent drives, and the Squid window ignores input until a human takes over."""
+        self._give_control_to_the_agent("begin")
+        return {"state": SessionState.AGENT.value, "session_id": self.microscope.agent_session.session_id}
+
+    @schema_method
+    def _cmd_take_over(self) -> Dict[str, Any]:
+        """Take the control from the agent for a human. Returns the state after the call ('stopping' at first)."""
+        state = self.microscope.agent_session.request_stop(SessionState.HUMAN, "take over")
+        return {"state": state.value}
+
+    @schema_method
+    def _cmd_hand_back(
+        self,
+        note: str = Field("", description="One line from the human about the work that they did"),
+    ) -> Dict[str, Any]:
+        """Give the control back to the agent after a human drove."""
+        self._give_control_to_the_agent("hand_back", note)
+        return {"state": SessionState.AGENT.value}
+
+    @schema_method
+    def _cmd_end_agent_session(self) -> Dict[str, Any]:
+        """End the agent session. From 'agent' it goes through 'stopping' first."""
+        return {"state": self.microscope.agent_session.end().value}
+
+    @schema_method
+    def _cmd_get_agent_session(self) -> Dict[str, Any]:
+        """The agent session: state, commands in progress, what a stop waits for, and the last handover."""
+        return self.microscope.agent_session.status()
 
     @schema_method
     def _cmd_autofocus(self) -> Dict[str, Any]:

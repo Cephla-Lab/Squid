@@ -7,6 +7,7 @@ import imageio
 import numpy as np
 
 import control._def
+from control.core.agent_session import AgentSession
 from control.core.config import ConfigRepository
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
@@ -689,6 +690,8 @@ class Microscope:
         self._stage_homing_lock = threading.Lock()
         self._stage_homing_claim: Optional[StageHomingClaim] = None
         self._stage_homing_listeners: List[Callable[[bool], None]] = []
+        # Who drives the microscope in an agent session (the agent or a human). With no session it admits everything.
+        self.agent_session = AgentSession()
         self._stage_homing_blocker: Optional[Callable[[], Optional[str]]] = None
 
         self.stage: AbstractStage = stage
