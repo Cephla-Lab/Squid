@@ -53,6 +53,35 @@ NoOpCallbacks = MultiPointControllerFunctions(
 from control.utils import serialize_for_yaml as _serialize_for_yaml  # noqa: E402
 
 
+def configurations_with_overrides(configurations: list, channel_overrides: Optional[dict]) -> list:
+    """The channels of one run. With channel_overrides ({channel name: {exposure_time_ms, illumination_intensity}})
+    each named channel is a copy that has these values: `configurations` and the stored profile stay as they are.
+    With no overrides it is `configurations` itself.
+
+    A plain function, not a method: build_params and start_new_experiment use it, and tests borrow build_params
+    for objects that are not controllers."""
+    if not channel_overrides:
+        return configurations
+    unknown = sorted(set(channel_overrides) - {config.name for config in configurations})
+    if unknown:
+        raise ValueError(f"channel_overrides names channels that are not selected: {unknown}")
+    # The worker builds an RGB image from the profile's R, G and B channels: an override would change no image.
+    rgb = sorted(name for name in channel_overrides if "RGB" in name)
+    if rgb:
+        raise ValueError(f"channel_overrides is not supported for an RGB channel: {rgb}")
+    effective = []
+    for config in configurations:
+        settings = channel_overrides.get(config.name)
+        if settings:
+            config = config.model_copy(deep=True)
+            if "exposure_time_ms" in settings:
+                config.exposure_time = settings["exposure_time_ms"]
+            if "illumination_intensity" in settings:
+                config.illumination_intensity = settings["illumination_intensity"]
+        effective.append(config)
+    return effective
+
+
 def _save_acquisition_yaml(
     params: "AcquisitionParameters",
     experiment_path: str,
@@ -577,7 +606,7 @@ class MultiPointController:
         self.liveController.microscope.config_repo.save_acquisition_output(
             output_dir=experiment_dir,
             objective=self.objectiveStore.current_objective,
-            channels=self.effective_configurations(channel_overrides),
+            channels=configurations_with_overrides(self.selected_configurations, channel_overrides),
             confocal_mode=self.liveController.is_confocal_mode(),
         )  # save the configuration for the experiment
         # Prepare acquisition parameters
@@ -624,25 +653,8 @@ class MultiPointController:
         f.close()
 
     def effective_configurations(self, channel_overrides: Optional[dict] = None) -> list:
-        """The channels of one run. With channel_overrides ({channel name: {exposure_time_ms,
-        illumination_intensity}}) each named channel is a copy that has these values: the selected channels and
-        the stored profile stay as they are. With no overrides it is the selected channels themselves."""
-        if not channel_overrides:
-            return self.selected_configurations
-        unknown = sorted(set(channel_overrides) - {config.name for config in self.selected_configurations})
-        if unknown:
-            raise ValueError(f"channel_overrides names channels that are not selected: {unknown}")
-        effective = []
-        for config in self.selected_configurations:
-            settings = channel_overrides.get(config.name)
-            if settings:
-                config = config.model_copy(deep=True)
-                if "exposure_time_ms" in settings:
-                    config.exposure_time = settings["exposure_time_ms"]
-                if "illumination_intensity" in settings:
-                    config.illumination_intensity = settings["illumination_intensity"]
-            effective.append(config)
-        return effective
+        """The channels of one run: the selected channels, with the overrides of that run on copies."""
+        return configurations_with_overrides(self.selected_configurations, channel_overrides)
 
     def set_selected_configurations(self, selected_configurations_name):
         self.selected_configurations = []
@@ -1183,7 +1195,7 @@ class MultiPointController:
         return AcquisitionParameters(
             experiment_ID=self.experiment_ID,
             base_path=self.base_path,
-            selected_configurations=self.effective_configurations(channel_overrides),
+            selected_configurations=configurations_with_overrides(self.selected_configurations, channel_overrides),
             acquisition_start_time=self.timestamp_acquisition_started,
             scan_position_information=scan_position_information,
             NX=self.NX,

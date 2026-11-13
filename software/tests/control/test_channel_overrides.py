@@ -161,3 +161,20 @@ def test_the_window_loads_a_file_with_overrides_only_for_the_server(monkeypatch,
     if not loads:
         assert CHANNEL_OVERRIDES_ONLY_SERVER in warning.call_args.args[2]
         host._apply_yaml_settings.assert_not_called()
+
+
+def test_an_override_for_an_rgb_channel_is_refused():
+    # the worker builds an RGB image from the profile's R, G and B channels, so an override would change no image
+    from control.core.multi_point_controller import configurations_with_overrides
+
+    configs = [SimpleNamespace(name="BF LED matrix full_RGB")]
+    with pytest.raises(ValueError, match="RGB"):
+        configurations_with_overrides(configs, {"BF LED matrix full_RGB": {"exposure_time_ms": 20.0}})
+
+
+@pytest.mark.parametrize("widget_class_name", ["WellplateMultiPointWidget", "FlexibleMultiPointWidget"])
+def test_the_slot_that_the_server_calls_loads_the_file_as_the_server(widget_class_name):
+    # the server calls this slot with a blocking queued connection: a dialog there would stop the server thread
+    host = MagicMock()
+    getattr(control.widgets, widget_class_name).load_acquisition_yaml_slot(host, "acquisition.yaml")
+    host._load_acquisition_yaml.assert_called_once_with("acquisition.yaml", from_server=True)
