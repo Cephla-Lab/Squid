@@ -3,7 +3,7 @@
 The session (control.core.agent_session) says who drives. This object makes four things agree with it: the input
 shield, the lock of the control panel, the stop sequence and the banner. It also does the two changes that give the
 control to the agent (begin and hand back), because the protection must be in place before the agent can send a
-command.
+command. Both changes stop the live view first: the agent's scans and bursts are refused while it runs.
 """
 
 from typing import Callable, List, Optional
@@ -20,6 +20,7 @@ REFUSAL_DIALOG_OPEN = "a dialog or a menu is open in Squid"
 REFUSAL_PANEL_LOCK = "could not lock the control panel"
 REFUSAL_CLOSING = "Squid is closing"
 REFUSAL_NO_ANSWER = "Squid did not answer"
+REFUSAL_LIVE = "could not stop the live view"
 STOP_CAUSE_TAKE_OVER = "take over"
 STOP_CAUSE_DIALOG = "a dialog opened in Squid"
 
@@ -38,12 +39,14 @@ class AgentSessionProtection(QObject):
         unlock_panel: Callable[[], None],
         blocker: Callable[[], Optional[str]],
         snapshot: Callable[[bool], dict],
+        stop_live: Callable[[], None] = lambda: None,
         parent=None,
     ) -> None:
         """lock_panel() locks the control panel for the session and returns when the controller did it; it raises
         if the controller did not. unlock_panel() removes that lock. A second call of one of them changes nothing.
         blocker() says why the agent must not get the control now (or None); it can run on any thread.
-        snapshot(with_position) gives the microscope state for a handover."""
+        snapshot(with_position) gives the microscope state for a handover.
+        stop_live() stops the live view (nothing when it is off) and raises if it could not; GUI thread."""
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self._session = session
@@ -53,6 +56,7 @@ class AgentSessionProtection(QObject):
         self._lock_panel = lock_panel
         self._unlock_panel = unlock_panel
         self._snapshot = snapshot
+        self._stop_live = stop_live
         self._shut_down = False
 
         session.set_blocker(blocker)
@@ -135,6 +139,11 @@ class AgentSessionProtection(QObject):
         reason = self._session.why_not(kind)
         if reason:
             return reason
+        try:  # before the protection: the human can still start live again until the shield is on
+            self._stop_live()
+        except Exception:
+            self._log.exception("Could not stop the live view for the agent session")
+            return REFUSAL_LIVE
         # The protection first: from the moment the session says "agent", the server runs the commands of the agent.
         self._shield.set_active(True)
         try:
