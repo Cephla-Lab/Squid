@@ -27,6 +27,13 @@ REFUSAL_HUMAN = "a human is driving"
 REFUSAL_AGENT_DRIVES = "the agent is driving"
 
 
+# The state from which the agent can get the control, and the refusal text in another state.
+_GIVE_CONTROL_FROM = {
+    "begin": (SessionState.NONE, "a session exists"),
+    "hand_back": (SessionState.HUMAN, "no human is driving"),
+}
+
+
 class AgentSessionRefused(RuntimeError):
     """The session does not allow this now. The text says why."""
 
@@ -35,10 +42,20 @@ def is_read_command(command: str) -> bool:
     return command == "ping" or command.startswith("get_")
 
 
+def _read_hardware(what: str, read: Callable[[], object]):
+    """One value from the hardware for a snapshot, or None if the hardware does not give it. A handover records
+    what it can read; it does not wait for, or fail on, one value."""
+    try:
+        return read()
+    except Exception:
+        squid.logging.get_logger(__name__).exception(f"Could not read {what} for the handover snapshot")
+        return None
+
+
 def snapshot_microscope(microscope, with_position: bool = True) -> dict:
     """The microscope state that a handover records. with_position=False reads no stage position (the stage may be
-    busy under another thread)."""
-    pos = microscope.stage.get_pos() if with_position else None
+    busy under another thread). A value that the hardware does not give is None."""
+    pos = _read_hardware("the stage position", microscope.stage.get_pos) if with_position else None
     channel = microscope.live_controller.currentConfiguration
     return {
         "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -47,7 +64,7 @@ def snapshot_microscope(microscope, with_position: bool = True) -> dict:
         "z_mm": pos.z_mm if pos else None,
         "objective": microscope.objective_store.current_objective,
         "channel": channel.name if channel is not None else None,
-        "exposure_ms": microscope.camera.get_exposure_time(),
+        "exposure_ms": _read_hardware("the exposure time", microscope.camera.get_exposure_time),
         "is_live": bool(microscope.live_controller.is_live),
     }
 
@@ -106,20 +123,32 @@ class AgentSession:
             except Exception:
                 self._log.exception("An agent session listener failed")
 
-    def _refusal_to_give_control(self) -> Optional[str]:
-        """Called with the lock held."""
+    def _refusal_to_give_control(self, kind: str, blocker_reason: Optional[str]) -> Optional[str]:
+        """Why the agent cannot get the control by `kind` ("begin" or "hand_back"). Called with the lock held."""
+        required_state, wrong_state_text = _GIVE_CONTROL_FROM[kind]
+        if self._state is not required_state:
+            return wrong_state_text
+        if blocker_reason:
+            return blocker_reason
         if self._in_flight > 0:
             return "a command is in progress"
         if self._console_in_flight > 0:
             return "the console is running a line"
         return None
 
+    def why_not(self, kind: str) -> Optional[str]:
+        """Why "begin" or "hand_back" would be refused at this moment, or None. It changes nothing. For a caller
+        that must prepare something before the change; the change itself asks again."""
+        if kind not in _GIVE_CONTROL_FROM:
+            raise ValueError(f"kind must be one of {sorted(_GIVE_CONTROL_FROM)}")
+        reason = self._blocker() if self._blocker is not None else None
+        with self._lock:
+            return self._refusal_to_give_control(kind, reason)
+
     def begin(self) -> str:
         reason = self._blocker() if self._blocker is not None else None
         with self._lock:
-            if self._state is not SessionState.NONE:
-                raise AgentSessionRefused("a session exists")
-            reason = reason or self._refusal_to_give_control()
+            reason = self._refusal_to_give_control("begin", reason)
             if reason:
                 raise AgentSessionRefused(reason)
             self._state = SessionState.AGENT
@@ -157,8 +186,9 @@ class AgentSession:
         self._notify(old, SessionState.STOPPING)
         return SessionState.STOPPING
 
-    def finish_stop(self, snapshot: dict, unlocked_anyway: bool = False) -> SessionState:
-        """The stop sequence calls this when nothing of the agent is in progress any more."""
+    def finish_stop(self, snapshot: Optional[dict], unlocked_anyway: bool = False) -> SessionState:
+        """The stop sequence calls this when nothing of the agent is in progress any more. snapshot is None if the
+        microscope state could not be read."""
         with self._lock:
             if self._state is not SessionState.STOPPING:
                 return self._state
@@ -176,9 +206,7 @@ class AgentSession:
     def hand_back(self, snapshot: dict, note: str = "") -> None:
         reason = self._blocker() if self._blocker is not None else None
         with self._lock:
-            if self._state is not SessionState.HUMAN:
-                raise AgentSessionRefused("no human is driving")
-            reason = reason or self._refusal_to_give_control()
+            reason = self._refusal_to_give_control("hand_back", reason)
             if reason:
                 raise AgentSessionRefused(reason)
             self._state = SessionState.AGENT

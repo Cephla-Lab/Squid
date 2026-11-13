@@ -7,6 +7,7 @@ from unittest.mock import patch
 from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QMessageBox
 
+from control.panel_lock import PANEL_LOCK_LOADING, PanelLockReasons
 from control.widgets_z_lift import LiftMotionGuard, LoadingPositionButton, ZLiftWidget
 from squid.stage.lift import LiftHeights
 
@@ -496,6 +497,7 @@ def test_everything_locks_when_the_move_to_loading_starts_and_stays_locked_until
         navigationWidget=QPushButton(),
         liveControlWidget=QPushButton(),
         _set_control_panel_lock=panel.append,
+        _panel_lock=PanelLockReasons(panel.append),
     )
     for name in (
         "_connect_loading_position_lock",
@@ -538,15 +540,20 @@ def test_shutdown_unlocks_the_control_panel_before_anything_can_fail():
     fake = _Gui()
     fake._loading_position_locked = True
     fake._set_control_panel_lock = lambda locked: calls.append(locked)
+    fake._panel_lock = PanelLockReasons(lambda locked: None)
+    fake._panel_lock.add(PANEL_LOCK_LOADING)
     fake.log = MagicMock()
+    fake._agent_protection = MagicMock()
     fake.stage = MagicMock()
     fake.stage.get_pos.side_effect = RuntimeError("the first cleanup step fails")
     with pytest.raises(RuntimeError):
         Gui._cleanup_common(fake, for_restart=False)
     assert calls == [False]
+    fake._agent_protection.shut_down.assert_called_once()  # after the unlock, before the step that fails
 
     calls.clear()
     fake._loading_position_locked = False  # not at the loading position: nothing sent
+    fake._panel_lock.remove(PANEL_LOCK_LOADING)
     with pytest.raises(RuntimeError):
         Gui._cleanup_common(fake, for_restart=False)
     assert calls == []
@@ -586,6 +593,7 @@ def test_a_restored_loading_position_starts_locked_with_the_return_ready(qtbot):
         _LOADING_POSITION_BLOCKED_WIDGETS=("navigationWidget",),
         navigationWidget=QPushButton(),
         _set_control_panel_lock=panel.append,
+        _panel_lock=PanelLockReasons(panel.append),
         _restored_loading_state={"scanning_z_mm": 2.5, "lift_mm": 4.0, "lift_format": "glass slide"},
     )
     for name in (

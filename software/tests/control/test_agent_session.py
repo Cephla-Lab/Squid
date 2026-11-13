@@ -223,3 +223,38 @@ def test_snapshot_reads_the_microscope_state():
     microscope.live_controller.currentConfiguration = None
     blind = snapshot_microscope(microscope, with_position=False)
     assert (blind["x_mm"], blind["y_mm"], blind["z_mm"], blind["channel"]) == (None, None, None, None)
+
+
+def test_why_not_gives_the_reason_that_begin_and_hand_back_would_give():
+    s = AgentSession()
+    assert s.why_not("begin") is None and s.why_not("hand_back") == "no human is driving"
+    s.set_blocker(lambda: "the stage is homing")
+    assert s.why_not("begin") == "the stage is homing"
+    s.set_blocker(None)
+    with s.admit("move_to"):
+        assert s.why_not("begin") == "a command is in progress"
+    with s.admit_console():
+        assert s.why_not("begin") == "the console is running a line"
+    s.begin()
+    assert s.why_not("begin") == "a session exists" and s.state is SessionState.AGENT
+    s.request_stop(SessionState.HUMAN, "take over")
+    s.finish_stop({})
+    assert s.why_not("hand_back") is None and s.why_not("begin") == "a session exists"
+    assert s.state is SessionState.HUMAN  # the question changes nothing
+    with pytest.raises(ValueError):
+        s.why_not("end")
+
+
+def test_snapshot_gives_none_for_hardware_that_does_not_answer():
+    def no_answer():
+        raise RuntimeError("no answer")
+
+    microscope = SimpleNamespace(
+        stage=SimpleNamespace(get_pos=no_answer),
+        objective_store=SimpleNamespace(current_objective="20x"),
+        camera=SimpleNamespace(get_exposure_time=no_answer),
+        live_controller=SimpleNamespace(is_live=True, currentConfiguration=SimpleNamespace(name="BF LED matrix full")),
+    )
+    snap = snapshot_microscope(microscope)  # a handover must not wait for one value
+    assert (snap["x_mm"], snap["y_mm"], snap["z_mm"], snap["exposure_ms"]) == (None, None, None, None)
+    assert (snap["objective"], snap["channel"], snap["is_live"]) == ("20x", "BF LED matrix full", True)

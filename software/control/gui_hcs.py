@@ -45,6 +45,11 @@ from control._def import *
 from control.laser_engine_widget import LaserEngineWidget
 from control.versalase_widget import VersaLaseWidget
 from control.NL5Widget import NL5Widget
+from control.panel_lock import PANEL_LOCK_AGENT, PANEL_LOCK_HOMING, PANEL_LOCK_LOADING, PanelLockReasons
+from control.agent_session_protection import AgentSessionProtection
+from control.agent_session_stop import AgentSessionStopSequence
+from control.agent_session_widgets import AgentSessionBanner, InputShield
+from control.core.agent_session import snapshot_microscope
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.multi_point_controller import MultiPointController
@@ -678,9 +683,13 @@ class HighContentScreeningGui(QMainWindow):
 
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self._skip_init = skip_init
+        # A simulated controller has no control panel, so an agent session needs no panel lock there.
+        self._is_simulation = is_simulation
         # Set while a manual V-308 objective swap runs (retract, servo off, confirm, servo on, restore).
         self._objective_swap_active = False
         self._loading_position_locked = False  # a Z lift system at the loading position: nothing moves
+        # The control panel stays locked while any feature wants it locked (loading position, homing, agent session).
+        self._panel_lock = PanelLockReasons(self._set_control_panel_lock)
         self._objective_swap_saved_enabled = {}
         # Follows the Microscope's homing claim, whoever took it (Home stage, Home X/Y, TCP home): nothing moves.
         self._stage_homing_locked = False
@@ -1693,6 +1702,7 @@ class HighContentScreeningGui(QMainWindow):
 
         self.connectSlidePositionController()
         self._connect_stage_homing()
+        self._connect_agent_session()
 
         self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.redraw_fov)
@@ -2627,14 +2637,13 @@ class HighContentScreeningGui(QMainWindow):
         self._loading_position_saved_enabled = self._disable_widgets_saving_state(
             self._LOADING_POSITION_BLOCKED_WIDGETS
         )
-        self._set_control_panel_lock(True)
+        self._panel_lock.add(PANEL_LOCK_LOADING)
 
     def _unlock_stage_after_loading_position(self):
         if not self._loading_position_locked:
             return
         self._loading_position_locked = False
-        if not self._stage_homing_locked:
-            self._set_control_panel_lock(False)
+        self._panel_lock.remove(PANEL_LOCK_LOADING)
         self._restore_widgets_state(self._loading_position_saved_enabled)
         self._loading_position_saved_enabled = {}
 
@@ -2671,10 +2680,9 @@ class HighContentScreeningGui(QMainWindow):
                 self._stage_homing_saved_enabled = self._disable_widgets_saving_state(
                     self._STAGE_HOMING_BLOCKED_WIDGETS
                 )
-                self._set_control_panel_lock(True)
+                self._panel_lock.add(PANEL_LOCK_HOMING)
             else:
-                if not self._loading_position_locked:
-                    self._set_control_panel_lock(False)
+                self._panel_lock.remove(PANEL_LOCK_HOMING)
                 self._restore_widgets_state(self._stage_homing_saved_enabled)
                 self._stage_homing_saved_enabled = {}
                 self.log.info("Stage homing ended: controls unlocked")
@@ -2814,6 +2822,61 @@ class HighContentScreeningGui(QMainWindow):
         self.stageUtils.set_homing_hooks(self._stage_homing_blocker, self._claim_stage_for_homing)
         self.stageUtils.signal_home_stage_requested.connect(self._on_home_stage_requested)
         self.signal_home_stage_finished.connect(self._on_home_stage_finished)
+
+    def _connect_agent_session(self):
+        """The agent session (who drives the microscope): the banner, the input shield, the stop sequence, and the
+        object that keeps them and the control panel lock in agreement with the session."""
+        session = self.microscope.agent_session
+        self._agent_banner = AgentSessionBanner(self)
+        self.addToolBar(Qt.TopToolBarArea, self._agent_banner)
+        self._agent_shield = InputShield(self._agent_banner, parent=self)
+
+        def snapshot(with_position: bool) -> dict:
+            return snapshot_microscope(self.microscope, with_position)
+
+        self._agent_stop_sequence = AgentSessionStopSequence(
+            session, self.multipointController, self.stage, snapshot, parent=self
+        )
+        self._agent_protection = AgentSessionProtection(
+            session=session,
+            banner=self._agent_banner,
+            shield=self._agent_shield,
+            stop_sequence=self._agent_stop_sequence,
+            lock_panel=self._lock_panel_for_agent_session,
+            unlock_panel=lambda: self._panel_lock.remove(PANEL_LOCK_AGENT),
+            blocker=self._agent_session_blocker,
+            snapshot=snapshot,
+            parent=self,
+        )
+
+    def run_agent_session_transition(self, kind: str, note: str = "") -> Optional[str]:
+        """Give the control of the microscope to the agent: kind is "begin" or "hand_back". Returns None, or why
+        it was refused. The control server calls this from its thread; the work is done on the GUI thread."""
+        return self._agent_protection.transition(kind, note)
+
+    def _agent_session_blocker(self) -> Optional[str]:
+        """Why the agent must not get the control now, or None. Runs on whichever thread asks: plain reads only."""
+        reason = self._stage_homing_blocker()
+        if reason:
+            return reason
+        if self.microscope.stage_homing_in_progress:
+            return "the stage is homing"
+        mcu = self.microcontroller
+        if not self._is_simulation and (mcu is None or not mcu.supports_panel_lock()):
+            return "this controller cannot lock its control panel (firmware 1.8 or later is necessary)"
+        return None
+
+    def _lock_panel_for_agent_session(self) -> None:
+        """Lock the control panel for the agent session and wait for the controller to confirm it. Raises if it
+        does not: the agent must not drive while the joystick can move the stage. (_set_control_panel_lock only
+        logs a failure, which is correct for homing but not here.) A second call changes nothing."""
+        if PANEL_LOCK_AGENT in self._panel_lock.held():
+            return
+        mcu = self.microcontroller
+        if mcu is not None and mcu.supports_panel_lock():
+            mcu.set_panel_lock(True)
+            mcu.wait_till_operation_is_completed()
+        self._panel_lock.add_locked(PANEL_LOCK_AGENT)
 
     def _claim_lift_for_acquisition(self):
         """MultiPointController.start_blocker on a Z lift system: hold the lift for the acquisition, or say why not."""
@@ -3857,10 +3920,15 @@ class HighContentScreeningGui(QMainWindow):
         """
         context = "restart" if for_restart else "shutdown"
 
-        # A Z lift system closed at the loading position: unlock the control panel first, before any step below
-        # can fail and abort the rest (Microscope.close() unlocks it too), so the joystick works without Squid.
-        if self._loading_position_locked:
+        # A Z lift system closed at the loading position, or an agent session: unlock the control panel first,
+        # before any step below can fail and abort the rest (Microscope.close() unlocks it too), so the joystick
+        # works without Squid.
+        if self._panel_lock.held():
             self._set_control_panel_lock(False)
+
+        # Nothing follows the agent session any more: no shield on a window that closes, no stop sequence that
+        # asks hardware that is being closed.
+        self._agent_protection.shut_down()
 
         # Cache position and settings
         try:

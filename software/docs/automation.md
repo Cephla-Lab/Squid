@@ -161,4 +161,5 @@ jobs:
 ## See Also
 
 - [MCP Integration](mcp_integration.md) - Control via Claude Code / AI agents
+- [Agent Session](agent-session.md) - One driver at a time: a program or a human, with take over and hand back
 - [Configuration System](configuration-system.md) - Setting up imaging channels and profiles
