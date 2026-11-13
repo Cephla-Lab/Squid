@@ -123,7 +123,7 @@ The `python_exec` command is disabled by default for security. To enable it:
 | `stop_live` | - | Stop live preview |
 | `acquire_image` | `save_path` | Capture single image |
 | `acquire_laser_af_image` | `save_path`, `use_last_frame` | Get laser autofocus camera image |
-| `acquire_burst` | `count`, `save_dir`, `interval_ms`, `prefix` | Capture a series of frames at the current position |
+| `acquire_burst` | `count`, `save_dir`, `interval_ms`, `prefix`, `keep_light_on` | Capture a series of frames at the current position |
 
 `acquire_burst` takes `count` frames (1 to 1000) at the current position, with the current channel and exposure,
 and saves them as `<save_dir>/<prefix>_<index>.tiff`. `save_dir` is an absolute path and is created if it is
@@ -131,10 +131,19 @@ missing. `<index>` has four digits and starts at `0000`; a file with the same na
 defaults to `burst`. `interval_ms` (0 to 60000) is the shortest time from the start of one frame to the start of
 the next; `0` (the default) means as fast as possible. A frame that takes longer than the interval delays the
 frames after it. The reply has `frames` (each with `path` and `time_s`, the time from the first frame),
-`position`, `channel`, `exposure_ms` and `stopped_early`.
+`position`, `channel`, `exposure_ms`, `stopped_early` and `light_kept_on`.
 
-The command returns when the burst has ended, so the client must wait longer than the burst lasts (the MCP bridge
-waits 30 seconds for a reply). It is refused while an acquisition runs, live view is on, or another burst runs. In
+By default the light is on only for each exposure, as for `acquire_image`. With `keep_light_on` set to `true`, the
+light goes on one time before the first frame and off after the last frame. Use it for a higher frame rate with a
+light source that is slow to switch (a laser engine with serial control can need more than 100 ms for each
+switch). The sample then gets light for the whole burst, also between the frames, so it bleaches more.
+`keep_light_on` works in the software trigger mode only.
+
+The files are written in a second thread while the next frames are taken. If the disk is slower than the camera,
+the frames wait in memory (at most about 1 GB) and then the camera waits; no frame is dropped.
+
+The command returns when the burst has ended and all files are written, so the client must wait longer than the
+burst lasts (the MCP bridge waits 30 seconds for a reply). It is refused while an acquisition runs, live view is on, or another burst runs. In
 an [agent session](agent-session.md), a take over or the end of the session stops the burst before the next frame
 (`stopped_early` is `true`). With no session, nothing stops a burst before its last frame.
 

@@ -1,3 +1,4 @@
+import contextlib
 import threading
 import time
 from pathlib import Path
@@ -72,6 +73,9 @@ if control._def.USE_OBJECTIVE_TURRET:
     )
 else:
     ObjectiveTurret4PosController = None
+
+
+_TRIGGER_READY_TIMEOUT_S = 5.0  # illumination_kept_on: the longest wait for the camera to take the next trigger
 
 
 class ObjectiveChangerProtocol(Protocol):
@@ -1055,6 +1059,43 @@ class Microscope:
                 # always turn off illumination when using software trigger
                 if using_software_trigger:
                     self.live_controller.turn_off_illumination()
+
+    @contextlib.contextmanager
+    def illumination_kept_on(self, name: str):
+        """Keep the light of the current channel on for a series of frames, for `name`.
+
+        `with microscope.illumination_kept_on("x") as take_frame:` then `take_frame()` for each image. Each
+        frame is one software trigger; the light does not go off between the frames, so the frames come faster
+        than with acquire_image(), and the sample gets light for the whole block and not only for the
+        exposures. The light goes off when the block ends, also after an error.
+
+        Raises:
+            RuntimeError: Not in the software trigger mode, or the illumination did not become ready.
+        """
+        if self.live_controller.trigger_mode != control._def.TriggerMode.SOFTWARE:
+            raise RuntimeError("The light can stay on only in the software trigger mode")
+
+        def take_frame() -> np.ndarray:
+            deadline = time.monotonic() + _TRIGGER_READY_TIMEOUT_S
+            while not self.camera.get_ready_for_trigger():  # the readout of the frame before is not complete
+                if time.monotonic() > deadline:
+                    raise RuntimeError("Failed to acquire image: the camera did not become ready for a trigger")
+                time.sleep(0.0005)
+            self.camera.send_trigger()
+            image = self.camera.read_frame()
+            if image is None:
+                raise RuntimeError("Failed to acquire image: camera.read_frame() returned None")
+            return image
+
+        with self.live_controller.use_current_channel(name) as light:  # wakes the line, opens its shutter
+            if not light.wait_until_ready():
+                raise RuntimeError("Failed to acquire image: the illumination did not become ready")
+            self.live_controller.turn_on_illumination()
+            try:
+                self._wait_for_microcontroller()
+                yield take_frame
+            finally:
+                self.live_controller.turn_off_illumination()
 
     def _get_channel_or_raise(self, objective: str, channel_name: str):
         config = self.live_controller.get_channel_by_name(objective, channel_name)

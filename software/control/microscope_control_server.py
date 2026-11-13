@@ -8,11 +8,13 @@ while the GUI is running.
 The server accepts JSON commands and returns JSON responses.
 """
 
+import contextlib
 import functools
 import inspect
 import json
 import math
 import os
+import queue
 import re
 import socket
 import threading
@@ -88,6 +90,73 @@ DEFAULT_PORT = 5050
 MAX_BUFFER_SIZE = 1 * 1024 * 1024  # 1 MB limit to prevent memory exhaustion
 MAX_CONNECTIONS = 5  # Maximum concurrent client connections
 _BURST_MAX_INTERVAL_MS = 60000  # acquire_burst: the longest time between two frames
+_BURST_QUEUE_BYTES = 1 << 30  # acquire_burst: the most frame data that waits for the disk (about 96 frames of 10.6 MB)
+
+
+class _BurstWriter:
+    """Writes the frames of a burst in a second thread, so that a file write does not delay the next frame.
+
+    It holds at most _BURST_QUEUE_BYTES of frames: when the disk is slower than the camera, write() waits and
+    no frame is dropped. After the first write that fails, it writes no more files."""
+
+    def __init__(self, tifffile) -> None:
+        self._tifffile = tifffile
+        self._queue: queue.Queue = queue.Queue()
+        self._room = threading.Condition()
+        self._waiting_bytes = 0
+        self._error: Optional[Exception] = None
+        self.saved = 0
+        self._thread = threading.Thread(target=self._run, name="acquire-burst-writer", daemon=True)
+
+    def __enter__(self) -> "_BurstWriter":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        self.drain()
+        return False
+
+    def write(self, path: str, image) -> None:
+        """Give one frame to the thread. Raises the error of an earlier write that failed."""
+        with self._room:
+            while (
+                self._error is None and self._waiting_bytes and self._waiting_bytes + image.nbytes > _BURST_QUEUE_BYTES
+            ):
+                self._room.wait(0.1)
+            if self._error is not None:
+                raise self._error
+            self._waiting_bytes += image.nbytes
+        self._queue.put((path, image))
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            path, image = item
+            try:
+                if self._error is None:
+                    self._tifffile.imwrite(path, image)
+                    self.saved += 1
+            except Exception as e:
+                self._error = e
+            finally:
+                with self._room:
+                    self._waiting_bytes -= image.nbytes
+                    self._room.notify_all()
+
+    def drain(self) -> int:
+        """Wait until the thread wrote what it got, and end it. Returns the number of files. Safe to call again."""
+        if self._thread.is_alive():
+            self._queue.put(None)
+            self._thread.join()
+        return self.saved
+
+    def finish(self) -> None:
+        """drain(), then raise the error of a write that failed."""
+        self.drain()
+        if self._error is not None:
+            raise self._error
 
 
 def schema_method(func: Callable) -> Callable:
@@ -540,12 +609,18 @@ class MicroscopeControlServer:
             le=_BURST_MAX_INTERVAL_MS,
         ),
         prefix: str = Field("burst", description="File name prefix (letters, digits, - and _)"),
+        keep_light_on: bool = Field(
+            False,
+            description="Keep the light on for the whole burst and not only for each exposure: more frames each "
+            "second, and more light on the sample. Software trigger mode only",
+        ),
     ) -> Dict[str, Any]:
         """Take a series of frames at the current position and save each as a TIFF file.
 
         The frames have the current channel and exposure and go to <save_dir>/<prefix>_<index>.tiff. Refused while
-        an acquisition runs, live view is on, or another burst runs. The command returns when the burst ended. In
-        an agent session it stops before the next frame when a take over or the end of the session is requested."""
+        an acquisition runs, live view is on, or another burst runs. The command returns when the burst ended and
+        all files are written. In an agent session it stops before the next frame when a take over or the end of
+        the session is requested. With keep_light_on the light source is not switched for each frame."""
         import tifffile
 
         # schema_method fills defaults; it does not enforce limits, so the limits are checked here.
@@ -562,14 +637,18 @@ class MicroscopeControlServer:
             raise ValueError("prefix must have only letters, digits, - and _")
         if not os.path.isabs(save_dir):
             raise ValueError("save_dir must be an absolute path")
+        if not isinstance(keep_light_on, bool):
+            raise ValueError("keep_light_on must be true or false")
         if not self._burst_lock.acquire(blocking=False):
             raise RuntimeError("a burst is running")
         try:
-            return self._run_burst(tifffile, count, save_dir, interval_ms / 1000.0, prefix)
+            return self._run_burst(tifffile, count, save_dir, interval_ms / 1000.0, prefix, keep_light_on)
         finally:
             self._burst_lock.release()
 
-    def _run_burst(self, tifffile, count: int, save_dir: str, interval_s: float, prefix: str) -> Dict[str, Any]:
+    def _run_burst(
+        self, tifffile, count: int, save_dir: str, interval_s: float, prefix: str, keep_light_on: bool
+    ) -> Dict[str, Any]:
         # acquire_image() does not stop live view and does not exclude a running acquisition: do not share the camera.
         if self.multipoint_controller is not None and self.multipoint_controller.acquisition_in_progress():
             raise RuntimeError("an acquisition is running")
@@ -596,33 +675,35 @@ class MicroscopeControlServer:
         first_read: Optional[float] = None
         next_start = time.monotonic()  # the first frame starts at once
         waiter = threading.Event()
-        # One hold of the light source for the whole burst. acquire_image() takes and releases its own for each
-        # frame, which on a laser engine opens and closes a mechanical shutter each time.
-        with self.microscope.live_controller.use_current_channel("acquire_burst"):
-            for index in range(count):
-                while True:
-                    if stop_requested():
-                        stopped_early = True
-                        break
-                    remaining = next_start - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    waiter.wait(min(remaining, 0.05))
-                if stopped_early:
-                    break
-                # From the start of this frame, not from a fixed grid: after a frame that took longer than the
-                # interval, the next frames do not come with no time between them.
-                next_start = time.monotonic() + interval_s
-                try:
-                    image = self.microscope.acquire_image()
-                    read_at = time.monotonic()
-                    path = os.path.join(save_dir, f"{prefix}_{index:04d}.tiff")
-                    tifffile.imwrite(path, image)
-                except Exception as e:
-                    raise RuntimeError(f"burst stopped after {len(frames)} frames: {e}") from e
-                if first_read is None:
-                    first_read = read_at
-                frames.append({"path": path, "time_s": read_at - first_read})
+        light = self.microscope.illumination_kept_on("acquire_burst") if keep_light_on else self._light_for_each_frame()
+        with _BurstWriter(tifffile) as writer:
+            try:
+                with light as take_frame:
+                    for index in range(count):
+                        while True:
+                            if stop_requested():
+                                stopped_early = True
+                                break
+                            remaining = next_start - time.monotonic()
+                            if remaining <= 0:
+                                break
+                            waiter.wait(min(remaining, 0.05))
+                        if stopped_early:
+                            break
+                        # From the start of this frame, not from a fixed grid: after a frame that took longer than
+                        # the interval, the next frames do not come with no time between them.
+                        next_start = time.monotonic() + interval_s
+                        image = take_frame()
+                        read_at = time.monotonic()
+                        path = os.path.join(save_dir, f"{prefix}_{index:04d}.tiff")
+                        writer.write(path, image)
+                        if first_read is None:
+                            first_read = read_at
+                        frames.append({"path": path, "time_s": read_at - first_read})
+                # The light is off now. Each file is on the disk, or this raises the error of the write that failed.
+                writer.finish()
+            except Exception as e:
+                raise RuntimeError(f"burst stopped after {writer.drain()} frames: {e}") from e
 
         return {
             "frames": frames,
@@ -630,7 +711,16 @@ class MicroscopeControlServer:
             "channel": channel.name if channel is not None else None,
             "exposure_ms": self.microscope.camera.get_exposure_time(),
             "stopped_early": stopped_early,
+            "light_kept_on": keep_light_on,
         }
+
+    @contextlib.contextmanager
+    def _light_for_each_frame(self):
+        """The default light of a burst: on for each exposure only. Gives the function that takes one frame."""
+        # One hold of the light source for the whole burst. acquire_image() takes and releases its own for each
+        # frame, which on a laser engine opens and closes a mechanical shutter each time.
+        with self.microscope.live_controller.use_current_channel("acquire_burst"):
+            yield self.microscope.acquire_image
 
     @schema_method
     def _cmd_set_channel(
