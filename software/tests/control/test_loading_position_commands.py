@@ -165,6 +165,55 @@ def test_a_move_whose_thread_cannot_start_is_a_failed_move_that_holds_nothing(qt
     assert _unattended(qtbot, dialog, to_loading=False) == [True, ""]  # nothing left refusing the next move
 
 
+def test_a_robot_move_is_refused_while_the_operator_answers_the_return_question(qtbot):
+    # A Z lift system asks, on the button's return, whether the objective comes back down. The question's event loop
+    # runs the control server's queued calls: a robot's return must not start under it, then a second move start on
+    # the operator's answer (and the operator's "stay retracted" be lost to the robot's default).
+    stage = _stage()
+    dialog = _stage_utils(qtbot, stage)
+    dialog.ask_objective_return = True
+    _unattended(qtbot, dialog, to_loading=True)
+    stage._scanning_position_z_mm = 2.5  # the objective was retracted from 2.5 mm for loading
+    robot = []
+
+    def operator_answers(*_):
+        robot.append(dialog.start_unattended_position_move(False, 9))  # arrives while the question is open
+        return QMessageBox.Ok
+
+    with patch("control.widgets._ask_objective_z_return", side_effect=operator_answers):
+        with patch("control.widgets.move_to_scanning_position") as move:  # starts, never reports back
+            dialog.switch_position()
+
+    assert robot and robot[0] not in ("", UNATTENDED_MOVE_ALREADY_THERE)
+    move.assert_called_once()
+    assert move.call_args.kwargs["restore_z"] is True  # the operator's answer
+    assert dialog._position_move_id == 0  # the move running is the button's
+
+
+def test_a_failed_button_move_is_reported_before_its_warning_opens(qtbot):
+    # The warning's event loop runs the control server's queued calls: a robot's move may start under it. The failed
+    # move must have been reported under its own id by then, not under the robot's once the warning is dismissed.
+    stage = _stage()
+    stage.move_y_to.side_effect = TimeoutError("y stalled")
+    dialog = _stage_utils(qtbot, stage)
+    ends = []
+    dialog.signal_position_move_finished.connect(lambda *end: ends.append(end))
+    robot = []
+
+    def warning(*_):
+        robot.append(dialog.start_unattended_position_move(False, 9))  # the way out of a failed move
+        return QMessageBox.Ok
+
+    with patch.object(QMessageBox, "warning", side_effect=warning):
+        with patch("control.widgets.move_to_scanning_position"):  # the robot's return: starts, never reports back
+            dialog.switch_position()
+            qtbot.waitUntil(lambda: len(robot) > 0, timeout=15000)
+
+    assert robot == [""]
+    assert [(move_id, success) for move_id, success, _ in ends] == [(0, False)]
+    assert "y stalled" in ends[0][2]
+
+
 # --- control server commands --------------------------------------------------------------------------------------
 
 
@@ -291,6 +340,22 @@ def test_after_a_failed_move_the_robot_is_not_told_the_stage_is_at_loading(qtbot
     result = _call(qtbot, server._cmd_return_from_loading_position)  # the way out, as the button offers
     assert result["moved"] is True and _xy(result["position"]) == (47.5, 31.25)
     assert _call(qtbot, server._cmd_move_to_loading_position)["moved"] is True
+
+
+def test_a_stage_moved_away_from_the_loading_position_is_not_reported_there(qtbot):
+    # Something else moved the stage while it was at the loading position (a control-server move_to, or the joystick
+    # on a system without a Z lift): asked again, it must not say "there, moved: false", or a robot reaches in.
+    stage = _stage(x_mm=47.5, y_mm=31.25)
+    dialog = _stage_utils(qtbot, stage)
+    server = _server(dialog)
+    _call(qtbot, server._cmd_move_to_loading_position)
+    stage.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM + 20.0)
+
+    with pytest.raises(RuntimeError, match="Refused.*no longer at the loading position.*return from"):
+        _call(qtbot, server._cmd_move_to_loading_position)
+
+    result = _call(qtbot, server._cmd_return_from_loading_position)  # the way out, as the button offers
+    assert result["moved"] is True and _xy(result["position"]) == (47.5, 31.25)
 
 
 def test_a_command_is_answered_by_its_own_move_not_by_another_one_ending(qtbot):
