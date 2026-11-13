@@ -40,6 +40,10 @@ class AutofocusWorker:
 
         self.crop_width = self.autofocusController.crop_width
         self.crop_height = self.autofocusController.crop_height
+        self.focus_measure_operator = (
+            self.autofocusController.focus_measure_operator or control._def.FOCUS_MEASURE_OPERATOR
+        )
+        self.keep_plane_images = self.autofocusController.keep_plane_images
 
     def run(self):
         try:
@@ -63,6 +67,7 @@ class AutofocusWorker:
         focus_measure_max = 0
 
         z_af_offset = self.deltaZ * round(self.N / 2)
+        z_bottom_mm = self.stage.get_pos().z_mm - z_af_offset  # the planes are one step each above this
 
         self.stage.move_z(-z_af_offset)
 
@@ -106,7 +111,10 @@ class AutofocusWorker:
             self._image_to_display_fn(image)
 
             timestamp_0 = time.time()
-            focus_measure = utils.calculate_focus_measure(image, control._def.FOCUS_MEASURE_OPERATOR)
+            focus_measure = utils.calculate_focus_measure(image, self.focus_measure_operator)
+            self.autofocusController.last_planes.append(
+                (z_bottom_mm + (i + 1) * self.deltaZ, focus_measure, image if self.keep_plane_images else None)
+            )
             timestamp_1 = time.time()
             self._log.info("             calculating focus measure took " + str(timestamp_1 - timestamp_0) + " second")
             focus_measure_vs_z[i] = focus_measure
