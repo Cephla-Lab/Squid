@@ -1110,7 +1110,12 @@ class Microscope:
                 raise RuntimeError("Failed to acquire image: camera.read_frame() returned None")
             return image
 
-        with self.live_controller.use_current_channel(name) as light:  # wakes the line, opens its shutter
+        # The stream first, then the light, as in acquire_image().
+        with _camera_streaming(
+            self.camera, self.live_controller.trigger_mode
+        ), self.live_controller.use_current_channel(
+            name
+        ) as light:  # the hold wakes the line and opens its shutter
             if not light.wait_until_ready():
                 raise RuntimeError("Failed to acquire image: the illumination did not become ready")
             self.live_controller.turn_on_illumination()

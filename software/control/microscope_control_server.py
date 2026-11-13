@@ -569,7 +569,8 @@ class MicroscopeControlServer:
         save_path: Optional[str] = Field(None, description="File path to save the image (TIFF format)"),
     ) -> Dict[str, Any]:
         """Acquire a single image from the camera, optionally saving to disk."""
-        image = self.microscope.acquire_image()
+        with self._frames_shown_in_an_agent_session():
+            image = self.microscope.acquire_image()
 
         result = {
             "acquired": image is not None,
@@ -678,7 +679,7 @@ class MicroscopeControlServer:
         light = self.microscope.illumination_kept_on("acquire_burst") if keep_light_on else self._light_for_each_frame()
         with _BurstWriter(tifffile) as writer:
             try:
-                with light as take_frame:
+                with self._frames_shown_in_an_agent_session(), light as take_frame:
                     for index in range(count):
                         while True:
                             if stop_requested():
@@ -713,6 +714,16 @@ class MicroscopeControlServer:
             "stopped_early": stopped_early,
             "light_kept_on": keep_light_on,
         }
+
+    @contextlib.contextmanager
+    def _frames_shown_in_an_agent_session(self):
+        """In an agent session a person watches the window: the frames of the agent's image commands go to its
+        live view, as the frames of Live and Snap do. With no session nothing changes for a client."""
+        if self.microscope.agent_session.status()["state"] != SessionState.AGENT.value:
+            yield
+            return
+        with self.microscope.live_controller.frames_reach_display():
+            yield
 
     @contextlib.contextmanager
     def _light_for_each_frame(self):
