@@ -1726,29 +1726,42 @@ class Microscope:
             self._laser_af_controller.on_settings_changed()
 
     def set_illumination_intensity(self, channel: str, intensity: float, objective: Optional[str] = None) -> None:
-        """Set the illumination intensity for a channel.
+        """Set the illumination intensity for a channel, and select the channel.
+
+        The value is saved in the profile, as when it is changed in the live controls.
 
         Args:
             channel: Name of the channel.
             intensity: Illumination intensity value.
             objective: Objective name. If None, uses current objective.
         """
-        if objective is None:
-            objective = self.objective_store.current_objective
-        channel_config = self._get_channel_or_raise(objective, channel)
-        channel_config.illumination_intensity = intensity
-        self.live_controller.set_microscope_mode(channel_config)
+        self._set_channel_setting(channel, "IlluminationIntensity", intensity, objective)
 
     def set_exposure_time(self, channel: str, exposure_time: float, objective: Optional[str] = None) -> None:
-        """Set the exposure time for a channel.
+        """Set the exposure time for a channel, and select the channel.
+
+        The value is saved in the profile, as when it is changed in the live controls.
 
         Args:
             channel: Name of the channel.
             exposure_time: Exposure time in milliseconds.
             objective: Objective name. If None, uses current objective.
         """
+        self._set_channel_setting(channel, "ExposureTime", exposure_time, objective)
+
+    def _set_channel_setting(self, channel: str, setting: str, value: float, objective: Optional[str]) -> None:
+        """Write one value of a channel to the channel configs, then select the channel with it.
+
+        The value goes to the values of the imaging mode in use (widefield, or confocal with the spinning disk in),
+        as the live controls write it. get_channel_by_name() builds a new object at each call, so a value that is
+        only set on that object is lost when the channel is loaded the next time.
+        """
         if objective is None:
             objective = self.objective_store.current_objective
-        channel_config = self._get_channel_or_raise(objective, channel)
-        channel_config.exposure_time = exposure_time
-        self.live_controller.set_microscope_mode(channel_config)
+        self._get_channel_or_raise(objective, channel)  # refuses a name that is not a channel, with the names
+        saved = self.config_repo.update_channel_setting(
+            objective, channel, setting, value, confocal_mode=self.live_controller.is_confocal_mode()
+        )
+        if not saved:
+            raise RuntimeError(f"Could not save {setting} of channel '{channel}' for objective '{objective}'")
+        self.live_controller.set_microscope_mode(self._get_channel_or_raise(objective, channel))

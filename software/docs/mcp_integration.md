@@ -130,8 +130,8 @@ The `python_exec` command is disabled by default for security. To enable it:
 |---------|------------|-------------|
 | `get_channels` | - | List available channels for current objective |
 | `set_channel` | `channel_name` | Set active imaging channel |
-| `set_exposure` | `exposure_ms`, `channel` | Set camera exposure |
-| `set_illumination_intensity` | `channel`, `intensity` | Set illumination (0-100%) |
+| `set_exposure` | `exposure_ms`, `channel` | Set camera exposure. With `channel`: the value of that channel, saved in the profile |
+| `set_illumination_intensity` | `channel`, `intensity` | Set illumination (0-100%) of the channel, saved in the profile |
 | `turn_on_illumination` | - | Turn on current channel illumination |
 | `turn_off_illumination` | - | Turn off all illumination |
 
