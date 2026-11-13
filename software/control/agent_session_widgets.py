@@ -33,7 +33,7 @@ _INPUT_EVENT_TYPES = frozenset(
         QEvent.Drop,
         QEvent.InputMethod,
         QEvent.Gesture,
-        QEvent.NativeGesture,
+        QEvent.Type(197),  # QEvent::NativeGesture, by its number: some PyQt5 builds (5.15.6) do not have the name
     }
 )
 

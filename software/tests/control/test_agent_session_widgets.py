@@ -23,7 +23,7 @@ INPUT_EVENT_TYPES = [
     QEvent.KeyPress, QEvent.KeyRelease, QEvent.Shortcut, QEvent.ShortcutOverride, QEvent.ContextMenu,
     QEvent.TouchBegin, QEvent.TouchUpdate, QEvent.TouchEnd, QEvent.TabletPress, QEvent.TabletMove,
     QEvent.TabletRelease, QEvent.DragEnter, QEvent.DragMove, QEvent.DragLeave, QEvent.Drop, QEvent.InputMethod,
-    QEvent.Gesture, QEvent.NativeGesture,
+    QEvent.Gesture, QEvent.Type(197),  # 197 is NativeGesture; some PyQt5 builds do not have the name
 ]  # fmt: skip
 
 
@@ -290,3 +290,11 @@ def test_banner_warns_while_the_agent_has_control_and_the_panel_is_not_locked(qt
     banner.show_state(SessionState.AGENT)
     banner.set_panel_warning("")
     assert not banner.warning_label.isVisibleTo(banner)
+
+
+def test_the_shield_module_uses_no_event_name_that_some_pyqt5_builds_do_not_have():
+    """PyQt5 5.15.6 (Ubuntu 22.04) has no QEvent.NativeGesture: a use of the name stops Squid at import."""
+    import control.agent_session_widgets as module
+
+    source = open(module.__file__).read()
+    assert "QEvent.NativeGesture" not in source
