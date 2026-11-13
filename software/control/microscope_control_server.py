@@ -11,6 +11,8 @@ The server accepts JSON commands and returns JSON responses.
 import functools
 import inspect
 import json
+import os
+import re
 import socket
 import threading
 import time
@@ -520,6 +522,89 @@ class MicroscopeControlServer:
             result["dtype"] = str(image.dtype)
 
         return result
+
+    _BURST_PREFIX = re.compile(r"[A-Za-z0-9_-]+")
+
+    @schema_method
+    def _cmd_acquire_burst(
+        self,
+        count: int = Field(..., description="Number of frames (1 to 1000)"),
+        save_dir: str = Field(..., description="Absolute path of the folder for the frames; created if missing"),
+        interval_ms: float = Field(
+            0, description="Time from the start of one frame to the start of the next; 0 = as fast as possible"
+        ),
+        prefix: str = Field("burst", description="File name prefix (letters, digits, - and _)"),
+    ) -> Dict[str, Any]:
+        """Take a series of frames at the current position, with the current channel and exposure, and save each
+        as <save_dir>/<prefix>_<index>.tiff. Refused while an acquisition runs or live view is on. Stops before the
+        next frame when a take over is requested."""
+        import tifffile
+
+        # schema_method fills defaults; it does not enforce limits, so the limits are checked here.
+        if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 1000:
+            raise ValueError("count must be a whole number from 1 to 1000")
+        if interval_ms < 0:
+            raise ValueError("interval_ms must be 0 or more")
+        if not self._BURST_PREFIX.fullmatch(prefix):
+            raise ValueError("prefix must have only letters, digits, - and _")
+        if not os.path.isabs(save_dir):
+            raise ValueError("save_dir must be an absolute path")
+        # acquire_image() does not stop live view and does not exclude a running acquisition: do not share the camera.
+        if self.multipoint_controller is not None and self.multipoint_controller.acquisition_in_progress():
+            raise RuntimeError("an acquisition is running")
+        if self.microscope.live_controller.is_live:
+            raise RuntimeError("live view is on")
+
+        session = self.microscope.agent_session
+        at_start = session.status()
+
+        def stop_requested() -> bool:
+            # Also true after a take over that ended with a hand back: the burst of before must not continue.
+            now = session.status()
+            return (
+                now["state"] in ("stopping", "human")
+                or now["session_id"] != at_start["session_id"]
+                or now["handover_count"] != at_start["handover_count"]
+            )
+
+        os.makedirs(save_dir, exist_ok=True)
+        pos = self.microscope.stage.get_pos()
+        channel = self.microscope.live_controller.currentConfiguration
+        frames: List[Dict[str, Any]] = []
+        stopped_early = False
+        first_read: Optional[float] = None
+        burst_start = time.monotonic()
+        waiter = threading.Event()
+        for index in range(count):
+            due = burst_start + index * interval_ms / 1000.0
+            while True:
+                if stop_requested():
+                    stopped_early = True
+                    break
+                remaining = due - time.monotonic()
+                if remaining <= 0:
+                    break
+                waiter.wait(min(remaining, 0.05))
+            if stopped_early:
+                break
+            try:
+                image = self.microscope.acquire_image()
+                read_at = time.monotonic()
+                path = os.path.join(save_dir, f"{prefix}_{index:04d}.tiff")
+                tifffile.imwrite(path, image)
+            except Exception as e:
+                raise RuntimeError(f"burst stopped after {len(frames)} frames: {e}") from e
+            if first_read is None:
+                first_read = read_at
+            frames.append({"path": path, "time_s": read_at - first_read})
+
+        return {
+            "frames": frames,
+            "position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm},
+            "channel": channel.name if channel is not None else None,
+            "exposure_ms": self.microscope.camera.get_exposure_time(),
+            "stopped_early": stopped_early,
+        }
 
     @schema_method
     def _cmd_set_channel(
