@@ -1894,6 +1894,11 @@ USE_JUPYTER_CONSOLE = False
 # Security note: Server listens only on localhost (127.0.0.1).
 # The python_exec command is disabled by default and must be explicitly enabled in the GUI.
 ENABLE_MCP_SERVER_SUPPORT = True  # Set to False to hide all MCP-related menu items
+# The lab notebook of an agent session: a separate program that Utils > Agent Notebook starts and opens.
+# Empty command (the default): no menu entry. "{timestamp}" in the command becomes the time of the start, e.g.
+#   agent_notebook_command = python3 -m my_notebook serve --run-dir /data/runs/run-{timestamp}
+AGENT_NOTEBOOK_COMMAND = ""
+AGENT_NOTEBOOK_URL = "http://127.0.0.1:5003/"
 CONTROL_SERVER_HOST = "127.0.0.1"
 CONTROL_SERVER_PORT = 5050
 ANTHROPIC_API_KEY = None  # Set via GUI (Settings > Set Anthropic API Key...)
