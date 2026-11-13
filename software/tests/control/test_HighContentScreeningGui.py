@@ -1612,6 +1612,31 @@ def test_agent_session_needs_a_panel_lock_that_the_controller_confirms(qtbot, co
     assert PANEL_LOCK_AGENT not in gui._panel_lock.held()
 
 
+def test_agent_session_with_no_panel_lock_needs_the_setting_and_warns(qtbot, confirm_exit_yes, monkeypatch, caplog):
+    """A real controller with firmware older than 1.8. The setting AGENT_SESSION_ALLOW_UNLOCKED_PANEL (off by
+    default) lets a session begin; the banner then says that the joystick is not locked."""
+    gui = _gui(qtbot)
+    mcu = gui.microcontroller
+    session = gui.microscope.agent_session
+    sent = []
+    monkeypatch.setattr(mcu, "set_panel_lock", sent.append)
+    monkeypatch.setattr(gui, "_is_simulation", False)
+    assert not mcu.supports_panel_lock() and control._def.AGENT_SESSION_ALLOW_UNLOCKED_PANEL is False
+    assert "cannot lock its control panel" in gui.run_agent_session_transition("begin")
+
+    monkeypatch.setattr(control._def, "AGENT_SESSION_ALLOW_UNLOCKED_PANEL", True)
+    with caplog.at_level(logging.WARNING):
+        assert gui.run_agent_session_transition("begin") is None
+    banner = gui._agent_banner
+    assert session.state is SessionState.AGENT and gui._agent_shield.is_active()
+    assert banner.warning_label.isVisibleTo(banner)
+    assert banner.warning_label.text() == "The control panel is not locked: do not touch the joystick."
+    assert [r for r in caplog.records if "control panel is not locked" in r.getMessage()]
+    session.request_stop(SessionState.HUMAN, "take over")
+    _wait_for_the_human(gui, qtbot)
+    assert not banner.warning_label.isVisibleTo(banner) and sent == []  # no lock command was sent at any time
+
+
 def test_homing_inside_an_agent_session_keeps_the_panel_locked(qtbot, confirm_exit_yes):
     gui = _gui(qtbot)
     _begin_agent_session(gui)
