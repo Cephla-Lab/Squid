@@ -123,6 +123,15 @@ The `python_exec` command is disabled by default for security. To enable it:
 | `stop_live` | - | Stop live preview |
 | `acquire_image` | `save_path` | Capture single image |
 | `acquire_laser_af_image` | `save_path`, `use_last_frame` | Get laser autofocus camera image |
+| `acquire_burst` | `count`, `save_dir`, `interval_ms`, `prefix` | Capture a series of frames at the current position |
+
+`acquire_burst` takes `count` frames (1 to 1000) at the current position, with the current channel and exposure,
+and saves them as `<save_dir>/<prefix>_<index>.tiff` (`save_dir` is an absolute path; `prefix` defaults to
+`burst`). `interval_ms` is the time from the start of one frame to the start of the next; `0` (the default) means
+as fast as possible. The reply has `frames` (each with `path` and `time_s`, the time from the first frame),
+`position`, `channel`, `exposure_ms` and `stopped_early`. The command is refused while an acquisition runs or
+live view is on. In an agent session, a take over stops the burst before the next frame (`stopped_early` is
+`true`).
 
 ### Channel & Illumination
 
