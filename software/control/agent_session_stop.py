@@ -73,8 +73,19 @@ class AgentSessionStopSequence(QObject):
 
     def unlock_anyway(self) -> None:
         """The human decides not to wait any more. The stage is not asked while a command is in progress."""
+        self._finish(with_position=self._session.in_flight == 0, unlocked_anyway=True)
+
+    def _finish(self, with_position: bool, unlocked_anyway: bool = False) -> None:
+        """End the stop: the human gets the control (or the session ends). This does not depend on the snapshot:
+        if the microscope state cannot be read, the handover has no snapshot. The timer stops only after the
+        session changed, so a failure here is tried again at the next check and the time limit still comes."""
+        try:
+            snapshot = self._snapshot(with_position)
+        except Exception:
+            self._log.exception("Could not read the microscope state for the handover: the stop ends with no snapshot")
+            snapshot = None
+        self._session.finish_stop(snapshot, unlocked_anyway=unlocked_anyway)
         self._timer.stop()
-        self._session.finish_stop(self._snapshot(self._session.in_flight == 0), unlocked_anyway=True)
 
     def _waiting_reasons(self) -> List[str]:
         """Why the control cannot go to the human yet. A check that fails counts as "not yet"."""
@@ -111,8 +122,7 @@ class AgentSessionStopSequence(QObject):
                 self._reasons = reasons
                 self.signal_waiting_changed.emit(reasons)
             if not reasons:
-                self._timer.stop()
-                self._session.finish_stop(self._snapshot(True))
+                self._finish(with_position=True)
                 return
             if not self._timed_out and self._clock() - self._started_at > AGENT_SESSION_STOP_TIMEOUT_S:
                 self._timed_out = True

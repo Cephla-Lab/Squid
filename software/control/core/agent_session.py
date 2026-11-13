@@ -42,10 +42,20 @@ def is_read_command(command: str) -> bool:
     return command == "ping" or command.startswith("get_")
 
 
+def _read_hardware(what: str, read: Callable[[], object]):
+    """One value from the hardware for a snapshot, or None if the hardware does not give it. A handover records
+    what it can read; it does not wait for, or fail on, one value."""
+    try:
+        return read()
+    except Exception:
+        squid.logging.get_logger(__name__).exception(f"Could not read {what} for the handover snapshot")
+        return None
+
+
 def snapshot_microscope(microscope, with_position: bool = True) -> dict:
     """The microscope state that a handover records. with_position=False reads no stage position (the stage may be
-    busy under another thread)."""
-    pos = microscope.stage.get_pos() if with_position else None
+    busy under another thread). A value that the hardware does not give is None."""
+    pos = _read_hardware("the stage position", microscope.stage.get_pos) if with_position else None
     channel = microscope.live_controller.currentConfiguration
     return {
         "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -54,7 +64,7 @@ def snapshot_microscope(microscope, with_position: bool = True) -> dict:
         "z_mm": pos.z_mm if pos else None,
         "objective": microscope.objective_store.current_objective,
         "channel": channel.name if channel is not None else None,
-        "exposure_ms": microscope.camera.get_exposure_time(),
+        "exposure_ms": _read_hardware("the exposure time", microscope.camera.get_exposure_time),
         "is_live": bool(microscope.live_controller.is_live),
     }
 
@@ -176,8 +186,9 @@ class AgentSession:
         self._notify(old, SessionState.STOPPING)
         return SessionState.STOPPING
 
-    def finish_stop(self, snapshot: dict, unlocked_anyway: bool = False) -> SessionState:
-        """The stop sequence calls this when nothing of the agent is in progress any more."""
+    def finish_stop(self, snapshot: Optional[dict], unlocked_anyway: bool = False) -> SessionState:
+        """The stop sequence calls this when nothing of the agent is in progress any more. snapshot is None if the
+        microscope state could not be read."""
         with self._lock:
             if self._state is not SessionState.STOPPING:
                 return self._state

@@ -103,7 +103,8 @@ def test_waits_for_a_command_and_then_for_the_stage(qtbot, session, mpc, stage):
     seq = make(session, mpc, stage)
     session.request_stop(SessionState.HUMAN, "take over")
     seq.start()
-    qtbot.wait(300)
+    qtbot.waitUntil(lambda: session.status()["waiting_for"] == [WAIT_COMMAND], timeout=2000)
+    qtbot.wait(300)  # more checks while the command runs: the stage is still not asked
     assert session.status()["waiting_for"] == [WAIT_COMMAND] and stage.asked == 0
     command.__exit__(None, None, None)
     qtbot.waitUntil(lambda: session.status()["waiting_for"] == [WAIT_STAGE], timeout=2000)
@@ -195,3 +196,28 @@ def test_tells_when_the_reasons_change_and_if_the_time_limit_passed(qtbot, sessi
     # the end of the first sequence (no reason left) was a change also
     qtbot.waitUntil(lambda: seen == [[WAIT_STAGE], [], [WAIT_STAGE]], timeout=2000)
     sequence.stop()
+
+
+def failing_snapshot(with_position):
+    raise RuntimeError("the microscope state cannot be read")
+
+
+def test_the_stop_ends_also_when_the_microscope_state_cannot_be_read(qtbot, session, mpc, stage):
+    """The human must always get the control: the end of a stop does not depend on the snapshot."""
+    sequence = AgentSessionStopSequence(session, mpc, stage, failing_snapshot)
+    session.request_stop(SessionState.HUMAN, "take over")
+    sequence.start()
+    qtbot.waitUntil(lambda: session.state is SessionState.HUMAN, timeout=2000)
+    assert session.status()["handover"]["before"] is None and not sequence.is_running()
+
+
+def test_unlock_anyway_works_also_when_the_microscope_state_cannot_be_read(qtbot, session, mpc, stage):
+    sequence = AgentSessionStopSequence(session, mpc, stage, failing_snapshot)
+    stage.stopped = False
+    session.request_stop(SessionState.HUMAN, "take over")
+    sequence.start()
+    qtbot.waitUntil(lambda: session.status()["waiting_for"] == [WAIT_STAGE], timeout=2000)
+    sequence.unlock_anyway()
+    status = session.status()
+    assert status["state"] == "human" and status["unlocked_anyway"] is True and status["handover"]["before"] is None
+    assert not sequence.is_running()

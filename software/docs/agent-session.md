@@ -31,7 +31,7 @@ The commands go to the control server (port 5050) like every other command: one 
 | Command | Parameters | Result | Notes |
 |---------|-----------|--------|-------|
 | `begin_agent_session` | none | `{"state": "agent", "session_id": "..."}` | Refused while the microscope is not free (see below). |
-| `take_over` | none | `{"state": "stopping"}` | Returns at once. Read the state with `get_agent_session` until it is `human`. |
+| `take_over` | none | `{"state": "stopping"}` | Returns at once. Read the state with `get_agent_session` until it is `human`. If a human drives already, the result is `{"state": "human"}`. With no session it is the error `no agent session`. |
 | `hand_back` | `note` (optional text) | `{"state": "agent"}` | Only while a human drives. |
 | `end_agent_session` | none | `{"state": "stopping"}` from `agent`, `{"state": "none"}` from `human` | |
 | `get_agent_session` | none | the session status (below) | A read: accepted in every state. |
@@ -74,7 +74,9 @@ send_command("end_agent_session")
 | `handover` | `before`: the microscope state when the human got the control. `after`: the state when the human gave it back. `note`: the line that the human wrote. |
 
 A microscope state has `time`, `x_mm`, `y_mm`, `z_mm`, `objective`, `channel`, `exposure_ms` and `is_live`. The
-agent compares `before` and `after` to see what the human changed. The two states are in memory only.
+agent compares `before` and `after` to see what the human changed. A value that the hardware did not give is
+`null`, and `before` is `null` if the microscope state could not be read at all: a take over does not wait for it.
+The two states are in memory only.
 
 ### Which commands are refused
 
@@ -94,6 +96,8 @@ The agent gets the control only when the microscope is free. The error text says
   `could not lock the control panel` if the controller did not confirm the lock
 - `a session exists` (begin), `no human is driving` (hand back)
 - `an agent session needs the Squid window` (the server runs with no window)
+- `Squid is closing`, `Squid did not answer`, or `the change failed in Squid (...)` with the error, if something
+  went wrong inside Squid during the change
 
 ## What the human sees
 
@@ -111,7 +115,8 @@ While the agent drives:
   widgets are not disabled, so the window still shows what the agent does.
 - The control panel (joystick and focus wheel) is locked. The lock is counted together with the locks of homing and
   of the loading position: the end of a homing run inside a session does not unlock the panel.
-- The terminal console answers `Refused: the agent is driving` to each line.
+- The terminal console answers `Refused: the agent is driving` to each line (`Refused: a stop is in progress`
+  during a stop).
 
 ### Take over
 
@@ -120,8 +125,9 @@ While the agent drives:
    acquisition to abort at each check), and the stage has stopped.
 3. When the three are true, Squid records the microscope state, the state becomes `human`, and the window and the
    control panel work again.
-4. If this takes more than 30 seconds, the banner shows what Squid waits for and the button **Unlock anyway**. With
-   it the human gets the control without waiting; the status then has `unlocked_anyway: true`.
+4. While Squid waits, the banner shows what it waits for. If this takes more than 30 seconds, the banner also has
+   the button **Unlock anyway**. With it the human gets the control without waiting; the status then has
+   `unlocked_anyway: true`.
 
 Squid leaves live view and the illumination as they are at the take over.
 
@@ -154,5 +160,7 @@ Closing Squid asks for a confirmation, which is such a dialog: closing while the
 - The handover shows the microscope state before and after the human drove. It does not list each action.
 - On macOS the menu bar is at the top of the screen, outside the Squid window. The window cannot ignore clicks
   there. A menu item that opens a dialog causes a take over; another item acts at once.
+- Closing a window is not input that the window ignores: the close button of a Squid window or dialog still
+  works while the agent drives. Closing a dialog that a command of the agent waits for answers that dialog.
 - In simulation the controller has no control panel, so a session begins with no panel lock. On a real controller
   with firmware older than 1.8 a session cannot begin.

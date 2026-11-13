@@ -5,7 +5,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from qtpy.QtCore import Qt, QThread, QTimer
+from qtpy.QtCore import QEventLoop, QMetaObject, QObject, Qt, QThread, QTimer, Slot
 from qtpy.QtWidgets import QApplication, QDialog, QInputDialog, QMainWindow, QMessageBox, QPushButton
 
 import control.agent_session_stop as stop_module
@@ -308,6 +308,104 @@ def test_begin_and_take_over_at_the_same_moment_never_leave_the_wrong_protection
         rig.session.end()
         QApplication.processEvents()
         assert rig.session.state is SessionState.NONE and not rig.shield.is_active() and not rig.panel.locked
+
+
+def test_a_take_over_that_comes_inside_begin_leaves_the_right_protection(rig, qtbot):
+    """The take over lands after the session said "agent" and before the transition made its own sync."""
+
+    def take_over_at_once(old, new):
+        if new is SessionState.AGENT:
+            rig.session.request_stop(SessionState.HUMAN, "take over")
+
+    rig.session.add_listener(take_over_at_once)
+    assert rig.protection.transition("begin") is None  # the begin itself was not refused
+    assert rig.session.state is SessionState.STOPPING and protected(rig)
+    qtbot.waitUntil(lambda: rig.session.state is SessionState.HUMAN and not rig.shield.is_active(), timeout=2000)
+    assert not rig.panel.locked
+    rig.session.remove_listener(take_over_at_once)
+
+
+class _GuiWork(QObject):
+    """A slot on the GUI thread that a command of the agent calls and waits for, as the control server does."""
+
+    def __init__(self, work):
+        super().__init__()
+        self._work = work
+
+    @Slot()
+    def run(self):
+        self._work()
+
+
+def _command_that_waits_for_the_gui_thread(rig, work):
+    target = _GuiWork(work)
+    done = []
+
+    def command():
+        with rig.session.admit("run_acquisition_from_yaml"):
+            QMetaObject.invokeMethod(target, "run", Qt.BlockingQueuedConnection)
+        done.append(True)
+
+    thread = threading.Thread(target=command)
+    thread.start()
+    return target, thread, done
+
+
+def test_take_over_from_the_banner_while_a_command_waits_for_the_gui_thread(rig, qtbot):
+    """The GUI thread works for a command of the agent and keeps its event loop turning (as with a dialog). The
+    human clicks Take over: the click returns, the window shows the wait, the command ends, the human drives."""
+    begin(rig)
+    seen = {}
+
+    def click_take_over():
+        qtbot.mouseClick(rig.banner.take_over_button, Qt.LeftButton)
+        seen["after_click"] = (rig.session.state, rig.session.in_flight)
+
+    def look_at_the_banner():
+        seen["banner"] = rig.banner.label.text()
+
+    def work():
+        loop = QEventLoop()
+        QTimer.singleShot(50, click_take_over)
+        QTimer.singleShot(300, look_at_the_banner)
+        QTimer.singleShot(400, loop.quit)
+        loop.exec_()
+
+    target, thread, done = _command_that_waits_for_the_gui_thread(rig, work)
+    qtbot.waitUntil(lambda: bool(done), timeout=5000)
+    thread.join()
+    assert seen["after_click"] == (SessionState.STOPPING, 1)
+    assert seen["banner"] == "Stopping. Waiting: a command is in progress"
+    qtbot.waitUntil(lambda: rig.session.state is SessionState.HUMAN and not rig.shield.is_active(), timeout=2000)
+    assert not rig.panel.locked
+
+
+def test_take_over_from_the_server_while_the_gui_thread_is_busy_for_a_command(rig, qtbot):
+    """The GUI thread is busy inside a slot for a command of the agent and handles no event. A take over from
+    another thread returns at once (it waits for nothing on the GUI thread), and all ends when the slot ends."""
+    begin(rig)
+    in_slot = threading.Event()
+    release = threading.Event()
+    answers = []
+
+    def work():
+        in_slot.set()
+        release.wait(5)
+
+    def take_over_while_busy():
+        in_slot.wait(5)
+        answers.append(rig.session.request_stop(SessionState.HUMAN, "take over"))
+        release.set()
+
+    taker = threading.Thread(target=take_over_while_busy)
+    taker.start()
+    target, thread, done = _command_that_waits_for_the_gui_thread(rig, work)
+    qtbot.waitUntil(lambda: bool(done), timeout=10000)
+    thread.join()
+    taker.join()
+    assert answers == [SessionState.STOPPING]
+    qtbot.waitUntil(lambda: rig.session.state is SessionState.HUMAN and not rig.shield.is_active(), timeout=2000)
+    assert not rig.panel.locked
 
 
 def test_a_dialog_that_opens_while_the_agent_drives_takes_over(rig, qtbot):
