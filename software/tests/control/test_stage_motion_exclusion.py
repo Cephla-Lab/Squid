@@ -30,6 +30,7 @@ AT_LOADING = "the stage is at the loading position (return from it first)"
 MOVING_BACK = "a move back from the loading position is running"
 ACQUISITION = "an acquisition is running"
 TCP_MOVE = "a stage move from the control server is running"
+UNSETTLED = "a move failed and the stage has not reported it stopped"
 
 
 @pytest.fixture
@@ -103,6 +104,43 @@ def test_a_refused_second_start_leaves_the_running_acquisition_holding_the_stage
         assert scope.stage_motion.holder == ACQUISITION
         release_worker.set()
         mpc.thread.join(10)
+
+
+def test_a_start_refused_while_another_sets_up_leaves_that_run_to_report_its_end(scope):
+    """The first start holds the stage before it marks itself starting (its log and memory monitor come in between). A
+    second start refused there must not report an end: the GUI would leave its acquiring state and release the first
+    run's Z lift claim under it."""
+    mpc, finished = _acquisition(scope)
+    ends = []
+
+    def acquisition_finished():
+        ends.append(True)
+        finished.set()
+
+    mpc.callbacks = dataclasses.replace(mpc.callbacks, signal_acquisition_finished=acquisition_finished)
+    setting_up, go_on = threading.Event(), threading.Event()
+    real_log = mpc._start_per_acquisition_log
+
+    def slow_log():
+        setting_up.set()
+        go_on.wait(30)
+        real_log()
+
+    first = []
+    with patch.object(mpc, "_start_per_acquisition_log", new=slow_log):
+        starter = threading.Thread(target=lambda: first.append(mpc.run_acquisition()))
+        starter.start()
+        assert setting_up.wait(10)
+
+        assert mpc.run_acquisition() is False
+        assert mpc.last_start_refusal == ACQUISITION
+        assert ends == []
+
+        go_on.set()
+        starter.join(30)
+    assert first == [True]
+    _wait_until_done(mpc, finished)
+    assert ends == [True]
 
 
 def test_a_start_refused_by_the_start_blocker_gives_the_stage_back(scope):
@@ -191,12 +229,92 @@ def test_a_tcp_move_holds_the_stage_while_it_moves(scope):
     assert scope.stage_motion.holder is None
 
 
-def test_a_tcp_move_that_fails_gives_the_stage_back(scope):
-    server = _server(scope)
-    with patch.object(scope.stage, "move_y", side_effect=TimeoutError("y stalled")):
-        reply = server._execute("move_relative", {"dy_mm": 1.0})
+def _until_released(scope, timeout_s=10):
+    deadline = threading.Event()
+    for _ in range(int(timeout_s / 0.05)):
+        if scope.stage_motion.holder is None:
+            return True
+        deadline.wait(0.05)
+    return False
 
-    assert reply["success"] is False and "y stalled" in reply["error"]
+
+def test_a_tcp_move_that_fails_keeps_the_stage_until_it_reports_stopped(scope):
+    """A blocking move that times out raises with its command sent, and the stage may still be moving: the stage stays
+    held, saying so, until the controller reports it stopped."""
+    server = _server(scope)
+    stopped = threading.Event()
+    with patch.object(scope, "_stage_reports_stopped", side_effect=stopped.is_set):
+        with patch.object(scope.stage, "move_y", side_effect=TimeoutError("y stalled")):
+            reply = server._execute("move_relative", {"dy_mm": 1.0})
+
+        assert reply["success"] is False and "y stalled" in reply["error"]
+        assert scope.stage_motion.holder == UNSETTLED
+        with pytest.raises(StageMotionRefused, match=UNSETTLED):
+            scope.stage_motion.take(LOADING_MOVE)
+
+        stopped.set()
+        assert _until_released(scope)
+
+
+def test_an_acquisition_whose_move_back_fails_keeps_the_stage_until_it_reports_stopped(scope):
+    mpc, finished = _acquisition(scope)
+    stopped = threading.Event()
+
+    def _restore_hardware_after_acquisition():  # the move back to the start position times out
+        raise TimeoutError("x stalled")
+
+    with patch.object(scope, "_stage_reports_stopped", side_effect=stopped.is_set):
+        with patch.object(mpc, "_restore_hardware_after_acquisition", new=_restore_hardware_after_acquisition):
+            assert mpc.run_acquisition() is True
+            _wait_until_done(mpc, finished)
+
+        assert scope.stage_motion.holder == UNSETTLED
+
+        stopped.set()
+        assert _until_released(scope)
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_an_acquisition_whose_teardown_raises_gives_the_stage_back_once_it_reports_stopped(scope):
+    """The worker's teardown raised (a job runner's output queue broke while it drained the results): the run never
+    reported its end, so its completion never gave the stage back. The stage may have been moving."""
+    mpc, _ = _acquisition(scope)
+    stopped = threading.Event()
+    with patch.object(scope, "_stage_reports_stopped", side_effect=stopped.is_set):
+        with patch("control.core.multi_point_controller.MultiPointWorker._finish_jobs", side_effect=EOFError):
+            assert mpc.run_acquisition() is True
+            mpc.thread.join(30)
+        assert not mpc.thread.is_alive()
+
+        assert scope.stage_motion.holder == UNSETTLED
+
+        stopped.set()
+        assert _until_released(scope)
+
+
+def test_a_start_that_fails_after_moving_keeps_the_stage_until_it_reports_stopped(scope):
+    """The focus map is made before the worker starts, moving the stage: a start failing there may leave it moving."""
+    mpc, _ = _acquisition(scope)
+    mpc.set_gen_focus_map_flag(True)
+    stopped = threading.Event()
+    with patch.object(scope, "_stage_reports_stopped", side_effect=stopped.is_set):
+        with patch.object(mpc.autofocusController, "gen_focus_map", side_effect=TimeoutError("z stalled")):
+            with pytest.raises(TimeoutError):
+                mpc.run_acquisition()
+
+        assert scope.stage_motion.holder == UNSETTLED
+
+        stopped.set()
+        assert _until_released(scope)
+
+
+def test_a_start_refused_before_moving_gives_the_stage_back_at_once(scope):
+    """The microcontroller stayed busy (live triggers): nothing was moved, and the way out is to home, which must not
+    be refused."""
+    mpc, _ = _acquisition(scope)
+    with patch.object(mpc.microcontroller, "wait_till_operation_is_completed", side_effect=TimeoutError("busy")):
+        assert mpc.run_acquisition() is False
+
     assert scope.stage_motion.holder is None
 
 

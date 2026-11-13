@@ -38,6 +38,10 @@ class StageMotionHold:
     def reason(self) -> str:
         return self._reason() if callable(self._reason) else self._reason
 
+    @reason.setter
+    def reason(self, reason: Reason) -> None:
+        self._reason = reason
+
     @property
     def released(self) -> bool:
         return self._released

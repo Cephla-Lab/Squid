@@ -466,15 +466,18 @@ class MicroscopeControlServer:
     @contextlib.contextmanager
     def _holding_stage(self, blocking: bool):
         """Hold the stage for one move: refused (StageMotionRefused) while anything else holds it; given back when the
-        move returns, or for a move not waited for (blocking False) once the stage reports it stopped."""
+        move returns, or once the stage reports it stopped for a move not waited for (blocking False) or one that raised
+        with its command sent (a timeout leaves the controller moving)."""
         hold = self.microscope.stage_motion.take(TCP_STAGE_MOVE)
         try:
             yield
-        finally:
-            if blocking:
-                hold.release()
-            else:
-                self.microscope.release_stage_motion_when_stopped(hold)
+        except BaseException:
+            self.microscope.release_stage_motion_when_stopped(hold, after_failed_move=True)
+            raise
+        if blocking:
+            hold.release()
+        else:
+            self.microscope.release_stage_motion_when_stopped(hold)
 
     def _refuse_while_stage_held(self) -> None:
         """An acquisition command, before it replaces the GUI's regions and experiment: refused while anything holds

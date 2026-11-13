@@ -104,6 +104,9 @@ STAGE_STOP_GRACE_POLL_S = 0.01
 
 # What a homing claim holds the stage-motion reservation as (Microscope.stage_motion)
 STAGE_HOMING = "the stage is homing"
+# ...and what any owner's hold becomes after a move of its raised (a timeout, say): the command was sent, and the stage
+# may still be moving until the controller reports it stopped (Microscope.release_stage_motion_when_stopped)
+STAGE_UNSETTLED = "a move failed and the stage has not reported it stopped"
 
 
 class StageHomingClaim:
@@ -1304,11 +1307,15 @@ class Microscope:
                 self._stage_homing_claim = None
             claim.hold.release()
 
-    def release_stage_motion_when_stopped(self, hold: StageMotionHold) -> None:
+    def release_stage_motion_when_stopped(self, hold: StageMotionHold, after_failed_move: bool = False) -> None:
         """Give hold back once the stage reports it stopped (AbstractStage.reports_stopped), from a watcher thread: the
-        hold of a move started without waiting for it covers the move, not just the call that started it. A stage
-        that never reports stopped keeps it held (a homing claim does the same); the watcher ends if the microscope
+        hold of a move started without waiting for it, or of a move that raised with its command sent
+        (after_failed_move: a timeout leaves the controller moving), covers the motion, not just the call. A stage that
+        never reports stopped keeps it held (a homing claim does the same); the watcher ends if the microscope
         closes."""
+        if after_failed_move:
+            hold.reason = STAGE_UNSETTLED
+            self._log.error(f"{STAGE_UNSETTLED}: stage moves stay refused until it does")
 
         def release_once_stopped():
             while not self._stage_reports_stopped():
