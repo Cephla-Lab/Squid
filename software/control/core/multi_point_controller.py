@@ -33,9 +33,13 @@ from control.core.memory_profiler import MemoryMonitor, log_memory
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
+from squid.stage.reservation import StageMotionHold, StageMotionRefused
 import squid.acquisition_state
 import squid.logging
 from control.acquisition_history_recorder import NullAcquisitionHistoryRecorder
+
+# What a running acquisition holds the stage-motion reservation as (Microscope.stage_motion)
+ACQUISITION_RUNNING = "an acquisition is running"
 
 NoOpCallbacks = MultiPointControllerFunctions(
     signal_acquisition_start=lambda *a, **kw: None,
@@ -250,6 +254,10 @@ class MultiPointController:
         self.history_recorder = NullAcquisitionHistoryRecorder()
         self._history_entry_id: Optional[str] = None
         self._starting = False  # a run_acquisition call is between its refusals and its worker thread
+        # The stage-motion reservation held by the run under way (Microscope.stage_motion): taken before the start
+        # blocker, given back when the run ends or its start fails. Why the last start was refused, or None.
+        self._stage_motion_hold: Optional[StageMotionHold] = None
+        self.last_start_refusal: Optional[str] = None
         self._expected_image_count = 0
         self.use_manual_focus_map = False
         self.base_path = None
@@ -262,8 +270,9 @@ class MultiPointController:
         self.focus_map = None
         self.region_laser_af_offsets = {}
         self.gen_focus_map = False
-        # Optional check run before every start (GUI widgets, workflow runner, TCP server): returns why the acquisition
-        # must not start now, or None. A Z lift system uses it to refuse a start while the lift is moving.
+        # Optional check run before every start (GUI widgets, workflow runner, TCP server), once the run holds the
+        # stage: returns why the acquisition must not start now, or None. A Z lift system uses it to refuse a start
+        # while the lift is moving.
         self.start_blocker: Optional[Callable[[], Optional[str]]] = None
         self.focus_map_storage = []
         self.already_using_fmap = False
@@ -795,26 +804,32 @@ class MultiPointController:
         self.protocol_info = None
         self.last_end_reason = None
         self.last_image_count = 0
+        self.last_start_refusal = None
         if not self.validate_acquisition_settings():
             self._end_refused_start(acquire_current_fov, run_protocol_info)  # tells the callers, to re-enable the UI
             return False
-        refusal = self.start_blocker() if self.start_blocker is not None else None
+        refusal = self._hold_stage_for_run()
         if refusal:
             self._log.error(f"Acquisition not started: {refusal}")
+            self.last_start_refusal = refusal
             self._end_refused_start(acquire_current_fov, run_protocol_info)
             return False
-        self._start_per_acquisition_log()
+        try:
+            self._start_per_acquisition_log()
 
-        # Start memory monitoring for the acquisition (if enabled)
-        if control._def.ENABLE_MEMORY_PROFILING:
-            self._memory_monitor = MemoryMonitor(
-                sample_interval_ms=200,
-                process_name="main",
-                track_children=True,
-                log_interval_s=30.0,  # Log every 30 seconds during acquisition
-            )
-            self._memory_monitor.start("ACQUISITION_START")
-            log_memory("ACQUISITION START", include_children=True)
+            # Start memory monitoring for the acquisition (if enabled)
+            if control._def.ENABLE_MEMORY_PROFILING:
+                self._memory_monitor = MemoryMonitor(
+                    sample_interval_ms=200,
+                    process_name="main",
+                    track_children=True,
+                    log_interval_s=30.0,  # Log every 30 seconds during acquisition
+                )
+                self._memory_monitor.start("ACQUISITION_START")
+                log_memory("ACQUISITION START", include_children=True)
+        except BaseException:
+            self._release_stage_after_run()  # before the protected region: nothing below runs to give it back
+            raise
 
         thread_started = False
         hardware_prepared = False
@@ -1111,6 +1126,7 @@ class MultiPointController:
             if starting_here:
                 self._starting = False
             if not thread_started:
+                self._release_stage_after_run()
                 # Acquisition never launched a worker — close out the breadcrumb so the
                 # watchdog doesn't later misread the lingering "running" state as a hang.
                 self._run_state_writer.end("error", None)
@@ -1213,8 +1229,33 @@ class MultiPointController:
                 restore()
             except Exception:
                 self._log.exception(f"Restoring after the acquisition failed in {restore.__name__}")
+        # The stage is done with (the move back to the start position included): the next owner may take it
+        self._release_stage_after_run()
         # emit the acquisition finished signal to enable the UI
         self.callbacks.signal_acquisition_finished()
+
+    def _hold_stage_for_run(self) -> Optional[str]:
+        """Take the stage-motion reservation for this run, then ask the start blocker. Returns why the run must not
+        start (nothing held then), or None with the reservation held until _release_stage_after_run."""
+        try:
+            hold = self.microscope.stage_motion.take(ACQUISITION_RUNNING)
+        except StageMotionRefused as e:
+            return e.reason
+        try:
+            refusal = self.start_blocker() if self.start_blocker is not None else None
+        except BaseException:
+            hold.release()
+            raise
+        if refusal:
+            hold.release()
+            return refusal
+        self._stage_motion_hold = hold
+        return None
+
+    def _release_stage_after_run(self) -> None:
+        hold, self._stage_motion_hold = self._stage_motion_hold, None
+        if hold is not None:
+            hold.release()
 
     def _restore_software_state_after_acquisition(self):
         """The steps that talk to no device, so a dead controller cannot stop them."""

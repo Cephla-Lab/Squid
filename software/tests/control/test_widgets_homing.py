@@ -98,11 +98,12 @@ class _Claim:
 
 def _stage_utils(qtbot):
     from control.widgets import StageUtils
+    from squid.stage.reservation import StageMotionReservation
 
     live = MagicMock()
     live.is_live = False
     stage = MagicMock()
-    dialog = StageUtils(stage, live, is_wellplate=False)
+    dialog = StageUtils(stage, live, is_wellplate=False, stage_motion=StageMotionReservation())
     dialog.set_homing_hooks(blocker=lambda: None, claim=lambda operation: _Claim())
     qtbot.addWidget(dialog)
     return dialog, stage

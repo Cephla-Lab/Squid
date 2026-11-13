@@ -10,6 +10,7 @@ from qtpy.QtWidgets import QMessageBox
 
 from control.widgets import StageUtils
 from squid.abc import Pos
+from squid.stage.reservation import StageMotionReservation
 
 
 def _stage_utils(qtbot, live_was_on=False, y_fails=False):
@@ -19,7 +20,7 @@ def _stage_utils(qtbot, live_was_on=False, y_fails=False):
         stage.move_y_to.side_effect = TimeoutError("y stalled")
     live = MagicMock()
     live.is_live = live_was_on
-    dialog = StageUtils(stage, live, is_wellplate=False)
+    dialog = StageUtils(stage, live, is_wellplate=False, stage_motion=StageMotionReservation())
     qtbot.addWidget(dialog)
     return dialog
 

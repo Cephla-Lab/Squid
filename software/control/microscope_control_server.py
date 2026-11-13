@@ -8,6 +8,7 @@ while the GUI is running.
 The server accepts JSON commands and returns JSON responses.
 """
 
+import contextlib
 import functools
 import inspect
 import json
@@ -19,6 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, TypedDict, get_type_hint
 
 import squid.logging
 from control.core.acquisition_settings import apply_acquisition_settings, parse_wells
+from squid.stage.reservation import StageMotionRefused
 
 import control._def  # Module import for runtime access to MCP-modifiable settings
 import control.utils
@@ -203,6 +205,9 @@ def schema_method(func: Callable) -> Callable:
     wrapper._schema = schema
     return wrapper
 
+
+# What a control-server move holds the stage-motion reservation as (Microscope.stage_motion)
+TCP_STAGE_MOVE = "a stage move from the control server is running"
 
 _ACQUISITION_NOT_STARTED = (
     "Acquisition did not start: the microcontroller stayed busy (home the stage or power-cycle the "
@@ -421,13 +426,17 @@ class MicroscopeControlServer:
         z_mm: Optional[float] = Field(None, description="Target Z position in millimeters"),
         blocking: bool = Field(True, description="Wait for move to complete before returning"),
     ) -> Dict[str, Any]:
-        """Move stage to absolute XYZ position in millimeters."""
-        if x_mm is not None:
-            self.microscope.move_x_to(x_mm, blocking=blocking)
-        if y_mm is not None:
-            self.microscope.move_y_to(y_mm, blocking=blocking)
-        if z_mm is not None:
-            self.microscope.move_z_to(z_mm, blocking=blocking)
+        """Move stage to absolute XYZ position in millimeters.
+
+        Refused while anything else drives the stage: an acquisition, a move to or from the loading position or the
+        stay there, a home."""
+        with self._holding_stage(blocking):
+            if x_mm is not None:
+                self.microscope.move_x_to(x_mm, blocking=blocking)
+            if y_mm is not None:
+                self.microscope.move_y_to(y_mm, blocking=blocking)
+            if z_mm is not None:
+                self.microscope.move_z_to(z_mm, blocking=blocking)
 
         pos = self.microscope.stage.get_pos()
         return {"moved_to": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
@@ -440,16 +449,43 @@ class MicroscopeControlServer:
         dz_mm: float = Field(0, description="Relative Z movement in millimeters"),
         blocking: bool = Field(True, description="Wait for move to complete before returning"),
     ) -> Dict[str, Any]:
-        """Move stage by relative amount in millimeters."""
-        if dx_mm != 0:
-            self.microscope.move_x(dx_mm, blocking=blocking)
-        if dy_mm != 0:
-            self.microscope.move_y(dy_mm, blocking=blocking)
-        if dz_mm != 0:
-            self.microscope.move_z(dz_mm, blocking=blocking)
+        """Move stage by relative amount in millimeters.
+
+        Refused as move_to is."""
+        with self._holding_stage(blocking):
+            if dx_mm != 0:
+                self.microscope.move_x(dx_mm, blocking=blocking)
+            if dy_mm != 0:
+                self.microscope.move_y(dy_mm, blocking=blocking)
+            if dz_mm != 0:
+                self.microscope.move_z(dz_mm, blocking=blocking)
 
         pos = self.microscope.stage.get_pos()
         return {"new_position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
+
+    @contextlib.contextmanager
+    def _holding_stage(self, blocking: bool):
+        """Hold the stage for one move: refused (StageMotionRefused) while anything else holds it; given back when the
+        move returns, or for a move not waited for (blocking False) once the stage reports it stopped."""
+        hold = self.microscope.stage_motion.take(TCP_STAGE_MOVE)
+        try:
+            yield
+        finally:
+            if blocking:
+                hold.release()
+            else:
+                self.microscope.release_stage_motion_when_stopped(hold)
+
+    def _refuse_while_stage_held(self) -> None:
+        """An acquisition command, before it replaces the GUI's regions and experiment: refused while anything holds
+        the stage. run_acquisition() takes the stage itself, in one step, so this is only the early answer."""
+        holder = self.microscope.stage_motion.holder
+        if holder:
+            raise StageMotionRefused(holder)
+
+    def _acquisition_not_started(self) -> RuntimeError:
+        refusal = self.multipoint_controller.last_start_refusal
+        return RuntimeError(f"Refused: {refusal}" if refusal else _ACQUISITION_NOT_STARTED)
 
     @schema_method
     def _cmd_home(
@@ -459,7 +495,10 @@ class MicroscopeControlServer:
             description="Required on a piezo-only system: true once the objective has been lowered with the focus knob",
         ),
     ) -> Dict[str, Any]:
-        """Home all stage axes (X, Y, Z) to reference position."""
+        """Home all stage axes (X, Y, Z) to reference position.
+
+        Refused while anything else drives the stage: an acquisition, a move to or from the loading position or the
+        stay there, another move."""
         # Passed as sent: the Microscope's check counts only true (a truthy string or number is not a confirmation).
         self.microscope.home_xyz(objective_lowered=objective_lowered)
         pos = self.microscope.stage.get_pos()
@@ -718,6 +757,7 @@ class MicroscopeControlServer:
         # Check if acquisition already running
         if self.multipoint_controller.acquisition_in_progress():
             raise RuntimeError("Acquisition already in progress")
+        self._refuse_while_stage_held()
 
         # Parse well coordinates (raises on unknown formats)
         well_coords = self._parse_wells(wells, wellplate_format)
@@ -786,7 +826,7 @@ class MicroscopeControlServer:
 
             # Run the acquisition (non-blocking - runs in worker thread)
             if not self.multipoint_controller.run_acquisition():
-                raise RuntimeError(_ACQUISITION_NOT_STARTED)
+                raise self._acquisition_not_started()
 
             return {
                 "started": True,
@@ -1004,6 +1044,7 @@ class MicroscopeControlServer:
         # Check if acquisition already running
         if self.multipoint_controller.acquisition_in_progress():
             raise RuntimeError("Acquisition already in progress")
+        self._refuse_while_stage_held()
 
         # Parse YAML file
         try:
@@ -1076,7 +1117,7 @@ class MicroscopeControlServer:
             # Run the acquisition (non-blocking - runs in worker thread)
             if not self.multipoint_controller.run_acquisition():
                 self._set_gui_acquisition_state(yaml_data, is_running=False)
-                raise RuntimeError(_ACQUISITION_NOT_STARTED)
+                raise self._acquisition_not_started()
 
             self._log.info(
                 f"Acquisition started: {total_fovs} FOVs, {len(yaml_data.channel_names)} channels, "
