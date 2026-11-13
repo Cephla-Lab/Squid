@@ -1697,6 +1697,9 @@ class HighContentScreeningGui(QMainWindow):
         self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.redraw_fov)
         self.objectivesWidget.signal_swap_active.connect(self._on_objective_swap_active)
+        # Disabling Stage Utils stops its button; this stops a remote (control server) loading move too, which on a
+        # system without a Z lift has no lift guard to refuse it
+        self.objectivesWidget.signal_swap_active.connect(self.stageUtils.set_objective_swap_active)
         self.cameraSettingWidget.signal_binning_changed.connect(self.navigationViewer.redraw_fov)
         # Sensor mode changes (readout speed) can shift the valid exposure range;
         # refresh the exposure control the user actually sees (LiveControlWidget's),

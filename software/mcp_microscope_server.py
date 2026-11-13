@@ -38,6 +38,7 @@ from mcp.types import TextContent, Tool
 # Default connection settings for the microscope control server
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5050
+DEFAULT_TIMEOUT_S = 30.0
 
 # Cache for schemas (refreshed on each list_tools call)
 _schemas_cache: Optional[dict] = None
@@ -45,13 +46,17 @@ _schemas_cache: Optional[dict] = None
 
 MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB limit to prevent memory exhaustion
 
+# Commands that reply only once a long move has ended: longer than the server's own wait for it
+# (LOADING_POSITION_MOVE_TIMEOUT_S, 180 s), so its timeout error arrives instead of a socket timeout
+_COMMAND_TIMEOUT_S = {"move_to_loading_position": 200.0, "return_from_loading_position": 200.0}
+
 
 def send_command(
     command: str,
     params: Optional[dict] = None,
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
-    timeout: float = 30.0,
+    timeout: float = DEFAULT_TIMEOUT_S,
 ) -> dict:
     """Send a command to the microscope control server."""
     request = {"command": command, "params": params or {}}
@@ -171,7 +176,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
     # Run the blocking socket call in a thread pool
     loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(None, lambda: send_command(command, arguments))
+    timeout = _COMMAND_TIMEOUT_S.get(command, DEFAULT_TIMEOUT_S)
+    response = await loop.run_in_executor(None, lambda: send_command(command, arguments, timeout=timeout))
 
     if response.get("success"):
         result = response.get("result", {})

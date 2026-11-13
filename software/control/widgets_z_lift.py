@@ -151,7 +151,7 @@ class LoadingPositionButton(QPushButton):
 
     def refresh(self, *_):
         at_loading = self.stage_utils.slide_position == "loading"
-        self.setText("Move To Scanning Position" if at_loading else "Move To Loading Position")
+        self.setText("Return from Loading Position" if at_loading else "Move To Loading Position")
         theme.set_role(self, "action", on=at_loading)
         self.setEnabled(not self.motion_guard.busy)
 

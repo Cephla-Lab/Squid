@@ -179,13 +179,16 @@ def _restore_objective_after_loading(stage: AbstractStage):
 
 
 def save_loading_state(stage: AbstractStage):
-    """Z lift systems: record that the stage is at the loading position, with the Z and lift height to return to,
+    """Z lift systems: record that the stage is at the loading position, with the XY, Z and lift height to return to,
     so a Squid closed there starts again in the loading state (see load_loading_state)."""
     lift = getattr(stage, "lift", None)
     if lift is None:
         return
     lift_mm, lift_format = getattr(stage, "_scanning_position_lift_mm", None) or (None, None)
+    x_mm, y_mm = return_xy_mm(stage) or (None, None)
     state = {
+        "scanning_x_mm": x_mm,
+        "scanning_y_mm": y_mm,
         "scanning_z_mm": getattr(stage, "_scanning_position_z_mm", None),
         "lift_mm": lift_mm,
         "lift_format": lift_format,
@@ -228,13 +231,27 @@ def _finite_mm_in(value, low: float, high: float) -> bool:
 
 
 def restore_loading_state(stage: AbstractStage, state: dict) -> bool:
-    """Put back what the move to the loading position remembered, so the return to scanning raises the lift and
-    offers the Z it left, as if Squid had not been closed. Returns False if any of it was missing or invalid (an
-    unreadable file gives {}): then the return still raises the lift to the working height saved for the sample
-    format selected by then (with none it stays lowered), and the objective stays retracted, to refocus by hand."""
+    """Put back what the move to the loading position remembered, so the return goes back to the XY it left, raises
+    the lift and offers the Z it left, as if Squid had not been closed. Returns False if any of it was missing or
+    invalid (an unreadable file gives {}): then the return stops at the scanning position, still raises the lift to
+    the working height saved for the sample format selected by then (with none it stays lowered), and the objective
+    stays retracted, to refocus by hand."""
     complete = True
+    config = stage.get_config()
+    x_mm, y_mm = state.get("scanning_x_mm"), state.get("scanning_y_mm")
+    if _finite_mm_in(x_mm, config.X_AXIS.MIN_POSITION, config.X_AXIS.MAX_POSITION) and _finite_mm_in(
+        y_mm, config.Y_AXIS.MIN_POSITION, config.Y_AXIS.MAX_POSITION
+    ):
+        stage._scanning_position_xy_mm = (x_mm, y_mm)
+    else:
+        _log.warning(
+            f"Loading position state: no valid XY ({x_mm!r}, {y_mm!r}); the return stops at the scanning position."
+        )
+        stage._scanning_position_xy_mm = None
+        complete = False
+
     z_mm = state.get("scanning_z_mm")
-    z_axis = stage.get_config().Z_AXIS
+    z_axis = config.Z_AXIS
     if z_mm is not None and not _finite_mm_in(z_mm, z_axis.MIN_POSITION, z_axis.MAX_POSITION):
         _log.warning(f"Loading position state: invalid Z {z_mm!r}; the objective stays retracted on the return.")
         z_mm, complete = None, False
@@ -312,10 +329,18 @@ def _clear_sample_for_loading_xy(stage: AbstractStage, is_wellplate: bool):
 
 
 def _move_to_loading_position_impl(stage: AbstractStage, is_wellplate: bool):
+    # The way back returns to this XY.
+    pos = stage.get_pos()
+    stage._scanning_position_xy_mm = (pos.x_mm, pos.y_mm)
     _clear_sample_for_loading_xy(stage, is_wellplate)
     # Recorded once the lift is down, before XY moves: a Squid that dies on the way still starts lowered and locked
     save_loading_state(stage)
     move_xy_to_loading_position(stage, is_wellplate)
+
+
+def return_xy_mm(stage: AbstractStage) -> Optional[Tuple[float, float]]:
+    """The XY the return from the loading position goes back to, or None: it then stops at the scanning position."""
+    return getattr(stage, "_scanning_position_xy_mm", None)
 
 
 def return_to_loading_position(stage: AbstractStage, is_wellplate: bool):
@@ -334,12 +359,21 @@ def return_to_loading_position(stage: AbstractStage, is_wellplate: bool):
 
 
 def _move_to_scanning_position_impl(stage: AbstractStage, is_wellplate: bool, restore_z: bool = True):
+    # Out of the loading area by the proven path to the scanning position (on a well plate, a straight line from the
+    # loading position could run into the clamp), then back to the XY the stage left from, still with the lift down
+    # and the objective up.
     if is_wellplate:
         stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
         stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
     else:
         stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
         stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
+    xy_mm = return_xy_mm(stage)
+    if xy_mm is not None:
+        stage.move_x_to(xy_mm[0])
+        stage.move_y_to(xy_mm[1])
+    else:
+        _log.info("No XY saved from before the loading position: the stage stays at the scanning position.")
     _restore_lift_after_loading(stage)
     if restore_z:
         _restore_objective_after_loading(stage)
@@ -348,6 +382,8 @@ def _move_to_scanning_position_impl(stage: AbstractStage, is_wellplate: bool, re
         # lift got there, like a restore.
         _log.info(f"The objective stays retracted (it was at {stage._scanning_position_z_mm:.4f} mm).")
         stage._scanning_position_z_mm = None
+    # Forgotten only once the whole return succeeded: a retry after a failed lift or Z move goes back to it again.
+    stage._scanning_position_xy_mm = None
     clear_loading_state()
 
 
@@ -386,7 +422,8 @@ def move_to_scanning_position(
     is_wellplate: bool = True,
     restore_z: bool = True,
 ):
-    """Move the stage back to scanning position from loading position.
+    """Move the stage back from the loading position to the XY it left from, by way of the scanning position (it
+    stops there when no XY was saved), then raise the lift and lower the objective as they were.
     Args:
         blocking: If True, wait for the move to complete before returning.
                     If False, return immediately and run the operation in a separate thread. callback will be called when done.

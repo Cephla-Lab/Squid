@@ -1117,6 +1117,21 @@ def test_wellplate_yaml_moving_the_stack_to_the_stepper_gives_the_entries_the_st
     assert w.entry_minZ.maximum() == control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
 
 
+def test_a_robot_loading_move_is_refused_during_a_manual_objective_swap(qtbot, confirm_exit_yes):
+    # Without a Z lift there is no lift guard to hold: the swap lock itself has to reach Stage Utils
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    assert win.stageUtils.lift_motion_guard is None
+
+    win.objectivesWidget.signal_swap_active.emit(True)  # a manual swap starts (the GUI's swap lock follows it)
+    with unittest.mock.patch("control.widgets.move_to_loading_position") as move:
+        refusal = win.stageUtils.start_unattended_position_move(True, 1)
+    assert "objective" in refusal
+    move.assert_not_called()
+    win.objectivesWidget.signal_swap_active.emit(False)
+
+
 def _gallery_row(gallery, entry_id):
     return next(row for row in gallery.rows() if row.entry.id == entry_id)
 

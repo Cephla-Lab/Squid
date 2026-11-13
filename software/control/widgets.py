@@ -59,6 +59,7 @@ import control._def  # Import module for runtime access to MCP-modifiable settin
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
 from squid.stage.prior import PriorStage
 from squid.stage.utils import (
+    is_at_loading_xy,
     move_to_loading_position,
     move_to_scanning_position,
     move_z_axis_to_safety_position,
@@ -3251,6 +3252,10 @@ class PreferencesDialog(QDialog):
             # If save failed, dialog stays open (error already shown)
 
 
+# StageUtils.start_unattended_position_move: the stage is already where it was asked to go, nothing moves
+UNATTENDED_MOVE_ALREADY_THERE = "already there"
+
+
 def show_homing_failure(parent, title: str, error: str, still_homing: bool) -> None:
     """A home that raised (Home stage, Home X/Y). still_homing: its claim is still held, as the stage has not
     reported that it stopped."""
@@ -3287,6 +3292,11 @@ class StageUtils(QDialog):
     signal_threaded_stage_move_started = Signal()
     signal_loading_position_reached = Signal()
     signal_scanning_position_reached = Signal()
+    # (move id, success, error message) at the end of every move to or from the loading position, on the GUI
+    # thread: what the control server waits for before it replies. The id is the one
+    # start_unattended_position_move was given (0 for the button's own move), so a command is answered only by
+    # its own move, not by one that was already running when it came in.
+    signal_position_move_finished = Signal(int, bool, str)
     signal_home_stage_requested = Signal()  # the Home Stage button: the main window runs it (Microscope.home_stage)
 
     def __init__(self, stage: AbstractStage, live_controller: LiveController, is_wellplate: bool, parent=None):
@@ -3306,6 +3316,22 @@ class StageUtils(QDialog):
         # returns to its Z once the lift is back up, or stays retracted.
         self.ask_objective_return = False
         self._was_live = False
+        # From the start of a move to or from the loading position until it reports back
+        self._position_move_running = False
+        # That move's own settings, for its callback (one such move at a time, so they hold until it reports back):
+        # the control server's id for it (0: the button's), and whether a failure shows a dialog (not for a robot)
+        self._position_move_id = 0
+        self._position_move_warns = True
+        # True only once a move to the loading position got there (or Squid restarted there). A failed move either
+        # way also leaves slide_position "loading", so the button offers the return, but the stage is somewhere on
+        # the way: a robot must not be told it is there.
+        self._loading_position_reached = False
+        # A manual objective swap is running (ObjectivesWidget.signal_swap_active, connected by the GUI): nothing
+        # may move the stage. On a Z lift system the swap also holds the lift guard; without one, this is the lock.
+        self._objective_swap_active = False
+        # The button's return is asking whether the objective comes back down: until the operator answers, no other
+        # move to or from the loading position may start (the question's event loop runs the control server's calls)
+        self._asking_objective_return = False
         # Home X / Home Y (set_homing_hooks): why the stage must not home now (or None), and the Microscope's homing
         # claim for a stopped stage, which pauses live and refuses other motion until the stage reports it stopped.
         self._homing_blocker: Optional[Callable[[], Optional[str]]] = None
@@ -3485,43 +3511,101 @@ class StageUtils(QDialog):
         self.lift_motion_guard = guard
         guard.signal_busy_changed.connect(self._on_lift_busy_changed)
 
+    @Slot(bool)
+    def set_objective_swap_active(self, active: bool):
+        """ObjectivesWidget.signal_swap_active: a manual objective swap started (True) or ended (False)."""
+        self._objective_swap_active = active
+
     def _on_lift_busy_changed(self, busy: bool):
         # Busy also covers this dialog's own toggle (the guard tracks it from the signals below), so this enables the
         # button exactly when the toggle could start.
         self.btn_load_slide.setEnabled(not busy)
 
     def switch_position(self):
-        """Switch between loading and scanning positions."""
-        if self.lift_motion_guard is not None and self.lift_motion_guard.busy:
-            self.log.info("Loading / scanning position refused: the Z lift is moving or an objective swap is running")
+        """The button: move to the loading position, or back from it to where the stage was."""
+        refusal = self._position_move_refusal()
+        if refusal:
+            self.log.info(f"Loading position move refused: {refusal}")
             return
         restore_z = True
         if self.slide_position == "loading" and self.ask_objective_return:
-            restore_z = self._ask_objective_return()
+            self._asking_objective_return = True
+            try:
+                restore_z = self._ask_objective_return()
+            finally:
+                self._asking_objective_return = False
             if restore_z is None:
                 return  # cancelled: nothing moves
+            # While the question was open, something else may have taken the stage (a swap or lift move over TCP)
+            refusal = self._position_move_refusal()
+            if refusal:
+                self.log.warning(f"Loading position move refused: {refusal}")
+                return
+        self._start_position_move(restore_z, warn_on_failure=True)
+
+    @Slot(bool, int, result=str)
+    def start_unattended_position_move(self, to_loading: bool, move_id: int) -> str:
+        """Automation (the control server): start the button's move to the loading position (to_loading) or back
+        from it, with no dialog: the objective comes back down, a failure is only reported. Returns "" when it
+        started (signal_position_move_finished follows), UNATTENDED_MOVE_ALREADY_THERE when the stage is already
+        there, else why it was refused. Runs on the GUI thread (a BlockingQueuedConnection from the server)."""
+        try:
+            refusal = self._position_move_refusal()
+            if refusal:
+                return refusal
+            at_loading = self.slide_position == "loading"
+            if to_loading and at_loading and not self._loading_position_reached:
+                return "the last move to or from the loading position did not finish: return from the loading position first"
+            if to_loading and at_loading and not is_at_loading_xy(self.stage):
+                # Something else moved it there (a control-server move, the joystick without a Z lift)
+                return "the stage is no longer at the loading position: return from the loading position first"
+            if to_loading == at_loading:
+                return UNATTENDED_MOVE_ALREADY_THERE
+            self._start_position_move(restore_z=True, warn_on_failure=False, move_id=move_id)
+            return ""
+        except Exception as e:  # Qt drops an exception raised in a slot called across threads
+            self.log.exception("Could not start the loading position move")
+            return f"could not start: {e}"
+
+    def _position_move_refusal(self) -> str:
+        if self._position_move_running:
+            return "a move to or from the loading position is already running"
+        if self._asking_objective_return:
+            return "the operator is answering whether the objective returns from the loading position"
+        if self._objective_swap_active:
+            return "an objective swap is running"
+        if self.lift_motion_guard is not None and self.lift_motion_guard.busy:
+            return "the Z lift is moving or an objective swap is running"
+        return ""
+
+    def _start_position_move(self, restore_z: bool, warn_on_failure: bool, move_id: int = 0):
         if not (self.keep_live_off_at_loading and self.slide_position == "loading"):
             # (leaving a loading position where live was kept off: _was_live still holds what it was before)
             self._was_live = self.live_controller.is_live
         if self.live_controller.is_live:
             self.live_controller.stop_live()
+        self._position_move_running = True
+        self._position_move_id, self._position_move_warns = move_id, warn_on_failure
         self.signal_threaded_stage_move_started.emit()
-        if self.slide_position != "loading":
-            move_to_loading_position(
-                self.stage,
-                blocking=False,
-                callback=_queued_slot(self, "_callback_loading_position_reached"),
-                is_wellplate=self.is_wellplate,
-            )
-        else:
-            move_to_scanning_position(
-                self.stage,
-                blocking=False,
-                callback=_queued_slot(self, "_callback_scanning_position_reached"),
-                is_wellplate=self.is_wellplate,
-                restore_z=restore_z,
-            )
         self.btn_load_slide.setEnabled(False)
+        if self.slide_position != "loading":
+            move, reached, kwargs = move_to_loading_position, self._callback_loading_position_reached, {}
+        else:
+            move, reached = move_to_scanning_position, self._callback_scanning_position_reached
+            kwargs = {"restore_z": restore_z}
+        try:
+            move(
+                self.stage,
+                blocking=False,
+                callback=_queued_slot(self, reached.__name__),
+                is_wellplate=self.is_wellplate,
+                **kwargs,
+            )
+        except Exception as e:
+            # The thread did not start: the same report as a move that failed in it, which releases what the
+            # start took (this flag, the Z lift guard, the GUI's stage lock) and restarts live
+            self.log.exception("Could not start the loading position move")
+            reached(False, f"Could not start the move: {e}")
 
     def _ask_objective_return(self) -> Optional[bool]:
         """Leaving the loading position: True to lower the objective back to its Z after the lift rises, False to
@@ -3531,7 +3615,7 @@ class StageUtils(QDialog):
             return True
         reply = _ask_objective_z_return(
             self,
-            "Move to Scanning Position",
+            "Return from Loading Position",
             "The objective is retracted for loading. Once the stage is back and the Z lift has risen, should the "
             f"objective return to {z_mm:.4f} mm, or stay retracted?",
             z_mm,
@@ -3543,39 +3627,46 @@ class StageUtils(QDialog):
     @Slot(bool, str)
     def _callback_loading_position_reached(self, success: bool, error_message: str):
         """The move to the loading position ended (on the GUI thread, from _queued_slot)."""
+        move_id, warns = self._position_move_id, self._position_move_warns
+        self._position_move_running = False
+        self._loading_position_reached = success
         self.slide_position = "loading"
         theme.set_role(self.btn_load_slide, "action", on=True)
-        self.btn_load_slide.setText("Move to Scanning Position")
+        self.btn_load_slide.setText("Return from Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live and not self.keep_live_off_at_loading:
             self._restart_live()
-        if not success:
-            QMessageBox.warning(self, "Error", error_message)
         self.signal_loading_position_reached.emit()
+        # Reported before the warning: its event loop runs the control server's calls, and a move one starts there
+        # is another move, with its own id
+        self.signal_position_move_finished.emit(move_id, success, error_message or "")
+        if not success and warns:
+            QMessageBox.warning(self, "Error", error_message)
 
     @Slot(bool, str)
     def _callback_scanning_position_reached(self, success: bool, error_message: str):
         """The move back to the scanning position ended (on the GUI thread, from _queued_slot)."""
         if not success:
             # The stage may not have left the loading position: it is still treated as there (a lift system keeps
-            # everything locked), and the button offers the move back to scanning again.
+            # everything locked), and the button offers the return again.
             self._callback_loading_position_reached(
-                False, f"Could not move back to the scanning position:\n{error_message}\n\nTry again."
+                False, f"Could not return from the loading position:\n{error_message}\n\nTry again."
             )
             return
+        self._position_move_running = False
+        self._loading_position_reached = False
         self.slide_position = "scanning"
         theme.set_role(self.btn_load_slide, "action")
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live:
             self._restart_live()
-        if not success:
-            QMessageBox.warning(self, "Error", error_message)
         self.signal_scanning_position_reached.emit()
+        self.signal_position_move_finished.emit(self._position_move_id, True, "")
 
     def _restart_live(self):
-        """Live view back on after a move. A camera that will not restart must not stop the move ending: the reached
-        signals that follow release the Z lift guard and the GUI's stage lock."""
+        """Live view back on after a move. A camera that will not restart must not stop the move ending: the signals
+        that follow release the Z lift guard and the GUI's stage lock, and answer a waiting control server command."""
         try:
             self.live_controller.start_live()
         except Exception:

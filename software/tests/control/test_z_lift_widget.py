@@ -232,7 +232,7 @@ def test_loading_buttons_share_one_toggle(qtbot):
     assert utils.switches == 1
     utils.slide_position = "loading"
     utils.signal_loading_position_reached.emit()
-    assert a.isEnabled() and b.text() == "Move To Scanning Position"
+    assert a.isEnabled() and b.text() == "Return from Loading Position"
 
 
 def test_loading_toggle_blocks_every_lift_move(qtbot, tmp_path):
@@ -342,7 +342,7 @@ def test_a_failed_return_from_loading_stays_at_loading(qtbot):
     warning.assert_called_once()
     assert reached == ["loading"]  # still at loading: everything stays locked
     assert dialog.slide_position == "loading" and guard.at_loading_position
-    assert dialog.btn_load_slide.text() == "Move to Scanning Position"  # retry offered
+    assert dialog.btn_load_slide.text() == "Return from Loading Position"  # retry offered
 
 
 def _stage_utils_dialog(qtbot, is_live, keep_live_off_at_loading):
@@ -603,7 +603,7 @@ def test_a_restored_loading_position_starts_locked_with_the_return_ready(qtbot):
 
     assert stage_utils.slide_position == "loading" and guard.at_loading_position
     assert not fake.navigationWidget.isEnabled() and panel == [True]  # locked, panel too
-    assert stage_utils.btn_load_slide.text() == "Move to Scanning Position"
+    assert stage_utils.btn_load_slide.text() == "Return from Loading Position"
     assert stage._scanning_position_z_mm == 2.5 and stage._scanning_position_lift_mm == (4.0, "glass slide")
 
 
