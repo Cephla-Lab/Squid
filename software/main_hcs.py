@@ -179,7 +179,7 @@ if __name__ == "__main__":
 
     if USE_TERMINAL_CONSOLE:
         console_locals = {"microscope": win.microscope}
-        console_thread = ConsoleThread(console_locals)
+        console_thread = ConsoleThread(console_locals, session=win.microscope.agent_session)
         console_thread.start()
 
     if ENABLE_MCP_SERVER_SUPPORT:

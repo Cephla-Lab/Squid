@@ -8,7 +8,10 @@ from qtpy.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QPus
 from qtpy.QtCore import QThread, Signal, Qt, QObject, QMetaObject
 import sys
 import code
+from typing import Optional
+
 import control.theme as theme
+from control.core.agent_session import AgentSession, AgentSessionRefused
 
 if sys.platform == "win32":
     from pyreadline3 import Readline
@@ -170,8 +173,10 @@ class GuiProxy:
 class EnhancedInteractiveConsole(code.InteractiveConsole):
     """Enhanced console with better completion support"""
 
-    def __init__(self, locals=None):
+    def __init__(self, locals=None, session: Optional[AgentSession] = None):
+        """With a session, a line runs only when the session admits it (not while the agent drives)."""
         super().__init__(locals)
+        self._session = session
         # Set up readline with our custom completer
         self.completer = QtCompleter(locals)
         readline.set_completer(self.completer.complete)
@@ -192,17 +197,29 @@ class EnhancedInteractiveConsole(code.InteractiveConsole):
 
         atexit.register(readline.write_history_file, histfile)
 
+    def push(self, line):
+        if self._session is None:
+            return super().push(line)
+        try:
+            with self._session.admit_console():
+                return super().push(line)
+        except AgentSessionRefused as refusal:
+            # Only the admission raises this: the console shows an exception of the line itself and does not raise it.
+            self.resetbuffer()
+            self.write(f"Refused: {refusal}\n")
+            return False
+
 
 class ConsoleThread(QThread):
     """Thread for running the interactive console"""
 
-    def __init__(self, locals_dict):
+    def __init__(self, locals_dict, session: Optional[AgentSession] = None):
         super().__init__()
         self.locals_dict = locals_dict
         self.wrapped_locals = {
             key: GuiProxy(value) if isinstance(value, QObject) else value for key, value in locals_dict.items()
         }
-        self.console = EnhancedInteractiveConsole(locals=self.wrapped_locals)
+        self.console = EnhancedInteractiveConsole(locals=self.wrapped_locals, session=session)
 
     def run(self):
         while True:
