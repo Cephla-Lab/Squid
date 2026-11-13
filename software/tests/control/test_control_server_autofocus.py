@@ -37,6 +37,15 @@ class FakeStage:
         pass
 
 
+class SteppedStage(FakeStage):
+    """Rounds each move to its motor steps, as the real stage does."""
+
+    STEP_MM = 0.000136
+
+    def move_z(self, delta_mm, blocking=True):
+        self.z_mm += round(delta_mm / self.STEP_MM) * self.STEP_MM
+
+
 class FakeCamera:
     """A fine texture that blurs with the distance from the focus plane: 1 pixel of blur for each 2 um."""
 
@@ -80,10 +89,10 @@ class Hold:
         return True
 
 
-def make_server(start_um_from_focus=4.0, frames=True, gui=False):
+def make_server(start_um_from_focus=4.0, frames=True, gui=False, stage_class=FakeStage):
     from control.microscope_control_server import MicroscopeControlServer
 
-    stage = FakeStage(FOCUS_Z_MM + start_um_from_focus / 1000.0)
+    stage = stage_class(FOCUS_Z_MM + start_um_from_focus / 1000.0)
     camera = FakeCamera(stage, frames)
     live = MagicMock()
     live.is_live = False
@@ -131,6 +140,21 @@ def test_autofocus_moves_to_the_sharpest_plane_and_reports_the_curve():
     assert result["measure"] == control._def.FOCUS_MEASURE_OPERATOR.name and result["seconds"] >= 0
     assert result["stopped_early"] == (len(planes) < 11)
     assert camera.frames_read == len(planes)  # frames in memory: one for each plane, no file
+
+
+def test_the_z_of_each_plane_is_the_position_that_the_stage_reported_for_its_frame():
+    # A real stage rounds each move to its motor steps: 1.524 um becomes 11 steps of 0.136 um = 1.496 um.
+    server, stage, camera = make_server(start_um_from_focus=-3.0, stage_class=SteppedStage)
+    z_of_frames = []
+    read_frame = camera.read_frame
+
+    def read_frame_and_note_z():
+        z_of_frames.append(stage.z_mm)
+        return read_frame()
+
+    camera.read_frame = read_frame_and_note_z
+    result = server._cmd_autofocus(n_planes=10, step_um=1.524)
+    assert [plane["z_mm"] for plane in result["planes"]] == pytest.approx(z_of_frames, abs=1e-9)
 
 
 def test_autofocus_uses_the_focus_measure_of_the_call_and_then_the_setting_again(monkeypatch):
