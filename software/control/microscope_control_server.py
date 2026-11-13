@@ -766,7 +766,12 @@ class MicroscopeControlServer:
             None, description="Channel to set exposure for (applies to current if not specified)"
         ),
     ) -> Dict[str, Any]:
-        """Set camera exposure time in milliseconds."""
+        """Set the exposure time in milliseconds: of the camera, or with a channel the saved value of that channel.
+
+        With a channel: the exposure of that channel for the imaging mode in use (widefield or confocal). It is saved
+        in the profile, as when it is changed in the live controls, and the channel is selected. With no channel:
+        the camera only, until a channel is selected.
+        """
         if channel:
             objective = self.microscope.objective_store.current_objective
             self.microscope.set_exposure_time(channel, exposure_ms, objective)
@@ -780,7 +785,11 @@ class MicroscopeControlServer:
         channel: str = Field(..., description="Channel name (e.g., 'Fluorescence 488 nm Ex')"),
         intensity: float = Field(..., description="Intensity value (0-100%)", ge=0, le=100),
     ) -> Dict[str, Any]:
-        """Set illumination/laser intensity for a specific channel (0-100%)."""
+        """Set illumination/laser intensity for a specific channel (0-100%); the value is saved for that channel.
+
+        The value is for the imaging mode in use (widefield or confocal). It is saved in the profile, as when it is
+        changed in the live controls, and the channel is selected.
+        """
         self.microscope.set_illumination_intensity(channel, intensity)
         return {"channel": channel, "intensity": intensity}
 
