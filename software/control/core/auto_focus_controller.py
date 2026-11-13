@@ -46,6 +46,12 @@ class AutoFocusController:
         self.autofocus_in_progress = False
         self.focus_map_coords = []
         self.use_focus_map = False
+        # For a caller that wants the result of one run (the control server's autofocus command):
+        # the focus measure of this run (None: the setting FOCUS_MEASURE_OPERATOR), and if the plane images are kept.
+        self.focus_measure_operator: Optional[control._def.FocusMeasureOperator] = None
+        self.keep_plane_images = False
+        # What the last contrast autofocus measured: (z_mm, focus measure, image or None) for each plane, from below.
+        self.last_planes: list = []
 
     def set_N(self, N):
         self.N = N
@@ -102,6 +108,7 @@ class AutoFocusController:
                 raise RuntimeError("Previous focus thread failed to join")
 
         self._keep_running.set()
+        self.last_planes = []
         self._autofocus_worker = AutofocusWorker(
             self, self._on_autofocus_completed, self._image_to_display_fn, self._keep_running
         )

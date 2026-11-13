@@ -124,6 +124,7 @@ The `python_exec` command is disabled by default for security. To enable it:
 | `acquire_image` | `save_path` | Capture single image |
 | `acquire_laser_af_image` | `save_path`, `use_last_frame` | Get laser autofocus camera image |
 | `acquire_burst` | `count`, `save_dir`, `interval_ms`, `prefix`, `keep_light_on` | Capture a series of frames at the current position |
+| `autofocus` | `n_planes`, `step_um`, `measure`, `save_dir` | Contrast autofocus at the current position |
 
 `acquire_burst` takes `count` frames (1 to 1000) at the current position, with the current channel and exposure,
 and saves them as `<save_dir>/<prefix>_<index>.tiff`. `save_dir` is an absolute path and is created if it is
@@ -146,6 +147,21 @@ The command returns when the burst has ended and all files are written, so the c
 burst lasts (the MCP bridge waits 30 seconds for a reply). It is refused while an acquisition runs, live view is on, or another burst runs. In
 an [agent session](agent-session.md), a take over or the end of the session stops the burst before the next frame
 (`stopped_early` is `true`). With no session, nothing stops a burst before its last frame.
+
+`autofocus` runs the contrast autofocus of Squid (the sweep of the Autofocus button) and moves to the sharpest
+plane. The planes are around the current Z: `n_planes` steps (3 to 50, default 10) of `step_um` (default 1.524).
+The frames stay in memory and the measure is taken on the centre of the image, so the command needs about the
+time of `n_planes` images. The sweep stops early when the measure falls clearly below its largest value.
+
+`measure` selects the focus measure for this call: `LAPE`, `GLVA` or `TENENGRAD`. With no `measure`, the setting
+`focus_measure_operator` of Squid is used. With `save_dir` (an absolute path), the part of each plane that the
+measure used is saved there as `plane_<index>.tiff`, after the sweep.
+
+The reply has `z_mm` (the Z after the autofocus), `moved_um`, `planes` (from below; each with `z_mm`,
+`focus_measure`, and `path` when `save_dir` was given), `best_index`, `measure`, `stopped_early` and `seconds`.
+The command is refused while an acquisition or another autofocus runs. Live view is stopped for the sweep and
+started again. The values of the Autofocus panel of the window do not change. If the camera gives no frame, the
+stage goes back to its start Z and the command fails.
 
 ### Channel & Illumination
 
