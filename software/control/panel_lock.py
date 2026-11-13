@@ -24,6 +24,10 @@ class PanelLockReasons:
         if was_free:
             self._apply(True)
 
+    def add_locked(self, reason: str) -> None:
+        """Add the reason of a caller that locked the panel itself and checked that the controller did it."""
+        self._reasons.add(reason)
+
     def remove(self, reason: str) -> None:
         if reason not in self._reasons:
             return

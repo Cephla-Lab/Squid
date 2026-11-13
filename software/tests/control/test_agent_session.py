@@ -223,3 +223,23 @@ def test_snapshot_reads_the_microscope_state():
     microscope.live_controller.currentConfiguration = None
     blind = snapshot_microscope(microscope, with_position=False)
     assert (blind["x_mm"], blind["y_mm"], blind["z_mm"], blind["channel"]) == (None, None, None, None)
+
+
+def test_why_not_gives_the_reason_that_begin_and_hand_back_would_give():
+    s = AgentSession()
+    assert s.why_not("begin") is None and s.why_not("hand_back") == "no human is driving"
+    s.set_blocker(lambda: "the stage is homing")
+    assert s.why_not("begin") == "the stage is homing"
+    s.set_blocker(None)
+    with s.admit("move_to"):
+        assert s.why_not("begin") == "a command is in progress"
+    with s.admit_console():
+        assert s.why_not("begin") == "the console is running a line"
+    s.begin()
+    assert s.why_not("begin") == "a session exists" and s.state is SessionState.AGENT
+    s.request_stop(SessionState.HUMAN, "take over")
+    s.finish_stop({})
+    assert s.why_not("hand_back") is None and s.why_not("begin") == "a session exists"
+    assert s.state is SessionState.HUMAN  # the question changes nothing
+    with pytest.raises(ValueError):
+        s.why_not("end")

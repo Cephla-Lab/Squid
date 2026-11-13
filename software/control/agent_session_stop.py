@@ -23,6 +23,7 @@ WAIT_STAGE = "the stage is moving"
 
 class AgentSessionStopSequence(QObject):
     signal_timed_out = Signal(list)  # the reasons; one time for each start()
+    signal_waiting_changed = Signal(list)  # the reasons, when they are not those of the check before
 
     def __init__(
         self,
@@ -44,6 +45,7 @@ class AgentSessionStopSequence(QObject):
         self._clock = clock
         self._started_at = 0.0
         self._timed_out = False
+        self._reasons: List[str] = []
         self._timer = QTimer(self)
         self._timer.setInterval(AGENT_SESSION_STOP_POLL_MS)
         self._timer.timeout.connect(self._tick)
@@ -51,12 +53,18 @@ class AgentSessionStopSequence(QObject):
     def is_running(self) -> bool:
         return self._timer.isActive()
 
+    @property
+    def timed_out(self) -> bool:
+        """True from the time limit of this sequence until the next start()."""
+        return self._timed_out
+
     def start(self) -> None:
         """Call on the GUI thread. Returns at once; a second call while it runs does nothing."""
         if self._timer.isActive():
             return
         self._started_at = self._clock()
         self._timed_out = False
+        self._reasons = []
         self._timer.start()
 
     def stop(self) -> None:
@@ -99,6 +107,9 @@ class AgentSessionStopSequence(QObject):
                 return
             reasons = self._waiting_reasons()
             self._session.set_waiting_for(reasons)
+            if reasons != self._reasons:
+                self._reasons = reasons
+                self.signal_waiting_changed.emit(reasons)
             if not reasons:
                 self._timer.stop()
                 self._session.finish_stop(self._snapshot(True))

@@ -27,6 +27,13 @@ REFUSAL_HUMAN = "a human is driving"
 REFUSAL_AGENT_DRIVES = "the agent is driving"
 
 
+# The state from which the agent can get the control, and the refusal text in another state.
+_GIVE_CONTROL_FROM = {
+    "begin": (SessionState.NONE, "a session exists"),
+    "hand_back": (SessionState.HUMAN, "no human is driving"),
+}
+
+
 class AgentSessionRefused(RuntimeError):
     """The session does not allow this now. The text says why."""
 
@@ -106,20 +113,32 @@ class AgentSession:
             except Exception:
                 self._log.exception("An agent session listener failed")
 
-    def _refusal_to_give_control(self) -> Optional[str]:
-        """Called with the lock held."""
+    def _refusal_to_give_control(self, kind: str, blocker_reason: Optional[str]) -> Optional[str]:
+        """Why the agent cannot get the control by `kind` ("begin" or "hand_back"). Called with the lock held."""
+        required_state, wrong_state_text = _GIVE_CONTROL_FROM[kind]
+        if self._state is not required_state:
+            return wrong_state_text
+        if blocker_reason:
+            return blocker_reason
         if self._in_flight > 0:
             return "a command is in progress"
         if self._console_in_flight > 0:
             return "the console is running a line"
         return None
 
+    def why_not(self, kind: str) -> Optional[str]:
+        """Why "begin" or "hand_back" would be refused at this moment, or None. It changes nothing. For a caller
+        that must prepare something before the change; the change itself asks again."""
+        if kind not in _GIVE_CONTROL_FROM:
+            raise ValueError(f"kind must be one of {sorted(_GIVE_CONTROL_FROM)}")
+        reason = self._blocker() if self._blocker is not None else None
+        with self._lock:
+            return self._refusal_to_give_control(kind, reason)
+
     def begin(self) -> str:
         reason = self._blocker() if self._blocker is not None else None
         with self._lock:
-            if self._state is not SessionState.NONE:
-                raise AgentSessionRefused("a session exists")
-            reason = reason or self._refusal_to_give_control()
+            reason = self._refusal_to_give_control("begin", reason)
             if reason:
                 raise AgentSessionRefused(reason)
             self._state = SessionState.AGENT
@@ -176,9 +195,7 @@ class AgentSession:
     def hand_back(self, snapshot: dict, note: str = "") -> None:
         reason = self._blocker() if self._blocker is not None else None
         with self._lock:
-            if self._state is not SessionState.HUMAN:
-                raise AgentSessionRefused("no human is driving")
-            reason = reason or self._refusal_to_give_control()
+            reason = self._refusal_to_give_control("hand_back", reason)
             if reason:
                 raise AgentSessionRefused(reason)
             self._state = SessionState.AGENT

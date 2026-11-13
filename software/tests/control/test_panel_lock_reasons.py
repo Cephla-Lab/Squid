@@ -36,3 +36,15 @@ def test_loading_and_homing_together_unlock_only_when_the_two_end():
     assert calls == [True]
     lock.remove(PANEL_LOCK_HOMING)
     assert calls == [True, False]
+
+
+def test_a_caller_that_locked_the_panel_itself_adds_its_reason_with_no_second_lock():
+    calls = []
+    lock = PanelLockReasons(calls.append)
+    lock.add_locked(PANEL_LOCK_AGENT)  # the caller sent the lock and checked the answer of the controller
+    assert calls == [] and lock.held() == frozenset({PANEL_LOCK_AGENT})
+    lock.add(PANEL_LOCK_HOMING)
+    lock.remove(PANEL_LOCK_HOMING)
+    assert calls == []  # the panel was locked already, and the session still holds it
+    lock.remove(PANEL_LOCK_AGENT)
+    assert calls == [False]

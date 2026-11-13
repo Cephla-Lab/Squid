@@ -167,3 +167,31 @@ def test_start_two_times_is_one_sequence_and_stop_cancels_it(qtbot, session, mpc
     stage.stopped = True
     qtbot.wait(300)
     assert not seq.is_running() and session.state is SessionState.STOPPING
+
+
+def test_tells_when_the_reasons_change_and_if_the_time_limit_passed(qtbot, session, mpc, stage):
+    now = [0.0]
+    sequence = make(session, mpc, stage, clock=lambda: now[0])
+    seen = []
+    sequence.signal_waiting_changed.connect(seen.append)
+    session.request_stop(SessionState.HUMAN, "take over")
+    assert sequence.timed_out is False
+    with session.admit("get_position"):  # a read: not counted, so the stage is asked
+        stage.stopped = False
+        sequence.start()
+        qtbot.waitUntil(lambda: seen == [[WAIT_STAGE]], timeout=2000)
+        qtbot.wait(350)  # more checks with the same reason: no more signals
+        assert seen == [[WAIT_STAGE]]
+        now[0] = 1000.0
+        qtbot.waitUntil(lambda: sequence.timed_out, timeout=2000)
+    stage.stopped = True
+    qtbot.waitUntil(lambda: session.state is SessionState.HUMAN, timeout=2000)
+    session.hand_back({})
+    session.request_stop(SessionState.HUMAN, "take over")
+    stage.stopped = False
+    now[0] = 2000.0
+    sequence.start()
+    assert sequence.timed_out is False  # a new sequence starts with a new time limit
+    # the end of the first sequence (no reason left) was a change also
+    qtbot.waitUntil(lambda: seen == [[WAIT_STAGE], [], [WAIT_STAGE]], timeout=2000)
+    sequence.stop()
