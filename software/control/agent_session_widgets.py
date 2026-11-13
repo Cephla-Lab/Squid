@@ -101,6 +101,8 @@ class InputShield(QObject):
         return False
 
 
+PANEL_NOT_LOCKED_WARNING = "The control panel is not locked: do not touch the joystick."
+
 _BANNER_COLORS = {
     SessionState.AGENT: "#ffcc66",
     SessionState.STOPPING: "#ffb07a",
@@ -134,6 +136,9 @@ class AgentSessionBanner(QToolBar):
         self.toggleViewAction().setVisible(False)  # not in the toolbar menu of the window: it cannot be hidden there
 
         self.label = QLabel()
+        self.warning_label = QLabel()  # shown while the agent has the control and the panel is not locked
+        self._panel_warning = ""
+        self._state = SessionState.NONE
         self.take_over_button = QPushButton("Take over")
         self.unlock_anyway_button = QPushButton("Unlock anyway")
         self.hand_back_button = QPushButton("Hand back")
@@ -151,12 +156,26 @@ class AgentSessionBanner(QToolBar):
         layout.addWidget(self.label)
         for button in (self.take_over_button, self.unlock_anyway_button, self.hand_back_button, self.end_button):
             layout.addWidget(button)
+        layout.addWidget(self.warning_label)
         layout.addStretch()
         self.addWidget(content)
 
         self.show_state(SessionState.NONE)
 
+    def set_panel_warning(self, text: str) -> None:
+        """A warning for the time that the agent has the control, or "" for none. For a controller that
+        cannot lock its control panel."""
+        self._panel_warning = text
+        self._show_panel_warning()
+
+    def _show_panel_warning(self) -> None:
+        self.warning_label.setText(self._panel_warning)
+        agent_has_control = self._state in (SessionState.AGENT, SessionState.STOPPING)
+        self.warning_label.setVisible(bool(self._panel_warning) and agent_has_control)
+
     def show_state(self, state: SessionState, waiting_for: Sequence[str] = (), timed_out: bool = False) -> None:
+        self._state = state
+        self._show_panel_warning()
         self.label.setText(_banner_text(state, waiting_for))
         self.take_over_button.setVisible(state is SessionState.AGENT)
         self.unlock_anyway_button.setVisible(state is SessionState.STOPPING and timed_out)

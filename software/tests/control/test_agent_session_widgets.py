@@ -272,3 +272,21 @@ def test_hand_back_that_is_cancelled_gives_no_signal(qtbot, monkeypatch):
 def test_the_banner_cannot_be_moved_or_hidden_from_the_toolbar_menu(qtbot, window):
     assert not window.banner.isMovable() and not window.banner.isFloatable()
     assert not window.banner.toggleViewAction().isVisible()
+
+
+def test_banner_warns_while_the_agent_has_control_and_the_panel_is_not_locked(qtbot):
+    warning = "The control panel is not locked: do not touch the joystick."
+    banner = AgentSessionBanner()
+    qtbot.addWidget(banner)
+    banner.show_state(SessionState.AGENT)
+    assert not banner.warning_label.isVisibleTo(banner)  # a locked panel: no warning
+    banner.set_panel_warning(warning)
+    assert banner.warning_label.isVisibleTo(banner) and banner.warning_label.text() == warning
+    assert banner.label.text() == "The agent is driving."
+    banner.show_state(SessionState.STOPPING, ["the stage is moving"])
+    assert banner.warning_label.isVisibleTo(banner)  # commands of the agent can still run
+    banner.show_state(SessionState.HUMAN)
+    assert not banner.warning_label.isVisibleTo(banner)
+    banner.show_state(SessionState.AGENT)
+    banner.set_panel_warning("")
+    assert not banner.warning_label.isVisibleTo(banner)

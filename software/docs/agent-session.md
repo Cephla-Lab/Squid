@@ -163,4 +163,17 @@ Closing Squid asks for a confirmation, which is such a dialog: closing while the
 - Closing a window is not input that the window ignores: the close button of a Squid window or dialog still
   works while the agent drives. Closing a dialog that a command of the agent waits for answers that dialog.
 - In simulation the controller has no control panel, so a session begins with no panel lock. On a real controller
-  with firmware older than 1.8 a session cannot begin.
+  with firmware older than 1.8 a session cannot begin, unless the setting below is on.
+
+## A controller that cannot lock its panel
+
+The panel lock needs controller firmware 1.8 or later. For an older controller there is one setting, off by
+default, in the `[GENERAL]` section of the configuration file:
+
+```ini
+agent_session_allow_unlocked_panel = True
+```
+
+With it a session can begin with no panel lock. The banner then also says "The control panel is not locked: do
+not touch the joystick." Nothing stops the joystick and the focus wheel: a hand on them moves the stage while the
+agent drives. Use the setting only when an operator is present.

@@ -48,7 +48,7 @@ from control.NL5Widget import NL5Widget
 from control.panel_lock import PANEL_LOCK_AGENT, PANEL_LOCK_HOMING, PANEL_LOCK_LOADING, PanelLockReasons
 from control.agent_session_protection import AgentSessionProtection
 from control.agent_session_stop import AgentSessionStopSequence
-from control.agent_session_widgets import AgentSessionBanner, InputShield
+from control.agent_session_widgets import PANEL_NOT_LOCKED_WARNING, AgentSessionBanner, InputShield
 from control.core.agent_session import snapshot_microscope
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
@@ -2861,10 +2861,17 @@ class HighContentScreeningGui(QMainWindow):
             return reason
         if self.microscope.stage_homing_in_progress:
             return "the stage is homing"
-        mcu = self.microcontroller
-        if not self._is_simulation and (mcu is None or not mcu.supports_panel_lock()):
+        if (
+            not self._is_simulation
+            and not self._controller_can_lock_its_panel()
+            and not control._def.AGENT_SESSION_ALLOW_UNLOCKED_PANEL
+        ):
             return "this controller cannot lock its control panel (firmware 1.8 or later is necessary)"
         return None
+
+    def _controller_can_lock_its_panel(self) -> bool:
+        mcu = self.microcontroller
+        return mcu is not None and mcu.supports_panel_lock()
 
     def _lock_panel_for_agent_session(self) -> None:
         """Lock the control panel for the agent session and wait for the controller to confirm it. Raises if it
@@ -2872,10 +2879,16 @@ class HighContentScreeningGui(QMainWindow):
         logs a failure, which is correct for homing but not here.) A second call changes nothing."""
         if PANEL_LOCK_AGENT in self._panel_lock.held():
             return
-        mcu = self.microcontroller
-        if mcu is not None and mcu.supports_panel_lock():
-            mcu.set_panel_lock(True)
-            mcu.wait_till_operation_is_completed()
+        can_lock = self._controller_can_lock_its_panel()
+        if can_lock:
+            self.microcontroller.set_panel_lock(True)
+            self.microcontroller.wait_till_operation_is_completed()
+        # A real controller that cannot lock its panel gets here only with AGENT_SESSION_ALLOW_UNLOCKED_PANEL
+        # (the session blocker refuses it otherwise): the banner tells the operator. Simulation has no panel.
+        unlocked = not can_lock and not self._is_simulation
+        self._agent_banner.set_panel_warning(PANEL_NOT_LOCKED_WARNING if unlocked else "")
+        if unlocked:
+            self.log.warning("Agent session: the control panel is not locked (the controller firmware cannot lock it)")
         self._panel_lock.add_locked(PANEL_LOCK_AGENT)
 
     def _claim_lift_for_acquisition(self):
