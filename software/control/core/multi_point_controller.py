@@ -556,7 +556,7 @@ class MultiPointController:
     def set_overlap_percent(self, overlap_percent: float):
         self.overlap_percent = overlap_percent
 
-    def start_new_experiment(self, experiment_ID, add_timestamp=True):
+    def start_new_experiment(self, experiment_ID, add_timestamp=True, channel_overrides: Optional[dict] = None):
         """Create the experiment folder and write its parameter files.
 
         add_timestamp=True (default): folder = experiment_ID (spaces -> underscores) + "_" + now.
@@ -577,7 +577,7 @@ class MultiPointController:
         self.liveController.microscope.config_repo.save_acquisition_output(
             output_dir=experiment_dir,
             objective=self.objectiveStore.current_objective,
-            channels=self.selected_configurations,
+            channels=self.effective_configurations(channel_overrides),
             confocal_mode=self.liveController.is_confocal_mode(),
         )  # save the configuration for the experiment
         # Prepare acquisition parameters
@@ -622,6 +622,27 @@ class MultiPointController:
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))
         f.close()
+
+    def effective_configurations(self, channel_overrides: Optional[dict] = None) -> list:
+        """The channels of one run. With channel_overrides ({channel name: {exposure_time_ms,
+        illumination_intensity}}) each named channel is a copy that has these values: the selected channels and
+        the stored profile stay as they are. With no overrides it is the selected channels themselves."""
+        if not channel_overrides:
+            return self.selected_configurations
+        unknown = sorted(set(channel_overrides) - {config.name for config in self.selected_configurations})
+        if unknown:
+            raise ValueError(f"channel_overrides names channels that are not selected: {unknown}")
+        effective = []
+        for config in self.selected_configurations:
+            settings = channel_overrides.get(config.name)
+            if settings:
+                config = config.model_copy(deep=True)
+                if "exposure_time_ms" in settings:
+                    config.exposure_time = settings["exposure_time_ms"]
+                if "illumination_intensity" in settings:
+                    config.illumination_intensity = settings["illumination_intensity"]
+            effective.append(config)
+        return effective
 
     def set_selected_configurations(self, selected_configurations_name):
         self.selected_configurations = []
@@ -781,7 +802,7 @@ class MultiPointController:
 
     _MCU_IDLE_WAIT_S = 15  # a wedged MCU clears a few seconds after live triggers stop
 
-    def run_acquisition(self, acquire_current_fov=False) -> bool:
+    def run_acquisition(self, acquire_current_fov=False, channel_overrides: Optional[dict] = None) -> bool:
         """Start the acquisition worker; returns True once it is running, False if the start was aborted."""
         # Consume the per-region laser-AF offsets for THIS run and clear the sticky controller
         # copy up-front. Any early return below — or a prior GUI abort that pushed offsets but
@@ -998,6 +1019,7 @@ class MultiPointController:
             acquisition_params = self.build_params(
                 scan_position_information=scan_position_information,
                 region_laser_af_offsets=run_region_laser_af_offsets,
+                channel_overrides=channel_overrides,
             )
 
             # Gather objective and camera info for YAML
@@ -1140,7 +1162,10 @@ class MultiPointController:
         return thread_started
 
     def build_params(
-        self, scan_position_information: ScanPositionInformation, region_laser_af_offsets: Optional[dict] = None
+        self,
+        scan_position_information: ScanPositionInformation,
+        region_laser_af_offsets: Optional[dict] = None,
+        channel_overrides: Optional[dict] = None,
     ) -> AcquisitionParameters:
         # Determine plate dimensions from wellplate format if available
         plate_num_rows = 8  # Default for 96-well
@@ -1158,7 +1183,7 @@ class MultiPointController:
         return AcquisitionParameters(
             experiment_ID=self.experiment_ID,
             base_path=self.base_path,
-            selected_configurations=self.selected_configurations,
+            selected_configurations=self.effective_configurations(channel_overrides),
             acquisition_start_time=self.timestamp_acquisition_started,
             scan_position_information=scan_position_information,
             NX=self.NX,

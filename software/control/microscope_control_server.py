@@ -1063,7 +1063,9 @@ class MicroscopeControlServer:
 
             # Set the base path and start new experiment
             self.multipoint_controller.set_base_path(base_path)
-            self.multipoint_controller.start_new_experiment(experiment_id)
+            # Light settings of the file for this run only; None for a file that has none.
+            channel_overrides = yaml_data.channel_overrides or None
+            self.multipoint_controller.start_new_experiment(experiment_id, channel_overrides=channel_overrides)
 
             # Calculate total FOVs for status reporting
             total_fovs = sum(len(coords) for coords in self.scan_coordinates.region_fov_coordinates.values())
@@ -1074,7 +1076,7 @@ class MicroscopeControlServer:
             self._set_gui_acquisition_state(yaml_data, is_running=True)
 
             # Run the acquisition (non-blocking - runs in worker thread)
-            if not self.multipoint_controller.run_acquisition():
+            if not self.multipoint_controller.run_acquisition(channel_overrides=channel_overrides):
                 self._set_gui_acquisition_state(yaml_data, is_running=False)
                 raise RuntimeError(_ACQUISITION_NOT_STARTED)
 

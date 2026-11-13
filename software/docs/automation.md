@@ -65,6 +65,27 @@ python scripts/run_acquisition.py --yaml acquisition.yaml --wells "A1,A2,B1,B2" 
 python scripts/run_acquisition.py --yaml acquisition.yaml --base-path /data/experiments --wait
 ```
 
+### Override exposure and intensity for one run
+
+An acquisition file can give the exposure and the illumination intensity of a channel for that run only. Add a
+top-level `channel_overrides` key to the YAML:
+
+```yaml
+channel_overrides:
+  "Fluorescence 488 nm Ex":
+    exposure_time_ms: 20.0
+    illumination_intensity: 5.0
+```
+
+- Each entry can give one value or the two values. The limits are 0.1 to 10000 ms and 0 to 100 %.
+- The channel must be one of the `channels` of the file.
+- The values are used for the images of that run and are written to the `acquisition.yaml` and
+  `acquisition_channels.yaml` of its folder. The stored channel settings of the profile are not changed.
+- Only the control server applies `channel_overrides` (`run_acquisition_from_yaml`, which
+  `scripts/run_acquisition.py` uses). A file that has the key is refused when it is loaded or dropped in the GUI,
+  and when a fluidics protocol refers to it.
+- A file with no `channel_overrides` key works as before.
+
 ## Connection Options
 
 ### Connect to already-running GUI

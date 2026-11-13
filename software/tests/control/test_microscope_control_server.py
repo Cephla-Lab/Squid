@@ -349,7 +349,7 @@ class TestRunAcquisitionFromYAMLOverrides:
         result = mock_server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file, experiment_id=custom_id)
 
         assert result["started"] is True
-        mock_server.multipoint_controller.start_new_experiment.assert_called_with(custom_id)
+        mock_server.multipoint_controller.start_new_experiment.assert_called_with(custom_id, channel_overrides=None)
 
     def test_base_path_override(self, mock_server, yaml_file):
         """Test that base_path parameter overrides default path."""

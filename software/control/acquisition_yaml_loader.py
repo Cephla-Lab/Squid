@@ -64,6 +64,40 @@ class AcquisitionYAMLData:
     # Set Z-range on a piezo z-stack, in piezo µm; files written before it existed have none.
     piezo_z_range_um: Optional[Tuple[float, float]] = None
     skip_saving: bool = False
+    # Exposure and intensity for this acquisition only (the stored profile is not changed).
+    channel_overrides: Dict[str, Dict[str, float]] = field(default_factory=dict)
+
+
+CHANNEL_OVERRIDE_KEYS = ("exposure_time_ms", "illumination_intensity")
+CHANNEL_OVERRIDES_ONLY_SERVER = "channel_overrides is applied only by run_acquisition_from_yaml"
+# The same limits as the set_exposure and set_illumination_intensity commands of the control server.
+_CHANNEL_OVERRIDE_LIMITS = {"exposure_time_ms": (0.1, 10000.0), "illumination_intensity": (0.0, 100.0)}
+
+
+def _parse_channel_overrides(raw, channel_names: List[str]) -> Dict[str, Dict[str, float]]:
+    """The optional top-level `channel_overrides` of an acquisition file: {channel name: {exposure_time_ms,
+    illumination_intensity}}. Refused, with nothing applied, for a channel that the acquisition does not use, an
+    unknown key, or a value outside the limits."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("channel_overrides must map a channel name to its settings")
+    overrides: Dict[str, Dict[str, float]] = {}
+    for name, settings in raw.items():
+        if name not in channel_names:
+            raise ValueError(f"channel_overrides names a channel that the acquisition does not use: '{name}'")
+        if not isinstance(settings, dict) or not settings:
+            raise ValueError(f"channel_overrides['{name}'] must give exposure_time_ms, illumination_intensity or both")
+        entry: Dict[str, float] = {}
+        for key, value in settings.items():
+            if key not in CHANNEL_OVERRIDE_KEYS:
+                raise ValueError(f"channel_overrides['{name}']: unknown key '{key}'")
+            low, high = _CHANNEL_OVERRIDE_LIMITS[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+                raise ValueError(f"channel_overrides['{name}']: {key} must be a number from {low:g} to {high:g}")
+            entry[key] = float(value)
+        overrides[name] = entry
+    return overrides
 
 
 def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
@@ -198,6 +232,9 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
 
     z_stack_order = parse_z_stack_order(z_stack.get("order"))
     return AcquisitionYAMLData(
+        channel_overrides=_parse_channel_overrides(
+            data.get("channel_overrides"), [ch.get("name") for ch in channels if ch.get("name")]
+        ),
         widget_type=widget_type,
         xy_mode=acq.get("xy_mode", "Select Wells"),
         # Objective info
