@@ -11,6 +11,7 @@ The server accepts JSON commands and returns JSON responses.
 import functools
 import inspect
 import json
+import math
 import os
 import re
 import socket
@@ -86,6 +87,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5050
 MAX_BUFFER_SIZE = 1 * 1024 * 1024  # 1 MB limit to prevent memory exhaustion
 MAX_CONNECTIONS = 5  # Maximum concurrent client connections
+_BURST_MAX_INTERVAL_MS = 60000  # acquire_burst: the longest time between two frames
 
 
 def schema_method(func: Callable) -> Callable:
@@ -263,6 +265,7 @@ class MicroscopeControlServer:
         self._thread: Optional[threading.Thread] = None
         self._python_exec_enabled = False  # Disabled by default for security
         self._connection_semaphore = threading.Semaphore(MAX_CONNECTIONS)
+        self._burst_lock = threading.Lock()  # one acquire_burst at a time: they would share the camera
 
         # Auto-discover commands by finding all _cmd_* methods
         self._commands: Dict[str, Callable] = {}
@@ -528,27 +531,45 @@ class MicroscopeControlServer:
     @schema_method
     def _cmd_acquire_burst(
         self,
-        count: int = Field(..., description="Number of frames (1 to 1000)"),
+        count: int = Field(..., description="Number of frames (1 to 1000)", ge=1, le=1000),
         save_dir: str = Field(..., description="Absolute path of the folder for the frames; created if missing"),
         interval_ms: float = Field(
-            0, description="Time from the start of one frame to the start of the next; 0 = as fast as possible"
+            0,
+            description="Shortest time from the start of one frame to the start of the next; 0 = as fast as possible",
+            ge=0,
+            le=_BURST_MAX_INTERVAL_MS,
         ),
         prefix: str = Field("burst", description="File name prefix (letters, digits, - and _)"),
     ) -> Dict[str, Any]:
-        """Take a series of frames at the current position, with the current channel and exposure, and save each
-        as <save_dir>/<prefix>_<index>.tiff. Refused while an acquisition runs or live view is on. Stops before the
-        next frame when a take over is requested."""
+        """Take a series of frames at the current position and save each as a TIFF file.
+
+        The frames have the current channel and exposure and go to <save_dir>/<prefix>_<index>.tiff. Refused while
+        an acquisition runs, live view is on, or another burst runs. The command returns when the burst ended. In
+        an agent session it stops before the next frame when a take over or the end of the session is requested."""
         import tifffile
 
         # schema_method fills defaults; it does not enforce limits, so the limits are checked here.
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 1000:
             raise ValueError("count must be a whole number from 1 to 1000")
-        if interval_ms < 0:
-            raise ValueError("interval_ms must be 0 or more")
+        if (
+            isinstance(interval_ms, bool)
+            or not isinstance(interval_ms, (int, float))
+            or not math.isfinite(interval_ms)  # NaN passes every comparison below and would never come due
+            or not 0 <= interval_ms <= _BURST_MAX_INTERVAL_MS
+        ):
+            raise ValueError(f"interval_ms must be a number from 0 to {_BURST_MAX_INTERVAL_MS}")
         if not self._BURST_PREFIX.fullmatch(prefix):
             raise ValueError("prefix must have only letters, digits, - and _")
         if not os.path.isabs(save_dir):
             raise ValueError("save_dir must be an absolute path")
+        if not self._burst_lock.acquire(blocking=False):
+            raise RuntimeError("a burst is running")
+        try:
+            return self._run_burst(tifffile, count, save_dir, interval_ms / 1000.0, prefix)
+        finally:
+            self._burst_lock.release()
+
+    def _run_burst(self, tifffile, count: int, save_dir: str, interval_s: float, prefix: str) -> Dict[str, Any]:
         # acquire_image() does not stop live view and does not exclude a running acquisition: do not share the camera.
         if self.multipoint_controller is not None and self.multipoint_controller.acquisition_in_progress():
             raise RuntimeError("an acquisition is running")
@@ -573,30 +594,35 @@ class MicroscopeControlServer:
         frames: List[Dict[str, Any]] = []
         stopped_early = False
         first_read: Optional[float] = None
-        burst_start = time.monotonic()
+        next_start = time.monotonic()  # the first frame starts at once
         waiter = threading.Event()
-        for index in range(count):
-            due = burst_start + index * interval_ms / 1000.0
-            while True:
-                if stop_requested():
-                    stopped_early = True
+        # One hold of the light source for the whole burst. acquire_image() takes and releases its own for each
+        # frame, which on a laser engine opens and closes a mechanical shutter each time.
+        with self.microscope.live_controller.use_current_channel("acquire_burst"):
+            for index in range(count):
+                while True:
+                    if stop_requested():
+                        stopped_early = True
+                        break
+                    remaining = next_start - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    waiter.wait(min(remaining, 0.05))
+                if stopped_early:
                     break
-                remaining = due - time.monotonic()
-                if remaining <= 0:
-                    break
-                waiter.wait(min(remaining, 0.05))
-            if stopped_early:
-                break
-            try:
-                image = self.microscope.acquire_image()
-                read_at = time.monotonic()
-                path = os.path.join(save_dir, f"{prefix}_{index:04d}.tiff")
-                tifffile.imwrite(path, image)
-            except Exception as e:
-                raise RuntimeError(f"burst stopped after {len(frames)} frames: {e}") from e
-            if first_read is None:
-                first_read = read_at
-            frames.append({"path": path, "time_s": read_at - first_read})
+                # From the start of this frame, not from a fixed grid: after a frame that took longer than the
+                # interval, the next frames do not come with no time between them.
+                next_start = time.monotonic() + interval_s
+                try:
+                    image = self.microscope.acquire_image()
+                    read_at = time.monotonic()
+                    path = os.path.join(save_dir, f"{prefix}_{index:04d}.tiff")
+                    tifffile.imwrite(path, image)
+                except Exception as e:
+                    raise RuntimeError(f"burst stopped after {len(frames)} frames: {e}") from e
+                if first_read is None:
+                    first_read = read_at
+                frames.append({"path": path, "time_s": read_at - first_read})
 
         return {
             "frames": frames,

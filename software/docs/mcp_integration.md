@@ -126,12 +126,17 @@ The `python_exec` command is disabled by default for security. To enable it:
 | `acquire_burst` | `count`, `save_dir`, `interval_ms`, `prefix` | Capture a series of frames at the current position |
 
 `acquire_burst` takes `count` frames (1 to 1000) at the current position, with the current channel and exposure,
-and saves them as `<save_dir>/<prefix>_<index>.tiff` (`save_dir` is an absolute path; `prefix` defaults to
-`burst`). `interval_ms` is the time from the start of one frame to the start of the next; `0` (the default) means
-as fast as possible. The reply has `frames` (each with `path` and `time_s`, the time from the first frame),
-`position`, `channel`, `exposure_ms` and `stopped_early`. The command is refused while an acquisition runs or
-live view is on. In an agent session, a take over stops the burst before the next frame (`stopped_early` is
-`true`).
+and saves them as `<save_dir>/<prefix>_<index>.tiff`. `save_dir` is an absolute path and is created if it is
+missing. `<index>` has four digits and starts at `0000`; a file with the same name is overwritten. `prefix`
+defaults to `burst`. `interval_ms` (0 to 60000) is the shortest time from the start of one frame to the start of
+the next; `0` (the default) means as fast as possible. A frame that takes longer than the interval delays the
+frames after it. The reply has `frames` (each with `path` and `time_s`, the time from the first frame),
+`position`, `channel`, `exposure_ms` and `stopped_early`.
+
+The command returns when the burst has ended, so the client must wait longer than the burst lasts (the MCP bridge
+waits 30 seconds for a reply). It is refused while an acquisition runs, live view is on, or another burst runs. In
+an [agent session](agent-session.md), a take over or the end of the session stops the burst before the next frame
+(`stopped_early` is `true`). With no session, nothing stops a burst before its last frame.
 
 ### Channel & Illumination
 

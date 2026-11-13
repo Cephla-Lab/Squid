@@ -1,6 +1,7 @@
 """acquire_burst: a series of frames at the current position."""
 
 import os
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -25,6 +26,7 @@ def server():
     with patch.object(MicroscopeControlServer, "__init__", lambda self: None):
         srv = MicroscopeControlServer()
     srv._log = MagicMock()
+    srv._burst_lock = threading.Lock()  # as __init__ makes it
     srv.microscope = microscope
     srv.multipoint_controller = MagicMock()
     srv.multipoint_controller.acquisition_in_progress.return_value = False
@@ -49,7 +51,8 @@ def test_burst_has_defaults_for_interval_and_prefix(server, tmp_path):
 
 def test_burst_keeps_the_interval(server, tmp_path):
     result = server._cmd_acquire_burst(count=3, save_dir=str(tmp_path), interval_ms=50, prefix="burst")
-    assert 0.09 <= result["frames"][2]["time_s"] <= 0.75  # generous upper limit for a busy CI runner
+    # generous limits for a busy CI runner; the times are from frame to frame, the interval from start to start
+    assert 0.08 <= result["frames"][2]["time_s"] <= 0.75
 
 
 def test_burst_stops_at_the_next_frame_after_a_take_over(server, tmp_path):
@@ -69,17 +72,121 @@ def test_burst_stops_at_the_next_frame_after_a_take_over(server, tmp_path):
 
 
 def test_a_take_over_ends_the_wait_between_frames(server, tmp_path):
+    """The take over comes while the burst waits for the time of its second frame (2 s after the first)."""
     session = server.microscope.agent_session
     session.begin()
+    take_over = threading.Timer(0.2, lambda: session.request_stop(SessionState.HUMAN, "take over"))
+    take_over.start()
+    start = time.monotonic()
+    try:
+        result = server._cmd_acquire_burst(count=3, save_dir=str(tmp_path), interval_ms=2000, prefix="burst")
+    finally:
+        take_over.cancel()
+    assert time.monotonic() - start < 1.0  # not the 2 s of the interval
+    assert len(result["frames"]) == 1 and result["stopped_early"] is True
+
+
+def test_a_late_frame_does_not_make_the_next_frames_come_at_once(server, tmp_path):
+    """interval_ms is from the start of one frame to the start of the next. A frame that took longer (a light
+    source that wakes up) must not be followed by frames with no time between them."""
+    starts = []
 
     def capture():
-        session.request_stop(SessionState.HUMAN, "take over")
+        starts.append(time.monotonic())
+        if len(starts) == 1:
+            time.sleep(0.35)
         return np.zeros((4, 4), dtype=np.uint16)
 
     server.microscope.acquire_image.side_effect = capture
-    start = time.monotonic()
-    result = server._cmd_acquire_burst(count=3, save_dir=str(tmp_path), interval_ms=2000, prefix="burst")
-    assert time.monotonic() - start < 0.5 and len(result["frames"]) == 1 and result["stopped_early"] is True
+    server._cmd_acquire_burst(count=4, save_dir=str(tmp_path), interval_ms=100, prefix="burst")
+    gaps = [b - a for a, b in zip(starts, starts[1:])]
+    assert gaps[0] >= 0.35 and all(gap >= 0.09 for gap in gaps[1:]), gaps
+
+
+@pytest.mark.parametrize("interval_ms", [float("nan"), float("inf")])
+def test_an_interval_that_is_not_a_finite_number_is_refused_and_the_burst_does_not_spin(server, tmp_path, interval_ms):
+    outcome = []
+
+    def call():
+        try:
+            server._cmd_acquire_burst(count=2, save_dir=str(tmp_path), interval_ms=interval_ms)
+        except ValueError as error:
+            outcome.append(str(error))
+
+    thread = threading.Thread(target=call, daemon=True)
+    thread.start()
+    thread.join(2)
+    still_running = thread.is_alive()
+    server.microscope.agent_session.begin()  # ends a burst that spins: its session is not the one of its start
+    thread.join(2)
+    assert not still_running and outcome and "interval_ms" in outcome[0]
+    server.microscope.acquire_image.assert_not_called()
+
+
+def test_a_second_burst_is_refused_while_one_runs(server, tmp_path):
+    in_capture = threading.Event()
+    release = threading.Event()
+
+    def slow_capture():
+        in_capture.set()
+        release.wait(5)
+        return np.zeros((4, 4), dtype=np.uint16)
+
+    server.microscope.acquire_image.side_effect = slow_capture
+    first = []
+    thread = threading.Thread(
+        target=lambda: first.append(server._cmd_acquire_burst(count=1, save_dir=str(tmp_path / "a")))
+    )
+    thread.start()
+    try:
+        assert in_capture.wait(5)
+        with pytest.raises(RuntimeError, match="^a burst is running$"):
+            server._cmd_acquire_burst(count=1, save_dir=str(tmp_path / "b"))
+    finally:
+        release.set()
+        thread.join(5)
+    assert len(first[0]["frames"]) == 1 and not os.path.exists(tmp_path / "b")
+    assert len(server._cmd_acquire_burst(count=1, save_dir=str(tmp_path / "c"))["frames"]) == 1  # free again
+
+
+def test_a_burst_that_is_refused_or_fails_leaves_the_next_burst_free(server, tmp_path):
+    server.microscope.live_controller.is_live = True
+    with pytest.raises(RuntimeError, match="live view is on"):
+        server._cmd_acquire_burst(count=1, save_dir=str(tmp_path))
+    server.microscope.live_controller.is_live = False
+    server.microscope.acquire_image.side_effect = RuntimeError("no frame")
+    with pytest.raises(RuntimeError, match="burst stopped after 0 frames"):
+        server._cmd_acquire_burst(count=1, save_dir=str(tmp_path))
+    server.microscope.acquire_image.side_effect = lambda: np.zeros((4, 4), dtype=np.uint16)
+    assert len(server._cmd_acquire_burst(count=1, save_dir=str(tmp_path))["frames"]) == 1
+
+
+def test_the_light_source_is_held_one_time_for_the_whole_burst(server, tmp_path):
+    """Each acquire_image() takes and releases the light source by itself. On a laser engine that opens and closes
+    a mechanical shutter for each frame; one hold around the burst keeps it open."""
+    events = []
+
+    class Hold:
+        def __enter__(self):
+            events.append("hold")
+            return self
+
+        def __exit__(self, *exc):
+            events.append("release")
+            return False
+
+    def capture():
+        events.append("frame")
+        if events.count("frame") == 3:
+            raise RuntimeError("no frame")
+        return np.zeros((4, 4), dtype=np.uint16)
+
+    server.microscope.live_controller.use_current_channel.side_effect = lambda name: Hold()
+    server.microscope.acquire_image.side_effect = capture
+    with pytest.raises(RuntimeError, match="burst stopped after 2 frames"):
+        server._cmd_acquire_burst(count=5, save_dir=str(tmp_path))
+    assert events == ["hold", "frame", "frame", "frame", "release"]  # released also when a frame fails
+    server.microscope.live_controller.use_current_channel.assert_called_once_with("acquire_burst")
 
 
 def test_burst_does_not_continue_after_a_handover(server, tmp_path):
@@ -116,7 +223,11 @@ def test_burst_is_refused_during_an_acquisition_and_with_live_view(server, tmp_p
     [
         ({"count": 0}, "count"),
         ({"count": 1001}, "count"),
+        ({"count": True}, "count"),
+        ({"count": 2.0}, "count"),
         ({"count": 1, "interval_ms": -1}, "interval_ms"),
+        ({"count": 1, "interval_ms": 60001}, "interval_ms"),
+        ({"count": 1, "interval_ms": "100"}, "interval_ms"),
         ({"count": 1, "prefix": "../x"}, "prefix"),
         ({"count": 1, "prefix": ""}, "prefix"),
     ],
@@ -145,3 +256,11 @@ def test_capture_error_says_how_many_frames_were_saved(server, tmp_path):
     with pytest.raises(RuntimeError, match="burst stopped after 1 frames: camera.read_frame"):
         server._cmd_acquire_burst(count=5, save_dir=str(tmp_path), interval_ms=0, prefix="burst")
     assert os.path.exists(tmp_path / "burst_0000.tiff")
+
+
+def test_the_schema_tells_the_limits_and_has_a_complete_first_sentence(server):
+    schema = server._cmd_acquire_burst._schema
+    assert schema["description"].endswith(".") and "series of frames" in schema["description"]
+    parameters = schema["parameters"]
+    assert (parameters["count"]["minimum"], parameters["count"]["maximum"]) == (1, 1000)
+    assert (parameters["interval_ms"]["minimum"], parameters["interval_ms"]["maximum"]) == (0, 60000)
