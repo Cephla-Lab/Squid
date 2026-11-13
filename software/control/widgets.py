@@ -1062,8 +1062,11 @@ class AcquisitionYAMLDropMixin:
             return "Flexible Multipoint"
         return "Wellplate Multipoint"
 
-    def _load_acquisition_yaml(self, file_path: str) -> bool:
+    def _load_acquisition_yaml(self, file_path: str, from_server: bool = False) -> bool:
         """Load acquisition settings from YAML file.
+
+        from_server: the control server loads the file to show its settings before it runs it. Only that run
+        applies the file's channel_overrides, so a file that a person loads or drops is refused when it has them.
 
         Returns:
             True if settings were loaded successfully, False otherwise.
@@ -1084,6 +1087,14 @@ class AcquisitionYAMLDropMixin:
                 "Widget Type Mismatch",
                 f"This YAML is for '{yaml_data.widget_type}' mode.\n"
                 f"Please drop this file on the {self._get_other_widget_name()} widget instead.",
+            )
+            return False
+
+        if yaml_data.channel_overrides and not from_server:
+            from control.acquisition_yaml_loader import CHANNEL_OVERRIDES_ONLY_SERVER
+
+            QMessageBox.warning(
+                self, "Load Error", f"This file cannot be loaded here:\n{CHANNEL_OVERRIDES_ONLY_SERVER}"
             )
             return False
 
@@ -8519,7 +8530,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
     def load_acquisition_yaml_slot(self, file_path: str) -> None:
         """Queued entry point for non-Qt threads (TCP server): load a saved acquisition.yaml into this tab."""
         try:
-            self._load_acquisition_yaml(file_path)
+            self._load_acquisition_yaml(file_path, from_server=True)
         except Exception as e:
             self._log.error(f"Failed to load acquisition YAML {file_path}: {e}", exc_info=True)
 
@@ -10678,7 +10689,7 @@ class WellplateMultiPointWidget(
     def load_acquisition_yaml_slot(self, file_path: str) -> None:
         """Queued entry point for non-Qt threads (TCP server): load a saved acquisition.yaml into this tab."""
         try:
-            self._load_acquisition_yaml(file_path)
+            self._load_acquisition_yaml(file_path, from_server=True)
         except Exception as e:
             self._log.error(f"Failed to load acquisition YAML {file_path}: {e}", exc_info=True)
 
