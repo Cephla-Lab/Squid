@@ -67,7 +67,6 @@ class AutofocusWorker:
         focus_measure_max = 0
 
         z_af_offset = self.deltaZ * round(self.N / 2)
-        z_bottom_mm = self.stage.get_pos().z_mm - z_af_offset  # the planes are one step each above this
 
         self.stage.move_z(-z_af_offset)
 
@@ -80,6 +79,7 @@ class AutofocusWorker:
                 break
             self.stage.move_z(self.deltaZ)
             steps_moved = steps_moved + 1
+            plane_z_mm = self.stage.get_pos().z_mm  # the stage rounds each move to its motor steps
             # trigger acquisition (including turning on the illumination) and read frame
             if self.liveController.trigger_mode == control._def.TriggerMode.SOFTWARE:
                 self.liveController.turn_on_illumination()
@@ -113,7 +113,7 @@ class AutofocusWorker:
             timestamp_0 = time.time()
             focus_measure = utils.calculate_focus_measure(image, self.focus_measure_operator)
             self.autofocusController.last_planes.append(
-                (z_bottom_mm + (i + 1) * self.deltaZ, focus_measure, image if self.keep_plane_images else None)
+                (plane_z_mm, focus_measure, image if self.keep_plane_images else None)
             )
             timestamp_1 = time.time()
             self._log.info("             calculating focus measure took " + str(timestamp_1 - timestamp_0) + " second")
