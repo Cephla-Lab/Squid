@@ -117,6 +117,9 @@ While the agent drives:
   of the loading position: the end of a homing run inside a session does not unlock the panel.
 - The terminal console answers `Refused: the agent is driving` to each line (`Refused: a stop is in progress`
   during a stop).
+- The live view shows the images that the agent takes with `acquire_image` and `acquire_burst`, as it shows the
+  frames of Live and Snap. A burst shows at the display rate, not each frame. With no agent session, an image
+  that a client takes does not change the display.
 
 ### Take over
 

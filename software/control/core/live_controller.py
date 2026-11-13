@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import time
 import threading
 from typing import Dict, Iterable, List, Optional, TYPE_CHECKING
@@ -43,6 +44,9 @@ class LiveController(QObject):
         self.is_live = False
         # True only for the duration of a single snap(); see should_display_frames().
         self._is_snapping = False
+        # frames_reach_display(): the scripted captures that a person watches now (each TCP client has its own thread)
+        self._display_holds = 0
+        self._display_holds_lock = threading.Lock()
         self.control_illumination = control_illumination
         self.illumination_on = False
         self.use_internal_timer_for_hardware_trigger = (
@@ -572,8 +576,33 @@ class LiveController(QObject):
         return self._is_snapping
 
     def should_display_frames(self) -> bool:
-        """True when camera frames are meant to reach the display (live or snap)."""
-        return self.is_live or self._is_snapping
+        """True when camera frames are meant to reach the display (live, snap, or a watched scripted capture)."""
+        return self.is_live or self._is_snapping or self._display_holds > 0
+
+    @contextlib.contextmanager
+    def frames_reach_display(self):
+        """Inside the block the camera frames reach the display, as the frames of live view and of a snap do.
+
+        For a scripted capture that a person watches in the window (an agent session). read_frame() returns as
+        soon as a frame is stored, which can be just before the callbacks that put it on the screen run. So a
+        block that ends in the normal way waits, at most 1 s, until the callbacks ran for a frame."""
+        callbacks_were_enabled = self.camera.get_callbacks_enabled()
+        self.camera.enable_callbacks(True)  # they may be off, e.g. by the laser AF controller
+        frame_propagated = threading.Event()
+        callback_id = self.camera.add_frame_callback(lambda _frame: frame_propagated.set())
+        with self._display_holds_lock:
+            self._display_holds += 1
+        completed = False
+        try:
+            yield
+            completed = True
+        finally:
+            if completed:
+                frame_propagated.wait(1.0)
+            with self._display_holds_lock:
+                self._display_holds -= 1
+            self.camera.remove_frame_callback(callback_id)
+            self.camera.enable_callbacks(callbacks_were_enabled)
 
     def _trigger_acquisition_timer_fn(self):
         trigger_start = time.monotonic()

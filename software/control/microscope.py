@@ -1,7 +1,8 @@
+import contextlib
 import threading
 import time
 from pathlib import Path
-from typing import Callable, List, Optional, Protocol
+from typing import Callable, Iterator, List, Optional, Protocol
 
 import imageio
 import numpy as np
@@ -72,6 +73,28 @@ if control._def.USE_OBJECTIVE_TURRET:
     )
 else:
     ObjectiveTurret4PosController = None
+
+
+_TRIGGER_READY_TIMEOUT_S = 5.0  # illumination_kept_on: the longest wait for the camera to take the next trigger
+
+
+@contextlib.contextmanager
+def _camera_streaming(camera: AbstractCamera, trigger_mode) -> Iterator[None]:
+    """Make sure that the camera streams for a scripted capture.
+
+    A real camera refuses a trigger when it does not stream, and nothing starts the stream before the first live
+    view. The stream is left as the Live button leaves it: on in the triggered modes (the camera waits for the
+    next trigger), off again in the continuous mode (there it would run free)."""
+    started_here = not camera.get_is_streaming()
+    if started_here:
+        camera.start_streaming()
+        if not camera.get_is_streaming():
+            raise RuntimeError("Failed to acquire image: the camera did not start streaming")
+    try:
+        yield
+    finally:
+        if started_here and trigger_mode == control._def.TriggerMode.CONTINUOUS:
+            camera.stop_streaming()
 
 
 class ObjectiveChangerProtocol(Protocol):
@@ -1019,32 +1042,36 @@ class Microscope:
     def acquire_image(self) -> np.ndarray:
         """Acquire a single image from the camera.
 
-        Turns on illumination, triggers the camera, reads the frame, and turns off
-        illumination. The trigger mode (software vs hardware) is determined by the
-        live controller configuration.
+        Starts the camera stream if it is off, turns on illumination, triggers the camera,
+        reads the frame, and turns off illumination. The trigger mode (software vs hardware)
+        is determined by the live controller configuration.
 
         Returns:
             The acquired image as a numpy array.
 
         Raises:
-            RuntimeError: If the camera fails to return a frame.
+            RuntimeError: If the camera does not start streaming or fails to return a frame.
         """
-        using_software_trigger = self.live_controller.trigger_mode == control._def.TriggerMode.SOFTWARE
+        trigger_mode = self.live_controller.trigger_mode
+        using_software_trigger = trigger_mode == control._def.TriggerMode.SOFTWARE
 
-        with self.live_controller.use_current_channel("acquire_image") as light:  # wakes the line, opens its shutter
+        # The stream first, then the light: a camera that is slow to start does not get light on the sample.
+        with _camera_streaming(self.camera, trigger_mode), self.live_controller.use_current_channel(
+            "acquire_image"
+        ) as light:  # the hold wakes the line and opens its shutter
             if not light.wait_until_ready():  # e.g. the 560 restarting after its idle-off: no dark image
                 raise RuntimeError("Failed to acquire image: the illumination did not become ready")
-            # turn on illumination and send trigger
-            if using_software_trigger:
-                self.live_controller.turn_on_illumination()
-                self._wait_for_microcontroller()
-                self.camera.send_trigger()
-            elif self.live_controller.trigger_mode == control._def.TriggerMode.HARDWARE:
-                self.low_level_drivers.microcontroller.send_hardware_trigger(
-                    control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
-                )
-
             try:
+                # turn on illumination and send trigger
+                if using_software_trigger:
+                    self.live_controller.turn_on_illumination()
+                    self._wait_for_microcontroller()
+                    self.camera.send_trigger()
+                elif trigger_mode == control._def.TriggerMode.HARDWARE:
+                    self.low_level_drivers.microcontroller.send_hardware_trigger(
+                        control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
+                    )
+
                 # read a frame from camera
                 image = self.camera.read_frame()
                 if image is None:
@@ -1052,9 +1079,51 @@ class Microscope:
                     raise RuntimeError("Failed to acquire image: camera.read_frame() returned None")
                 return image
             finally:
-                # always turn off illumination when using software trigger
+                # always turn off illumination when using software trigger, also when the trigger was refused
                 if using_software_trigger:
                     self.live_controller.turn_off_illumination()
+
+    @contextlib.contextmanager
+    def illumination_kept_on(self, name: str):
+        """Keep the light of the current channel on for a series of frames, for `name`.
+
+        `with microscope.illumination_kept_on("x") as take_frame:` then `take_frame()` for each image. Each
+        frame is one software trigger; the light does not go off between the frames, so the frames come faster
+        than with acquire_image(), and the sample gets light for the whole block and not only for the
+        exposures. The light goes off when the block ends, also after an error.
+
+        Raises:
+            RuntimeError: Not in the software trigger mode, or the illumination did not become ready.
+        """
+        if self.live_controller.trigger_mode != control._def.TriggerMode.SOFTWARE:
+            raise RuntimeError("The light can stay on only in the software trigger mode")
+
+        def take_frame() -> np.ndarray:
+            deadline = time.monotonic() + _TRIGGER_READY_TIMEOUT_S
+            while not self.camera.get_ready_for_trigger():  # the readout of the frame before is not complete
+                if time.monotonic() > deadline:
+                    raise RuntimeError("Failed to acquire image: the camera did not become ready for a trigger")
+                time.sleep(0.0005)
+            self.camera.send_trigger()
+            image = self.camera.read_frame()
+            if image is None:
+                raise RuntimeError("Failed to acquire image: camera.read_frame() returned None")
+            return image
+
+        # The stream first, then the light, as in acquire_image().
+        with _camera_streaming(
+            self.camera, self.live_controller.trigger_mode
+        ), self.live_controller.use_current_channel(
+            name
+        ) as light:  # the hold wakes the line and opens its shutter
+            if not light.wait_until_ready():
+                raise RuntimeError("Failed to acquire image: the illumination did not become ready")
+            self.live_controller.turn_on_illumination()
+            try:
+                self._wait_for_microcontroller()
+                yield take_frame
+            finally:
+                self.live_controller.turn_off_illumination()
 
     def _get_channel_or_raise(self, objective: str, channel_name: str):
         config = self.live_controller.get_channel_by_name(objective, channel_name)
