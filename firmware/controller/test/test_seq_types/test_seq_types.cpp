@@ -104,6 +104,42 @@ void test_channel_count_bounds(void) {
                             (uint8_t)validate(l, ch, cams, 1, 8, 8).error);
 }
 
+// Each duration is bounded on its own above, but the engine's deadlines add lead + strobe + exposure +
+// readout of one exposure: that sum has to respect the bound too (it is what the wrap-safe comparisons
+// see), and the channel is named.
+void test_exposure_deadline_sum_is_bounded(void) {
+    SeqLoop l = good_loop();
+    SeqChannel ch[2] = {good_channel(), good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    cams[0].strobe_delay_us = kMaxDurationUs / 2;
+    cams[0].readout_time_us = 2;
+    ch[1].exposure_us = kMaxDurationUs / 2;  // in bounds alone; over it together with the strobe + readout
+    ValidationResult r = validate(l, ch, cams, 1, 8, 8);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::BadDuration, (uint8_t)r.error);
+    TEST_ASSERT_EQUAL_UINT8(1, r.detail);
+    ch[1].exposure_us = kMaxDurationUs / 2 - 2;
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)validate(l, ch, cams, 1, 8, 8).error);
+}
+
+// A TTL channel lights one shared mask for all its cameras, with one OFF edge per camera: the cameras'
+// strobe delays have to agree, or the earliest OFF darkens the others. An LED-only channel is free to mix.
+void test_ttl_channel_cameras_must_share_a_strobe_delay(void) {
+    SeqLoop l = good_loop();
+    SeqChannel ch[2] = {good_channel(), good_channel()};
+    ch[0].camera_mask = 0x03;
+    SeqCameraConfig cams[2] = {cam_level(), cam_level()};
+    cams[1].strobe_delay_us = 2000;
+    ValidationResult r = validate(l, ch, cams, 2, 8, 8);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::BadCamera, (uint8_t)r.error);
+    TEST_ASSERT_EQUAL_UINT8(0, r.detail);
+    ch[0].illum_ttl_mask = 0;
+    ch[0].led_pattern = 1;
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)validate(l, ch, cams, 2, 8, 8).error);
+    cams[1].strobe_delay_us = cams[0].strobe_delay_us;
+    ch[0].illum_ttl_mask = 0x01;
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)validate(l, ch, cams, 2, 8, 8).error);
+}
+
 // SeqError travels in a status byte and is mirrored by number in software/control/sequencer_program.py:
 // an enumerator may be renamed (ReadyTimeout -> ReadyLineStuck, 2026-09-21), never moved.
 void test_error_codes_keep_their_wire_numbers(void) {
@@ -129,6 +165,8 @@ int main(int, char**) {
     RUN_TEST(test_camera_mask_beyond_configured_cameras_rejected);
     RUN_TEST(test_stepper_axis_out_of_range_rejected);
     RUN_TEST(test_channel_count_bounds);
+    RUN_TEST(test_exposure_deadline_sum_is_bounded);
+    RUN_TEST(test_ttl_channel_cameras_must_share_a_strobe_delay);
     RUN_TEST(test_error_codes_keep_their_wire_numbers);
     RUN_TEST(test_wire_struct_sizes_are_frozen);
     return UNITY_END();

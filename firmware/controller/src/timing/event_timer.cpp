@@ -20,6 +20,14 @@ const uint8_t kNumTtlPins = sizeof(kTtlPins) / sizeof(kTtlPins[0]);
 // Shortest interval the PIT is armed for. An edge closer than this runs up to kMinArmUs late
 // rather than being busy-waited for inside the ISR.
 const uint32_t kMinArmUs = 2;
+// Longest interval the PIT is armed for. The Teensy core refuses periods above about 179 s
+// (IntervalTimer::MAX_PERIOD) and begin() then arms nothing, which would leave the pending
+// edges (a trigger release, an illumination OFF) unexecuted for good. A longer gap is covered
+// by several wake-ups: each finds nothing due yet and re-arms for the remainder.
+const uint32_t kMaxArmUs = 60u * 1000000u;
+// begin() refused to arm (no free PIT channel): the edges still queued will never run and the
+// outputs stay where they are. Latched for seq_tick() to abort the run on, like the interlock.
+volatile bool arm_failed = false;
 
 inline void write_ttl(uint8_t mask, uint8_t level) {
     for (uint8_t i = 0; i < kNumTtlPins; i++)
@@ -58,7 +66,9 @@ void service_and_arm() {
     while (queue.pop_due(micros(), &e)) apply(e);
     uint32_t delay_us;
     if (!queue.next_delay(micros(), &delay_us)) return;  // nothing pending: stay disarmed
-    timer.begin(on_timer, delay_us < kMinArmUs ? kMinArmUs : delay_us);
+    if (delay_us < kMinArmUs) delay_us = kMinArmUs;
+    if (delay_us > kMaxArmUs) delay_us = kMaxArmUs;
+    if (!timer.begin(on_timer, delay_us)) arm_failed = true;
 }
 
 void on_timer() { service_and_arm(); }
@@ -81,7 +91,10 @@ void event_timer_cancel_all() {
     for (int ch = 0; ch < NUM_CAMERA_TRIGGERS; ch++) trigger_release(ch);
     write_ttl(0xFF, LOW);
     interlock_tripped = false;
+    arm_failed = false;
     interrupts();
 }
 
 bool event_timer_interlock_tripped() { return interlock_tripped; }
+
+bool event_timer_arm_failed() { return arm_failed; }
