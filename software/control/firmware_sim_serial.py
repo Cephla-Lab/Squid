@@ -25,6 +25,7 @@ from control._def import (
     STARTUP_STATE_MIN_FIRMWARE,
 )
 from control.microcontroller import AbstractCephlaMicroSerial
+from control.sequencer_sim import SimulatedSequencer
 
 
 class FirmwareProtocolError(Exception):
@@ -130,6 +131,15 @@ class FirmwareConstants:
             "SET_PORT_ILLUMINATION",
             "SET_MULTI_PORT_MASK",
             "TURN_OFF_ALL_PORTS",
+            # Background senders (firmware v1.1+): the heartbeat keeps the serial watchdog
+            # fed and is the one command the sequencer's allow-table lets through a run.
+            "SET_WATCHDOG_TIMEOUT",
+            "HEARTBEAT",
+            # Hardware sequencer (firmware 2.0)
+            "SEQ_WRITE",
+            "SEQ_COMMIT",
+            "SEQ_RUN",
+            "SEQ_CANCEL",
         ]
         return {name: self._constants[name] for name in command_names if name in self._constants}
 
@@ -303,6 +313,11 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         self.commands_validated = 0
         self.validation_errors = []
 
+        # Hardware sequencer (firmware 2.0). Point sequencer.on_hardware_trigger at a
+        # simulated camera to get real frames out of a simulated sequenced acquisition.
+        self._last_cmd_id = 0
+        self.sequencer = SimulatedSequencer(emit_status_packet=self._emit_status_packet)
+
     def set_power_good(self, power_good: bool) -> None:
         """The stage power supply's power-good line. Low clears every homed flag (and the query reports UNHEALTHY
         until it is high again); the flags stay cleared after it comes back."""
@@ -437,9 +452,14 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
 
         version_byte = (self.firmware_version[0] << 4) | (self.firmware_version[1] & 0x0F)
 
-        # Focus wheel to host: the theta field carries the wheel count, flagged in byte 19
+        # Bytes 14-17 are a multiplexed field, byte 19 saying who owns it (serial_communication.cpp):
+        # the sequencer while a sequence runs and briefly after, else the focus wheel count in
+        # TO_HOST mode, else theta. A pending startup verdict overrides them all (below).
         theta_field, byte19, bytes20_21 = self.theta, 0, 0
-        if self.focus_wheel_mode == self.fw.get("FOCUS_WHEEL_TO_HOST", 1):
+        if self.sequencer.owns_status_field():
+            theta_field = int.from_bytes(bytes(self.sequencer.status_bytes()), "big", signed=True)
+            byte19 = 1 << self.fw.get("SEQ_FLAG_STATUS", 2)
+        elif self.focus_wheel_mode == self.fw.get("FOCUS_WHEEL_TO_HOST", 1):
             theta_field = self.focus_wheel_count
             byte19 = 1 << self.fw.get("FOCUS_WHEEL_FLAG_REPORTING", 7)
         # hv_startup_reply_fields: a startup verdict packet carries the startup reply in bytes 14-21 instead
@@ -504,6 +524,15 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         # A verdict answers only the command that asked for it (the firmware clears it before every dispatch)
         self._startup_verdict_pending = False
         startup_state = self.firmware_version >= STARTUP_STATE_MIN_FIRMWARE
+
+        # The sequencer sees every command first: it owns the SEQ_* opcodes, refuses
+        # anything not in the allow-table while a sequence runs, and owns the execution
+        # status byte for as long as a run is pending.
+        outcome = self.sequencer.dispatch(bytes(cmd))
+        self._last_cmd_id = cmd_id
+        if outcome.handled:
+            self._queue_response(cmd_id, self._packet_status(outcome.status))
+            return
 
         # Extract 4-byte position from bytes 2-5
         def get_position() -> int:
@@ -579,9 +608,15 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             if startup_state:  # older firmware: no handler, a no-op
                 self._query_startup_state(cmd)
 
-        # Build and queue response
-        response = self._build_response(cmd_id, self._packet_status(status))
-        self.response_buffer.extend(response)
+        # One status byte, held by the sequencer model: a handler's refusal is latched there, and
+        # a run in flight keeps reporting IN_PROGRESS regardless (process_serial_message()).
+        if status == self.fw.get("CMD_EXECUTION_ERROR", 4):
+            self.sequencer.report_execution_error()
+        self._queue_response(cmd_id, self._packet_status(self.sequencer.execution_status()))
+
+    def _queue_response(self, cmd_id: int, status: int) -> None:
+        """Append one MSG_LENGTH status packet. Assumes self._update_lock is held."""
+        self.response_buffer.extend(self._build_response(cmd_id, status))
         self._update_internal_state()
 
     @property
@@ -660,25 +695,17 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             return self.fw.get("IN_PROGRESS", 1)
         return execution_status
 
-    def _set_focus_wheel_mode(self, mode: int, flags: int = 0) -> bool:
-        """SET_FOCUS_WHEEL_MODE. Older firmware has no handler (callback_default: success, nothing happens); newer
-        firmware refuses an unknown mode or flag, stores the power-up mode when asked, and resets the count on
-        entering TO_HOST."""
-        if self.firmware_version < FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE:
-            return True
-        drives_z, to_host = self.fw.get("FOCUS_WHEEL_DRIVES_Z", 0), self.fw.get("FOCUS_WHEEL_TO_HOST", 1)
-        save = self.fw.get("FOCUS_WHEEL_SAVE_AS_POWER_UP", 1)
-        if mode not in (drives_z, to_host) or flags & ~save:
-            return False
-        if flags & save:
-            self.focus_wheel_power_up_mode = mode
-        self._enter_focus_wheel_mode(mode)
-        return True
+    def _emit_status_packet(self) -> None:
+        """The 10 ms broadcast, for as long as a sequence is running.
 
-    def _enter_focus_wheel_mode(self, mode: int) -> None:
-        if mode == self.fw.get("FOCUS_WHEEL_TO_HOST", 1) and self.focus_wheel_mode != mode:
-            self.focus_wheel_count = 0
-        self.focus_wheel_mode = mode
+        Called from the sequencer's run thread.  Like the firmware, the packet echoes the
+        id of the LAST command received (a heartbeat mid-run moves it) and the execution
+        status the sequencer currently reports.
+        """
+        with self._update_lock:
+            if self._closed:
+                return
+            self._queue_response(self._last_cmd_id, self._packet_status(self.sequencer.execution_status()))
 
     def turn_focus_wheel(self, ticks: int) -> None:
         """Simulate the control panel's focus wheel: moves Z in DRIVES_Z, counts in TO_HOST (wrapping int32);
@@ -705,6 +732,26 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         self.limit_switch_config[axis] = config
         return True
 
+    def _set_focus_wheel_mode(self, mode: int, flags: int = 0) -> bool:
+        """SET_FOCUS_WHEEL_MODE. Older firmware has no handler (callback_default: success, nothing happens); newer
+        firmware refuses an unknown mode or flag, stores the power-up mode when asked, and resets the count on
+        entering TO_HOST."""
+        if self.firmware_version < FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE:
+            return True
+        drives_z, to_host = self.fw.get("FOCUS_WHEEL_DRIVES_Z", 0), self.fw.get("FOCUS_WHEEL_TO_HOST", 1)
+        save = self.fw.get("FOCUS_WHEEL_SAVE_AS_POWER_UP", 1)
+        if mode not in (drives_z, to_host) or flags & ~save:
+            return False
+        if flags & save:
+            self.focus_wheel_power_up_mode = mode
+        self._enter_focus_wheel_mode(mode)
+        return True
+
+    def _enter_focus_wheel_mode(self, mode: int) -> None:
+        if mode == self.fw.get("FOCUS_WHEEL_TO_HOST", 1) and self.focus_wheel_mode != mode:
+            self.focus_wheel_count = 0
+        self.focus_wheel_mode = mode
+
     def _update_internal_state(self, clear_buffer: bool = False):
         if clear_buffer:
             self.response_buffer.clear()
@@ -713,6 +760,9 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
     # AbstractCephlaMicroSerial implementation
 
     def close(self) -> None:
+        # Before the lock: close() joins the run thread, which calls back in here to emit
+        # packets and would deadlock against a held _update_lock.
+        self.sequencer.close()
         with self._update_lock:
             self._closed = True
             self._update_internal_state(clear_buffer=True)
