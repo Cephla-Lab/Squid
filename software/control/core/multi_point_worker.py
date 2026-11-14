@@ -285,10 +285,11 @@ class MultiPointWorker:
         # - Non-HCS 6D: {experiment_path}/zarr/{region}/acquisition.zarr  (6D, non-standard)
         zarr_writer_info = None
         if use_zarr_v3:
-            # Detect HCS mode using well-based acquisition state.
-            # is_loaded_wells already reflects the result of _is_well_based_acquisition(),
-            # so we only need to combine it with is_select_wells here.
-            is_hcs = is_select_wells or is_loaded_wells
+            # The plate layout (plate.ome.zarr/{row}/{col}/{fov}) needs every region to be a well:
+            # "Select Wells" with no well ticked keeps a stale "current" region, and SaveZarrJob then
+            # died on parse_well_id("current"). Such a run is written per FOV, as the GUI side
+            # (_detect_hcs_mode) already assumes for it.
+            is_hcs = is_loaded_wells or (is_select_wells and self._all_regions_are_wells())
 
             # Pre-compute FOV counts per region (needed for 6D shape calculation in non-HCS mode)
             region_fov_counts = {}
@@ -385,6 +386,21 @@ class MultiPointWorker:
         self.use_piezo = value
         self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
 
+    def _all_regions_are_wells(self) -> bool:
+        """True when every region name is a well id (A1, B12, ...); False for none, or one like "current"."""
+        if not self.scan_region_names:
+            return False
+        for region_id in self.scan_region_names:
+            if not region_id:
+                self._log.debug("empty region_id in scan_region_names; not a well-based acquisition")
+                return False
+            try:
+                parse_well_id(region_id)
+            except ValueError as exc:
+                self._log.debug("region_id '%s' is not a well ID (%s); not a well-based acquisition", region_id, exc)
+                return False
+        return True
+
     def _is_well_based_acquisition(self) -> bool:
         """Check if regions represent a valid well-based acquisition.
 
@@ -398,24 +414,8 @@ class MultiPointWorker:
             )
             return False
 
-        # Check all region names are valid well IDs using parse_well_id
-        for region_id in self.scan_region_names:
-            if not region_id:
-                self._log.debug(
-                    "_is_well_based_acquisition: encountered empty region_id in scan_region_names; "
-                    "treating as invalid well-based acquisition"
-                )
-                return False
-            try:
-                parse_well_id(region_id)
-            except ValueError as exc:
-                self._log.debug(
-                    "_is_well_based_acquisition: region_id '%s' is not a valid well ID: %s; "
-                    "treating as invalid well-based acquisition",
-                    region_id,
-                    exc,
-                )
-                return False
+        if not self._all_regions_are_wells():
+            return False
 
         # Check all wells have same grid size
         grid_sizes = set()
