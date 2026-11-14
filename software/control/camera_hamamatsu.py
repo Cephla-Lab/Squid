@@ -213,14 +213,12 @@ class HamamatsuCamera(AbstractCamera):
         self._read_thread_running.clear()
 
     @staticmethod
-    def _last_dcam_error_string_direct(last_error: DCAMERR):
-
+    def _last_dcam_error_string_direct(last_error) -> str:
+        """'<code>:<NAME>' for a DCAMERR (or its raw integer code), '<code>:UNKNOWN_ERROR' for a code the
+        enum does not list."""
+        code = int(last_error)
         reverse_error_map = {enum_entry.value: enum_name for (enum_name, enum_entry) in DCAMERR.__members__.items()}
-
-        if last_error not in reverse_error_map:
-            return f"{last_error}:{reverse_error_map[last_error]}"
-        else:
-            return f"{last_error}:UNKNOWN_ERROR"
+        return f"{code}:{reverse_error_map.get(code, 'UNKNOWN_ERROR')}"
 
     def _last_dcam_error_string(self):
         return HamamatsuCamera._last_dcam_error_string_direct(self._camera.lasterr())
