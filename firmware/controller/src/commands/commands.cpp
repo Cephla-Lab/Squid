@@ -8,6 +8,7 @@
 #include "../tmc/drivers/driver_probe.h"
 #include "../tmc/drivers/stepper_driver.h"
 #include "../trigger_pins.h"
+#include "sequence_commands.h"
 
 CommandCallback cmd_map[256] = {0};
 
@@ -69,6 +70,10 @@ void init_callbacks()
     cmd_map[STORE_CONFIG_SIGNATURE] = &callback_store_config_signature;
     cmd_map[QUERY_STARTUP_STATE] = &callback_query_startup_state;
     cmd_map[RESET] = &callback_reset;
+    cmd_map[SEQ_WRITE] = &callback_seq_write;
+    cmd_map[SEQ_COMMIT] = &callback_seq_commit;
+    cmd_map[SEQ_RUN] = &callback_seq_run;
+    cmd_map[SEQ_CANCEL] = &callback_seq_cancel;
 }
 
 void callback_default()
@@ -584,6 +589,7 @@ void callback_initialize()
 
 void callback_reset()
 {
+    seq_transport_reset();  // a running sequence is aborted through the engine
     // Startup state (1.9): RESET deliberately leaves homing_validity alone - the homed flags and the configuration
     // signature survive it. It writes no XACTUAL and touches no driver, so a stage homed before RESET is still homed
     // after it, and a relaunched host that sends RESET can still be told so.

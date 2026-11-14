@@ -444,6 +444,42 @@ class IlluminationController:
             return {"intensity_unit": "dac_percent", "illumination_intensity_factor": factor}
         return {**lookup.calibration.describe(), "illumination_intensity_factor": factor}
 
+    @property
+    def intensity_is_mcu_dac(self) -> bool:
+        """True when channel intensity is set through the controller's DACs (not by a light
+        source's own software interface)."""
+        return self.intensity_control_mode != IntensityControlMode.Software
+
+    @property
+    def shutter_is_mcu_ttl(self) -> bool:
+        """True when the light is switched by the controller's TTL outputs (not by a light source's
+        own software interface)."""
+        return self.shutter_control_mode == ShutterControlMode.TTL
+
+    def resolve_mcu_illumination(self, channel, intensity) -> Tuple[int, float]:
+        """(illumination source code, DAC percent 0-100) that set_intensity() sends to the
+        controller for this channel, with the channel's calibration applied when one exists.
+
+        The single place a channel becomes controller values: set_intensity() uses it per frame,
+        and the hardware sequencer uses it to resolve a whole burst up front, so the two cannot
+        drift apart.
+        """
+        source = self.channel_mappings_TTL[channel]
+        lookup = self.lookup_calibration(channel)
+        if lookup.calibration is None:
+            return source, intensity
+        factor = self._dac_factor()
+        max_output = self._max_output(channel)
+        for note in lookup.calibration.notes(factor, max_output):
+            self._log_once(logging.WARNING, f"{lookup.file_name}: {note}")
+        commanded, clamped = lookup.calibration.commanded_percent(intensity, factor, max_output)
+        if clamped:
+            self._log_once(
+                logging.WARNING,
+                f"{lookup.file_name}: intensity clamped at Max Output ({max_output * 100:g} % DAC)",
+            )
+        return source, commanded
+
     def set_intensity(self, channel, intensity):
         # initialize intensity setting for this channel if it doesn't exist
         if channel not in self.intensity_settings:
@@ -484,21 +520,7 @@ class IlluminationController:
                 # Otherwise, the wrong channel will be opened when turn_on_illumination() is called.
                 self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], intensity)
         else:
-            lookup = self.lookup_calibration(channel)
-            if lookup.calibration is not None:
-                factor = self._dac_factor()
-                max_output = self._max_output(channel)
-                for note in lookup.calibration.notes(factor, max_output):
-                    self._log_once(logging.WARNING, f"{lookup.file_name}: {note}")
-                commanded, clamped = lookup.calibration.commanded_percent(intensity, factor, max_output)
-                if clamped:
-                    self._log_once(
-                        logging.WARNING,
-                        f"{lookup.file_name}: intensity clamped at Max Output ({max_output * 100:g} % DAC)",
-                    )
-                self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], commanded)
-            else:
-                self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], intensity)
+            self.microcontroller.set_illumination(*self.resolve_mcu_illumination(channel, intensity))
             self.intensity_settings[channel] = intensity
 
     def get_shutter_state(self):

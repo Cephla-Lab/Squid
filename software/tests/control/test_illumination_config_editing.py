@@ -15,7 +15,8 @@ from control.core.config import ConfigRepository
 from control.lighting import IlluminationController
 from tests.tools import get_test_microcontroller
 from squid.intensity_calibration import EngineLineIdentity, write_calibration
-from tests.squid.calibration_fixtures import DAC, make_engine_calibration, write_legacy_csv
+from tests.squid.calibration_fixtures import DAC, make_engine_calibration, master_lookup, write_legacy_csv
+from squid.power_meter import simulated_led_mw
 
 ILLUMINATION_YAML = """\
 version: 1
@@ -176,6 +177,53 @@ def test_simulated_microscope_shares_config_repo_with_illumination_controller():
         assert scope.illumination_controller.config_repo is replacement
     finally:
         scope.close()
+
+
+# --- resolve_mcu_illumination: the one place a channel becomes (source code, DAC percent) --------
+# The hardware sequencer resolves every channel up front; it must get exactly what the per-frame
+# path sends, or a sequenced and a software-sequenced acquisition would differ in brightness.
+
+
+def test_set_intensity_sends_exactly_what_resolve_mcu_illumination_returns(repo, monkeypatch):
+    micro = get_test_microcontroller()
+    controller = IlluminationController(micro, config_repo=repo)
+    sent = []
+    monkeypatch.setattr(micro, "set_illumination", lambda source, intensity: sent.append((source, intensity)))
+
+    resolved = controller.resolve_mcu_illumination(405, 37.5)
+    controller.set_intensity(405, 37.5)
+
+    assert sent == [resolved]
+    assert resolved[0] == controller.channel_mappings_TTL[405]
+
+
+def test_resolve_mcu_illumination_applies_the_channel_calibration(repo):
+    calibrations = repo.machine_configs_path / "intensity_calibrations"
+    calibrations.mkdir(exist_ok=True)
+    path = calibrations / "405.csv"
+    write_legacy_csv(path, DAC, simulated_led_mw(DAC / 100 * 0.45))  # found by wavelength; master's lookup applies
+    controller = IlluminationController(get_test_microcontroller(), config_repo=repo)
+    source, dac_percent = controller.resolve_mcu_illumination(405, 40)
+    assert source == controller.channel_mappings_TTL[405]
+    assert dac_percent == pytest.approx(float(master_lookup(path, 40)))
+    assert dac_percent != pytest.approx(40)
+
+    path.unlink()
+    assert controller.resolve_mcu_illumination(405, 40)[1] == 40  # no calibration: percent passes through
+
+
+def test_software_intensity_control_is_not_an_mcu_dac_light_source(repo):
+    import control.lighting
+
+    micro = get_test_microcontroller()
+    assert IlluminationController(micro, config_repo=repo).intensity_is_mcu_dac
+    software = IlluminationController(
+        micro,
+        intensity_control_mode=control.lighting.IntensityControlMode.Software,
+        shutter_control_mode=control.lighting.ShutterControlMode.Software,
+        config_repo=repo,
+    )
+    assert not software.intensity_is_mcu_dac
 
 
 def test_configurator_shows_calibration_status(qtbot, repo):

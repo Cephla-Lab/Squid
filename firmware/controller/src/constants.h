@@ -84,8 +84,8 @@
 //               it is. Every other packet is unchanged; byte 18 is never touched.
 //               The number may move to the next free minor at merge: the piezo
 //               focus wheel design also claims 1.9.
-#define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 9
+#define FIRMWARE_VERSION_MAJOR 2
+#define FIRMWARE_VERSION_MINOR 0
 
 #include "def/def_v1.h"
 
