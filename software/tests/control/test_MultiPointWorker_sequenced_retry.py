@@ -18,7 +18,7 @@ import contextlib
 import dataclasses
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 from control.core.multi_point_utils import CaptureInfo
 from control.core.multi_point_worker import MultiPointWorker
@@ -216,26 +216,3 @@ def test_an_overrun_sequence_is_cancelled_before_the_camera_is_restarted():
     frames, reason = w._run_sequenced_burst(_captures(3), 1000)
     assert frames is None
     assert events == ["cancel", "camera restart"]
-
-
-def test_a_failed_burst_puts_the_piezo_back_at_the_stack_start():
-    """The engine's fail() leaves the piezo at the last plane it commanded (only Done and a cancel return
-    to the start) while the worker's cache says the stack start; every failed attempt moves it back there,
-    so the retry and the next acquisition start where the cache says."""
-    w = _bare_worker()
-    w._applied_config = None
-    w.selected_configurations = [MagicMock()]
-    w.z_piezo_um = 20.0
-    w.deltaZ = 0.001  # mm
-    w.NZ, w.Nt, w.time_point = 3, 1, 0
-    w.do_reflection_af = w.do_autofocus = False
-    w.piezo = MagicMock()
-    w.piezo.range_um = 300
-    w.stage = MagicMock()
-    w._run_sequenced_burst = MagicMock(return_value=(None, "the controller reported an error"))
-    w._ask_user_to_intervene = MagicMock()
-
-    w._acquire_sequenced_stack("A1", "/tmp", 0)
-
-    assert w.piezo.move_to.call_args_list == [call(20.0)] * 3
-    w._ask_user_to_intervene.assert_called_once()

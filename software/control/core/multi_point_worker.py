@@ -40,7 +40,7 @@ from control.core.pending_captures import PendingCaptures
 from control.core.burst_dispatcher import BurstDispatcher
 from control.core.sequenced_acquisition import (
     BurstPlan,
-    build_bursts,
+    build_program,
     burst_plans,
     BurstOutcome,
     ChannelPlan,
@@ -245,7 +245,10 @@ class MultiPointWorker:
         # The bursts one FOV's stack is split into when this acquisition is hardware-sequenced (empty
         # otherwise), each a program and the channels it images: CHANNEL FIRST is one burst, Z FIRST
         # one per channel. Decided once, in _prepare_sequenced_acquisition().
-        self._sequenced_bursts: List[Tuple[BurstPlan, SequencerProgram]] = []
+        self._sequenced_bursts: List[BurstPlan] = []
+        # What every burst's program is built from (_burst_program): the resolved channels and the stack.
+        self._burst_channel_plans: List[ChannelPlan] = []
+        self._program_kwargs: dict = {}
         # The program the controller holds now (it holds one): a burst with another one uploads first.
         self._sequenced_program: Optional[SequencerProgram] = None
         # The channels the camera and the emission filter were last set up for (_set_up_for_burst).
@@ -1440,40 +1443,52 @@ class MultiPointWorker:
             )
             return
 
-        camera_spec = camera_record(
-            use_ready_line=control._def.SEQUENCER_USE_CAMERA_READY_LINE,
-            strobe_delay_ms=self.camera.get_strobe_time(),
-            readout_ms=control._def.SEQUENCER_CAMERA_READOUT_MS,
-        )
-        bursts = build_bursts(
-            plans,
-            self.z_stack_order,
+        bursts = burst_plans(self.z_stack_order, len(plans))
+        self._burst_channel_plans = plans
+        self._program_kwargs = dict(
             n_layers=self.NZ,
             dz_um=self.deltaZ * 1000,
             piezo_range_um=self.piezo.range_um,
             piezo_flip=control._def.OBJECTIVE_PIEZO_FLIP_DIR,
             z_settle_ms=control._def.MULTIPOINT_PIEZO_DELAY_MS,
             intensity_factor=control._def.ILLUMINATION_INTENSITY_FACTOR,
-            camera=camera_spec,
             wait_timeout_s=control._def.SEQUENCER_WAIT_TIMEOUT_S,
             illum_lead_us=control._def.SEQUENCER_ILLUMINATION_LEAD_US,
         )
-        # The first burst's program is uploaded now, so firmware that refuses it fails the acquisition
-        # here, before any FOV. Z FIRST uploads each later channel's program before its burst.
-        first_plan, first_program = bursts[0]
-        self._set_up_for_burst([self.selected_configurations[index] for index in first_plan.channel_indices])
-        self._ensure_uploaded(first_program)
         self._sequenced_bursts = bursts
+        # The first burst's program is uploaded now, after the camera is set up for it (the program carries
+        # the camera's strobe delay for that exposure), so firmware that refuses it fails the acquisition
+        # here, before any FOV. Every later burst uploads its own program when it differs from the one held.
+        self._set_up_for_burst([self.selected_configurations[index] for index in bursts[0].channel_indices])
+        self._ensure_uploaded(self._burst_program(bursts[0]))
         self._burst_dispatcher = BurstDispatcher(self._dispatch_burst, on_error=lambda e: self._abort_due_to_error())
         self._burst_dispatcher.start()
         self._log.info(
             f"Hardware-sequenced acquisition: {self.NZ} layers x {len(plans)} channels per position in "
-            f"{len(bursts)} burst(s) ({self.z_stack_order}; {len(first_program.pack())} byte program uploaded)."
+            f"{len(bursts)} burst(s) ({self.z_stack_order}; {len(self._sequenced_program.pack())} byte program "
+            "uploaded)."
         )
 
+    def _burst_program(self, plan: BurstPlan) -> SequencerProgram:
+        """This burst's program, with the camera's strobe delay AS IT IS NOW.
+
+        The camera has just been set up for the burst's exposure, and a camera's trigger latency can depend
+        on the exposure (the ToupCam's does, in global reset). One strobe snapshot per acquisition, taken
+        before any exposure was set, would hand every burst a stale delay: the illumination would start
+        before the sensor integrates, and nothing would notice.
+        """
+        camera_spec = camera_record(
+            use_ready_line=control._def.SEQUENCER_USE_CAMERA_READY_LINE,
+            strobe_delay_ms=self.camera.get_strobe_time(),
+            readout_ms=control._def.SEQUENCER_CAMERA_READOUT_MS,
+        )
+        channels = [self._burst_channel_plans[index] for index in plan.channel_indices]
+        return build_program(channels, camera=camera_spec, **self._program_kwargs)
+
     def _ensure_uploaded(self, program: SequencerProgram) -> None:
-        """The controller holds one program: upload this burst's unless it is the one held."""
-        if self._sequenced_program is not program:
+        """The controller holds one program: upload this burst's unless it equals the one held (programs are
+        values, so a burst whose channels and strobe delay are unchanged uploads nothing)."""
+        if self._sequenced_program != program:
             self.wait_till_operation_is_completed()
             self.microcontroller.seq_upload(program)
             self._sequenced_program = program
@@ -1696,7 +1711,7 @@ class MultiPointWorker:
         if (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
             self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
 
-        for burst_index, (plan, program) in enumerate(self._sequenced_bursts):
+        for burst_index, plan in enumerate(self._sequenced_bursts):
             if self.abort_requested_fn():
                 self.handle_acquisition_abort(current_path)
                 return
@@ -1706,7 +1721,7 @@ class MultiPointWorker:
             start_um = self.z_piezo_um
             stack_start = piezo_um_to_dac(start_um, self.piezo.range_um, control._def.OBJECTIVE_PIEZO_FLIP_DIR)
             self._ensure_set_up_for_burst(burst_configs)
-            self._ensure_uploaded(program)
+            self._ensure_uploaded(self._burst_program(plan))
 
             def captures() -> List[CaptureInfo]:
                 return [
