@@ -25,7 +25,7 @@ because that is what the v1 protocol does everywhere else.
 import dataclasses
 import struct
 from enum import IntEnum
-from typing import List, Sequence, Tuple, Union
+from typing import List, Optional, Sequence, Tuple, Union
 
 # --- opcodes (seq_wire.h kOpSeq*, constants_protocol.h SEQ_*) ------------------------------
 
@@ -51,7 +51,7 @@ STATUS_BYTE_FRAMES_LO = 17
 
 # --- limits (seq_types.h) ------------------------------------------------------------------
 
-WIRE_VERSION = 2  # v2: SeqChannel grew illum_lead_us + reserved (20 -> 24 bytes)
+WIRE_VERSION = 3  # v3: SEQ_RUN carries a channel selector (byte 6); layout unchanged since v2 (SeqChannel 24 bytes)
 WORD_BYTES = 4
 MAX_CHANNELS = 16
 MAX_CAMERAS = 8
@@ -410,15 +410,22 @@ class SequencerProgram(_Replaceable):
         the channel's camera_mask holds."""
         return self.loop.n_layers * self.n_channels
 
+    def n_frames_for(self, channel: Optional[int]) -> int:
+        """Exposure steps of a run of one channel (SEQ_RUN's channel selector), or of every channel."""
+        return self.loop.n_layers if channel is not None else self.n_frames
+
     def nbytes(self) -> int:
         return program_bytes(self.n_channels, self.n_cameras)
 
-    def step_to_layer_channel(self, step: int) -> Tuple[int, int]:
-        """The (layer, channel index) of acquisition step k.
+    def step_to_layer_channel(self, step: int, channel: Optional[int] = None) -> Tuple[int, int]:
+        """The (layer, channel index) of acquisition step k, of a run of every channel or of
+        `channel` alone (SEQ_RUN's channel selector: one step per layer).
 
         Mirrors SeqEngine::step_to_layer_channel(); the host needs the same mapping to line
         up the frames it receives with the z positions it asked for.
         """
+        if channel is not None:
+            return step, channel
         if self.loop.order == Order.CHANNELS_INNER:
             return step // self.n_channels, step % self.n_channels
         return step % self.loop.n_layers, step // self.loop.n_layers
@@ -427,8 +434,9 @@ class SequencerProgram(_Replaceable):
         """Mirrors SeqEngine::stack_target_for()."""
         return stack_start + layer * self.loop.dz + self.channels[channel_index].z_offset
 
-    def check_stack_range(self, stack_start: int) -> None:
-        """Raise if any target of the run would leave the stack axis range.
+    def check_stack_range(self, stack_start: int, channel: Optional[int] = None) -> None:
+        """Raise if any target of the run - of every channel, or of `channel` alone - would
+        leave the stack axis range.
 
         Mirrors SeqEngine::stack_range_ok(), which refuses the whole run before the first
         move rather than discovering the problem part-way through.  detail is the offending
@@ -444,8 +452,10 @@ class SequencerProgram(_Replaceable):
             )
         # Targets are linear in the layer index, so checking both ends covers every layer.
         span = (self.loop.n_layers - 1) * self.loop.dz
-        for i, channel in enumerate(self.channels):
-            first = stack_start + channel.z_offset
+        for i, spec in enumerate(self.channels):
+            if channel is not None and i != channel:
+                continue  # only the selected channel's planes are visited
+            first = stack_start + spec.z_offset
             last = first + span
             if not (low <= first <= high and low <= last <= high):
                 raise ProgramValidationError(

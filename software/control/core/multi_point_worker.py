@@ -40,10 +40,10 @@ from control.core.pending_captures import PendingCaptures
 from control.core.burst_dispatcher import BurstDispatcher
 from control.core.sequenced_acquisition import (
     BurstPlan,
-    build_program,
     burst_plans,
     BurstOutcome,
     ChannelPlan,
+    build_program,
     burst_failure_reason,
     camera_record,
     ineligibility_reason,
@@ -243,13 +243,14 @@ class MultiPointWorker:
         # Invariant: _ready_for_next_trigger set => empty.
         self._pending_captures: PendingCaptures[CaptureInfo] = PendingCaptures()
         # The bursts one FOV's stack is split into when this acquisition is hardware-sequenced (empty
-        # otherwise), each a program and the channels it images: CHANNEL FIRST is one burst, Z FIRST
-        # one per channel. Decided once, in _prepare_sequenced_acquisition().
+        # otherwise): CHANNEL FIRST is one burst of every channel, Z FIRST one burst per channel, each a
+        # SEQ_RUN that selects its channel of the one uploaded program. Decided once, in
+        # _prepare_sequenced_acquisition().
         self._sequenced_bursts: List[BurstPlan] = []
-        # What every burst's program is built from (_burst_program): the resolved channels and the stack.
+        # What the program is built from (_burst_program): the resolved channels and the stack.
         self._burst_channel_plans: List[ChannelPlan] = []
         self._program_kwargs: dict = {}
-        # The program the controller holds now (it holds one): a burst with another one uploads first.
+        # The program the controller holds now (it holds one; a burst whose program differs uploads first).
         self._sequenced_program: Optional[SequencerProgram] = None
         # The channels the camera and the emission filter were last set up for (_set_up_for_burst).
         self._burst_configs: Optional[tuple] = None
@@ -1409,10 +1410,9 @@ class MultiPointWorker:
             return
 
         plans = self._channel_plans()
+        bursts = burst_plans(self.z_stack_order, len(plans))
         width, height = self.camera.get_resolution()
-        frames_per_burst = self.NZ * max(
-            (len(plan.channel_indices) for plan in burst_plans(self.z_stack_order, len(plans))), default=0
-        )
+        frames_per_burst = self.NZ * max((len(plan.channel_indices) for plan in bursts), default=0)
         reason = ineligibility_reason(
             firmware_supports_sequencer=self.microcontroller.supports_hardware_sequencer(),
             trigger_is_hardware=self.liveController.trigger_mode == TriggerMode.HARDWARE,
@@ -1456,11 +1456,11 @@ class MultiPointWorker:
             illum_lead_us=control._def.SEQUENCER_ILLUMINATION_LEAD_US,
         )
         self._sequenced_bursts = bursts
-        # The first burst's program is uploaded now, after the camera is set up for it (the program carries
+        # The program is uploaded now, after the camera is set up for the first burst (the program carries
         # the camera's strobe delay for that exposure), so firmware that refuses it fails the acquisition
-        # here, before any FOV. Every later burst uploads its own program when it differs from the one held.
+        # here, before any FOV. A later burst uploads again only when its program differs from the one held.
         self._set_up_for_burst([self.selected_configurations[index] for index in bursts[0].channel_indices])
-        self._ensure_uploaded(self._burst_program(bursts[0]))
+        self._ensure_uploaded(self._burst_program())
         self._burst_dispatcher = BurstDispatcher(self._dispatch_burst, on_error=lambda e: self._abort_due_to_error())
         self._burst_dispatcher.start()
         self._log.info(
@@ -1469,8 +1469,11 @@ class MultiPointWorker:
             "uploaded)."
         )
 
-    def _burst_program(self, plan: BurstPlan) -> SequencerProgram:
-        """This burst's program, with the camera's strobe delay AS IT IS NOW.
+    def _burst_program(self) -> SequencerProgram:
+        """The program for the next burst, with the camera's strobe delay AS IT IS NOW.
+
+        One program holds every channel (a Z FIRST burst selects its channel in SEQ_RUN), so what can
+        change between bursts is the camera record only.
 
         The camera has just been set up for the burst's exposure, and a camera's trigger latency can depend
         on the exposure (the ToupCam's does, in global reset). One strobe snapshot per acquisition, taken
@@ -1482,12 +1485,11 @@ class MultiPointWorker:
             strobe_delay_ms=self.camera.get_strobe_time(),
             readout_ms=control._def.SEQUENCER_CAMERA_READOUT_MS,
         )
-        channels = [self._burst_channel_plans[index] for index in plan.channel_indices]
-        return build_program(channels, camera=camera_spec, **self._program_kwargs)
+        return build_program(self._burst_channel_plans, camera=camera_spec, **self._program_kwargs)
 
     def _ensure_uploaded(self, program: SequencerProgram) -> None:
-        """The controller holds one program: upload this burst's unless it equals the one held (programs are
-        values, so a burst whose channels and strobe delay are unchanged uploads nothing)."""
+        """The controller holds one program: upload this one unless it equals the one held (programs are
+        values, so a burst whose strobe delay is unchanged uploads nothing)."""
         if self._sequenced_program != program:
             self.wait_till_operation_is_completed()
             self.microcontroller.seq_upload(program)
@@ -1521,18 +1523,19 @@ class MultiPointWorker:
         self._burst_configs = tuple(configs)
         self._applied_config = None
 
-    def _sequenced_burst_timeout_s(self) -> float:
-        """Upper bound for one burst: what every step takes on its own (illumination lead, strobe delay,
-        exposure, readout) and every layer's settle, plus every wait at its worst case, the return move
-        and a margin.
+    def _sequenced_burst_timeout_s(self, channel: Optional[int]) -> float:
+        """Upper bound for one burst - of every channel, or of `channel` alone: what every step takes on
+        its own (illumination lead, strobe delay, exposure, readout) and every layer's settle, plus every
+        wait at its worst case, the return move and a margin.
 
         The waits are the only part the controller cannot predict (a camera-ready line, a move that
         reports done late); the rest is what the program itself takes, and no wait timeout covers it.
         """
         program = self._sequenced_program
+        channels = program.channels if channel is None else [program.channels[channel]]
         layers = program.loop.n_layers
-        steps = layers * len(program.channels)
-        steps_s = sum(self._step_time_us(program, channel) for channel in program.channels) * layers / 1e6
+        steps = layers * len(channels)
+        steps_s = sum(self._step_time_us(program, spec) for spec in channels) * layers / 1e6
         settle_s = layers * program.loop.z_settle_us / 1e6
         return steps_s + settle_s + (steps + 1) * (program.wait_timeout_us / 1e6) + 5.0
 
@@ -1586,10 +1589,11 @@ class MultiPointWorker:
         self.microcontroller.wait_till_operation_is_completed()
 
     def _run_sequenced_burst(
-        self, captures: List[CaptureInfo], stack_start: int
+        self, captures: List[CaptureInfo], stack_start: int, channel: Optional[int]
     ) -> Tuple[Optional[List[Tuple[CameraFrame, CaptureInfo]]], Optional[str]]:
-        """Run one burst. Returns (frames, None) only if the burst is provably complete and in
-        order; otherwise (None, why), and NOTHING of it has reached a save job."""
+        """Run one burst - the whole program, or `channel` of it alone (SEQ_RUN's channel selector).
+        Returns (frames, None) only if the burst is provably complete and in order; otherwise
+        (None, why), and NOTHING of it has reached a save job."""
         if self.abort_requested_fn():
             # The software path checks before every capture; a burst is one SEQ_RUN, so before the burst.
             # Cancelling after sending would still let the controller fire the first exposure.
@@ -1608,8 +1612,8 @@ class MultiPointWorker:
             self._ready_for_next_trigger.clear()
             self._pending_captures.expect(captures, stream_generation=self.camera.stream_generation(), deliver=collect)
             try:
-                self.microcontroller.seq_run(stack_start)
-                self._wait_for_sequence(self._sequenced_burst_timeout_s())
+                self.microcontroller.seq_run(stack_start, channel)
+                self._wait_for_sequence(self._sequenced_burst_timeout_s(channel))
             except CommandAborted as e:
                 run_error = e
                 self.microcontroller.acknowledge_aborted_command()  # consumed here: the burst is given up below
@@ -1716,12 +1720,15 @@ class MultiPointWorker:
                 self.handle_acquisition_abort(current_path)
                 return
             burst_configs = [configs[index] for index in plan.channel_indices]
+            # A burst of one channel of a multi-channel program selects it in SEQ_RUN; a burst of the
+            # whole program (CHANNEL FIRST, or a single-channel acquisition) runs it as is.
+            channel = plan.channel_indices[0] if len(plan.channel_indices) == 1 and len(configs) > 1 else None
             if burst_index > 0 and self.laser_af_per_stack and self.do_reflection_af:
                 af_succeeded = self._re_anchor_before_stack(burst_configs[0], region_id, fov, af_succeeded)
             start_um = self.z_piezo_um
             stack_start = piezo_um_to_dac(start_um, self.piezo.range_um, control._def.OBJECTIVE_PIEZO_FLIP_DIR)
             self._ensure_set_up_for_burst(burst_configs)
-            self._ensure_uploaded(self._burst_program(plan))
+            self._ensure_uploaded(self._burst_program())
 
             def captures() -> List[CaptureInfo]:
                 return [
@@ -1748,7 +1755,7 @@ class MultiPointWorker:
             while frames is None:
                 attempt += 1
                 self._log.info(f"Hardware sequence: {which}, attempt {attempt}.")
-                frames, reason = self._run_sequenced_burst(captures(), stack_start)
+                frames, reason = self._run_sequenced_burst(captures(), stack_start, channel)
                 if frames is not None or self.abort_requested_fn():
                     break
                 # A failed run leaves the piezo where the controller stopped it (the engine's fail() does not

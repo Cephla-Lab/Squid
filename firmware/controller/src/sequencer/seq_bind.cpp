@@ -81,7 +81,6 @@ class TeensySeqHal : public seq::SeqHal {
 TeensySeqHal hal;
 seq::SeqEngine engine(hal);
 uint32_t wait_timeout_us = 0;
-bool program_uses_ttl = false;  // the laser interlock only concerns the TTL (laser) ports
 
 }  // namespace
 
@@ -99,26 +98,23 @@ seq::ValidationResult seq_load(const seq::wire::ParsedProgram& p) {
     // Refused until the stepper stack axis is bound properly; the host builds piezo stacks only.
     if (p.loop.stack_axis_type == (uint8_t)seq::StackAxisType::Stepper)
         return {seq::SeqError::BadStackAxis, p.loop.stack_axis_id};
-    bool uses_ttl = false;
     for (uint8_t i = 0; i < p.loop.n_channels; i++) {
         if (p.channels[i].illum_ttl_mask >> kNumTtlPorts) return {seq::SeqError::BadChannel, i};
-        if (p.channels[i].illum_ttl_mask) uses_ttl = true;
     }
     const seq::ValidationResult r = engine.load(p.loop, p.channels, p.cams, p.n_cameras);
     if (r.error != seq::SeqError::None) return r;
     wait_timeout_us = p.wait_timeout_us;
-    program_uses_ttl = uses_ttl;
     return r;
 }
 
-bool seq_start(int32_t stack_start) {
+bool seq_start(int32_t stack_start, uint8_t channel) {
     if (engine.running()) return false;
     // The run owns the camera triggers and the illumination ports: a port the host switched on
     // before the run, a strobe still pending in the v1 ISR or a trigger pulse still held would
     // otherwise light or release into the first exposures. fail() releases them the same way.
     cancel_legacy_camera_outputs();
     hal.begin_run();
-    return engine.start(micros(), wait_timeout_us, stack_start);
+    return engine.start(micros(), wait_timeout_us, stack_start, channel);
 }
 
 void seq_cancel() { engine.cancel(); }
@@ -128,8 +124,9 @@ void seq_abort(seq::SeqError e) { engine.abort(e); }
 void seq_tick() {
     if (!engine.running()) return;
     // Abort THROUGH the engine: loop() also forces the TTL ports LOW when the interlock opens,
-    // and without this the run would complete "successfully" with dark frames.
-    if (program_uses_ttl && (!INTERLOCK_OK() || event_timer_interlock_tripped())) {
+    // and without this the run would complete "successfully" with dark frames. The interlock only
+    // concerns the TTL (laser) ports, and only the channel(s) THIS run lights (SEQ_RUN's selector).
+    if (engine.run_uses_ttl() && (!INTERLOCK_OK() || event_timer_interlock_tripped())) {
         engine.abort(seq::SeqError::InterlockOpen);
         return;
     }

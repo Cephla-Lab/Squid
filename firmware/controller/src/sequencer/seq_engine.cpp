@@ -30,12 +30,23 @@ ValidationResult SeqEngine::load(const SeqLoop& loop, const SeqChannel* channels
     return r;
 }
 
+bool SeqEngine::run_uses_ttl() const {
+    if (run_channel_ != kAllChannels)
+        return run_channel_ < loop_.n_channels && channels_[run_channel_].illum_ttl_mask != 0;
+    for (uint8_t c = 0; c < loop_.n_channels; c++)
+        if (channels_[c].illum_ttl_mask) return true;
+    return false;
+}
+
 uint32_t SeqEngine::total_steps() const {
-    return (uint32_t)loop_.n_layers * loop_.n_channels;
+    return (uint32_t)loop_.n_layers * run_channels();
 }
 
 void SeqEngine::step_to_layer_channel(uint32_t k, uint16_t* layer, uint8_t* ch) const {
-    if (loop_.order == (uint8_t)Order::ChannelsInner) {
+    if (run_channel_ != kAllChannels) {  // one channel: a plain stack, one step per layer
+        *layer = (uint16_t)k;
+        *ch = run_channel_;
+    } else if (loop_.order == (uint8_t)Order::ChannelsInner) {
         *layer = (uint16_t)(k / loop_.n_channels);
         *ch = (uint8_t)(k % loop_.n_channels);
     } else {
@@ -56,7 +67,8 @@ bool SeqEngine::stack_range_ok(int32_t start, uint8_t* bad_channel) const {
     if (start < lo || start > hi) return false;
     // Targets are linear in the layer index, so checking both ends covers every layer.
     const int64_t span = (int64_t)(loop_.n_layers - 1) * loop_.dz;
-    for (uint8_t c = 0; c < loop_.n_channels; c++) {
+    const bool one = run_channel_ != kAllChannels;  // only the selected channel's planes are visited
+    for (uint8_t c = one ? run_channel_ : 0; c < (one ? run_channel_ + 1 : loop_.n_channels); c++) {
         const int64_t first = (int64_t)start + channels_[c].z_offset;
         const int64_t last = first + span;
         if (first < lo || first > hi || last < lo || last > hi) {
@@ -67,13 +79,15 @@ bool SeqEngine::stack_range_ok(int32_t start, uint8_t* bad_channel) const {
     return true;
 }
 
-bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_axis_start) {
+bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_axis_start,
+                      uint8_t channel) {
     if (!loaded_ || running()) return false;  // Idle, Done and Failed may all (re)start
     wait_timeout_us_ = wait_timeout_us;
     stack_start_ = stack_axis_start;
+    run_channel_ = channel;
     progress_ = SeqProgress{};
     progress_.total_layers = loop_.n_layers;
-    progress_.total_channels = loop_.n_channels;
+    progress_.total_channels = run_channels();
     for (uint8_t i = 0; i < kMaxCameras; i++) {
         trigger_valid_[i] = false;
         readout_valid_[i] = false;
@@ -92,6 +106,10 @@ bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_a
     uint8_t bad_channel = 0;
     if (wait_timeout_us > kMaxDurationUs) {
         fail(SeqError::BadDuration, 0);
+        return true;
+    }
+    if (channel != kAllChannels && channel >= loop_.n_channels) {
+        fail(SeqError::BadChannel, channel);
         return true;
     }
     if (!stack_range_ok(stack_axis_start, &bad_channel)) {
