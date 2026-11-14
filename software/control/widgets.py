@@ -3005,6 +3005,20 @@ class PreferencesDialog(QDialog):
         if not self._floats_equal(old_val, new_val):
             changes.append(("Filter Wheel Completion Window", f"{old_val:g} \u00b0", f"{new_val:g} \u00b0", True))
 
+        old_val = self._get_config_bool(
+            "GENERAL", "hardware_trigger_global_reset", control._def.HARDWARE_TRIGGER_GLOBAL_RESET
+        )
+        new_val = self.hardware_trigger_global_reset_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Hardware Trigger Global Reset", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_bool(
+            "GENERAL", "camera_trigger_ready_output", control._def.CAMERA_TRIGGER_READY_OUTPUT
+        )
+        new_val = self.camera_trigger_ready_output_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Camera Trigger Ready Output", str(old_val), str(new_val), True))
+
         # LED matrix factors (live update)
         old_val = self._get_config_float("GENERAL", "led_matrix_r_factor", 1.0)
         new_val = self.led_r_factor.value()
