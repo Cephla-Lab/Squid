@@ -106,10 +106,10 @@ def test_a_refused_second_start_leaves_the_running_acquisition_holding_the_stage
         mpc.thread.join(10)
 
 
-def test_a_start_refused_while_another_sets_up_leaves_that_run_to_report_its_end(scope):
-    """The first start holds the stage before it marks itself starting (its log and memory monitor come in between). A
-    second start refused there must not report an end: the GUI would leave its acquiring state and release the first
-    run's Z lift claim under it."""
+def _second_start_while_the_first_sets_up(scope, second_start):
+    """The first start holds the stage before it marks itself starting (its log and memory monitor come in between).
+    Pause it there, on its own thread, and call second_start(mpc). Then let the first run to its end. Returns the
+    acquisition_finished calls made while the first was setting up, and all of them."""
     mpc, finished = _acquisition(scope)
     ends = []
 
@@ -131,16 +131,32 @@ def test_a_start_refused_while_another_sets_up_leaves_that_run_to_report_its_end
         starter = threading.Thread(target=lambda: first.append(mpc.run_acquisition()))
         starter.start()
         assert setting_up.wait(10)
-
-        assert mpc.run_acquisition() is False
-        assert mpc.last_start_refusal == ACQUISITION
-        assert ends == []
-
+        second_start(mpc)
+        ends_while_setting_up = list(ends)
         go_on.set()
         starter.join(30)
     assert first == [True]
     _wait_until_done(mpc, finished)
-    assert ends == [True]
+    return ends_while_setting_up, ends
+
+
+def test_a_start_refused_while_another_sets_up_leaves_that_run_to_report_its_end(scope):
+    """A second start refused while the first sets up must not report an end: the GUI would leave its acquiring state
+    and release the first run's Z lift claim under it."""
+
+    def second_start(mpc):
+        assert mpc.run_acquisition() is False
+        assert mpc.last_start_refusal == ACQUISITION
+
+    assert _second_start_while_the_first_sets_up(scope, second_start) == ([], [True])
+
+
+def test_a_start_failing_validation_while_another_sets_up_leaves_that_run_to_report_its_end(scope):
+    def second_start(mpc):
+        with patch.object(mpc, "validate_acquisition_settings", return_value=False):
+            assert mpc.run_acquisition() is False
+
+    assert _second_start_while_the_first_sets_up(scope, second_start) == ([], [True])
 
 
 def test_a_start_refused_by_the_start_blocker_gives_the_stage_back(scope):

@@ -326,8 +326,12 @@ class MultiPointController:
     def _another_acquisition_in_progress(self) -> bool:
         """True while a start is between its refusals and its worker thread, or a worker thread is running: a start
         refused or failing then belongs to a second caller (Snap Images during a flexible acquisition), not to the run
-        in progress."""
-        return self._starting or (self.thread is not None and self.thread.is_alive())
+        in progress. A start holding the stage counts too: it takes the stage before it marks itself starting."""
+        return (
+            self._starting
+            or self.microscope.stage_motion.holder == ACQUISITION_RUNNING
+            or (self.thread is not None and self.thread.is_alive())
+        )
 
     def _signal_failed_start(self, another_run_holds_the_stage: bool = False) -> None:
         """Tell the callers a start went nowhere, so the UI they put into its acquiring state is released. Not while
