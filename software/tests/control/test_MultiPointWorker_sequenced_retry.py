@@ -77,6 +77,8 @@ def _bare_worker():
     w._frame_wait_timeout_s = lambda: 0.001  # a frame still in flight after this is "late"
     w._sequenced_burst_timeout_s = lambda *_: 1.0
     w._wait_for_sequence = lambda timeout: None
+    w._sleep = lambda seconds: None
+    w.abort_requested_fn = lambda: False
     w.microcontroller = MagicMock()
     w.camera = FakeCamera(w._image_callback)
     return w
@@ -177,3 +179,40 @@ def test_a_stream_restart_under_a_queued_burst_is_named_when_its_frame_is_refuse
     assert any(
         "frame 7" in str(call) and "for run 1" in str(call) for call in w._log.warning.call_args_list
     ), w._log.warning.call_args_list
+
+
+def test_a_burst_is_not_started_after_an_abort_was_requested():
+    """The software path checks the abort flag before every capture; the burst is one SEQ_RUN, so the check
+    comes before it. Cancelling after sending would still let the controller fire the first exposure."""
+    w = _bare_worker()
+    w.abort_requested_fn = lambda: True
+    frames, reason = w._run_sequenced_burst(_captures(3), 1000)
+    assert frames is None and "aborted" in reason
+    w.microcontroller.seq_run.assert_not_called()
+    assert w.camera.stream_restarts == 0
+
+
+def test_an_overrun_sequence_is_cancelled_before_the_camera_is_restarted():
+    """The host's deadline passed with the controller still running: the run is cancelled and waited out
+    before the camera stream is restarted, so no run keeps firing under the resynchronized camera."""
+    w = _bare_worker()
+    events = []
+
+    def overrun(timeout):
+        raise TimeoutError("the hardware sequence did not finish")
+
+    w._wait_for_sequence = overrun
+    w._overdue_cancel_wait_s = lambda: 1.0
+    w.microcontroller.seq_cancel.side_effect = lambda: events.append("cancel")
+    w.microcontroller.is_busy.side_effect = [True, False]
+    w.microcontroller.seq_status = SequencerStatus(SeqState.DONE, SeqError.CANCELED, 0, 1)
+    start_streaming = w.camera.start_streaming
+
+    def restart():
+        events.append("camera restart")
+        start_streaming()
+
+    w.camera.start_streaming = restart
+    frames, reason = w._run_sequenced_burst(_captures(3), 1000)
+    assert frames is None
+    assert events == ["cancel", "camera restart"]

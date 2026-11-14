@@ -93,6 +93,12 @@ seq::ValidationResult seq_load(const seq::wire::ParsedProgram& p) {
         if (line != seq::kNone && (line != 0 || TRIGGER_READY_PIN < 0))
             return {seq::SeqError::BadCamera, i};
     }
+    // The stepper binding above keeps its own targets and never writes focusPosition, which
+    // do_focus_control() re-issues as the Z target every pass once the run ends: a stepper stack
+    // would be undone (and a stopped abort move re-issued) the moment the sequence finished.
+    // Refused until the stepper stack axis is bound properly; the host builds piezo stacks only.
+    if (p.loop.stack_axis_type == (uint8_t)seq::StackAxisType::Stepper)
+        return {seq::SeqError::BadStackAxis, p.loop.stack_axis_id};
     bool uses_ttl = false;
     for (uint8_t i = 0; i < p.loop.n_channels; i++) {
         if (p.channels[i].illum_ttl_mask >> kNumTtlPorts) return {seq::SeqError::BadChannel, i};
@@ -107,6 +113,10 @@ seq::ValidationResult seq_load(const seq::wire::ParsedProgram& p) {
 
 bool seq_start(int32_t stack_start, uint8_t channel) {
     if (engine.running()) return false;
+    // The run owns the camera triggers and the illumination ports: a port the host switched on
+    // before the run, a strobe still pending in the v1 ISR or a trigger pulse still held would
+    // otherwise light or release into the first exposures. fail() releases them the same way.
+    cancel_legacy_camera_outputs();
     hal.begin_run();
     return engine.start(micros(), wait_timeout_us, stack_start, channel);
 }
@@ -123,7 +133,9 @@ void seq_tick() {
         engine.abort(seq::SeqError::InterlockOpen);
         return;
     }
-    if (hal.schedule_failed()) {
+    // Edges that were never queued, or queued but never armed, would leave a trigger or a TTL
+    // port asserted: abort, which releases them (fail -> all_off -> event_timer_cancel_all).
+    if (hal.schedule_failed() || event_timer_arm_failed()) {
         engine.abort(seq::SeqError::EdgeQueueFull);
         return;
     }

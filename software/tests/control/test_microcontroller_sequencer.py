@@ -8,6 +8,7 @@ test_sequencer_simulation.py.
 
 import struct
 import threading
+import time
 
 import pytest
 
@@ -172,6 +173,31 @@ class TestSequencerProbe:
         assert mcu.supports_hardware_sequencer()
         assert mcu.supports_hardware_sequencer()
         assert len(probes_sent(serial)) == 1
+
+    def test_a_link_failure_during_the_probe_is_not_a_refusal(self):
+        # Every packet answers CMD_CHECKSUM_ERROR: the host resends, exhausts its retries and aborts the
+        # command. That says nothing about the firmware, so it must not be cached as "present" (master
+        # firmware would then complete a whole sequence without doing anything).
+        serial = RecordingSerial(sequencer=False)
+        mcu = Microcontroller(serial, reset_and_initialize=False)
+        try:
+            mcu.wait_till_operation_is_completed()  # the constructor's own commands, on a healthy link
+            serial.status = CMD_EXECUTION_STATUS.CMD_CHECKSUM_ERROR  # the link fails as the probe goes out
+            with pytest.raises(CommandAborted) as exc:
+                mcu.supports_hardware_sequencer()
+            assert not exc.value.recoverable
+            mcu.acknowledge_aborted_command()
+            # The link recovers. The retries' stale answers are still arriving; let the reader drain them
+            # (harmless with no command pending) before the firmware is asked again.
+            serial.status = CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+            deadline = time.time() + 5.0
+            while serial.bytes_available() and time.time() < deadline:
+                time.sleep(0.01)
+            time.sleep(0.05)
+            assert not mcu.supports_hardware_sequencer()  # asked again once the link answers
+            assert len(probes_sent(serial)) >= 2
+        finally:
+            mcu.close()
 
     def test_the_refusal_leaves_no_aborted_command_behind(self, mcu_and_serial):
         mcu, _ = mcu_and_serial

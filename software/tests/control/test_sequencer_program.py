@@ -194,7 +194,9 @@ class TestPack:
                     ready_line=sp.NONE_ID if i % 2 else i,
                     ready_active_high=bool(i % 2),
                     readout_overlap_safe=not (i % 2),
-                    strobe_delay_us=i * 10,
+                    # One strobe delay for all: the channels light TTL ports for every camera, and a TTL
+                    # channel's cameras must share theirs (validate). golden_program covers the field.
+                    strobe_delay_us=500,
                     readout_time_us=i * 100,
                     min_trigger_period_us=i * 1000,
                 )
@@ -336,6 +338,31 @@ class TestValidate:
         with pytest.raises(ProgramValidationError) as exc:
             minimal_program(channels=(SeqChannelSpec(exposure_us=sp.MAX_DURATION_US + 1),)).validate()
         assert exc.value.error == SeqError.BAD_EXPOSURE
+
+    def test_rejects_an_exposure_whose_deadlines_add_up_over_the_bound(self):
+        # Each term is within the bound on its own; the engine adds lead + strobe + exposure + readout
+        # for one exposure's deadlines, so the sum is bounded too, and the channel is named.
+        camera = minimal_program().cameras[0].replace(strobe_delay_us=sp.MAX_DURATION_US // 2, readout_time_us=2)
+        long = SeqChannelSpec(exposure_us=sp.MAX_DURATION_US // 2, camera_mask=1)
+        short = SeqChannelSpec(exposure_us=5000, camera_mask=1)
+        with pytest.raises(ProgramValidationError) as exc:
+            minimal_program(channels=(short, long), cameras=(camera,)).validate()
+        assert exc.value.error == SeqError.BAD_DURATION
+        assert exc.value.detail == 1
+        minimal_program(channels=(long.replace(exposure_us=sp.MAX_DURATION_US // 2 - 2),), cameras=(camera,)).validate()
+
+    def test_rejects_a_ttl_channel_whose_cameras_have_different_strobe_delays(self):
+        # One shared TTL mask, one OFF edge per camera: the earliest OFF would darken the other camera.
+        camera = minimal_program().cameras[0]
+        cameras = (camera, camera.replace(strobe_delay_us=2000))
+        ttl = SeqChannelSpec(exposure_us=5000, camera_mask=0b11, illum_ttl_mask=1)
+        with pytest.raises(ProgramValidationError) as exc:
+            minimal_program(channels=(ttl,), cameras=cameras).validate()
+        assert exc.value.error == SeqError.BAD_CAMERA
+        assert exc.value.detail == 0
+        # An LED-matrix channel shares no TTL; equal strobe delays are fine for a TTL channel.
+        minimal_program(channels=(ttl.replace(illum_ttl_mask=0, led_pattern=1),), cameras=cameras).validate()
+        minimal_program(channels=(ttl,), cameras=(camera, camera)).validate()
 
     def test_rejects_a_zero_exposure(self):
         with pytest.raises(ProgramValidationError) as exc:

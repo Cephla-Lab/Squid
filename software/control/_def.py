@@ -1438,12 +1438,14 @@ HARDWARE_TRIGGER_MODE = HardwareTriggerMode.EDGE
 # Only has an effect together with HARDWARE_TRIGGER_MODE = LEVEL and a camera in the
 # HARDWARE trigger acquisition mode. Drivers read the mode back from the camera and raise
 # rather than fall back to rolling timing, which would fire the strobe before the last rows
-# are exposing.
+# are exposing, and put the previous trigger mode back. A camera that does not support global
+# reset does not open while this is on.
 HARDWARE_TRIGGER_GLOBAL_RESET = False
 
 # Opt-in: have the camera drive a "trigger ready" output the controller can gate the next
 # trigger on (Hamamatsu: output trigger connector 1; ToupCam: GPIO1, "Frame Trigger Wait").
-# Only configured while the camera is in the HARDWARE trigger acquisition mode.
+# Only configured while the camera is in the HARDWARE trigger acquisition mode; a camera
+# without such an output does not open while this is on.
 # ACTIVE LOW on both: the controller's ready input is pulled up, so an unplugged cable reads
 # HIGH, and HIGH has to mean NOT ready. With the setting off nothing changes -- the ToupCam
 # driver keeps driving GPIO1 (active high) in EDGE mode only, as it always has.

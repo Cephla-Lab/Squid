@@ -526,6 +526,32 @@ class SequencerProgram(_Replaceable):
                     f"camera_mask 0b{channel.camera_mask:b} selects a camera the program does not configure "
                     f"({self.n_cameras} cameras)",
                 )
+            # Every deadline the engine derives from one exposure lies lead + strobe + exposure + readout
+            # past the trigger (seq_engine.cpp schedule_exposures): the SUM has to respect the bound as
+            # well as each term, or the wrap-safe comparisons break for that frame. And a TTL channel
+            # lights one shared mask with one OFF edge per camera, so its cameras' strobe delays have to
+            # agree: the earliest OFF would darken the other cameras' exposures.
+            strobe_delays = set()
+            for cam_index, camera in enumerate(self.cameras):
+                if not (channel.camera_mask >> cam_index) & 1:
+                    continue
+                deadline = channel.illum_lead_us + camera.strobe_delay_us + channel.exposure_us + camera.readout_time_us
+                if deadline > MAX_DURATION_US:
+                    raise ProgramValidationError(
+                        SeqError.BAD_DURATION,
+                        i,
+                        f"channel {i}: illum_lead + camera {cam_index} strobe delay + exposure + readout = {deadline} "
+                        f"exceeds the engine bound {MAX_DURATION_US}",
+                    )
+                if channel.illum_ttl_mask:
+                    strobe_delays.add(camera.strobe_delay_us)
+            if len(strobe_delays) > 1:
+                raise ProgramValidationError(
+                    SeqError.BAD_CAMERA,
+                    i,
+                    f"channel {i} lights a TTL port for cameras with different strobe delays {sorted(strobe_delays)}: "
+                    "one shared illumination needs one strobe delay",
+                )
             if channel.filter_wheel != NONE_ID and not 0 <= channel.filter_wheel < N_AXES:
                 raise ProgramValidationError(
                     SeqError.BAD_CHANNEL, i, f"filter_wheel {channel.filter_wheel} must be 0..{N_AXES - 1} or NONE_ID"

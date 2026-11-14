@@ -21,6 +21,8 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 
 from control.sequencer_program import (
+    MAX_CHANNELS,
+    MAX_FRAMES,
     NONE_ID,
     Order,
     SeqCameraSpec,
@@ -119,8 +121,15 @@ def piezo_um_to_dac(z_um: float, range_um: float, flip: bool) -> int:
 
 
 def piezo_step_lsb(delta_um: float, range_um: float, flip: bool) -> int:
-    """A relative piezo move in DAC LSB; the sign follows OBJECTIVE_PIEZO_FLIP_DIR."""
-    step = round(65535 * delta_um / range_um)
+    """A relative piezo move in DAC LSB; the sign follows OBJECTIVE_PIEZO_FLIP_DIR.
+
+    Truncated toward zero like piezo_um_to_dac(), never rounded up: the controller repeats this
+    one step per layer, and a step rounded up can put the last layer of a stack that fills the
+    piezo's range past DAC 65535 (0, 150, 300 um on a 300 um piezo: 2 x 32768 = 65536), which the
+    controller refuses as STACK_OUT_OF_RANGE. Truncating keeps every layer at or below the
+    software path's own truncated target, so a stack the range check accepts always runs.
+    """
+    step = int(65535 * delta_um / range_um)
     return -step if flip else step
 
 
@@ -283,6 +292,14 @@ def ineligibility_reason(
                 f"the channels use different {emission_filter_unit.name} iris values and the sequencer cannot "
                 "change them inside a burst"
             )
+    # One program holds the whole block, with the limits of its wire format (sequencer_program.py).
+    if len(channels) > MAX_CHANNELS:
+        return f"{len(channels)} channels are selected and one sequencer program holds at most {MAX_CHANNELS}"
+    if nz * len(channels) > MAX_FRAMES:
+        return (
+            f"{nz} z levels x {len(channels)} channels = {nz * len(channels)} frames per position, and a run "
+            f"counts at most {MAX_FRAMES}"
+        )
     if not global_reset_active:
         return (
             "LEVEL trigger + global reset is not active (hardware_trigger_mode = LEVEL and "
