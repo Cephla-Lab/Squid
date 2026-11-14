@@ -16,6 +16,7 @@ import squid.logging
 import control._def
 from control.startup_homing import (
     CONFIG_SIGNATURE_FORMAT,
+    StartupHomingDeclined,
     config_signature,
     require_objective_lowered,
     required_homed_axes_mask,
@@ -678,7 +679,15 @@ class Microcontroller:
     # on the micro.  So 0.1 is 10x that.
     STALE_READ_TIMEOUT = 0.1
 
-    def __init__(self, serial_device: AbstractCephlaMicroSerial, reset_and_initialize=True):
+    def __init__(
+        self,
+        serial_device: AbstractCephlaMicroSerial,
+        reset_and_initialize=True,
+        confirm_cold_start: Optional[Callable[[], bool]] = None,
+    ):
+        """confirm_cold_start (reset_and_initialize only): asked when the startup is not warm, after the startup query
+        and RESET and before INITIALIZE, which loses the homed frame. False raises StartupHomingDeclined with the
+        controller still as the last session left it (a declined stop sign must not cost the homing it would keep)."""
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
         if not serial_device:
@@ -797,6 +806,9 @@ class Microcontroller:
                 # RESET on both paths: it ends a crashed session's command in progress (the query does not wait for
                 # one) and puts back what a session may have changed, and writes no position.
                 self.reset()
+                if not self.startup_was_warm and confirm_cold_start is not None and not confirm_cold_start():
+                    self.log.info("Cold start declined: the controller was not initialized")
+                    raise StartupHomingDeclined("Startup homing declined: the nosepiece was not lowered")
                 if self.startup_was_warm:
                     # INITIALIZE would change things: it zeroes XACTUAL and re-initialises the drivers and the DAC
                     # config. Skipping it keeps the homed frame, which the controller's homed flags and health check
