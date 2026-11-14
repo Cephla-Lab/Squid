@@ -770,7 +770,9 @@ def parse_well_id(well_id: str) -> Tuple[str, str]:
     a well ID string. Handles single and multi-letter rows.
 
     Note:
-        Input is normalized to uppercase. Both "a1" and "A1" return ("A", "1").
+        Input is normalized to uppercase, and leading zeros are dropped from the column: "a1", "A1" and
+        "A01" all return ("A", "1"), so a zero-padded id from a loaded CSV names the same well, directory
+        and OME-NGFF plate column as the plain one.
 
     Args:
         well_id: Well identifier, e.g., "A1", "B12", "AA3" (case-insensitive)
@@ -794,6 +796,8 @@ def parse_well_id(well_id: str) -> Tuple[str, str]:
             letter_part += char
         else:
             number_part += char
+    if number_part.isdigit():
+        number_part = str(int(number_part))
     return (letter_part, number_part)
 
 
