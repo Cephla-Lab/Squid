@@ -294,10 +294,18 @@ def test_an_acquisition_whose_move_back_fails_keeps_the_stage_until_it_reports_s
 def test_an_acquisition_whose_teardown_raises_gives_the_stage_back_once_it_reports_stopped(scope):
     """The worker's teardown raised (a job runner's output queue broke while it drained the results): the run never
     reported its end, so its completion never gave the stage back. The stage may have been moving."""
+    from control.core.multi_point_controller import MultiPointWorker
+
+    real_finish_jobs = MultiPointWorker._finish_jobs
+
+    def finish_jobs_then_fail(worker, *args, **kwargs):
+        real_finish_jobs(worker, *args, **kwargs)  # the job runners still shut down: no orphaned subprocess
+        raise EOFError("the job runner's output queue closed")
+
     mpc, _ = _acquisition(scope)
     stopped = threading.Event()
     with patch.object(scope, "_stage_reports_stopped", side_effect=stopped.is_set):
-        with patch("control.core.multi_point_controller.MultiPointWorker._finish_jobs", side_effect=EOFError):
+        with patch.object(MultiPointWorker, "_finish_jobs", finish_jobs_then_fail):
             assert mpc.run_acquisition() is True
             mpc.thread.join(30)
         assert not mpc.thread.is_alive()
