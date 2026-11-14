@@ -36,6 +36,7 @@ from control.startup_homing import (
 from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage, AbstractFilterWheelController
 from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
+from squid.stage.reservation import StageMotionHold, StageMotionRefused, StageMotionReservation
 import control.celesta
 import control.illumination_andor
 import control.illumination_versalase
@@ -101,6 +102,12 @@ STAGE_STOP_POLL_S = 0.2
 STAGE_STOP_GRACE_S = 2 * STAGE_STOP_POLL_S
 STAGE_STOP_GRACE_POLL_S = 0.01
 
+# What a homing claim holds the stage-motion reservation as (Microscope.stage_motion)
+STAGE_HOMING = "the stage is homing"
+# ...and what any owner's hold becomes after a move of its raised (a timeout, say): the command was sent, and the stage
+# may still be moving until the controller reports it stopped (Microscope.release_stage_motion_when_stopped)
+STAGE_UNSETTLED = "a move failed and the stage has not reported it stopped"
+
 
 class StageHomingClaim:
     """One homing operation's hold on the stage (Microscope.claim_stage_homing).
@@ -110,9 +117,10 @@ class StageHomingClaim:
     host-side abort, a stale status or a lost link keep it held.
     """
 
-    def __init__(self, microscope: "Microscope", operation: str):
+    def __init__(self, microscope: "Microscope", operation: str, hold: StageMotionHold):
         self._microscope = microscope
         self.operation = operation
+        self.hold = hold  # the stage-motion reservation, given back with the claim
         self.was_live = False  # set by claim_stage_homing
         self._lock = threading.Lock()
         self._released = False
@@ -685,6 +693,9 @@ class Microscope:
         self._closed = False
         self._closed_event = threading.Event()  # set by close(): ends a homing claim's wait for the stage to stop
 
+        # Who drives the stage: an acquisition, the loading-position move and the stay there, a control-server move,
+        # a home. Each takes it before moving anything, from whichever thread it starts on (squid.stage.reservation).
+        self.stage_motion = StageMotionReservation()
         # The homing claim (claim_stage_homing): at most one at a time; other motion is refused while it is held.
         self._stage_homing_lock = threading.Lock()
         self._stage_homing_claim: Optional[StageHomingClaim] = None
@@ -1266,10 +1277,17 @@ class Microscope:
         if reason:
             self._log.info(f"{operation} refused: {reason}")
             raise StageHomingRefused(operation, reason)
-        claim = StageHomingClaim(self, operation)
         with self._stage_homing_lock:
             if self._stage_homing_claim is not None:
                 raise StageHomingInProgressError("stage homing in progress")
+            try:
+                # The claim holds the stage-motion reservation: refused while anything else drives the stage (an
+                # acquisition, the loading position, a control-server move), and refusing them while it homes.
+                hold = self.stage_motion.take(STAGE_HOMING)
+            except StageMotionRefused as e:
+                self._log.info(f"{operation} refused: {e.reason}")
+                raise StageHomingRefused(operation, e.reason) from None
+            claim = StageHomingClaim(self, operation, hold)
             self._stage_homing_claim = claim
         try:
             claim.was_live = self.live_controller.is_live
@@ -1287,6 +1305,25 @@ class Microscope:
         with self._stage_homing_lock:
             if self._stage_homing_claim is claim:
                 self._stage_homing_claim = None
+            claim.hold.release()
+
+    def release_stage_motion_when_stopped(self, hold: StageMotionHold, after_failed_move: bool = False) -> None:
+        """Give hold back once the stage reports it stopped (AbstractStage.reports_stopped), from a watcher thread: the
+        hold of a move started without waiting for it, or of a move that raised with its command sent
+        (after_failed_move: a timeout leaves the controller moving), covers the motion, not just the call. A stage that
+        never reports stopped keeps it held (a homing claim does the same); the watcher ends if the microscope
+        closes."""
+        if after_failed_move:
+            hold.reason = STAGE_UNSETTLED
+            self._log.error(f"{STAGE_UNSETTLED}: stage moves stay refused until it does")
+
+        def release_once_stopped():
+            while not self._stage_reports_stopped():
+                if self._closed_event.wait(STAGE_STOP_POLL_S):
+                    return
+            hold.release()
+
+        threading.Thread(target=release_once_stopped, daemon=True, name="stage-motion-release").start()
 
     def _end_stage_homing(self, claim: StageHomingClaim) -> None:
         """StageHomingClaim's release, once the stage reported it stopped: resume live if it was running before, tell

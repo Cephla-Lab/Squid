@@ -1102,7 +1102,9 @@ class HighContentScreeningGui(QMainWindow):
         self.navigationWidget = widgets.NavigationWidget(
             self.stage, widget_configuration=f"{WELLPLATE_FORMAT} well plate"
         )
-        self.stageUtils = widgets.StageUtils(self.stage, self.liveController, is_wellplate=True)
+        self.stageUtils = widgets.StageUtils(
+            self.stage, self.liveController, is_wellplate=True, stage_motion=self.microscope.stage_motion
+        )
         if self.microscope.z_lift is not None:
             from control.widgets_z_lift import LoadingPositionButton, ZLiftWidget
 
@@ -2604,8 +2606,7 @@ class HighContentScreeningGui(QMainWindow):
         """Squid was closed at the loading position: start in that state (StageUtils, the lift guard, the loading
         buttons and every lock follow its signal), with the Z and lift height to return to as they were."""
         squid.stage.utils.restore_loading_state(self.stage, self._restored_loading_state or {})
-        self.stageUtils._was_live = False
-        self.stageUtils._callback_loading_position_reached(True, None)
+        self.stageUtils.enter_restored_loading_position()
 
     def _connect_loading_position_lock(self):
         """Z lift system: nothing moves from the moment the loading toggle starts (the move to the loading position,
