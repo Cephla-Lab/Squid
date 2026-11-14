@@ -92,9 +92,30 @@ def test_piezo_conversion_matches_set_piezo_um():
 
 
 def test_piezo_step_is_signed_by_the_flip():
-    assert piezo_step_lsb(1.0, 300, flip=False) == round(65535 / 300)  # 218
+    assert piezo_step_lsb(1.0, 300, flip=False) == int(65535 / 300)  # 218
     assert piezo_step_lsb(1.0, 300, flip=True) == -218
-    assert piezo_step_lsb(-1.5, 300, flip=False) == -round(65535 * 1.5 / 300)
+    assert piezo_step_lsb(-1.5, 300, flip=False) == -int(65535 * 1.5 / 300)
+
+
+def test_the_piezo_step_is_truncated_so_a_full_range_stack_stays_inside_the_dac():
+    # 0, 150, 300 um on a 300 um piezo: rounding the step up (32768) would put the last layer at 65536,
+    # which the controller refuses; truncating keeps every layer at or below the software path's target.
+    assert piezo_step_lsb(150.0, 300, flip=False) == 32767 == piezo_um_to_dac(150.0, 300, flip=False)
+    for n_layers, dz_um in ((3, 150.0), (5, 75.0), (101, 3.0)):
+        program = build_program(
+            [plan(source_code=11)],
+            n_layers=n_layers,
+            dz_um=dz_um,
+            piezo_range_um=300,
+            piezo_flip=False,
+            z_settle_ms=20,
+            intensity_factor=1.0,
+            camera=CAMERA,
+            wait_timeout_s=5.0,
+        )
+        program.check_stack_range(piezo_um_to_dac(0.0, 300, flip=False))  # what SeqEngine::start checks
+        last = piezo_um_to_dac(0.0, 300, flip=False) + (n_layers - 1) * program.loop.dz
+        assert last <= piezo_um_to_dac((n_layers - 1) * dz_um, 300, flip=False) <= 65535
 
 
 # --- program building ---------------------------------------------------------------------------
@@ -121,7 +142,7 @@ def test_build_program_resolves_each_channel_to_ttl_port_dac_and_intensity():
     assert program.loop.stack_axis_id == PIEZO_DAC_ID == 7
     assert program.loop.order == Order.CHANNELS_INNER  # the worker's loop nesting: z outer, channel inner
     assert program.loop.n_layers == 10
-    assert program.loop.dz == round(65535 * 1.5 / 300)
+    assert program.loop.dz == int(65535 * 1.5 / 300)
     assert program.loop.z_settle_us == 20_000
     assert program.loop.return_to_start is True
     assert program.wait_timeout_us == 5_000_000
@@ -236,6 +257,12 @@ def test_a_plain_fluorescence_piezo_stack_is_eligible():
         (dict(burst_bytes=1_200_000_000), "memory"),
         (dict(burst_bytes=700_000_000), "memory"),  # 2 x 700 MB fits the 2 GB budget; 3 x 700 MB does not
         (dict(channels=[], camera_gains=[]), "no channels"),
+        # One program holds the whole block: at most 16 channels, and a u16 frame counter per run.
+        (
+            dict(channels=[plan(name=f"ch {i}", source_code=11) for i in range(17)], camera_gains=[10.0] * 17),
+            "at most 16",
+        ),
+        (dict(nz=40_000), "at most 65535"),
         # Z FIRST writes the same files in a different physical order (bleaching, drift and timing differ).
         (dict(z_stack_order="Z FIRST"), "z-stack order"),
         # An NL5 scan unit triggers the camera itself and takes its channel and laser power at every channel
