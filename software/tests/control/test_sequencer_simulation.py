@@ -12,7 +12,7 @@ import pytest
 
 import control.sequencer_program as sp
 import control.sequencer_sim as seq_sim
-from control._def import CMD_EXECUTION_STATUS, CMD_SET
+from control._def import CMD_EXECUTION_STATUS, CMD_SET, STARTUP_VERDICT_STATUS_BASE
 from control.firmware_sim_serial import FirmwareSimSerial
 from control.microcontroller import CommandAborted, Microcontroller, SimSerial
 
@@ -57,6 +57,27 @@ class TriggerRecorder:
     def count(self):
         with self.lock:
             return len(self.camera_ids)
+
+
+class BlockingTrigger(TriggerRecorder):
+    """Holds the run thread inside its `hold_at`-th trigger callback (1-based) until `gate` is set.
+
+    At the test speed-up a whole program runs in milliseconds, so a command meant to reach a run
+    in flight would otherwise race the run's end. Holding the thread in the camera hook models a
+    camera that is slow to take the trigger, without changing the sequencer's own timing.
+    """
+
+    def __init__(self, hold_at: int = 1):
+        super().__init__()
+        self.gate = threading.Event()
+        self._hold_at = hold_at
+
+    def __call__(self, camera_id):
+        super().__call__(camera_id)
+        with self.lock:
+            hold = len(self.camera_ids) == self._hold_at
+        if hold:
+            self.gate.wait(RUN_TIMEOUT_S)
 
 
 def stack_program(n_channels=2, n_layers=3, **loop_overrides):
@@ -133,7 +154,7 @@ class TestSequencerSupport:
     def test_the_field_goes_back_to_theta_after_the_hold(self, mcu, monkeypatch):
         monkeypatch.setattr(seq_sim, "STATUS_HOLD_S", 0.05)
         mcu.supports_hardware_sequencer()
-        time.sleep(0.1)
+        _wait_until(lambda: not sequencer_of(mcu).owns_status_field(), "the status-field hold to expire")
 
         mcu._serial.theta = -4321
         mcu.turn_off_all_ports()
@@ -190,9 +211,13 @@ class TestRun:
         assert mcu.seq_status.frames_fired == 1
 
     def test_the_run_stays_in_progress_until_it_finishes(self, mcu):
+        recorder = BlockingTrigger()  # holds the run in flight while the host is asked
+        sequencer_of(mcu).on_hardware_trigger = recorder
         mcu.seq_upload(stack_program(n_channels=2, n_layers=8))
         mcu.seq_run(0)
+        _wait_until(lambda: recorder.count >= 1, "the run to start")
         assert mcu.is_busy()
+        recorder.gate.set()
         mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
         assert not mcu.is_busy()
 
@@ -269,6 +294,18 @@ class TestCommit:
             mcu.wait_till_operation_is_completed()
         assert exc.value.seq_status.error == sp.SeqError.BAD_EXPOSURE
 
+    def test_a_stepper_stack_is_refused_by_the_binding(self, mcu):
+        # seq_load() (seq_bind.cpp): the stepper binding never updates focusPosition, so stepper stacks
+        # are refused until it is bound properly. validate() itself accepts the program: the refusal is
+        # the binding's, so it carries the axis id, and the host never builds one (piezo stacks only).
+        loop = minimal_program().loop.replace(stack_axis_type=sp.StackAxisType.STEPPER, stack_axis_id=2, dz=100)
+        program = minimal_program(loop=loop)
+        program.validate()
+        with pytest.raises(CommandAborted) as exc:
+            mcu.seq_upload(program)
+        assert exc.value.seq_status.error == sp.SeqError.BAD_STACK_AXIS
+        assert exc.value.seq_status.detail == 2
+
     def test_a_resent_word_is_idempotent(self, mcu):
         program = stack_program(n_channels=1, n_layers=2)
         staged = program.pack()
@@ -297,7 +334,7 @@ class TestCommit:
 
 class TestCancel:
     def test_cancel_mid_run_stops_after_the_current_frame(self, mcu):
-        recorder = TriggerRecorder()
+        recorder = BlockingTrigger(hold_at=2)  # the run waits in its second frame while the cancel goes out
         sequencer_of(mcu).on_hardware_trigger = recorder
         program = stack_program(n_channels=2, n_layers=16)  # 32 frames
 
@@ -305,6 +342,7 @@ class TestCancel:
         mcu.seq_run(0)
         _wait_until(lambda: recorder.count >= 2, "the run to fire a couple of frames")
         mcu.seq_cancel()
+        recorder.gate.set()
         # The run's own waiter returns: SEQ_CANCEL completes when the engine is terminal.
         mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
 
@@ -362,12 +400,15 @@ class TestAllowTableWhileRunning:
         so the CMD_EXECUTION_ERROR the dispatcher latched only reaches the host when the
         run goes terminal (serial_communication.cpp + seq_transport_tick()).
         """
+        recorder = BlockingTrigger()  # holds the run in flight while the disallowed command goes out
+        sequencer_of(mcu).on_hardware_trigger = recorder
         program = stack_program(n_channels=2, n_layers=16)
         mcu.seq_upload(program)
         mcu.seq_run(0)
-        _wait_until(lambda: mcu.seq_status.frames_fired >= 1, "the run to start")
+        _wait_until(lambda: recorder.count >= 1, "the run to start")
 
         mcu.move_x_usteps(100)
+        recorder.gate.set()
         with pytest.raises(CommandAborted):
             mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
         # the run itself was not disturbed
@@ -384,14 +425,17 @@ class TestAllowTableWhileRunning:
         serial simulators have never modelled -- they echo the command's own id.  That gap
         predates the sequencer and is orthogonal to it.
         """
+        recorder = BlockingTrigger()  # holds the run in flight while RESET goes out
+        sequencer_of(mcu).on_hardware_trigger = recorder
         mcu.seq_upload(stack_program(n_channels=2, n_layers=16))
         mcu.seq_run(0)
-        _wait_until(lambda: mcu.seq_status.frames_fired >= 1, "the run to start")
+        _wait_until(lambda: recorder.count >= 1, "the run to start")
 
         mcu.reset()
         # Wait on the HOST's view: the simulator flips state before the read thread has
         # consumed the packet that carries it.
         _wait_until(lambda: mcu.seq_status.state == sp.SeqState.FAILED, "the host to see the aborted run")
+        recorder.gate.set()
 
         assert mcu.seq_status.error == sp.SeqError.HOST_ABORT
         assert not sequencer_of(mcu).running()
@@ -404,7 +448,9 @@ class TestAllowTableWhileRunning:
         wait_till_operation_is_completed() returning is NOT enough to conclude the run
         succeeded -- the caller has to read seq_status.
         """
-        recorder = TriggerRecorder()
+        # The run is held inside its first trigger callback while the safety command goes out: at
+        # the test's speed-up the whole program would otherwise finish before the command arrives.
+        recorder = BlockingTrigger()
         sequencer_of(mcu).on_hardware_trigger = recorder
         program = stack_program(n_channels=2, n_layers=16)
 
@@ -413,10 +459,34 @@ class TestAllowTableWhileRunning:
         _wait_until(lambda: recorder.count >= 1, "the run to start")
         mcu.turn_off_all_ports()
         mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)  # must NOT raise
+        recorder.gate.set()
 
         assert mcu.seq_status.error == sp.SeqError.HOST_ABORT
         assert mcu.seq_status.state == sp.SeqState.FAILED
         assert recorder.count < program.n_frames
+
+    def test_a_run_started_after_a_host_abort_is_not_revived_by_the_old_timeline(self, mcu):
+        """TURN_OFF_ALL_PORTS marks the run terminal while its thread may still sit in a trigger
+        callback or a dwell. The next SEQ_RUN must not wake that thread into the new program: it
+        would fire the old frames into the new run and complete the new command early."""
+        recorder = BlockingTrigger()
+        sequencer_of(mcu).on_hardware_trigger = recorder
+        program = stack_program(n_channels=1, n_layers=4)
+        mcu.seq_upload(program)
+        mcu.seq_run(0)
+        _wait_until(lambda: recorder.count >= 1, "the old run's first trigger")  # its thread waits in the callback
+        old_thread = sequencer_of(mcu)._thread
+        mcu.turn_off_all_ports()
+        mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
+        assert mcu.seq_status.error == sp.SeqError.HOST_ABORT
+
+        mcu.seq_run(0)
+        recorder.gate.set()  # the old thread wakes while the new run is under way
+        mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
+        _wait_until(lambda: not old_thread.is_alive(), "the old timeline thread to exit")
+        assert mcu.seq_status.state == sp.SeqState.DONE
+        assert mcu.seq_status.frames_fired == program.n_frames
+        assert recorder.count == 1 + program.n_frames
 
     def test_a_second_run_while_running_is_refused(self, mcu):
         mcu.seq_upload(stack_program(n_channels=2, n_layers=16))
@@ -505,3 +575,33 @@ class TestSimulatedSequencerUnit:
         outcome = sequencer.dispatch(bytes(command))
 
         assert not outcome.handled
+
+
+class TestStatusBroadcasts:
+    """The sequencer's 10 ms broadcast obeys the same packet policy as a command response."""
+
+    def test_sim_serial_drops_the_broadcast_on_a_lost_link(self):
+        serial = SimSerial()
+        try:
+            serial.reset_input_buffer()
+            serial.drop_responses = True
+            serial._emit_status_packet()
+            assert serial.bytes_available() == 0
+            serial.drop_responses = False
+            serial._emit_status_packet()
+            assert serial.bytes_available() > 0
+        finally:
+            serial.close()
+
+    def test_firmware_sim_serial_broadcast_carries_a_pending_startup_verdict(self):
+        # hv_packet_status() applies to every packet the firmware sends, the broadcasts included.
+        serial = FirmwareSimSerial(strict=True)
+        try:
+            serial.reset_input_buffer()
+            serial._startup_verdict_pending = True
+            serial._startup_verdict = 3
+            serial._emit_status_packet()
+            packet = serial.read(serial.bytes_available())
+            assert packet[1] == STARTUP_VERDICT_STATUS_BASE + 3
+        finally:
+            serial.close()

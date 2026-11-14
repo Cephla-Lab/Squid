@@ -354,7 +354,8 @@ void test_edge_mode_pulse_and_modeled_exposure_end(void) {
 }
 
 // Two cameras, different strobe delays: both scheduled at the same assert instant;
-// the step is one frame event; readiness tracked per camera.
+// the step is one frame event; readiness tracked per camera. The channel lights the LED
+// matrix: a TTL channel's cameras must share a strobe delay (seq::validate).
 void test_two_cameras_simultaneous_exposure(void) {
     FakeHal hal;
     SeqEngine e(hal);
@@ -363,6 +364,8 @@ void test_two_cameras_simultaneous_exposure(void) {
     l.n_channels = 1;
     SeqChannel ch[1] = {good_channel()};
     ch[0].camera_mask = 0x03;
+    ch[0].illum_ttl_mask = 0;
+    ch[0].led_pattern = 1;
     SeqCameraConfig cams[2] = {cam_level(), cam_level()};
     cams[1].strobe_delay_us = 2000;
     cams[1].readout_time_us = 40000;

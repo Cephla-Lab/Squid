@@ -76,13 +76,14 @@ void loop() {
   finalize_homing_w2();
   finalize_homing_xy();
 
-  // The joystick and the focus wheel are ignored while a sequence runs: a nudged wheel must
-  // not move Z in the middle of a stack (do_focus_control writes the Z target every pass).
+  // A running sequence locks the panel out (panel_locked_out()): check_joystick() runs every pass
+  // so a jog that was under way when the run started is brought to rest and the panel timeout
+  // keeps working, while the lock-out drops the stick and the wheel's travel. do_focus_control()
+  // stays off for the run: it writes the Z target every pass, and a nudged wheel must not move Z
+  // in the middle of a stack.
+  check_joystick();
   if (!seq_running())
-  {
-    check_joystick();
     do_focus_control();
-  }
 
   send_position_update();
   check_position();
