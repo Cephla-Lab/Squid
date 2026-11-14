@@ -206,16 +206,20 @@ def test_a_from_top_stack_steps_the_piezo_down_in_the_program_as_in_the_metadata
     assert piezo_um[len(FLUORESCENCE)] - piezo_um[0] == pytest.approx(-DZ_UM)  # the metadata steps down too
 
 
-def test_a_from_center_stack_leaves_the_piezo_where_the_software_stack_does(sequencing_setup, monkeypatch):
-    """After a From Center stack the controller leaves the piezo at the stack BOTTOM. The host must climb back
-    to the centre, as the software stack does: the next FOV's From Center move starts from where the piezo
-    was left, so left at the bottom every FOV would start half a stack below the previous one."""
-    kwargs = dict(monkeypatch=monkeypatch, z_stacking_config="FROM CENTER", n_regions=2, binning=(4, 4))
+@pytest.mark.parametrize("order", ["CHANNEL FIRST", "Z FIRST"])
+def test_a_from_center_stack_leaves_the_piezo_where_the_software_stack_does(sequencing_setup, monkeypatch, order):
+    """After a From Center stack the controller leaves the piezo at the stack BOTTOM (of the last burst, in Z
+    FIRST). The host must climb back to the centre, as the software stack does: the next FOV's From Center
+    move starts from where the piezo was left, so left at the bottom every FOV would start half a stack
+    below the previous one."""
+    kwargs = dict(
+        monkeypatch=monkeypatch, z_stacking_config="FROM CENTER", z_stack_order=order, n_regions=2, binning=(4, 4)
+    )
     software, _, software_final_um = run_acquisition(FLUORESCENCE, sequenced=False, **kwargs)
     sequenced, _, sequenced_final_um = run_acquisition(FLUORESCENCE, sequenced=True, **kwargs)
 
     software_um = [z_um for _, _, _, z_um in software.images]
-    assert software_um[: NZ * len(FLUORESCENCE)] == pytest.approx([18.5, 18.5, 20.0, 20.0, 21.5, 21.5])
+    assert sorted(software_um[: NZ * len(FLUORESCENCE)]) == pytest.approx([18.5, 18.5, 20.0, 20.0, 21.5, 21.5])
     assert [z_um for _, _, _, z_um in sequenced.images] == pytest.approx(software_um)
     assert sequenced_final_um == pytest.approx(software_final_um) == pytest.approx(20)
 
@@ -228,17 +232,80 @@ def test_an_ineligible_acquisition_falls_back_to_software_sequencing(sequencing_
     assert status.frames_fired == 0  # the controller's sequencer was never used
 
 
-def test_a_z_first_acquisition_runs_software_sequenced_in_the_order_it_asked_for(sequencing_setup, monkeypatch):
-    """The program runs every channel at each z level (CHANNEL FIRST). A Z FIRST acquisition would
-    write the same files, but acquiring them in a different physical order is a different experiment
-    (bleaching, drift and the timing between channels differ), so it stays software-sequenced."""
-    tracker, status, _ = run_acquisition(FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch, z_stack_order="Z FIRST")
+def test_a_z_first_acquisition_runs_one_single_channel_burst_per_channel(sequencing_setup, monkeypatch):
+    """Hongquan, 2026-11-01: Z FIRST runs on the controller as one burst per channel, in channel order,
+    and delivers the image set the software Z FIRST loop delivers, in its order."""
+    runs = []
+    uploads = []
+    seq_run = control.microcontroller.Microcontroller.seq_run
+    seq_upload = control.microcontroller.Microcontroller.seq_upload
+    monkeypatch.setattr(
+        control.microcontroller.Microcontroller,
+        "seq_run",
+        lambda self, start: (runs.append(start), seq_run(self, start))[1],
+    )
+    monkeypatch.setattr(
+        control.microcontroller.Microcontroller,
+        "seq_upload",
+        lambda self, program: (uploads.append(program), seq_upload(self, program))[1],
+    )
 
-    assert [(z, name) for z, name, _, _ in tracker.images] == [(z, name) for name in FLUORESCENCE for z in range(NZ)]
-    assert [z_um for _, _, _, z_um in tracker.images] == pytest.approx(
+    software, software_status, _ = run_acquisition(
+        FLUORESCENCE, sequenced=False, monkeypatch=monkeypatch, z_stack_order="Z FIRST"
+    )
+    sequenced, status, piezo_um = run_acquisition(
+        FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch, z_stack_order="Z FIRST"
+    )
+
+    expected_order = [(z, name) for name in FLUORESCENCE for z in range(NZ)]
+    assert [(z, name) for z, name, _, _ in software.images] == expected_order
+    assert [(z, name, file_id) for z, name, file_id, _ in sequenced.images] == [
+        (z, name, file_id) for z, name, file_id, _ in software.images
+    ]
+    assert [z_um for _, _, _, z_um in sequenced.images] == pytest.approx(
         [20 + z * DZ_UM for _ in FLUORESCENCE for z in range(NZ)]
     )
-    assert status.frames_fired == 0  # the controller's sequencer was never used
+    assert piezo_um == pytest.approx(20)  # the controller returned the piezo after the last burst
+    # one burst per channel, each from the stack start, each with its own one-channel program
+    assert len(runs) == len(FLUORESCENCE) and len(set(runs)) == 1
+    assert [len(program.channels) for program in uploads] == [1] * len(FLUORESCENCE)
+    assert status.state == SeqState.DONE and status.error == SeqError.NONE
+    assert status.frames_fired == NZ  # the last burst's count
+    assert software_status is None
+
+
+def test_z_first_sets_each_channels_exposure_and_emission_filter_before_its_burst(
+    sequencing_setup, simulated_emission_wheel, monkeypatch
+):
+    """Channels needing different filter positions fall back in CHANNEL FIRST; in Z FIRST the host
+    moves the wheel, and sets the camera, for each channel before its burst."""
+    scopes = []
+    at_run = []  # (camera exposure, wheel position) when each burst starts
+    seq_run = control.microcontroller.Microcontroller.seq_run
+
+    def record_then_run(self, stack_start):
+        scope = scopes[0]
+        at_run.append(
+            (scope.camera.get_exposure_time(), scope.addons.emission_filter_wheel.get_filter_wheel_position()[1])
+        )
+        return seq_run(self, stack_start)
+
+    monkeypatch.setattr(control.microcontroller.Microcontroller, "seq_run", record_then_run)
+
+    tracker, status, _ = run_acquisition(
+        FLUORESCENCE,
+        sequenced=True,
+        monkeypatch=monkeypatch,
+        z_stack_order="Z FIRST",
+        filter_positions=[2, 3],
+        exposures_ms=[5.0, 20.0],
+        on_controller=lambda mpc: scopes.append(mpc.microscope),
+    )
+
+    assert [wheel for _, wheel in at_run] == [2, 3]
+    assert [exposure for exposure, _ in at_run] == pytest.approx([5.0, 20.0])
+    assert [(z, name) for z, name, _, _ in tracker.images] == [(z, name) for name in FLUORESCENCE for z in range(NZ)]
+    assert status.frames_fired == NZ  # it was sequenced: the controller ran the last channel's burst
 
 
 def test_channels_needing_different_emission_filters_run_software_sequenced(
