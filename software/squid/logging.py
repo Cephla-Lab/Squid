@@ -1,8 +1,12 @@
+import atexit
 import logging as py_logging
 import logging.handlers
+import multiprocessing.util
+import os
 import os.path
 import queue
 import threading
+import time
 from typing import List, Optional, Tuple, Type
 from types import TracebackType
 import sys
@@ -47,13 +51,13 @@ class _CustomFormatter(py_logging.Formatter):
 
 
 def _thread_id_filter(record: logging.LogRecord):
-    """Inject thread_id to log records"""
-    record.thread_id = threading.get_native_id()
+    """Inject thread_id to log records: the thread that LOGGED. The first handler to see a record stamps
+    it; the console and the files are written by another thread (see below) and must not re-stamp it."""
+    record.__dict__.setdefault("thread_id", threading.get_native_id())
     return True
 
 
 _COLOR_STREAM_HANDLER = py_logging.StreamHandler()
-_COLOR_STREAM_HANDLER.addFilter(_thread_id_filter)
 _COLOR_STREAM_HANDLER.setFormatter(_CustomFormatter())
 
 # Make sure the squid root logger has all the handlers we want setup.  We could move this into a helper so it
@@ -61,8 +65,90 @@ _COLOR_STREAM_HANDLER.setFormatter(_CustomFormatter())
 # Also set the default logging level to INFO on the stream handler, but DEBUG on the root logger so we can have
 # other loggers at different levels.
 _COLOR_STREAM_HANDLER.setLevel(py_logging.INFO)
-py_logging.getLogger(_squid_root_logger_name).addHandler(_COLOR_STREAM_HANDLER)
 py_logging.getLogger(_squid_root_logger_name).setLevel(py_logging.DEBUG)
+
+
+# --- The console and the files are written by ONE writer thread, not by the thread that logs ----------
+#
+# A handler that writes and flushes a stream gives up the GIL at every write. While another thread is
+# CPU-bound, getting it back costs a full interpreter switch interval each time. Measured 2026-09-21: one
+# log.debug() with file handlers took 0.09 ms alone and 15.2 ms (3 x 5 ms) while another thread pickled
+# camera frames for the save subprocess - and a camera read thread that logs three lines per frame fell
+# behind its 41 ms frame period. Handing the record to a queue costs ~0.01 ms and no GIL hand-back.
+#
+# - The squid root logger carries a single _QueueingHandler. The handlers that do I/O ("sinks": the
+#   console and every file handler added below) belong to the writer thread, and keep their own levels.
+# - ERROR and above are on disk when the log call returns: the lines before a crash are the ones that
+#   matter. Everything queued before them goes out with them, in order.
+# - Handlers that other code attaches straight to a squid logger (the GUI's warning list, BufferingHandler)
+#   are untouched: they run on the logging thread as before, and they do no file I/O.
+# - fork() (how Linux starts the save subprocess) does not copy threads: the child gets a fresh queue and
+#   a writer of its own; the queue is drained before forking so the writer is idle, not mid-write.
+
+
+class _QueueingHandler(logging.handlers.QueueHandler):
+    def emit(self, record: py_logging.LogRecord) -> None:
+        super().emit(record)
+        if record.levelno >= py_logging.ERROR and threading.current_thread() is not _writer._thread:
+            flush()
+
+
+def _new_writer(sinks=()) -> logging.handlers.QueueListener:
+    writer = logging.handlers.QueueListener(queue.Queue(), *sinks, respect_handler_level=True)
+    writer.start()
+    return writer
+
+
+_writer = _new_writer([_COLOR_STREAM_HANDLER])
+_QUEUEING_HANDLER = _QueueingHandler(_writer.queue)
+_QUEUEING_HANDLER.addFilter(_thread_id_filter)  # on the logging thread, before the record is queued
+py_logging.getLogger(_squid_root_logger_name).addHandler(_QUEUEING_HANDLER)
+
+
+def _sinks() -> Tuple[py_logging.Handler, ...]:
+    return _writer.handlers
+
+
+def _add_sink(handler: py_logging.Handler) -> None:
+    _writer.handlers = _writer.handlers + (handler,)
+
+
+def _remove_sink(handler: py_logging.Handler) -> None:
+    flush()  # what was logged while it was attached belongs in it
+    _writer.handlers = tuple(h for h in _writer.handlers if h is not handler)
+
+
+def flush(timeout_s: float = 5.0) -> bool:
+    """Wait until everything logged so far has been written. False if that took longer than timeout_s.
+
+    Needed only by code that reads a log file back right after logging to it, and at exit; ERROR and
+    above flush by themselves."""
+    log_queue = _writer.queue
+    deadline = time.monotonic() + timeout_s
+    with log_queue.all_tasks_done:
+        while log_queue.unfinished_tasks:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            log_queue.all_tasks_done.wait(remaining)
+    return True
+
+
+def _stop_writer() -> None:
+    _writer.stop()  # writes what is queued, then ends the thread
+
+
+def _restart_writer_in_forked_child() -> None:
+    global _writer
+    _writer = _new_writer(_writer.handlers)  # the parent's writer thread does not exist here
+    _QUEUEING_HANDLER.queue = _writer.queue
+
+
+atexit.register(_stop_writer)
+# multiprocessing children leave through os._exit() and never run atexit; they do run these.
+multiprocessing.util.Finalize(None, flush, exitpriority=0)
+if sys.platform != "win32":
+    os.register_at_fork(before=flush, after_in_child=_restart_writer_in_forked_child)
 
 
 def get_logger(name: Optional[str] = None) -> py_logging.Logger:
@@ -90,9 +176,7 @@ def set_stdout_log_level(level):
     is needed the normal logging package tools can be used instead.  It also leaves FileHandler log levels such that
     they can always be outputting everything (regardless of what we set the stdout log level to)
     """
-    squid_root_logger = get_logger()
-
-    for handler in squid_root_logger.handlers:
+    for handler in _sinks():
         # We always want the file handlers to capture everything, so don't touch them.
         if isinstance(handler, logging.FileHandler):
             continue
@@ -173,13 +257,12 @@ def get_default_log_directory():
 
 
 def add_file_logging(log_filename, replace_existing=False):
-    root_logger = get_logger()
     abs_path = os.path.abspath(log_filename)
-    for handler in root_logger.handlers:
+    for handler in _sinks():
         if isinstance(handler, logging.handlers.BaseRotatingHandler):
             if handler.baseFilename == abs_path:
                 if replace_existing:
-                    root_logger.removeHandler(handler)
+                    _remove_sink(handler)
                 else:
                     log.error(f"RotatingFileHandler already exists for {abs_path}, and replace_existing==False!")
                     return False
@@ -200,14 +283,13 @@ def add_file_logging(log_filename, replace_existing=False):
 
     formatter = py_logging.Formatter(fmt=_baseline_log_format, datefmt=_baseline_log_dateformat)
     new_handler.setFormatter(formatter)
-    new_handler.addFilter(_thread_id_filter)
 
     log.info(f"Adding new file logger writing to file '{new_handler.baseFilename}'")
-    root_logger.addHandler(new_handler)
-
     # We want a new log file every time we start, so force one at startup if the log file already existed.
+    # Before the writer thread gets the handler: a rollover must not race a write.
     if log_file_existed:
         new_handler.doRollover()
+    _add_sink(new_handler)
 
     return True
 
@@ -217,11 +299,10 @@ def add_file_handler(log_filename, replace_existing=False, level=py_logging.DEBU
     Attach a plain FileHandler to the squid root logger and return it, so callers can later remove/close it.
     This uses the same baseline formatting + thread_id injection as squid's other logs.
     """
-    root_logger = get_logger()
     abs_path = os.path.abspath(log_filename)
 
     # If a handler already exists for this exact path, optionally replace it.
-    for handler in list(root_logger.handlers):
+    for handler in _sinks():
         if isinstance(handler, (logging.FileHandler, logging.handlers.BaseRotatingHandler)):
             if getattr(handler, "baseFilename", None) == abs_path:
                 if not replace_existing:
@@ -230,7 +311,7 @@ def add_file_handler(log_filename, replace_existing=False, level=py_logging.DEBU
                         f"Not adding duplicate handler."
                     )
                     return None
-                root_logger.removeHandler(handler)
+                _remove_sink(handler)
                 try:
                     handler.close()
                 except Exception as e:
@@ -241,10 +322,9 @@ def add_file_handler(log_filename, replace_existing=False, level=py_logging.DEBU
     new_handler = logging.FileHandler(abs_path, encoding="utf-8", errors="replace")
     new_handler.setLevel(level)
     new_handler.setFormatter(py_logging.Formatter(fmt=_baseline_log_format, datefmt=_baseline_log_dateformat))
-    new_handler.addFilter(_thread_id_filter)
 
     log.info(f"Adding new file handler writing to file '{abs_path}'")
-    root_logger.addHandler(new_handler)
+    _add_sink(new_handler)
     return new_handler
 
 
@@ -257,6 +337,7 @@ def remove_handler(handler: py_logging.Handler) -> None:
     handler_desc = getattr(handler, "baseFilename", repr(handler))
 
     try:
+        _remove_sink(handler)  # a file handler from add_file_handler(); harmless for any other
         root_logger.removeHandler(handler)
     except ValueError:
         # Handler wasn't attached - this is expected and fine
@@ -278,8 +359,7 @@ def get_current_log_file_path() -> Optional[str]:
     Returns:
         The absolute path to the log file, or None if no file logging is configured.
     """
-    root_logger = get_logger()
-    for handler in root_logger.handlers:
+    for handler in _sinks():
         if isinstance(handler, (py_logging.FileHandler, py_logging.handlers.BaseRotatingHandler)):
             return getattr(handler, "baseFilename", None)
     return None
