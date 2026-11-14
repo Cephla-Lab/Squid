@@ -587,6 +587,28 @@ def test_user_abort_reports_user_abort():
     assert mpc.last_end_reason == "user_abort"
 
 
+def test_a_run_whose_teardown_raises_still_reports_its_end_as_an_error():
+    """The worker's teardown raised (a job runner's output queue broke while it drained the results): the end must
+    still be reported, or the GUI stays acquiring with nothing left to abort, and the controller never restores."""
+    from control.core.multi_point_worker import MultiPointWorker
+
+    real_finish_jobs = MultiPointWorker._finish_jobs
+
+    def finish_jobs_then_fail(worker, *args, **kwargs):
+        real_finish_jobs(worker, *args, **kwargs)  # the job runners still shut down: no orphaned subprocess
+        raise EOFError("the job runner's output queue closed")
+
+    scope, tt, mpc = _controller_with_tracker()
+    with patch.object(MultiPointWorker, "_finish_jobs", finish_jobs_then_fail):
+        mpc.run_acquisition()
+        assert tt.finished_event.wait(30)
+        mpc.thread.join(10)
+
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "error"
+    assert not mpc.acquisition_in_progress()
+
+
 def test_validation_failure_reports_failed_to_start_exactly_once():
     scope, tt, mpc = _controller_with_tracker()
     mpc.laserAutoFocusController.laser_af_properties.has_reference = False

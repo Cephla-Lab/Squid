@@ -567,44 +567,60 @@ class MultiPointWorker:
             self._run_state_fatal = True
             raise
         finally:
-            # We do this above, but there are some paths that skip the proper end of the acquisition so make
-            # sure to always wait for final images here before removing our callback.
-            self._wait_for_outstanding_callback_images()
-            self._log.debug(self._timing.get_report())
-            if this_image_callback_id:
-                self.camera.remove_frame_callback(this_image_callback_id)
+            # Every step of the end runs, and the end is always reported: unreported, the GUI stays acquiring with
+            # nothing left to abort, and the controller never restores. A step that raises ends the run as an error.
 
-            self._finish_jobs()
+            def finish_with_the_camera():
+                # We do this above, but there are some paths that skip the proper end of the acquisition so make
+                # sure to always wait for final images here before removing our callback.
+                self._wait_for_outstanding_callback_images()
+                self._log.debug(self._timing.get_report())
+                if this_image_callback_id:
+                    self.camera.remove_frame_callback(this_image_callback_id)
 
-            # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
-            reason = self.end_reason = self._compute_end_reason()
-            total_duration = time.time() - self.timestamp_acquisition_started
-            self._run_state.end(
-                reason,
-                {
-                    "total_images": self.image_count,
-                    "total_timepoints": self.time_point,
-                    "total_duration_seconds": total_duration,
-                    "errors_encountered": self._acquisition_error_count,
-                },
-            )
+            self._run_end_step("finishing with the camera", finish_with_the_camera)
+            self._run_end_step("finishing the jobs", self._finish_jobs)
 
-            # Send Slack acquisition finished notification via callback (ensures ordering with timepoint notifications)
-            if self._slack_notifier is not None:
-                try:
-                    stats = AcquisitionStats(
-                        total_images=self.image_count,
-                        total_timepoints=self.time_point,
-                        total_duration_seconds=total_duration,
-                        errors_encountered=self._acquisition_error_count,
-                        experiment_id=self.experiment_ID or "unknown",
-                        reason=reason,
-                    )
-                    self.callbacks.signal_slack_acquisition_finished(stats)
-                except Exception as e:
-                    self._log.warning(f"Failed to send Slack acquisition finished notification: {e}")
+            try:
+                # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
+                reason = self.end_reason = self._compute_end_reason()
+                total_duration = time.time() - self.timestamp_acquisition_started
+                self._run_state.end(
+                    reason,
+                    {
+                        "total_images": self.image_count,
+                        "total_timepoints": self.time_point,
+                        "total_duration_seconds": total_duration,
+                        "errors_encountered": self._acquisition_error_count,
+                    },
+                )
 
-            self.callbacks.signal_acquisition_finished()
+                # Send Slack acquisition finished notification via callback (ensures ordering with timepoint
+                # notifications)
+                if self._slack_notifier is not None:
+                    try:
+                        stats = AcquisitionStats(
+                            total_images=self.image_count,
+                            total_timepoints=self.time_point,
+                            total_duration_seconds=total_duration,
+                            errors_encountered=self._acquisition_error_count,
+                            experiment_id=self.experiment_ID or "unknown",
+                            reason=reason,
+                        )
+                        self.callbacks.signal_slack_acquisition_finished(stats)
+                    except Exception as e:
+                        self._log.warning(f"Failed to send Slack acquisition finished notification: {e}")
+            finally:
+                self.callbacks.signal_acquisition_finished()
+
+    def _run_end_step(self, what: str, step: Callable[[], None]) -> None:
+        """One step of the end of a run (run()'s finally). One that raises (a job runner's output queue breaking while
+        it drains, say) is logged and ends the run as an error; the later steps and the end report still run."""
+        try:
+            step()
+        except Exception:
+            self._log.exception(f"Ending the acquisition: {what} failed; the run ends as an error")
+            self._run_state_fatal = True
 
     def _compute_illumination_wavelengths(self) -> List[int]:
         """The wavelengths this acquisition images with: its channels, and the contrast autofocus channel when it runs."""
