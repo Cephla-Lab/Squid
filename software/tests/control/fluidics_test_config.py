@@ -121,3 +121,132 @@ application: Flow Cell
 """
 
 TEC_CONFIG_YAML = CONFIG_YAML + "\ntemperature_controller:\n  serial_number: SIM-TEC\n  channels: 2\n"
+
+# A plate-sipper rig, as Squid-Fluidics ships it (sample_config/plate_sipper_config.yaml): one 10-port
+# valve, the sipper on port 1, bottles on ports 2-6 (4 and 5 volume tracked), and an XYZ stage over
+# two 96-well plates, probes (the default plate) and ssct. Kept here rather than read from the
+# submodule so re-teaching the sample does not move these tests.
+SIPPER_CONFIG_YAML = """\
+config_version: '2.0'
+microcontroller:
+  serial_number: '20021310'
+syringe_pump:
+  serial_number: A9DVHMOCA
+  volume_ul: 5000
+  ports_allowed:
+  - 1
+  - 2
+  - 3
+  waste_port: 1
+  extract_port: 2
+  dispense_port: null
+  speed_code_limit: 10
+reagent_selection:
+  selector_valves:
+    valve_ids:
+    - 0
+    number_of_ports:
+      0: 10
+    tubing_fluid_amount_to_valve_ul:
+      0: 0
+    name_mapping:
+      port_1: sipper
+      port_2: wash buffer 1
+      port_3: 4x SSC
+      port_4: DAPI
+      port_5: anti-bleaching buffer
+      port_6: wash buffer 2
+    tubing_fluid_amount_ul:
+      port_1: 460
+      port_2: 200
+      port_3: 220
+      port_4: 240
+      port_5: 240
+      port_6: 410
+    loaded_volume_ul:
+      port_4: 2000
+      port_5: 5000
+  common_tubing_fluid_amount_ul: 310
+  nimotion_gantry_system:
+    selector_valve_port: 1
+    push_volume_ul: 710
+    serial_number: A10PIMTHA
+    baudrate: 115200
+    axes: {x: X1, y: Y2, z: Z3}
+    travel_z_mm: 7.2
+    xy_velocity_mm_s: 50
+    z_velocity_mm_s: 20
+    homing_velocity_mm_s: 20
+    homing_acceleration_mm_s2: 200
+    default_reservoir: probes
+    reservoirs:
+      1:
+        name: probes
+        type: plate
+        number_of_wells: 96
+        a1_xy_mm: [8.8, 1.3]
+        dip_z_mm: 54.2
+        column_axis: "+y"
+        row_axis: "+x"
+        loaded_ul: 350
+      2:
+        name: ssct
+        type: plate
+        number_of_wells: 96
+        a1_xy_mm: [102.5, 1.5]
+        dip_z_mm: 50.0
+        column_axis: "+y"
+        row_axis: "+x"
+        loaded_ul: 1800
+    priming_well: ssct/H11
+    clean_up_well: ssct/H12
+    agitate_amplitude_mm: 5.0
+flow_sensors:
+- index: 1
+  name: syringe_draw
+  monitor: "off"
+application: Flow Cell
+"""
+
+# Two seqFISH rounds on that rig (Squid-Fluidics' sample_sequences/seqfish-plate-sipper.yaml, trimmed):
+# hyb draws from a probes well, push moves it into the flow cell from the paired ssct well, ssct washes
+# from that same well after three dips, then a bottle row.
+SIPPER_ROWS = [
+    {"type": "priming", "round": "setup", "fluidic_port": 3, "flow_rate": 5000, "volume": 800},
+    {
+        "type": "flow_reagent",
+        "round": "R01",
+        "name": "hyb",
+        "fluidic_port": 1,
+        "well": "A1",
+        "flow_rate": 2000,
+        "volume": 100,
+    },
+    {"type": "push", "round": "R01", "name": "push", "well": "ssct/A1", "flow_rate": 2000, "incubation_time": 20},
+    {
+        "type": "flow_reagent",
+        "round": "R01",
+        "name": "ssct",
+        "fluidic_port": 1,
+        "well": "ssct/A1",
+        "flow_rate": 5000,
+        "volume": 1000,
+        "dip_cycles": 3,
+    },
+    {
+        "type": "flow_reagent",
+        "round": "R01",
+        "name": "dapi",
+        "fluidic_port": 4,
+        "flow_rate": 5000,
+        "volume": 300,
+        "fill_tubing_with": 3,
+    },
+]
+
+
+def sipper_protocol():
+    """A protocol of SIPPER_ROWS, each row a fresh copy."""
+    from control.models.fluidics_protocol import ProtocolFile
+
+    return ProtocolFile(name="sipper", sequences=[dict(row) for row in SIPPER_ROWS])

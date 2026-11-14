@@ -3,6 +3,7 @@
 import threading
 from typing import List, Optional
 
+from fluidics.errors import FluidicsError, ReservoirUndeclared
 from fluidics.events import RunEnded, RunStarted, SequenceStarted
 from fluidics.sequences import SequenceListAdapter, validate_sequences
 from pydantic import ValidationError
@@ -14,9 +15,19 @@ from control.models.fluidics_run import TecState
 _log = squid.logging.get_logger(__name__)
 
 
+def _in_squid_terms(error: Exception) -> str:
+    """The library's message, plus where Squid keeps what it names: its undeclared-volume refusal
+    points at the standalone GUI's Reservoirs… button."""
+    message = str(error)
+    if isinstance(error, ReservoirUndeclared):
+        message += " (in Squid: the Reservoirs tab, under the Fluidics tab's instrument column)"
+    return message
+
+
 class LibraryTicket:
-    """One library run. RunEnded is copied on the library's job thread (fields + usage rows) and an Event
-    is set; wait() runs on the runner thread and also waits for the session to be free again."""
+    """One library run. RunEnded is copied on the library's job thread (fields + the volume tracker's
+    per-run draws) and an Event is set; wait() runs on the runner thread and also waits for the
+    session to be free again."""
 
     def __init__(self, system):
         self._system = system
@@ -32,7 +43,10 @@ class LibraryTicket:
             self.position = event.position
         elif isinstance(event, RunEnded) and (self.run_id is None or event.run_id == self.run_id):
             try:
-                usage = {int(port): float(ul) for port, _name, ul in self._system.usage.rows()}
+                # Per port since this run started; every well's draws count under the sipper's port.
+                # The volume tracker zeroes it at RunStarted and subscribed before this port did.
+                tracker = self._system.devices.reservoirs
+                usage = {int(port): float(ul) for port, _name, ul in tracker.used_rows()}
             except Exception as e:  # never let bookkeeping hide the outcome
                 _log.warning(f"Could not read reagent usage: {e}")
                 usage = {}
@@ -95,6 +109,17 @@ class LibraryFluidicsPort:
     def plan(self, rows: List[dict]) -> tuple:
         return tuple(self._system.plan(rows))
 
+    def check_reservoirs(self, plan: tuple) -> List[tuple]:
+        """The library's volume gate over `plan`, which may be several runs' plans laid end to end
+        (every fluidics step of a protocol): replayed on a simulated twin restored from the live
+        volume tracker, which is only read. Returns (key, dispatched_ul, remaining_ul) for each
+        tracked reservoir it draws from; empty on a rig that tracks no volume. Raises ValueError,
+        in the library's words, for a draw from an emptied or undeclared reservoir."""
+        try:
+            return list(self._system.check_reservoirs(plan))
+        except FluidicsError as e:
+            raise ValueError(_in_squid_terms(e)) from e
+
     def start(self, rows: List[dict], plan: Optional[tuple] = None) -> LibraryTicket:
         ticket = LibraryTicket(self._system)
         with self._lock:
@@ -103,11 +128,14 @@ class LibraryFluidicsPort:
             self._current = ticket
         try:
             # RunStarted arrives synchronously inside run(); no runner lock is held here.
+            # The library gates each run on the volumes (check_reservoirs) before it starts.
             self._system.run(None if plan is not None else rows, plan=plan)
-        except BaseException:
+        except BaseException as e:
             with self._lock:
                 if self._current is ticket:
                     self._current = None
+            if isinstance(e, ReservoirUndeclared):
+                raise ReservoirUndeclared(_in_squid_terms(e)) from e
             raise
         return ticket
 

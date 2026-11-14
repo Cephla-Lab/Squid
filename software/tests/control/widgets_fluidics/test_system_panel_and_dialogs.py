@@ -5,6 +5,7 @@ import pytest
 from control.models.fluidics_protocol import ProtocolFile
 from control.models.fluidics_run import RunCursor, RunManifest, StepRecord
 from control.widgets_fluidics.dialogs import AddRoundsDialog, PreflightDialog, RecoveryDialog
+from tests.control.fluidics_test_config import sipper_protocol
 
 
 SETTINGS = {"channels": ["A"], "z_stack": {"nz": 1}}
@@ -75,8 +76,100 @@ def test_add_rounds_dialog_builds_expand_kwargs_and_previews(qtbot):
 
     dialog.accept()
     assert dialog.result_kwargs == dict(
-        template_round="R01", count=2, label_pattern="R{n:02d}", start=2, port_row_name="probe", ports=[2, 3]
+        template_round="R01",
+        count=2,
+        label_pattern="R{n:02d}",
+        start=2,
+        port_row_name="probe",
+        ports=[2, 3],
+        wells=None,
     )
+    assert dialog.wells_edit.isHidden()  # no row of this round draws from a well
+
+
+def test_add_rounds_dialog_proposes_the_next_wells_for_a_sipper_round(qtbot):
+    dialog = AddRoundsDialog(sipper_protocol())
+    qtbot.addWidget(dialog)
+    dialog.template_combo.setCurrentText("R01")
+    assert not dialog.wells_edit.isHidden()
+    dialog.count_spin.setValue(3)
+    assert dialog.wells_edit.text() == "A2-A4"  # after R01's A1, along the row
+    preview = dialog.preview.toPlainText().splitlines()
+    assert preview[0] == "R02 · A2, ssct/A2" and preview[2].startswith("R04 · A4, ssct/A4")
+
+    qtbot.keyClicks(dialog.wells_edit, ", B1")  # typed: the operator's list from here on
+    dialog.count_spin.setValue(4)
+    assert dialog.wells_edit.text() == "A2-A4, B1"
+    dialog.accept()
+    assert dialog.result_kwargs["wells"] == ["A2", "A3", "A4", "B1"]
+
+
+def test_add_rounds_refuses_rather_than_reuses_when_the_plate_has_no_next_well(qtbot):
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QDialogButtonBox
+
+    protocol = sipper_protocol()
+    for row in protocol.sequences:
+        if row.get("round") == "R01" and row.get("well"):
+            row["well"] = row["well"].replace("A1", "H12")  # the plate's last well
+    dialog = AddRoundsDialog(protocol)
+    qtbot.addWidget(dialog)
+    dialog.template_combo.setCurrentText("R01")
+    assert dialog.wells_edit.text() == ""  # nothing after H12 to propose
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    assert "no wells after H12 on its plate" in dialog.preview.toPlainText()
+
+    qtbot.keyClicks(dialog.wells_edit, "A1")
+    assert dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    for _ in range(2):  # cleared by the operator: every round reuses the same wells, on purpose
+        qtbot.keyClick(dialog.wells_edit, Qt.Key_Backspace)
+    dialog.accept()
+    assert dialog.result_kwargs["wells"] is None
+
+
+def test_add_rounds_names_a_template_well_that_is_not_one(qtbot):
+    from qtpy.QtWidgets import QDialogButtonBox
+
+    protocol = sipper_protocol()
+    for row in protocol.sequences:
+        if row.get("round") == "R01" and row.get("well"):
+            row["well"] = row["well"].replace("A1", "A13")  # a typo the editor flags too
+    dialog = AddRoundsDialog(protocol)
+    qtbot.addWidget(dialog)
+    dialog.template_combo.setCurrentText("R01")
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    preview = dialog.preview.toPlainText()
+    assert "'A13' is not a well" in preview and "fix the round's well row" in preview
+
+
+def test_the_dialogs_explain_themselves_without_an_empty_help_button(qtbot):
+    from qtpy.QtCore import Qt
+
+    dialog = AddRoundsDialog(sipper_protocol())
+    qtbot.addWidget(dialog)
+    assert "Hover over a field" in dialog.help_label.text()
+    fields = (dialog.template_combo, dialog.count_spin, dialog.pattern_edit, dialog.start_spin)
+    fields += (dialog.port_row_combo, dialog.ports_edit, dialog.wells_label, dialog.wells_edit)
+    assert all(field.toolTip() for field in fields)
+    assert "ssct/A1 → ssct/A2" in dialog.wells_edit.toolTip()
+
+    preflight = PreflightDialog([], ["ok"])
+    qtbot.addWidget(preflight)
+    for shown in (dialog, preflight):
+        assert not shown.windowFlags() & Qt.WindowContextHelpButtonHint  # the "?" showed no help
+
+
+def test_add_rounds_dialog_refuses_a_well_list_shorter_than_the_rounds(qtbot):
+    from qtpy.QtWidgets import QDialogButtonBox
+
+    dialog = AddRoundsDialog(sipper_protocol())
+    qtbot.addWidget(dialog)
+    dialog.template_combo.setCurrentText("R01")
+    dialog.count_spin.setValue(2)
+    dialog.wells_edit.clear()
+    qtbot.keyClicks(dialog.wells_edit, "A2")
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    assert "need 2 wells" in dialog.preview.toPlainText()
 
 
 def test_add_rounds_dialog_disables_ok_on_a_bad_port_list(qtbot):
@@ -128,38 +221,45 @@ def test_quick_op_calls_priming_or_clean_up_with_use_ports(qtbot, fluidics_confi
 
     calls = []
     operations = SimpleNamespace(
-        priming_or_clean_up=lambda port, flow, volume, use_ports=None: calls.append(
-            (port, flow, volume, tuple(use_ports))
+        # no `well` parameter, as on an Open Chamber rig: a rig without a sipper is never passed one
+        priming_or_clean_up=lambda port, flow, volume, use_ports=None, clean_up=False: calls.append(
+            (port, flow, volume, tuple(use_ports), clean_up)
         )
-    )
-    system = SimpleNamespace(
-        operations=operations,
-        busy=False,
-        run_manual=lambda verb, callbacks=None: verb(),  # synchronous for the test
-        abort=lambda: None,
     )
     from fluidics.control.config import load_config
 
+    config = load_config(fluidics_config_path)
+    valves = SimpleNamespace(get_port_names=lambda: [(1, "Port 1: reagent x"), (25, "Port 25: buffer 1")])
+    system = SimpleNamespace(
+        operations=operations,
+        busy=False,
+        run_manual=lambda verb, callbacks=None, source=None: verb(),  # synchronous for the test
+        abort=lambda: None,
+        devices=SimpleNamespace(config=config, selector_valves=valves),
+    )
     service = SimpleNamespace(
         initialized=True,
         system=system,
-        config=load_config(fluidics_config_path),
+        config=config,
         default_config_path=fluidics_config_path,
     )
     tab = FluidicsDisplayTab(service)
     qtbot.addWidget(tab)
     tab.fluidics_port = object()  # marks the system ready
+    tab._fill_wash_ports()
+    assert tab.wash_port_combo.currentData() == 25  # named as a buffer, as the old widget's port 25
     tab.ports_edit.setText("2, 5, 7")
-    tab.wash_port_spin.setValue(1)
+    tab.wash_port_combo.setCurrentIndex(tab.wash_port_combo.findData(1))
     tab.volume_spin.setValue(50)
     tab.flow_spin.setValue(200)
 
     tab._quick_op("priming")
-    assert calls == [(1, 200, 50, (2, 5, 7))]  # wash port 1, one final draw over use_ports 2,5,7
+    assert calls == [(1, 200, 50, (2, 5, 7), False)]  # port 1 fills the tubing, one final draw over use_ports 2,5,7
 
     calls.clear()
     tab._quick_running = False
     tab.repeat_spin.setValue(3)
     tab._quick_op("clean_up")
-    assert calls == [(1, 200, 50, (2, 5, 7))] * 3  # Clean repeats
+    # Clean repeats, and says it is a clean-up (a sipper's line then draws from the clean-up well)
+    assert calls == [(1, 200, 50, (2, 5, 7), True)] * 3
     tab.log_view.disconnect_logging()
