@@ -56,6 +56,35 @@ def test_skip_init_skips_addon_homing():
         sim_scope.close()
 
 
+@pytest.mark.parametrize("homing_unfinished, homings", [(True, 1), (False, 0)])
+def test_restart_homes_a_turret_only_when_its_last_homing_never_finished(monkeypatch, homing_unfinished, homings):
+    # A software restart (--skip-init) trusts the turret's counter, unless the drive is still in
+    # homing mode: then the last homing was cut off and the drive finished (or abandoned) the search
+    # on its own, so its counter is in the drive's own frame, not the host's (bench 2026-10-10).
+    import control.objective_turret_controller as otc
+
+    monkeypatch.setattr(control._def, "USE_XERYON", False)
+    monkeypatch.setattr(control._def, "USE_OBJECTIVE_TURRET", True)
+    monkeypatch.setattr(
+        control.microscope,
+        "ObjectiveTurret4PosControllerSimulation",
+        otc.ObjectiveTurret4PosControllerSimulation,
+        raising=False,
+    )
+    homed = []
+    monkeypatch.setattr(
+        otc.ObjectiveTurret4PosControllerSimulation, "home", lambda self, timeout_s=None: homed.append(timeout_s)
+    )
+    monkeypatch.setattr(
+        otc.ObjectiveTurret4PosControllerSimulation, "homing_unfinished", property(lambda self: homing_unfinished)
+    )
+    scope = control.microscope.Microscope.build_from_global_config(True, skip_init=True)
+    try:
+        assert len(homed) == homings
+    finally:
+        scope.close()
+
+
 @patch("squid.config.get_filter_wheel_config")
 def test_prepare_for_use_skips_homing_when_flag_set(mock_get_fw_config):
     """Test that MicroscopeAddons.prepare_for_use skips home() calls when skip_init=True."""
