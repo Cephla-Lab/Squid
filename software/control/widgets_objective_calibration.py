@@ -1,19 +1,22 @@
-"""Utils > Objective Calibration...: measure each objective's pixel size and pixel->stage matrix.
+"""Utils > Objective Calibration...: measure each objective's pixel size and pixel->stage matrix
+(B1), and the Z and XY offsets between objectives (C1).
 
-AI-docs objective-pixel-size design §6.1. The engine (squid/objective_calibration) runs in a QThread
-on the hardware adapter; every cycle, however it ends, puts the objective, XY and Z back. Nothing is
-written until "Apply and save", which replaces only the measured objectives' pixel_size blocks in
-machine_configs/objective_calibration.yaml. This version records the calibration; nothing applies it
-yet.
+AI-docs objective-pixel-size design §6.1 and objective-offset design §6.8. The engine
+(squid/objective_calibration) runs in a QThread on the hardware adapter; every cycle, however it
+ends, puts the objective, XY and Z back. Nothing is written until "Apply and save", which replaces
+only the measured objectives' pixel_size blocks, and, when offsets were measured, the
+offset_calibration section and every objective's offset block, in
+machine_configs/objective_calibration.yaml. This version records the calibrations; nothing applies
+them yet (B2 and C2).
 """
 
 import time
 from datetime import datetime
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from qtpy.QtCore import QMetaObject, Qt, QThread, Signal, Slot
-from qtpy.QtGui import QImage, QPixmap
+from qtpy.QtGui import QColor, QImage, QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -36,16 +39,36 @@ import squid.logging
 from control.models.objective_calibration_config import (
     CurrentSetup,
     ImageTransform,
+    Mounting,
+    ObjectiveCalibrationConfig,
     ObjectiveCalibrationFileError,
+    OffsetCalibrationSection,
+    build_offset_records,
     build_pixel_record,
+    clear_offset_records,
     clear_pixel_records,
+    implied_steps_um,
+    merge_offset_records,
     merge_pixel_records,
+    offset_camera_key,
+    offset_validity,
+    parfocal_residuals_um,
     pixel_size_validity,
     review_save,
+    step_cap_blockers,
     with_summary,
 )
 from squid.objective_calibration.engine import ObjectiveSpec, RunConfig, RunResult, cycle_report, run_calibration
 from squid.objective_calibration.hardware import RunCancelled
+from squid.objective_calibration.offsets import (
+    OffsetsCycleResult,
+    OffsetsPhase,
+    OffsetSummary,
+    offsets_report,
+    summarize_offsets,
+)
+from squid.objective_calibration.pixel_size import decompose
+from squid.objective_calibration.registration import SEARCH_MARGIN
 
 log = squid.logging.get_logger(__name__)
 
@@ -53,11 +76,18 @@ RUNNING_MESSAGE = (
     "A calibration is running. Cancel it and wait for the stage and objective to be put back before closing."
 )
 GUIDANCE = (
-    "Use a flat, textured, non-periodic sample (a stained section, or a region of a USAF target containing "
-    "several bar groups of different sizes: a single group is periodic, and bare glass has no texture), "
-    "roughly in focus on the current objective, with the stage away from its travel limits. "
+    "Use a level stained section with varied texture in both directions, roughly in focus on the current "
+    "objective, with the stage away from its travel limits. Avoid repeating patterns (a grating, a single "
+    "bar group), bare glass and unstained cells in brightfield: they cannot be matched or focused reliably. "
+    "A tilt s adds up to s × W/2 to the Z offsets, with W half the smallest field of view. "
     "Saved calibrations are recorded for review; this version does not apply them yet."
 )
+ORIENTATION_MESSAGE = (
+    "Camera orientation does not match the mosaic; XY offsets were not saved. "
+    "Fix the camera orientation settings, then recalibrate."
+)
+FIRST_RANGE_UM = 100.0  # spec C §6.1: a first calibration searches ±100 µm
+RECALIBRATION_RANGE_UM = 20.0  # ±20 µm when a valid offset calibration predicts each focus
 COLUMNS = [
     "Objective",
     "Pixel size (µm)",
@@ -69,6 +99,20 @@ COLUMNS = [
     "Saved (µm)",
     "Status",
 ]
+OFFSET_COLUMNS = [
+    "Objective",
+    "Δx (µm)",
+    "Δy (µm)",
+    "Δz (µm)",
+    "± std x/y/z (µm)",
+    "Match",
+    "Runner-up",
+    "Peak rise",
+    "Closure (µm)",
+    "Saved Δx/Δy/Δz (µm)",
+    "Status",
+]
+STEP_COLUMNS = ["From", "To", "Z step (mm)"]
 
 
 class CalibrationWorker(QThread):
@@ -79,12 +123,13 @@ class CalibrationWorker(QThread):
     signal_frame = Signal(str, object)  # objective, the frame the engine just took (a few per second)
     signal_finished = Signal(object)
 
-    def __init__(self, hardware, config: RunConfig, fine_metric, after_run=None, parent=None):
+    def __init__(self, hardware, config: RunConfig, fine_metric, after_run=None, phase2=None, parent=None):
         super().__init__(parent)
         self.hardware = hardware
         self.config = config
         self.fine_metric = fine_metric
         self.after_run = after_run
+        self.phase2 = phase2
         self._cancel = False
 
     def cancel(self):
@@ -96,6 +141,7 @@ class CalibrationWorker(QThread):
                 self.hardware,
                 self.config,
                 fine_metric=self.fine_metric,
+                phase2=self.phase2,
                 progress=self.signal_progress.emit,
                 should_cancel=lambda: self._cancel,
             )
@@ -124,6 +170,10 @@ class _PromptedSwitch:
         if name != self._hardware.current_objective() and not self._ask(name):
             raise RunCancelled("Objective switch declined")
         self._hardware.switch_objective(name)
+
+
+def _fmt(value: Optional[float], digits: int = 2) -> str:
+    return "" if value is None else f"{value:.{digits}f}"
 
 
 class _FrameForwarding:
@@ -177,6 +227,9 @@ class ObjectiveCalibrationDialog(QDialog):
         tube_lens_mm: float,
         get_declared: Callable[[str], dict],
         fine_metric: Callable,
+        get_mounting: Optional[Callable[[str], Tuple[str, Optional[int]]]] = None,
+        pos2_offset_um: float = 0.0,
+        max_step_um: float = 500.0,
         manual_switch: bool = False,
         default_channel: Optional[str] = None,
         busy_reason: Optional[Callable[[], Optional[str]]] = None,
@@ -190,12 +243,17 @@ class ObjectiveCalibrationDialog(QDialog):
         self.config_repo = config_repo
         self.tube_lens_mm = tube_lens_mm
         self._get_declared = get_declared
+        self._get_mounting = get_mounting or (lambda name: ("none", None))
+        self.pos2_offset_um = pos2_offset_um
+        self.max_step_um = max_step_um
         self.fine_metric = fine_metric
         self.manual_switch = manual_switch
         self.busy_reason = busy_reason
         self.after_run = after_run
         self.worker: Optional[CalibrationWorker] = None
         self.result: Optional[RunResult] = None
+        self.phase: Optional[OffsetsPhase] = None  # the offsets phase of the last run, with its per-cycle results
+        self.offsets: Dict[str, OffsetSummary] = {}  # the last run's offsets, averaged over its successful cycles
         self._switch_target = ""
         self._switch_answer = False
         try:
@@ -227,7 +285,7 @@ class ObjectiveCalibrationDialog(QDialog):
         form.addRow("Channel", self.combo_channel)
         self.spin_range = QDoubleSpinBox()
         self.spin_range.setRange(10.0, 1000.0)
-        self.spin_range.setValue(100.0)
+        self.spin_range.setValue(FIRST_RANGE_UM)
         self.spin_range.setPrefix("± ")
         self.spin_range.setSuffix(" µm")
         form.addRow("Focus search range", self.spin_range)
@@ -235,10 +293,13 @@ class ObjectiveCalibrationDialog(QDialog):
         self.spin_cycles.setRange(1, 5)
         self.spin_cycles.setValue(3)
         form.addRow("Cycles", self.spin_cycles)
+        measure = QHBoxLayout()
         self.checkbox_pixel_size = QCheckBox("Pixel size")
         self.checkbox_pixel_size.setChecked(True)
-        self.checkbox_pixel_size.setEnabled(False)  # the only measurement until C1 adds Offsets
-        form.addRow("Measure", self.checkbox_pixel_size)
+        self.checkbox_offsets = QCheckBox("Offsets (Z and XY between objectives)")
+        for box in (self.checkbox_pixel_size, self.checkbox_offsets):
+            measure.addWidget(box)
+        form.addRow("Measure", measure)
 
         guidance = QLabel(GUIDANCE)
         guidance.setWordWrap(True)
@@ -254,6 +315,9 @@ class ObjectiveCalibrationDialog(QDialog):
             label = QLabel("")
             self.validity_labels[name] = label
             saved_layout.addWidget(label)
+        self.label_offsets = QLabel("")
+        self.label_offsets.setWordWrap(True)
+        saved_layout.addWidget(self.label_offsets)
 
         self.frame_view = QLabel("The frames the run takes appear here.")
         self.frame_view.setAlignment(Qt.AlignCenter)
@@ -263,6 +327,19 @@ class ObjectiveCalibrationDialog(QDialog):
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.verticalHeader().setVisible(False)
+        self.table_offsets = QTableWidget(0, len(OFFSET_COLUMNS))
+        self.table_offsets.setHorizontalHeaderLabels(OFFSET_COLUMNS)
+        self.table_offsets.verticalHeader().setVisible(False)
+        self.label_ranges = QLabel("")
+        self.label_ranges.setWordWrap(True)
+        self.table_steps = QTableWidget(0, len(STEP_COLUMNS))
+        self.table_steps.setHorizontalHeaderLabels(STEP_COLUMNS)
+        self.table_steps.verticalHeader().setVisible(False)
+        self.label_steps = QLabel(
+            "Implied Z step on every objective switch (from the saved offsets; red: over the cap)"
+        )
+        self.label_uncalibrated = QLabel("")
+        self.label_uncalibrated.setWordWrap(True)
         self.label_orientation = QLabel("")
         self.label_result = QLabel("")
         self.label_result.setWordWrap(True)
@@ -275,12 +352,14 @@ class ObjectiveCalibrationDialog(QDialog):
         self.button_cancel = QPushButton("Cancel")
         self.button_apply = QPushButton("Apply and save")
         self.button_clear = QPushButton("Clear pixel size")
+        self.button_clear_offsets = QPushButton("Clear offsets")
         self.button_close = QPushButton("Close")
         for button in (
             self.button_calibrate,
             self.button_cancel,
             self.button_apply,
             self.button_clear,
+            self.button_clear_offsets,
             self.button_close,
         ):
             button.setAutoDefault(False)
@@ -289,6 +368,7 @@ class ObjectiveCalibrationDialog(QDialog):
         self.button_cancel.clicked.connect(self._cancel)
         self.button_apply.clicked.connect(self._apply)
         self.button_clear.clicked.connect(self._clear)
+        self.button_clear_offsets.clicked.connect(self._clear_offsets)
         self.button_close.clicked.connect(self.reject)
 
         layout = QVBoxLayout(self)
@@ -299,6 +379,11 @@ class ObjectiveCalibrationDialog(QDialog):
             self.frame_view,
             self.frame_caption,
             self.table,
+            self.table_offsets,
+            self.label_ranges,
+            self.label_steps,
+            self.table_steps,
+            self.label_uncalibrated,
             self.label_orientation,
             self.label_result,
             self.log_view,
@@ -321,6 +406,7 @@ class ObjectiveCalibrationDialog(QDialog):
         self.button_cancel.setEnabled(running)
         self.button_apply.setEnabled(not running and self._can_apply())
         self.button_clear.setEnabled(not running and not self.file_error)
+        self.button_clear_offsets.setEnabled(not running and not self.file_error)
         self.button_close.setEnabled(not running)
 
     def _can_apply(self) -> bool:
@@ -328,7 +414,7 @@ class ObjectiveCalibrationDialog(QDialog):
             not self.file_error
             and self.result is not None
             and self.result.stopped is None
-            and bool(self.result.pixel_sizes)
+            and (bool(self.result.pixel_sizes) or bool(self.offsets))
         )
 
     def _declared(self, name: str) -> Optional[dict]:
@@ -346,6 +432,32 @@ class ObjectiveCalibrationDialog(QDialog):
             ImageTransform(rotate_deg=rotate_deg, flip=flip),
         )
 
+    def _current_mountings(self) -> Dict[str, Mounting]:
+        """Every installed objective's mounting now (spec A's get_mounting plus its serial), for the
+        validity check and the records."""
+        mountings = {}
+        for name in self.checkboxes:
+            declared = self._declared(name)
+            try:
+                changer, position = self._get_mounting(name)
+            except KeyError:
+                continue
+            mountings[name] = Mounting(
+                changer=changer, position=position, serial=declared["serial"] if declared else ""
+            )
+        return mountings
+
+    def _saved_matrices_um_per_px(self) -> Dict[str, np.ndarray]:
+        """The saved, directionally valid matrices for the current image pixels (spec B §4.5)."""
+        if self.saved is None:
+            return {}
+        setup, binned = self._setup(), self.hardware.binned_sensor_pixel_um()
+        matrices = {}
+        for name, entry in self.saved.objectives.items():
+            if pixel_size_validity(entry.pixel_size, setup, self._declared(name)).directional:
+                matrices[name] = np.asarray(entry.pixel_size.matrix_norm, dtype=float) * binned
+        return matrices
+
     def _refresh_saved(self):
         self.label_file.setText(self.file_error)
         self.label_file.setVisible(bool(self.file_error))
@@ -362,6 +474,50 @@ class ObjectiveCalibrationDialog(QDialog):
                 label.setText(f"{name}: {record.pixel_size_um:.4f} µm/px: scale valid, XY invalid ({validity.reason})")
             else:
                 label.setText(f"{name}: {record.pixel_size_um:.4f} µm/px: invalid ({validity.reason})")
+        mountings = self._current_mountings()
+        validity = offset_validity(self.saved, mountings, offset_camera_key(self.hardware))
+        section = self.saved.offset_calibration if self.saved is not None else None
+        if section is None:
+            self.label_offsets.setText("Offsets: not calibrated")
+        else:
+            head = f"Offsets (reference {section.reference_objective}, measured {section.measured_at}, {section.cycles} cycles)"
+            if validity.z and validity.xy:
+                self.label_offsets.setText(f"{head}: Z valid, XY valid")
+            elif validity.z:
+                self.label_offsets.setText(f"{head}: Z valid, XY invalid ({validity.reason})")
+            else:
+                self.label_offsets.setText(f"{head}: invalid ({validity.reason}); recalibrate")
+        self.spin_range.setValue(RECALIBRATION_RANGE_UM if validity.z else FIRST_RANGE_UM)
+        self._show_steps(self.saved if validity.z else None, mountings)
+
+    def _show_steps(self, config: Optional[ObjectiveCalibrationConfig], mountings: Dict[str, Mounting]):
+        """The implied Z step for every pair of installed objectives (spec C §6.8), over-cap rows in red,
+        and the objectives the calibration does not cover (spec C §4)."""
+        ordered = {name: mountings[name] for name in self.checkboxes if name in mountings}
+        steps = implied_steps_um(config, ordered, self.pos2_offset_um) if config is not None else {}
+        self.table_steps.setRowCount(len(steps))
+        for i, ((a, b), step) in enumerate(steps.items()):
+            for j, value in enumerate((a, b, f"{step / 1000:+.4f}")):
+                item = QTableWidgetItem(value)
+                if abs(step) > self.max_step_um:
+                    item.setBackground(QColor("#ffb3b3"))
+                self.table_steps.setItem(i, j, item)
+        if config is None or config.offset_calibration is None:
+            self.label_uncalibrated.setText("")
+            return
+        covered = {config.offset_calibration.reference_objective} | {
+            name for name, entry in config.objectives.items() if entry.offset is not None
+        }
+        missing = [name for name in ordered if name not in covered]
+        self.label_uncalibrated.setText(
+            (
+                f"Not in the offset calibration: {', '.join(missing)}. They keep today's frame (assumed parfocal "
+                "and parcentric with the reference), so a switch between them and a calibrated objective applies "
+                "the calibrated one's correction."
+            )
+            if missing
+            else ""
+        )
 
     # ---------------------------------------------------------------- run
     def _start(self):
@@ -375,22 +531,53 @@ class ObjectiveCalibrationDialog(QDialog):
         if not selected:
             self._say("Not started. Select at least one objective.")
             return
+        measure_pixel_size, measure_offsets = self.checkbox_pixel_size.isChecked(), self.checkbox_offsets.isChecked()
+        if not (measure_pixel_size or measure_offsets):
+            self._say("Not started. Select a measurement.")
+            return
         config = RunConfig(
             selected,
             self.combo_channel.currentText(),
             search_range_um=self.spin_range.value(),
             cycles=self.spin_cycles.value(),
+            measure_pixel_size=measure_pixel_size,
         )
+        mountings = self._current_mountings()
+        if offset_validity(self.saved, mountings, offset_camera_key(self.hardware)).z:
+            # Every run, not only one with Offsets checked: the ±20 um default range after an offsets save
+            # relies on the prediction (spec C §6.2 step 2.2; the final review of C1).
+            config.predicted_residual_um = parfocal_residuals_um(self.saved, mountings, self.pos2_offset_um)
+        phase = None
+        if measure_offsets:
+            if len(selected) < 2:
+                self._say("Not started. Offsets need at least two objectives.")
+                return
+            if not measure_pixel_size:
+                config.saved_matrices_um_per_px = self._saved_matrices_um_per_px()
+                missing = [spec.name for spec in selected if spec.name not in config.saved_matrices_um_per_px]
+                if missing:
+                    self._say(
+                        f"Not started. Offsets alone need a valid saved pixel calibration for {', '.join(missing)}; "
+                        "measure the pixel size too."
+                    )
+                    return
+            phase = OffsetsPhase(config, fine_metric=self.fine_metric)
         hardware = _PromptedSwitch(self.hardware, self._ask_switch) if self.manual_switch else self.hardware
         self.result = None
+        self.phase = phase
+        self.offsets = {}
         self.table.setRowCount(0)
+        self.table_offsets.setRowCount(0)
+        self.label_ranges.setText("")
         self.label_orientation.setText("")
         self.log_view.clear()
         self._say("Calibrating...")
         forwarding = _FrameForwarding(
             hardware, lambda objective, image: self.worker.signal_frame.emit(objective, image)
         )
-        self.worker = CalibrationWorker(forwarding, config, self.fine_metric, after_run=self.after_run, parent=self)
+        self.worker = CalibrationWorker(
+            forwarding, config, self.fine_metric, after_run=self.after_run, phase2=phase, parent=self
+        )
         self.worker.signal_progress.connect(self.log_view.append)
         self.worker.signal_frame.connect(self._show_frame)
         self.worker.signal_finished.connect(self._finished)
@@ -440,8 +627,13 @@ class ObjectiveCalibrationDialog(QDialog):
             self._say(f"Calibration failed: {result}. Check the stage and objective before continuing.")
         else:
             self.result = result
+            if self.phase is not None:
+                self.offsets = summarize_offsets(self.phase.results)
             self._show_result(result)
-            for line in cycle_report(result):  # every gate value, so the squid log is the bench record
+            report = cycle_report(result)  # every gate value, so the squid log is the bench record
+            if self.phase is not None:
+                report += offsets_report(result, self.phase.results)
+            for line in report:
                 log.info(line)
                 self.log_view.append(line)
             if result.stopped == "cancelled":
@@ -454,9 +646,31 @@ class ObjectiveCalibrationDialog(QDialog):
             elif result.stopped:
                 self._say(f"Calibration stopped: {result.stopped}. Check the stage and objective before continuing.")
             else:
-                measured = ", ".join(sorted(result.pixel_sizes)) or "no objective"
-                self._say(f"Calibration finished: pixel size measured for {measured}. Nothing has been saved yet.")
+                parts = []
+                if result.pixel_sizes:
+                    parts.append(f"pixel size measured for {', '.join(sorted(result.pixel_sizes))}")
+                if self.offsets:
+                    parts.append(f"offsets measured for {', '.join(sorted(self.offsets))}")
+                failed = [f"cycle {c.index + 1}: {c.error}" for c in result.cycles if c.error]
+                if parts and self.phase is not None and not self.offsets:
+                    # Offsets were asked for and none was measured: say so, not a plain finished run.
+                    self._say(
+                        f"Calibration finished: {'; '.join(parts)}. Offsets not measured ({'; '.join(failed)}); "
+                        "the saved offsets are unchanged. Nothing has been saved yet."
+                    )
+                elif parts:
+                    self._say(f"Calibration finished: {'; '.join(parts)}. Nothing has been saved yet.")
+                else:
+                    self._say("Calibration finished with nothing measured. " + "; ".join(failed))
         self._set_running(False)
+
+    def _orientation_matches(self) -> bool:
+        """Whether XY may be saved (spec C §5): every matrix the run registered with (this run's, or
+        the saved ones it started with in an offsets-only run, even if cleared since) has F = I."""
+        if self.result is not None and self.result.pixel_sizes:
+            return all(s.orientation_matches_mosaic for s in self.result.pixel_sizes.values())
+        matrices = self.phase.cfg.saved_matrices_um_per_px if self.phase is not None else {}
+        return bool(matrices) and all(np.array_equal(decompose(m)[2], np.eye(2)) for m in matrices.values())
 
     def _show_result(self, result: RunResult):
         rows = {}
@@ -492,20 +706,70 @@ class ObjectiveCalibrationDialog(QDialog):
             s = summaries[0]
             match = "matches the mosaic" if s.orientation_matches_mosaic else "does NOT match the mosaic"
             self.label_orientation.setText(f"Camera orientation (F = {s.flip.astype(int).tolist()}): {match}")
+        if self.phase is not None:
+            self._show_offsets(result, self.phase.results)
+
+    def _show_offsets(self, result: RunResult, cycles: List[OffsetsCycleResult]):
+        failed = [f"cycle {c.index + 1}: {c.error}" for c in result.cycles if c.error]
+        warnings = sorted({w for c in cycles for w in c.warnings})
+        reference = cycles[0].reference if cycles else self.phase.ordered[0]
+        names = [reference] + [name for name in self.phase.ordered if name in self.offsets]
+        self.table_offsets.setRowCount(len(names))
+        for i, name in enumerate(names):
+            entry = self.saved.objectives.get(name) if self.saved is not None else None
+            block = entry.offset if entry is not None else None
+            saved = f"{_fmt(block.dx_um)} / {_fmt(block.dy_um)} / {_fmt(block.dz_um)}" if block is not None else ""
+            if name == reference:
+                values = [name, "0", "0", "0", "", "", "", "", "", saved, "reference"]
+            else:
+                s = self.offsets[name]
+                values = [
+                    name,
+                    _fmt(s.dx_um),
+                    _fmt(s.dy_um),
+                    _fmt(s.dz_um),
+                    f"{_fmt(s.std_dx_um)} / {_fmt(s.std_dy_um)} / {_fmt(s.std_dz_um)}",
+                    _fmt(s.match_score),
+                    _fmt(s.runner_up_ratio),
+                    _fmt(s.focus_peak_rise, 1),
+                    _fmt(s.closure_error_um),
+                    saved,
+                    "; ".join(failed + warnings) or "ok",
+                ]
+            for j, value in enumerate(values):
+                self.table_offsets.setItem(i, j, QTableWidgetItem(value))
+        self._show_ranges(cycles)
+        if not self.offsets:
+            return
+        if not self._orientation_matches():
+            self.label_orientation.setText(ORIENTATION_MESSAGE)
+        candidate, _ = self._candidate_offsets(datetime.now().isoformat(timespec="seconds"))
+        self._show_steps(candidate, self._current_mountings())
+
+    def _show_ranges(self, cycles: List[OffsetsCycleResult]):
+        """The largest offset each reference pair could measure, from this camera's frame (spec C §6.4)."""
+        pairs = [pair for pair in cycles[0].pairs if pair.lower == cycles[0].reference] if cycles else []
+        if not pairs:
+            self.label_ranges.setText("")
+            return
+        reach = "; ".join(
+            f"{p.lower}-{p.higher} ±{p.range_um[0]:.1f} µm in x, ±{p.range_um[1]:.1f} µm in y" for p in pairs
+        )
+        self.label_ranges.setText(
+            f"Largest offset each pair can measure on this camera's frame: {reach}. Objectives of equal or nearly "
+            f"equal magnification are compared through a central crop that keeps {SEARCH_MARGIN:.0%} of the field "
+            f"free on every side, so for them it is {SEARCH_MARGIN:.0%} of the field."
+        )
 
     # ---------------------------------------------------------------- save
     def _declared_by_name(self, config) -> Dict[str, Optional[dict]]:
         names = set(config.objectives) | set(self.specs)
         return {name: self._declared(name) for name in names}
 
-    def _apply(self):
-        if self._running() or not self._can_apply():
-            return
-        setup = self._setup()
+    def _candidate_pixel_records(self, measured_at: str, setup: CurrentSetup):
         binned = self.hardware.binned_sensor_pixel_um()
         binning = self.hardware.binning()[0]
-        measured_at = datetime.now().isoformat(timespec="seconds")
-        records = {
+        return {
             name: build_pixel_record(
                 summary,
                 measured_at=measured_at,
@@ -519,19 +783,58 @@ class ObjectiveCalibrationDialog(QDialog):
             )
             for name, summary in self.result.pixel_sizes.items()
         }
-        merged = merge_pixel_records(self.saved, records)
-        declared = self._declared_by_name(merged)
-        blockers, warnings = review_save(
-            merged,
-            {name: s.pixel_size_um for name, s in self.result.pixel_sizes.items()},
-            {name: self.specs[name].nominal_px_um for name in self.result.pixel_sizes},
-            setup,
-            declared,
+
+    def _candidate_offsets(self, measured_at: str, base: Optional[ObjectiveCalibrationConfig] = None):
+        """The config a save would write for this run's offsets, and whether XY is in it."""
+        mountings = self._current_mountings()
+        reference = self.phase.results[0].reference
+        section = OffsetCalibrationSection(
+            reference_objective=reference,
+            reference_mounting=mountings[reference],
+            measured_at=measured_at,
+            channel=self.phase.cfg.channel,  # the run's, not the selector's now: it stays editable
+            cycles=len(self.phase.results),
+            camera_key=offset_camera_key(self.hardware),
         )
-        if blockers:
-            self._say("Not saved. " + " ".join(blockers))
+        save_xy = self._orientation_matches()
+        records = build_offset_records(self.offsets, mountings, save_xy=save_xy)
+        return merge_offset_records(base if base is not None else self.saved, section, records), save_xy
+
+    def _apply(self):
+        if self._running() or not self._can_apply():
             return
-        merged = with_summary(merged, setup, declared)
+        setup = self._setup()
+        measured_at = datetime.now().isoformat(timespec="seconds")
+        merged = self.saved
+        saved_what, notes = [], []
+        if self.result.pixel_sizes:
+            records = self._candidate_pixel_records(measured_at, setup)
+            merged = merge_pixel_records(merged, records)
+            blockers, warnings = review_save(
+                merged,
+                {name: s.pixel_size_um for name, s in self.result.pixel_sizes.items()},
+                {name: self.specs[name].nominal_px_um for name in self.result.pixel_sizes},
+                setup,
+                self._declared_by_name(merged),
+            )
+            if blockers:
+                self._say("Not saved. " + " ".join(blockers))
+                return
+            saved_what.append(f"the pixel size of {', '.join(sorted(records))}")
+            notes.extend(warnings)
+        if self.offsets:
+            merged, save_xy = self._candidate_offsets(measured_at, base=merged)
+            mountings = self._current_mountings()
+            blockers = step_cap_blockers(implied_steps_um(merged, mountings, self.pos2_offset_um), self.max_step_um)
+            if blockers:
+                self._say("Not saved. " + " ".join(blockers))
+                return
+            saved_what.append(f"the {'Z and XY' if save_xy else 'Z'} offsets of {', '.join(sorted(self.offsets))}")
+            if not save_xy:
+                notes.append(ORIENTATION_MESSAGE)
+        elif self.phase is not None:
+            notes.append("Offsets were not measured; the saved offsets are unchanged.")
+        merged = with_summary(merged, setup, self._declared_by_name(merged))
         try:
             self.config_repo.save_objective_calibration(merged)
         except OSError as e:
@@ -539,9 +842,10 @@ class ObjectiveCalibrationDialog(QDialog):
             return
         self.saved = merged
         self.result = None
+        self.offsets = {}
         self._refresh_saved()
         self._set_running(False)
-        self._say(" ".join([f"Saved the pixel size of {', '.join(sorted(records))}."] + warnings))
+        self._say(" ".join([f"Saved {' and '.join(saved_what)}."] + notes))
 
     def _clear(self):
         if self._running() or self.file_error or self.saved is None:
@@ -572,6 +876,26 @@ class ObjectiveCalibrationDialog(QDialog):
         self.saved = cleared
         self._refresh_saved()
         self._say(f"Cleared the saved pixel size of {', '.join(names)}.")
+
+    def _clear_offsets(self):
+        """Spec C §5: removes only the offset section and blocks; the pixel-size records stay."""
+        if self._running() or self.file_error or self.saved is None or self.saved.offset_calibration is None:
+            self._say("No saved offset calibration to clear.")
+            return
+        reply = QMessageBox.question(
+            self, "Clear offsets", "Clear the saved objective offsets?", QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+        cleared = clear_offset_records(self.saved)
+        try:
+            self.config_repo.save_objective_calibration(cleared)
+        except OSError as e:
+            self._say(f"Not cleared: {e}")
+            return
+        self.saved = cleared
+        self._refresh_saved()
+        self._say("Cleared the saved objective offsets.")
 
     # ---------------------------------------------------------------- Qt
     def reject(self):

@@ -32,6 +32,31 @@ def image_transform(camera_config) -> Tuple[Optional[float], Optional[str]]:
     return (camera_config.rotate_image_angle, flip)
 
 
+# Camera drivers whose get_region_of_interest() is verified, in the code, to be in unbinned sensor
+# pixels whatever the binning (spec C §5). Only for these is the ROI centre normalized, and the offset
+# key then ignores binning and ROI size. Every other driver's key holds its raw ROI and binning, so a
+# change to either invalidates XY. The drivers with binning fixed at 1x1 (DefaultCamera, FLIR,
+# Photometrics) are left out on purpose: their key cannot change today and stays safe if they gain binning.
+ROI_UNBINNED_DRIVERS = frozenset(
+    {
+        # "Numbers are in unbinned pixels" (control/camera_hamamatsu.py:570); the getter reads back the
+        # same SUBARRAY properties (:606-612).
+        "control.camera_hamamatsu.HamamatsuCamera",
+        # The ROI starts as the full 1x1 resolution (squid/camera/utils.py:167-173), set_binning leaves it
+        # unchanged (:249-252), and the getter returns it as set (:441-446).
+        "squid.camera.utils.SimulatedCamera",
+    }
+)
+
+
+def roi_centre_px(camera) -> Optional[Tuple[float, float]]:
+    """The ROI centre in unbinned sensor pixels (spec C §5), or None for a driver outside ROI_UNBINNED_DRIVERS."""
+    if f"{type(camera).__module__}.{type(camera).__qualname__}" not in ROI_UNBINNED_DRIVERS:
+        return None
+    x, y, width, height = camera.get_region_of_interest()
+    return (x + width / 2, y + height / 2)
+
+
 def _microstep_um(axis) -> float:
     return 1000.0 * axis.SCREW_PITCH / (axis.MICROSTEPS_PER_STEP * axis.FULL_STEPS_PER_REV)
 
@@ -163,6 +188,12 @@ class MicroscopeCalibrationHardware:
     def image_transform(self) -> Tuple[Optional[float], Optional[str]]:
         return image_transform(self._camera_config)
 
+    def roi(self) -> Tuple[int, int, int, int]:
+        return tuple(int(v) for v in self._camera.get_region_of_interest())
+
+    def roi_centre_px(self) -> Optional[Tuple[float, float]]:
+        return roi_centre_px(self._camera)
+
     def restore_mode(self) -> None:
         """Put the live controller back on the channel it had before the run, and forget which channel
         this adapter applied, so the next run in the same dialog applies its channel again."""
@@ -190,6 +221,7 @@ def simulation_hardware(
             spec.na,
             pixel_um=spec.nominal_px_um * (1.0 + error),
             z_focus_um=float(rng.uniform(-20.0, 20.0)),
+            parcentric_um=(float(rng.uniform(-10.0, 10.0)), float(rng.uniform(-10.0, 10.0))),
         )
     return FakeCalibrationHardware(
         objectives,

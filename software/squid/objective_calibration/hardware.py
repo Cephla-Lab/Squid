@@ -61,6 +61,15 @@ class CalibrationHardware(Protocol):
 
     def image_transform(self) -> Tuple[Optional[float], Optional[str]]: ...
 
+    def roi(self) -> Tuple[int, int, int, int]:
+        """The camera ROI (x, y, width, height) exactly as the camera driver reports it."""
+        ...
+
+    def roi_centre_px(self) -> Optional[Tuple[float, float]]:
+        """The ROI centre (x, y) in unbinned sensor pixels, or None when the driver's ROI units are not
+        verified: with roi() and binning(), the offset calibration's XY key (spec C §5)."""
+        ...
+
 
 def check_z_target(hw: CalibrationHardware, z_um: float) -> None:
     low, high = hw.z_limits_um()

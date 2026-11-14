@@ -1,12 +1,14 @@
 """Per-objective calibration records in machine_configs/objective_calibration.yaml.
 
-AI-docs objective-pixel-size design §4.3-4.4. B owns the `pixel_calibration` summary and every
-objective's `pixel_size` block. Every other key (C's offset data) is carried through B's saves
-untouched. Until B2, nothing outside the calibration dialog reads this file.
+AI-docs objective-pixel-size design §4.3-4.4 and objective-offset design §4-6.5. B owns the
+`pixel_calibration` summary and every objective's `pixel_size` block; C1 owns `offset_calibration`
+and every objective's `offset` block. Each save rewrites only its own section. Until B2 and C2,
+nothing outside the calibration dialog reads this file.
 """
 
 import math
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from typing import Dict, Iterable, List, Literal, Optional, Tuple
 
@@ -73,9 +75,78 @@ class PixelSizeRecord(BaseModel):
         return matrix
 
 
+class Mounting(BaseModel):
+    """Where an objective sat at measurement: spec A's get_mounting plus its serial (spec C §4)."""
+
+    model_config = _STRICT
+    changer: str  # nimotion_turret | xeryon | none
+    position: Optional[int] = None
+    serial: str = ""
+
+
+class OffsetCameraKey(BaseModel):
+    """The offset calibration's own, immutable camera key (spec C §5): B's saves never touch it.
+
+    XY holds while the camera, its image transform and the ROI centre are unchanged. roi_centre_px is
+    recorded only for camera drivers whose ROI units are verified (unbinned sensor pixels); then binning
+    and ROI size are irrelevant. Without it, XY is keyed on the raw ROI and the binning instead, and
+    any change to either invalidates XY: extra recalibration, never a false "valid"."""
+
+    model_config = _STRICT
+    camera: str
+    binning: int = Field(ge=1)
+    roi: List[int]  # (x, y, width, height) as the camera driver reports it
+    roi_centre_px: Optional[List[float]] = None  # (x, y) in unbinned sensor pixels, when the units are verified
+    image_transform: ImageTransform  # the rotation and flip applied to every frame
+
+    @field_validator("roi")
+    @classmethod
+    def _four_values(cls, roi: List[int]) -> List[int]:
+        if len(roi) != 4:
+            raise ValueError("roi must be [x, y, width, height]")
+        return roi
+
+    @field_validator("roi_centre_px")
+    @classmethod
+    def _two_coordinates(cls, centre: Optional[List[float]]) -> Optional[List[float]]:
+        if centre is not None and len(centre) != 2:
+            raise ValueError("roi_centre_px must be [x, y]")
+        return centre
+
+
+class OffsetCalibrationSection(BaseModel):
+    model_config = _STRICT
+    reference_objective: str
+    reference_mounting: Mounting
+    measured_at: str
+    channel: str
+    cycles: int = Field(ge=1)
+    camera_key: OffsetCameraKey
+
+
+class OffsetRecord(BaseModel):
+    model_config = _STRICT
+    mounting: Mounting
+    dx_um: Optional[float] = None  # absent when the orientation gate kept XY from being saved (spec C §5)
+    dy_um: Optional[float] = None
+    dz_um: float  # raw z_focus_k - z_focus_ref; the changer's own frame is subtracted at use time (spec C §4)
+    std_dx_um: Optional[float] = Field(None, ge=0)
+    std_dy_um: Optional[float] = Field(None, ge=0)
+    std_dz_um: Optional[float] = Field(None, ge=0)
+    match_score: float
+    runner_up_ratio: float
+    focus_peak_rise: float
+    closure_error_um: Optional[float] = Field(None, ge=0)
+
+
 class ObjectiveRecords(BaseModel):
-    model_config = ConfigDict(extra="allow")  # C1 keeps its own blocks next to pixel_size
+    model_config = ConfigDict(extra="allow")  # later sections keep their own blocks next to these
     pixel_size: Optional[PixelSizeRecord] = None
+    offset: Optional[OffsetRecord] = None
+
+    @property
+    def is_empty(self) -> bool:
+        return self.pixel_size is None and self.offset is None and not self.model_extra
 
 
 class PixelCalibrationSummary(BaseModel):
@@ -86,9 +157,10 @@ class PixelCalibrationSummary(BaseModel):
 
 
 class ObjectiveCalibrationConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # C's offset_calibration section is carried through
+    model_config = ConfigDict(extra="allow")  # later sections are carried through
     version: Literal[1] = 1  # a newer file fails to load, so this version never overwrites it
     pixel_calibration: Optional[PixelCalibrationSummary] = None
+    offset_calibration: Optional[OffsetCalibrationSection] = None
     objectives: Dict[str, ObjectiveRecords] = Field(default_factory=dict)
 
 
@@ -172,7 +244,7 @@ def clear_pixel_records(
         if entry is None:
             continue
         entry.pixel_size = None
-        if not entry.model_extra:
+        if entry.is_empty:
             del cleared.objectives[name]
     return cleared
 
@@ -275,6 +347,174 @@ def review_save(
     return blockers, warnings
 
 
+# ----------------------------------------------------------------------------- C1: objective offsets
+
+
+@dataclass(frozen=True)
+class OffsetValidity:
+    """Spec C §4-5: Z holds while the mountings hold; XY also needs the same camera key."""
+
+    z: bool
+    xy: bool
+    reason: str = ""
+
+
+def build_offset_records(
+    summaries: Dict[str, object], mountings: Dict[str, Mounting], *, save_xy: bool
+) -> Dict[str, OffsetRecord]:
+    """`summaries` are the engine's OffsetSummary per non-reference objective. With save_xy False (the
+    orientation gate, spec C §5) the blocks carry no dx/dy."""
+    records = {}
+    for name, s in summaries.items():
+        records[name] = OffsetRecord(
+            mounting=mountings[name],
+            dx_um=s.dx_um if save_xy else None,
+            dy_um=s.dy_um if save_xy else None,
+            dz_um=s.dz_um,
+            std_dx_um=s.std_dx_um if save_xy else None,
+            std_dy_um=s.std_dy_um if save_xy else None,
+            std_dz_um=s.std_dz_um,
+            match_score=s.match_score,
+            runner_up_ratio=s.runner_up_ratio,
+            focus_peak_rise=s.focus_peak_rise,
+            closure_error_um=s.closure_error_um,
+        )
+    return records
+
+
+def merge_offset_records(
+    config: Optional[ObjectiveCalibrationConfig],
+    section: Optional[OffsetCalibrationSection],
+    records: Dict[str, OffsetRecord],
+) -> ObjectiveCalibrationConfig:
+    """A copy with `offset_calibration` and EVERY objective's offset block replaced: a partial save across
+    two references would mix frames (spec C §6.5). pixel_size blocks and other keys are kept."""
+    merged = _copy(config)
+    merged.offset_calibration = section
+    for name in list(merged.objectives):
+        merged.objectives[name].offset = None
+        if merged.objectives[name].is_empty:
+            del merged.objectives[name]
+    for name, record in records.items():
+        merged.objectives.setdefault(name, ObjectiveRecords()).offset = record
+    return merged
+
+
+def clear_offset_records(config: Optional[ObjectiveCalibrationConfig]) -> ObjectiveCalibrationConfig:
+    """A copy without the offset section and every offset block; an objective left with no data is dropped."""
+    return merge_offset_records(config, None, {})
+
+
+def offset_camera_key(hardware) -> OffsetCameraKey:
+    """The camera key of an offset calibration taken on this hardware now (any CalibrationHardware)."""
+    rotate_deg, flip = hardware.image_transform()
+    centre = hardware.roi_centre_px()
+    return OffsetCameraKey(
+        camera=hardware.camera_key(),
+        binning=hardware.binning()[0],
+        roi=list(hardware.roi()),
+        roi_centre_px=list(centre) if centre is not None else None,
+        image_transform=ImageTransform(rotate_deg=rotate_deg, flip=flip),
+    )
+
+
+def mounting_matches(recorded: Mounting, current: Mounting) -> bool:
+    return (
+        recorded.changer == current.changer
+        and recorded.position == current.position
+        and serial_matches(recorded.serial, current.serial)
+    )
+
+
+def offset_validity(
+    config: Optional[ObjectiveCalibrationConfig], current_mountings: Dict[str, Mounting], camera: OffsetCameraKey
+) -> OffsetValidity:
+    """Spec C §4: any mounting mismatch, or a missing reference, invalidates the whole calibration.
+    Spec C §5: XY is also invalid after a change of camera, image transform or ROI centre (binning and
+    ROI size are irrelevant; with unverified ROI units, any ROI or binning change counts), and when
+    the blocks were saved without XY."""
+    section = config.offset_calibration if config is not None else None
+    if section is None:
+        return OffsetValidity(False, False, "not calibrated")
+    reference = section.reference_objective
+    if reference not in current_mountings:
+        return OffsetValidity(False, False, f"reference objective {reference} is no longer installed")
+    if not mounting_matches(section.reference_mounting, current_mountings[reference]):
+        return OffsetValidity(False, False, f"reference objective {reference} was remounted since calibration")
+    for name, entry in config.objectives.items():
+        if entry.offset is None:
+            continue
+        if name not in current_mountings:
+            return OffsetValidity(False, False, f"{name} is no longer installed")
+        if not mounting_matches(entry.offset.mounting, current_mountings[name]):
+            return OffsetValidity(False, False, f"{name} was remounted since calibration")
+    reasons = []
+    key = section.camera_key
+    if camera.camera != key.camera:
+        reasons.append(f"camera changed ({key.camera} -> {camera.camera})")
+    if camera.image_transform != key.image_transform:
+        reasons.append(TRANSFORM_CHANGED)
+    if key.roi_centre_px is not None and camera.roi_centre_px is not None:
+        if max(abs(a - b) for a, b in zip(key.roi_centre_px, camera.roi_centre_px)) > 0.5:
+            reasons.append("camera ROI centre changed")
+    elif (camera.roi, camera.binning) != (key.roi, key.binning):
+        reasons.append("camera ROI or binning changed (this camera's ROI units are unverified)")
+    if any(entry.offset is not None and entry.offset.dx_um is None for entry in config.objectives.values()):
+        reasons.append("XY offsets were not saved (camera orientation did not match the mosaic)")
+    return OffsetValidity(True, not reasons, "; ".join(reasons))
+
+
+def xeryon_frame_um(mounting: Mounting, pos2_offset_um: float) -> float:
+    """Today's Z frame of an objective (spec C §4): position-2 objectives on a Xeryon sit
+    POS_2_OFFSET lower; everything else is 0."""
+    return -pos2_offset_um if mounting.changer == "xeryon" and mounting.position == 2 else 0.0
+
+
+def z_frames_um(
+    config: Optional[ObjectiveCalibrationConfig], current_mountings: Dict[str, Mounting], pos2_offset_um: float
+) -> Dict[str, float]:
+    """Spec C §4: a calibrated objective's frame is xeryon_frame(the reference's RECORDED mounting) + dz;
+    an uncalibrated one keeps today's frame. Only meaningful while the calibration is valid."""
+    frames = {name: xeryon_frame_um(m, pos2_offset_um) for name, m in current_mountings.items()}
+    section = config.offset_calibration if config is not None else None
+    if section is None:
+        return frames
+    reference_frame = xeryon_frame_um(section.reference_mounting, pos2_offset_um)
+    if section.reference_objective in frames:
+        frames[section.reference_objective] = reference_frame
+    for name, entry in config.objectives.items():
+        if entry.offset is not None and name in frames:
+            frames[name] = reference_frame + entry.offset.dz_um
+    return frames
+
+
+def parfocal_residuals_um(
+    config: Optional[ObjectiveCalibrationConfig], current_mountings: Dict[str, Mounting], pos2_offset_um: float
+) -> Dict[str, float]:
+    """Each objective's frame minus the changer's own part: the switch step old -> new is
+    residual[new] - residual[old] (spec C §7.2), and the engine centres its first focus with it."""
+    frames = z_frames_um(config, current_mountings, pos2_offset_um)
+    return {name: frames[name] - xeryon_frame_um(m, pos2_offset_um) for name, m in current_mountings.items()}
+
+
+def implied_steps_um(
+    config: Optional[ObjectiveCalibrationConfig], current_mountings: Dict[str, Mounting], pos2_offset_um: float
+) -> Dict[Tuple[str, str], float]:
+    """The switch step for every pair of installed objectives, in the order of current_mountings."""
+    residuals = parfocal_residuals_um(config, current_mountings, pos2_offset_um)
+    return {(a, b): residuals[b] - residuals[a] for a, b in combinations(current_mountings, 2)}
+
+
+def step_cap_blockers(steps: Dict[Tuple[str, str], float], cap_um: float) -> List[str]:
+    """Spec C §4: a calibration in which any pair implies a step over MAX_OBJECTIVE_Z_STEP_MM cannot be saved."""
+    return [
+        f"Implied Z step {abs(step) / 1000:.3f} mm between {a} and {b} exceeds the cap "
+        f"({cap_um / 1000:g} mm); check the changer configuration."
+        for (a, b), step in steps.items()
+        if abs(step) > cap_um
+    ]
+
+
 def load_objective_calibration(path) -> Optional[ObjectiveCalibrationConfig]:
     """None if the file is absent. Raises ObjectiveCalibrationFileError if it exists but cannot be read."""
     path = Path(path)
@@ -294,4 +534,6 @@ def save_objective_calibration(config: ObjectiveCalibrationConfig, path) -> None
     one, never an empty or partial file, and a failed publish leaves no temp file behind."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_atomically(path, yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False).encode("utf-8"))
+    # exclude_none: an absent block or field reads back as None, and the file shows only what was measured
+    data = config.model_dump(mode="json", exclude_none=True)
+    write_atomically(path, yaml.safe_dump(data, sort_keys=False).encode("utf-8"))
