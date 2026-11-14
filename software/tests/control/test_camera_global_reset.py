@@ -121,10 +121,12 @@ _GLOBAL_RESET_OPTION = toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE
 class FakeToupcamSdk:
     """Records every SDK call the driver makes and serves option read-backs."""
 
-    # IoControl GET type -> the SET type whose last value it reports (same io line).
+    # IoControl GET type -> the SET type whose last value it reports (same io line). A GPIO's
+    # direction starts as input (0), as an unconfigured line would: only SET_GPIODIR makes it an output.
     _IO_GET_TO_SET = {
         toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTMODE: toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE,
         toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTINVERTER: toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER,
+        toupcam.TOUPCAM_IOCONTROLTYPE_GET_GPIODIR: toupcam.TOUPCAM_IOCONTROLTYPE_SET_GPIODIR,
     }
 
     def __init__(
@@ -499,6 +501,52 @@ def test_toupcam_trigger_ready_output_not_configured_in_software_trigger(monkeyp
     _make_toupcam(sdk)._set_acquisition_mode_imp(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
     assert _last_written(sdk, _GPIO1, _SET_INVERTER) is None
+
+
+_SET_DIR = toupcam.TOUPCAM_IOCONTROLTYPE_SET_GPIODIR
+_GET_DIR = toupcam.TOUPCAM_IOCONTROLTYPE_GET_GPIODIR
+_GPIODIR_OUTPUT = 0x01  # toupcam.h: "0x00 => Input, 0x01 => Output" (the Python binding's comment is wrong)
+
+
+@pytest.mark.parametrize("trigger_mode", [HardwareTriggerMode.EDGE, HardwareTriggerMode.LEVEL])
+def test_toupcam_trigger_ready_output_makes_gpio1_an_output_first(monkeypatch, trigger_mode):
+    """GPIO1 starts as an input in the fake, as an unconfigured line would: the output mode alone would not drive it."""
+    _enable_global_reset(monkeypatch, enabled=False, trigger_mode=trigger_mode)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", True)
+    sdk = FakeToupcamSdk()
+
+    _make_toupcam(sdk)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+    ours = [(kind, value) for line, kind, value in sdk.io_control_calls if line == _GPIO1][-6:]
+    assert ours == [
+        (_SET_DIR, _GPIODIR_OUTPUT),
+        (_GET_DIR, 0),
+        (_SET_MODE, _FRAME_TRIGGER_WAIT),
+        (_SET_INVERTER, 1),
+        (_GET_MODE, 0),
+        (_GET_INVERTER, 0),
+    ]
+
+
+def test_toupcam_trigger_ready_output_direction_readback_mismatch_raises(monkeypatch):
+    _enable_global_reset(monkeypatch, enabled=False)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", True)
+    sdk = FakeToupcamSdk(io_readback={(_GPIO1, _GET_DIR): 0})  # the camera keeps GPIO1 an input
+
+    with pytest.raises(CameraError, match="direction"):
+        _make_toupcam(sdk)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+    # Not configured as trigger-ready on a line that is not driving.
+    assert _last_written(sdk, _GPIO1, _SET_INVERTER) is None
+
+
+def test_toupcam_trigger_ready_output_direction_sdk_error_raises(monkeypatch):
+    _enable_global_reset(monkeypatch, enabled=False)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", True)
+    sdk = FakeToupcamSdk(io_error={(_GPIO1, _SET_DIR): toupcam.HRESULTException(0x80004001)})
+
+    with pytest.raises(CameraError, match="trigger-ready output"):
+        _make_toupcam(sdk)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
 
 
 # --- ToupCam: an opt-in the camera cannot do stops it from opening ---------------------------

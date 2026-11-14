@@ -28,6 +28,11 @@ log = squid.logging.get_logger(__name__)
 
 # IoControl line numbers (toupcam.h): 0 opto-isolated input, 1 opto-isolated output, 2 GPIO0, 3 GPIO1.
 _GPIO1_IO_LINE = 3
+# TOUPCAM_IOCONTROLTYPE_GET/SET_GPIODIR value for an output. toupcam.h and the SDK's HTML manual both say
+# "0x00 => Input, 0x01 => Output" (checked in the 2024-10, 2025-06 and 2026-10 SDKs); the Python binding's
+# comment, "0x01 => Input, 0x02 => Output", repeats GET_SUPPORTEDMODE's encoding by mistake.  The LEVEL trigger
+# path's write of 0 to make GPIO0 an input agrees with the header.
+_GPIODIR_OUTPUT = 0x01
 # TOUPCAM_IOCONTROLTYPE_GET_SUPPORTEDMODE bit for a line that can be an output (0x01 is input).
 _IO_SUPPORTS_OUTPUT = 0x02
 
@@ -1089,19 +1094,31 @@ class ToupcamCamera(AbstractCamera):
         if not control._def.CAMERA_TRIGGER_READY_OUTPUT:
             return
 
-        gpio1 = 3  # IoControl line numbers: 0 opto-isolated in, 1 opto-isolated out, 2 GPIO0, 3 GPIO1
-        frame_trigger_wait = 0
-        try:
-            self._camera.IoControl(gpio1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE, frame_trigger_wait)
-            self._camera.IoControl(gpio1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER, 1)
-            mode = self._camera.IoControl(gpio1, toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTMODE, 0)
-            inverter = self._camera.IoControl(gpio1, toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTINVERTER, 0)
-        except toupcam.HRESULTException as ex:
+        def gpio1(io_type, value=0):
+            try:
+                return self._camera.IoControl(_GPIO1_IO_LINE, io_type, value)
+            except toupcam.HRESULTException as ex:
+                raise CameraError(
+                    "This camera rejected the trigger-ready output setup on GPIO1: "
+                    f"{control.toupcam_exceptions.explain(ex)}. Turn off CAMERA_TRIGGER_READY_OUTPUT "
+                    "or use a camera that supports it."
+                ) from ex
+
+        # The output mode and inverter only say what an output line drives; a GPIO that is an input drives
+        # nothing, and the controller's pulled-up ready input would read NOT ready forever. Direction first.
+        gpio1(toupcam.TOUPCAM_IOCONTROLTYPE_SET_GPIODIR, _GPIODIR_OUTPUT)
+        direction = gpio1(toupcam.TOUPCAM_IOCONTROLTYPE_GET_GPIODIR)
+        if direction != _GPIODIR_OUTPUT:
             raise CameraError(
-                "This camera rejected the trigger-ready output setup on GPIO1: "
-                f"{control.toupcam_exceptions.explain(ex)}. Turn off CAMERA_TRIGGER_READY_OUTPUT "
-                "or use a camera that supports it."
-            ) from ex
+                f"This camera reports GPIO1 direction {direction} instead of {_GPIODIR_OUTPUT} (output). "
+                "Refusing to let a controller gate triggers on a line the camera does not drive."
+            )
+
+        frame_trigger_wait = 0
+        gpio1(toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE, frame_trigger_wait)
+        gpio1(toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER, 1)
+        mode = gpio1(toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTMODE)
+        inverter = gpio1(toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTINVERTER)
 
         if mode != frame_trigger_wait:
             raise CameraError(
