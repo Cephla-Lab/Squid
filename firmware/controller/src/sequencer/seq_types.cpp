@@ -38,6 +38,26 @@ ValidationResult validate(const SeqLoop& loop, const SeqChannel* channels,
             return err(SeqError::BadChannel, i);
         if (c.intensity_dac != kNone && c.intensity_dac >= n_dacs)
             return err(SeqError::BadChannel, i);
+        // Every deadline the engine derives from one exposure (illumination on and off, readout
+        // done) lies at most lead + strobe + exposure + readout past the trigger, so that SUM has
+        // to respect the bound too, not only each term: the parts are bounded one by one above.
+        // And a TTL channel lights ONE shared mask for all its cameras with one OFF edge per
+        // camera (seq_engine.cpp schedule_exposures): with different strobe delays the earliest
+        // OFF would darken the other cameras' exposures, so the delays have to agree.
+        bool have_strobe = false;
+        uint32_t shared_strobe = 0;
+        for (uint8_t cam = 0; cam < n_cameras && cam < kMaxCameras; cam++) {
+            if (!((c.camera_mask >> cam) & 1)) continue;
+            const uint64_t deadline = (uint64_t)c.illum_lead_us + cams[cam].strobe_delay_us +
+                                      c.exposure_us + cams[cam].readout_time_us;
+            if (deadline > kMaxDurationUs) return err(SeqError::BadDuration, i);
+            if (c.illum_ttl_mask) {
+                if (have_strobe && cams[cam].strobe_delay_us != shared_strobe)
+                    return err(SeqError::BadCamera, i);
+                shared_strobe = cams[cam].strobe_delay_us;
+                have_strobe = true;
+            }
+        }
     }
     return err(SeqError::None);
 }

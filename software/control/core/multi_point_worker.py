@@ -1507,11 +1507,52 @@ class MultiPointWorker:
         self._applied_config = None
 
     def _sequenced_burst_timeout_s(self) -> float:
-        """Upper bound for one burst: every step at its worst-case wait, plus the return move."""
+        """Upper bound for one burst: what every step takes on its own (illumination lead, strobe delay,
+        exposure, readout) and every layer's settle, plus every wait at its worst case, the return move
+        and a margin.
+
+        The waits are the only part the controller cannot predict (a camera-ready line, a move that
+        reports done late); the rest is what the program itself takes, and no wait timeout covers it.
+        """
         program = self._sequenced_program
-        steps = program.loop.n_layers * len(program.channels)
-        exposure_s = sum(channel.exposure_us for channel in program.channels) * program.loop.n_layers / 1e6
-        return exposure_s + (steps + 1) * (program.wait_timeout_us / 1e6) + 5.0
+        layers = program.loop.n_layers
+        steps = layers * len(program.channels)
+        steps_s = sum(self._step_time_us(program, channel) for channel in program.channels) * layers / 1e6
+        settle_s = layers * program.loop.z_settle_us / 1e6
+        return steps_s + settle_s + (steps + 1) * (program.wait_timeout_us / 1e6) + 5.0
+
+    @staticmethod
+    def _step_time_us(program: SequencerProgram, channel) -> int:
+        """What one exposure of `channel` takes the controller before the next can start: the longest over
+        the cameras it triggers (seq_engine.cpp schedule_exposures)."""
+        return max(
+            channel.illum_lead_us + camera.strobe_delay_us + channel.exposure_us + camera.readout_time_us
+            for cam_index, camera in enumerate(program.cameras)
+            if (channel.camera_mask >> cam_index) & 1
+        )
+
+    def _overdue_cancel_wait_s(self) -> float:
+        """How long a cancelled run can still take: the exposure in flight (never truncated), the return
+        move's wait, and a margin."""
+        program = self._sequenced_program
+        longest_step_s = max(self._step_time_us(program, channel) for channel in program.channels) / 1e6
+        return longest_step_s + program.wait_timeout_us / 1e6 + 5.0
+
+    def _stop_overdue_sequence(self) -> None:
+        """The host gave up waiting, but the controller may still be running the burst: cancel it and wait
+        for a terminal state before anything else touches the camera or the controller.
+
+        Restarting the camera under a run that keeps firing would leave its frames pairing with nothing,
+        and the retry's SEQ_RUN would be refused while the controller is busy.
+        """
+        self._log.warning("The hardware sequence overran the host's deadline: cancelling it.")
+        self.microcontroller.seq_cancel()
+        deadline = time.time() + self._overdue_cancel_wait_s()
+        while time.time() < deadline:
+            if not self.microcontroller.is_busy():
+                return
+            self._sleep(0.005)
+        self._log.error("The controller did not finish the cancelled sequence; a retry is refused while it runs.")
 
     def _wait_for_sequence(self, timeout_s: float) -> None:
         """Wait for the pending SEQ_RUN. A user abort cancels the run (the controller finishes
@@ -1534,6 +1575,10 @@ class MultiPointWorker:
     ) -> Tuple[Optional[List[Tuple[CameraFrame, CaptureInfo]]], Optional[str]]:
         """Run one burst. Returns (frames, None) only if the burst is provably complete and in
         order; otherwise (None, why), and NOTHING of it has reached a save job."""
+        if self.abort_requested_fn():
+            # The software path checks before every capture; a burst is one SEQ_RUN, so before the burst.
+            # Cancelling after sending would still let the controller fire the first exposure.
+            return None, "the acquisition was aborted before the burst started"
         if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
             return self._discard_failed_burst("a frame from before the hardware sequence never arrived")
 
@@ -1550,8 +1595,12 @@ class MultiPointWorker:
             try:
                 self.microcontroller.seq_run(stack_start)
                 self._wait_for_sequence(self._sequenced_burst_timeout_s())
-            except (CommandAborted, TimeoutError) as e:
+            except CommandAborted as e:
                 run_error = e
+                self.microcontroller.acknowledge_aborted_command()  # consumed here: the burst is given up below
+            except TimeoutError as e:
+                run_error = e
+                self._stop_overdue_sequence()
             # The last frames may still be on their way over USB. What can still arrive is bounded
             # by what the controller FIRED, not by what was expected: a run it refused (interlock
             # open, stack out of range) fired nothing, and waiting for "the last expected frame"
@@ -1687,6 +1736,10 @@ class MultiPointWorker:
                 frames, reason = self._run_sequenced_burst(captures(), stack_start)
                 if frames is not None or self.abort_requested_fn():
                     break
+                # A failed run leaves the piezo where the controller stopped it (the engine's fail() does not
+                # return to the start; Done and a cancel do) while the cache still says the stack start. Put it
+                # back, so the retry and whatever acquisition comes next start from where the cache says.
+                self.piezo.move_to(start_um)
                 # O1 (Hongquan, 2026-09-20): retry, retry again, then ask the user to intervene.
                 if outcome_after_failed_burst(attempt) == BurstOutcome.ASK_USER:
                     self._ask_user_to_intervene(

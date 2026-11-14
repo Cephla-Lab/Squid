@@ -516,7 +516,7 @@ class SimSerial(AbstractCephlaMicroSerial):
         status the sequencer currently reports.
         """
         with self._update_lock:
-            if self._closed:
+            if self._closed or self.drop_responses:  # a lost link loses the broadcasts too
                 return
             self._queue_response(self._last_cmd_id, self._packet_status(self.sequencer.execution_status()))
 
@@ -1872,6 +1872,12 @@ class Microcontroller:
         try:
             self.wait_till_operation_is_completed(Microcontroller.SEQ_STAGING_TIMEOUT_S)
         except CommandAborted as refusal:
+            # Only an answer counts: the firmware refusing the command (CMD_EXECUTION_ERROR, which the
+            # read loop marks recoverable). An abort for a link problem (checksum retries exhausted, no
+            # ack) says nothing about the firmware; caching "present" on it would let master firmware
+            # complete a whole sequence without doing anything.
+            if not refusal.recoverable:
+                raise
             self.acknowledge_aborted_command()
             self.log.info(f"[MCU] hardware sequencer present: the empty SEQ_COMMIT was refused ({refusal.seq_status})")
             return True

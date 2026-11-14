@@ -54,6 +54,10 @@ static unsigned jog_calls_while_locked;   // setSpeed with a non-zero speed whil
 
 static int axis_of(const TMC4361ATypeDef *t) { return int(t - tmc4361); }
 
+/* the hardware sequencer (sequencer/seq_bind.cpp, not under test): whether a sequence is running */
+static bool sequence_running = false;
+bool seq_running() { return sequence_running; }
+
 void tmc4361A_setSpeed(TMC4361ATypeDef *t, int32_t velocity)
 {
   motor_speed[axis_of(t)] = velocity;
@@ -130,6 +134,7 @@ void setUp(void)
   is_homing_X = is_homing_Y = is_homing_Z = is_homing_XY = is_homing_W = is_homing_W2 = false;
   is_preparing_for_homing_X = is_preparing_for_homing_Y = is_preparing_for_homing_Z = false;
   is_preparing_for_homing_W = is_preparing_for_homing_W2 = false;
+  sequence_running = false;
   for (int a = 0; a < TOTAL_AXES; a++) tmc4361[a].driver_type = DRIVER_TMC2660;
   enable_offset_velocity = false;
   // A connected, armed panel (#734): the link takes the wheel baseline from the first packet and reads the
@@ -217,6 +222,51 @@ void test_jog_is_stopped_when_a_homing_starts(void)
   is_preparing_for_homing_Z = true;
   joystick_pass(false);
   TEST_ASSERT_EQUAL_MESSAGE(0, motor_speed[y], "Y must be at rest when a Z homing starts");
+}
+
+/* A hardware sequence (SEQ_RUN) is a lock-out too: a jog under way when the run starts is brought to rest
+   in that pass (the jog is a velocity command that only check_joystick() stops, and the run may last
+   seconds), and the wheel's travel during the run is dropped: the sequencer owns the stack axis. */
+void test_jog_is_stopped_when_a_sequence_starts(void)
+{
+  jog(STICK, 0);
+  sequence_running = true;
+  joystick_pass(false);
+  TEST_ASSERT_EQUAL_MESSAGE(0, motor_speed[x], "X must be at rest in the pass the sequence starts in");
+}
+
+void test_wheel_travel_during_a_sequence_is_dropped(void)
+{
+  panel_wheel += 320;
+  packet(0, 0);
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(320, focusPosition, "precondition: a live wheel moves the Z target");
+  sequence_running = true;
+  panel_wheel += 640;
+  packet(0, 0);
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(320, focusPosition, "no wheel travel reaches Z during a sequence");
+  sequence_running = false;
+  panel_wheel += 64;
+  packet(0, 0);
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(384, focusPosition, "after the run only the new travel counts");
+}
+
+/* SEQ_RUN takes the camera outputs over from the per-command paths (functions.cpp
+   cancel_legacy_camera_outputs, called by seq_start): a pending strobe, a held trigger and the
+   illumination flag are all cleared, so nothing the host left behind lights or releases into the run. */
+void test_sequence_start_clears_the_legacy_trigger_and_strobe_state(void)
+{
+  control_strobe[0] = true;
+  strobe_output_level[0] = HIGH;
+  trigger_asserted[1] = true;
+  illumination_is_on = true;
+  cancel_legacy_camera_outputs();
+  for (int ch = 0; ch < NUM_CAMERA_TRIGGERS; ch++)
+  {
+    TEST_ASSERT_FALSE_MESSAGE(control_strobe[ch], "no strobe may stay pending into the run");
+    TEST_ASSERT_EQUAL_MESSAGE(LOW, strobe_output_level[ch], "the strobe ISR must see its output as off");
+    TEST_ASSERT_FALSE_MESSAGE(trigger_asserted[ch], "no trigger pulse may stay held into the run");
+  }
+  TEST_ASSERT_FALSE_MESSAGE(illumination_is_on, "the run starts dark");
 }
 
 /* An axis the joystick is not jogging is not written to when a command starts: a controller without a
@@ -388,6 +438,9 @@ int main(int argc, char **argv)
   RUN_TEST(test_wheel_travel_during_a_commanded_move_is_dropped);
   RUN_TEST(test_focus_control_stays_off_a_commanded_z_move);
   RUN_TEST(test_jog_is_stopped_when_a_homing_starts);
+  RUN_TEST(test_jog_is_stopped_when_a_sequence_starts);
+  RUN_TEST(test_wheel_travel_during_a_sequence_is_dropped);
+  RUN_TEST(test_sequence_start_clears_the_legacy_trigger_and_strobe_state);
   RUN_TEST(test_idle_axes_are_not_touched);
   RUN_TEST(test_commanded_axis_is_left_to_the_command);
   RUN_TEST(test_deflection_never_reaches_a_motor_while_locked_out);

@@ -81,13 +81,17 @@ void turn_on_port(int port_index);
 void turn_off_port(int port_index);
 void set_port_intensity(int port_index, uint16_t intensity);
 void turn_off_all_ports();
+// Clear the per-command trigger and strobe state and turn every port off: the hardware sequencer
+// owns the camera outputs for a run and starts it from released, dark outputs (seq_start).
+void cancel_legacy_camera_outputs();
 
 /***************************************************************************************************/
 /******************************************* joystick **********************************************/
 /***************************************************************************************************/
 extern PacketSerial joystick_packetSerial;
 
-bool panel_locked_out();   // a commanded move or a homing is in progress: the panel's input is dropped
+bool panel_locked_out();   // a commanded move, a homing or a hardware sequence is in progress: the panel's input is dropped
+bool seq_running();        // sequencer/seq_bind.cpp: a hardware sequence (SEQ_RUN) is running
 void onJoystickPacketReceived(const uint8_t* buffer, size_t size);
 
 /***************************************************************************************************/

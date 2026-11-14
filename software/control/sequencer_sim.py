@@ -111,8 +111,10 @@ class SimulatedSequencer:
         # STATUS_HOLD_S after its last activity; None before any activity.
         self._last_activity_s: Optional[float] = None
 
+        # The current run's events; every SEQ_RUN makes new ones (see _seq_run) and bumps _run_id.
         self._cancel = threading.Event()
         self._abort = threading.Event()
+        self._run_id = 0
         # The run was ended by a host safety command that must itself succeed
         # (sequence_commands.cpp quiet_abort).
         self._quiet_abort = False
@@ -296,6 +298,11 @@ class SimulatedSequencer:
         except sp.ProgramValidationError as e:
             self._refuse(e.error, e.detail, str(e))
             return
+        if program.loop.stack_axis_type == sp.StackAxisType.STEPPER:
+            # seq_load() (seq_bind.cpp): the stepper binding never updates focusPosition, so a stepper
+            # stack is refused until it is bound properly; the host builds piezo stacks only.
+            self._refuse(sp.SeqError.BAD_STACK_AXIS, program.loop.stack_axis_id, "the stepper stack axis is not bound")
+            return
         with self._lock:
             self._program = program
             self._committed = True
@@ -324,12 +331,21 @@ class SimulatedSequencer:
             self._fail(e.error, e.detail)  # nothing is triggered
             return
 
-        self._cancel.clear()
-        self._abort.clear()
+        # Each run gets its own events and id. The previous run's thread may still be inside its
+        # last dwell or trigger callback after host_abort() marked it terminal; clearing a shared
+        # event here would wake it into THIS run's program (extra frames, an early Done). It keeps
+        # its own, set, events and exits at its next check, and _owns_run() drops its late writes.
+        cancel, abort = threading.Event(), threading.Event()
         with self._lock:
+            self._cancel, self._abort = cancel, abort
+            self._run_id += 1
+            run_id = self._run_id
             self._cmd_in_progress = True
         self._thread = threading.Thread(
-            target=self._run_timeline, args=(program, stack_start), name="SimulatedSequencer", daemon=True
+            target=self._run_timeline,
+            args=(program, stack_start, run_id, cancel, abort),
+            name="SimulatedSequencer",
+            daemon=True,
         )
         self._thread.start()
 
@@ -371,18 +387,31 @@ class SimulatedSequencer:
 
     # --- the run thread -------------------------------------------------------------------
 
-    def _run_timeline(self, program: sp.SequencerProgram, stack_start: int) -> None:
+    def _owns_run(self, run_id: int) -> bool:
+        """Whether the timeline thread with this id is still the current run's (else its writes are stale)."""
+        return self._run_id == run_id
+
+    def _run_timeline(
+        self,
+        program: sp.SequencerProgram,
+        stack_start: int,
+        run_id: int,
+        cancel: threading.Event,
+        abort: threading.Event,
+    ) -> None:
         total_steps = program.n_frames
         try:
             for step in range(total_steps):
-                if self._abort.is_set():
+                if abort.is_set():
                     return  # host_abort()/reset()/close() already set the terminal state
-                if self._cancel.is_set():
+                if cancel.is_set():
                     break  # cancel never truncates an exposure, so it stops between frames
                 _layer, channel_index = program.step_to_layer_channel(step)
                 channel = program.channels[channel_index]
 
                 with self._lock:
+                    if not self._owns_run(run_id):
+                        return
                     self._state = sp.SeqState.EXPOSING
                     self._frames_fired += 1
                 for camera_id in cameras_in_mask(channel.camera_mask):
@@ -390,21 +419,31 @@ class SimulatedSequencer:
                     if trigger is not None:
                         trigger(camera_id)
                 self._emit()
-                self._dwell(_frame_time_s(program, channel))
+                self._dwell(_frame_time_s(program, channel), abort)
 
-            if self._abort.is_set():
+            if abort.is_set():
                 return
-            self._finish(program, total_steps)
+            self._finish(program, total_steps, run_id, cancel, abort)
         except Exception:
             # An exception out of the trigger hook is a simulation bug, not a modelled
             # hardware fault.  Fail the run loudly rather than quietly produce no frames;
             # the traceback above is the real diagnosis.
             self._log.exception("simulated sequencer run failed")
-            self._fail(sp.SeqError.MOVE_FAILED, 0)
+            with self._lock:
+                owns = self._owns_run(run_id)
+            if owns:
+                self._fail(sp.SeqError.MOVE_FAILED, 0)
         finally:
             self._emit()
 
-    def _finish(self, program: sp.SequencerProgram, total_steps: int) -> None:
+    def _finish(
+        self,
+        program: sp.SequencerProgram,
+        total_steps: int,
+        run_id: int,
+        cancel: threading.Event,
+        abort: threading.Event,
+    ) -> None:
         """SeqEngine::finish(): optional return move, then Done.
 
         Note what it does NOT do: touch the execution status.  A clean run leaves whatever
@@ -412,15 +451,19 @@ class SimulatedSequencer:
         allow-table refused -- still reaches the host when the run ends.
         """
         with self._lock:
-            canceled = self._cancel.is_set() and self._frames_fired < total_steps
+            canceled = cancel.is_set() and self._frames_fired < total_steps
         if program.loop.return_to_start:
             with self._lock:
+                if not self._owns_run(run_id):
+                    return
                 self._state = sp.SeqState.RETURNING
             self._emit()
-            self._dwell(program.loop.z_settle_us / 1e6)
-        if self._abort.is_set():
+            self._dwell(program.loop.z_settle_us / 1e6, abort)
+        if abort.is_set():
             return
         with self._lock:
+            if not self._owns_run(run_id):
+                return
             self._state = sp.SeqState.DONE
             if canceled:
                 # A cancelled run still reached Done, not Failed, so the command COMPLETED.
@@ -428,10 +471,10 @@ class SimulatedSequencer:
             self._cmd_in_progress = False
             self._last_activity_s = time.monotonic()  # the terminal status stays readable
 
-    def _dwell(self, seconds: float) -> None:
+    def _dwell(self, seconds: float, abort: threading.Event) -> None:
         """Sleep, emitting status packets meanwhile and returning early on abort."""
         deadline = time.time() + seconds / SPEED_UP_FACTOR
-        while not self._abort.is_set():
+        while not abort.is_set():
             remaining = deadline - time.time()
             if remaining <= 0:
                 return

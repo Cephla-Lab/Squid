@@ -705,7 +705,7 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         with self._update_lock:
             if self._closed:
                 return
-            self._queue_response(self._last_cmd_id, self.sequencer.execution_status())
+            self._queue_response(self._last_cmd_id, self._packet_status(self.sequencer.execution_status()))
 
     def turn_focus_wheel(self, ticks: int) -> None:
         """Simulate the control panel's focus wheel: moves Z in DRIVES_Z, counts in TO_HOST (wrapping int32);

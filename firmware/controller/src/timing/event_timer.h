@@ -22,3 +22,8 @@ void event_timer_cancel_all();
 // Latched until the next event_timer_cancel_all(). The caller must abort the run: the frame
 // being exposed is dark.
 bool event_timer_interlock_tripped();
+
+// True once the timer could not be armed for the pending edges (no free PIT channel): they
+// will never run, so a trigger or an illumination port may be left asserted. Latched until
+// the next event_timer_cancel_all(). The caller must abort the run, which releases them.
+bool event_timer_arm_failed();

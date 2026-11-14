@@ -515,6 +515,26 @@ void turn_off_all_ports()
   illumination_is_on = false;
 }
 
+// The hardware sequencer takes the camera triggers and the illumination ports over for a run
+// (seq_start): whatever the per-command paths left behind is cleared first, so a run starts from
+// dark, released outputs. Without this a port switched on before the run would stay lit through a
+// burst of another channel, a strobe still pending in ISR_strobeTimer would light its source into
+// the run, and do_camera_trigger() would release the shared trigger pin under the sequencer's
+// first exposure. The strobe ISR reads these flags, hence the interrupt guard.
+void cancel_legacy_camera_outputs()
+{
+  noInterrupts();
+  for (int camera_channel = 0; camera_channel < NUM_CAMERA_TRIGGERS; camera_channel++)
+  {
+    control_strobe[camera_channel] = false;
+    strobe_output_level[camera_channel] = LOW;
+    trigger_asserted[camera_channel] = false;
+    trigger_release(camera_channel);
+  }
+  turn_off_all_ports();
+  interrupts();
+}
+
 void ISR_strobeTimer()
 {
   for (int camera_channel = 0; camera_channel < NUM_CAMERA_TRIGGERS; camera_channel++)
@@ -591,11 +611,15 @@ PacketSerial joystick_packetSerial;
 // nothing is released when the lock-out ends.
 bool panel_locked_out()
 {
+  // A hardware sequence (SEQ_RUN) locks the panel out for its length: the wheel's travel is dropped (the
+  // sequencer owns the stack axis, and do_focus_control() stays off until the run ends) and a jog that
+  // was under way when the run started is brought to rest by check_joystick(), which keeps running.
   return X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress
       || W_commanded_movement_in_progress || W2_commanded_movement_in_progress
       || is_homing_X || is_homing_Y || is_homing_Z || is_homing_XY || is_homing_W || is_homing_W2
       || is_preparing_for_homing_X || is_preparing_for_homing_Y || is_preparing_for_homing_Z
-      || is_preparing_for_homing_W || is_preparing_for_homing_W2;
+      || is_preparing_for_homing_W || is_preparing_for_homing_W2
+      || seq_running();
 }
 
 void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
