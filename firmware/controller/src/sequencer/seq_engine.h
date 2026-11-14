@@ -54,6 +54,10 @@ class SeqEngine {
     void tick(uint32_t now_us);
     SeqState state() const { return state_; }
     const SeqProgress& progress() const { return progress_; }
+    // Whether THIS run lights a TTL (laser) port: the selected channel's mask, or any channel's when
+    // every channel runs. Decides whether an open laser interlock concerns the run (seq_bind.cpp):
+    // a program's unselected laser channel must not abort a run of its LED-only channel.
+    bool run_uses_ttl() const;
 
    private:
     uint32_t total_steps() const;

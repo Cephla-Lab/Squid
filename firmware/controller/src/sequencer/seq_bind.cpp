@@ -81,7 +81,6 @@ class TeensySeqHal : public seq::SeqHal {
 TeensySeqHal hal;
 seq::SeqEngine engine(hal);
 uint32_t wait_timeout_us = 0;
-bool program_uses_ttl = false;  // the laser interlock only concerns the TTL (laser) ports
 
 }  // namespace
 
@@ -99,15 +98,12 @@ seq::ValidationResult seq_load(const seq::wire::ParsedProgram& p) {
     // Refused until the stepper stack axis is bound properly; the host builds piezo stacks only.
     if (p.loop.stack_axis_type == (uint8_t)seq::StackAxisType::Stepper)
         return {seq::SeqError::BadStackAxis, p.loop.stack_axis_id};
-    bool uses_ttl = false;
     for (uint8_t i = 0; i < p.loop.n_channels; i++) {
         if (p.channels[i].illum_ttl_mask >> kNumTtlPorts) return {seq::SeqError::BadChannel, i};
-        if (p.channels[i].illum_ttl_mask) uses_ttl = true;
     }
     const seq::ValidationResult r = engine.load(p.loop, p.channels, p.cams, p.n_cameras);
     if (r.error != seq::SeqError::None) return r;
     wait_timeout_us = p.wait_timeout_us;
-    program_uses_ttl = uses_ttl;
     return r;
 }
 
@@ -128,8 +124,9 @@ void seq_abort(seq::SeqError e) { engine.abort(e); }
 void seq_tick() {
     if (!engine.running()) return;
     // Abort THROUGH the engine: loop() also forces the TTL ports LOW when the interlock opens,
-    // and without this the run would complete "successfully" with dark frames.
-    if (program_uses_ttl && (!INTERLOCK_OK() || event_timer_interlock_tripped())) {
+    // and without this the run would complete "successfully" with dark frames. The interlock only
+    // concerns the TTL (laser) ports, and only the channel(s) THIS run lights (SEQ_RUN's selector).
+    if (engine.run_uses_ttl() && (!INTERLOCK_OK() || event_timer_interlock_tripped())) {
         engine.abort(seq::SeqError::InterlockOpen);
         return;
     }

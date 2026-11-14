@@ -135,7 +135,9 @@ def test_z_first_runs_each_channel_of_the_one_uploaded_program_with_its_own_sett
     w._acquire_sequenced_stack("A1", "/tmp", 0, af_succeeded=True)
 
     assert [r["channel"] for r in w.runs] == [0, 1]  # SEQ_RUN's channel selector, no program per burst
-    assert w.microcontroller.seq_upload.call_count == 0  # uploaded once, in the preparation
+    # One program, uploaded once (by the first burst here; the preparation is not run in this fixture) and
+    # not again: the strobe delay is the same for both channels, so the second burst's program equals it.
+    assert w.microcontroller.seq_upload.call_count == 1
     assert [r["exposure_ms"] for r in w.runs] == [5, 20]
     assert [r["filter_for"] for r in w.runs] == ["A", "B"]
 
@@ -175,7 +177,7 @@ def test_channel_first_is_one_burst_of_every_channel():
         [(z, name, idx, START_UM + z * DZ_UM) for z in range(NZ) for idx, name in enumerate("AB")]
     ] * 2
     assert [r["channel"] for r in w.runs] == [None, None]
-    assert w.microcontroller.seq_upload.call_count == 0
+    assert w.microcontroller.seq_upload.call_count == 1  # once, by the first burst; the second FOV re-uses it
     assert [r["exposure_ms"] for r in w.runs] == [20, 20]  # the longest, set once
     assert w.camera.set_exposure_time.call_count == 1
 

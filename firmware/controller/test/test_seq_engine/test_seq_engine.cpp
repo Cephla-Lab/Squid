@@ -369,6 +369,29 @@ void test_a_selected_channel_runs_alone(void) {
     for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_UINT16(expect[i], targets[i]);
 }
 
+// The laser interlock concerns a run only if the run lights a TTL port: with the channel selector that is
+// the selected channel's mask, not the program's (seq_bind.cpp aborts on run_uses_ttl()).
+void test_run_uses_ttl_follows_the_selected_channel(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 2;
+    SeqChannel ch[2] = {good_channel(), good_channel()};
+    ch[1].illum_ttl_mask = 0;  // LED-matrix only
+    ch[1].led_pattern = 1;
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000, /*channel=*/1));
+    TEST_ASSERT_FALSE(e.run_uses_ttl());
+    run_until(e, hal, hal.now_us + 1000000);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000, /*channel=*/0));
+    TEST_ASSERT_TRUE(e.run_uses_ttl());
+    run_until(e, hal, hal.now_us + 1000000);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000));
+    TEST_ASSERT_TRUE(e.run_uses_ttl());
+}
+
 void test_a_selector_past_the_last_channel_fails_before_any_move(void) {
     FakeHal hal;
     SeqEngine e(hal);
@@ -1106,6 +1129,7 @@ int main(int, char**) {
     RUN_TEST(test_z_step_overlaps_readout_between_layers);
     RUN_TEST(test_z_inner_order_and_z_offset);
     RUN_TEST(test_a_selected_channel_runs_alone);
+    RUN_TEST(test_run_uses_ttl_follows_the_selected_channel);
     RUN_TEST(test_a_selector_past_the_last_channel_fails_before_any_move);
     RUN_TEST(test_edge_mode_pulse_and_modeled_exposure_end);
     RUN_TEST(test_two_cameras_simultaneous_exposure);

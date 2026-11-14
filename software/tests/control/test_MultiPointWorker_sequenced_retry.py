@@ -186,7 +186,7 @@ def test_a_burst_is_not_started_after_an_abort_was_requested():
     comes before it. Cancelling after sending would still let the controller fire the first exposure."""
     w = _bare_worker()
     w.abort_requested_fn = lambda: True
-    frames, reason = w._run_sequenced_burst(_captures(3), 1000)
+    frames, reason = w._run_sequenced_burst(_captures(3), 1000, None)
     assert frames is None and "aborted" in reason
     w.microcontroller.seq_run.assert_not_called()
     assert w.camera.stream_restarts == 0
@@ -213,6 +213,6 @@ def test_an_overrun_sequence_is_cancelled_before_the_camera_is_restarted():
         start_streaming()
 
     w.camera.start_streaming = restart
-    frames, reason = w._run_sequenced_burst(_captures(3), 1000)
+    frames, reason = w._run_sequenced_burst(_captures(3), 1000, None)
     assert frames is None
     assert events == ["cancel", "camera restart"]

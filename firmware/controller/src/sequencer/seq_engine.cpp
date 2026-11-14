@@ -30,6 +30,14 @@ ValidationResult SeqEngine::load(const SeqLoop& loop, const SeqChannel* channels
     return r;
 }
 
+bool SeqEngine::run_uses_ttl() const {
+    if (run_channel_ != kAllChannels)
+        return run_channel_ < loop_.n_channels && channels_[run_channel_].illum_ttl_mask != 0;
+    for (uint8_t c = 0; c < loop_.n_channels; c++)
+        if (channels_[c].illum_ttl_mask) return true;
+    return false;
+}
+
 uint32_t SeqEngine::total_steps() const {
     return (uint32_t)loop_.n_layers * run_channels();
 }
