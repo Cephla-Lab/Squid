@@ -396,10 +396,11 @@ class HamamatsuCamera(AbstractCamera):
         except Exception as setup_error:
             try:
                 self._set_prop_or_raise(DCAM_IDPROP.TRIGGERSOURCE, previous_source, "TRIGGERSOURCE")
-                self._restore_trigger_timing()
-                # The camera's own (rolling) trigger timing is back, whichever step above had verified global
-                # reset before a later one failed.
+                # Cleared before the timing is put back, whichever step above had verified global reset before a
+                # later one failed: a restore that fails half way leaves the sensor's timing mixed, and the
+                # record must not say global reset for a sensor that is not in it.
                 self._global_reset_verified = False
+                self._restore_trigger_timing()
                 # The exposure (and, if that mode is hardware trigger, the strobe) for the mode it is in again.
                 self.set_exposure_time(self._exposure_time_ms)
             except Exception as rollback_error:
