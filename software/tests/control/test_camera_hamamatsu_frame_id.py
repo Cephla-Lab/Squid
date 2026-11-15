@@ -25,6 +25,7 @@ with contextlib.ExitStack() as _stack:
     if hasattr(ctypes, "windll"):
         _stack.enter_context(mock.patch.object(ctypes.windll, "LoadLibrary", return_value=mock.MagicMock()))
     import control.camera_hamamatsu as camera_hamamatsu
+    from control.dcamapi4 import DCAM_IDPROP, DCAMPROP
 
 
 class FakeDcam:
@@ -41,6 +42,12 @@ class FakeDcam:
         assert index == -1  # "the newest frame", exactly what buf_getlastframedata() asks for
         stamp = self._stamps.pop(0)
         return types.SimpleNamespace(framestamp=stamp), np.full((4, 4), stamp, dtype=np.uint16)
+
+    def prop_getvalue(self, idprop):
+        # start_streaming() asks for the acquisition mode to choose how frames are read. These tests are
+        # about numbering, so: INTERNAL = continuous = the newest-frame path they were written against.
+        assert int(idprop) == int(DCAM_IDPROP.TRIGGERSOURCE)
+        return int(DCAMPROP.TRIGGERSOURCE.INTERNAL)
 
     def buf_alloc(self, count):
         return True

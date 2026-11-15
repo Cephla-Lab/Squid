@@ -64,6 +64,12 @@ jobs:
           done
         working-directory: ./firmware/controller
 
+      - name: Build the sequencer bench self-test (compile only — never uploaded or shipped)
+        run: pio run -e teensy41_newctrl
+        working-directory: ./firmware/controller
+        env:
+          PLATFORMIO_BUILD_FLAGS: -D SEQ_SELFTEST -D SEQ_SELFTEST_STACK_DAC=6 -D SEQ_SELFTEST_READY_LINE
+
       - name: Test the upload board selector (teensy_select_upload.py)
         run: python -m unittest discover -s firmware/tools -v
 

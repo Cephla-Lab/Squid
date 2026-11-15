@@ -443,6 +443,10 @@ class CameraFrame:
     frame: np.array
     frame_format: CameraFrameFormat
     frame_pixel_format: CameraPixelFormat
+    # The run of the camera's stream this frame was READ in (AbstractCamera.stream_generation()); 0 from a driver that
+    # does not stamp it. A frame a driver had already read when the stream was restarted is still delivered afterwards,
+    # and this is how a consumer tells it from the frames of the restarted stream.
+    stream_generation: int = 0
 
     def is_color(self):
         return CameraPixelFormat.is_color_format(self.frame_pixel_format)
@@ -479,6 +483,15 @@ class AbstractCamera(metaclass=abc.ABCMeta):
             old_roi[2] * old_binning[0] / new_binning[0],
             old_roi[3] * old_binning[1] / new_binning[1],
         )
+
+    # Counts the runs of the camera's stream: a start_streaming() that starts the camera's capture bumps it, and the
+    # driver stamps every frame with the value current when the frame was READ (CameraFrame.stream_generation). A
+    # class attribute, so a driver that never bumps it reports 0 - the value its unstamped frames carry.
+    _stream_generation: int = 0
+
+    def stream_generation(self) -> int:
+        """The current run of the camera's stream; a frame of an earlier run carries a smaller number."""
+        return self._stream_generation
 
     def __init__(
         self,
@@ -744,7 +757,10 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def stop_streaming(self):
         """
-        Stops camera frame streaming, which means frames will only come in with a call go get_frame
+        Stops camera frame streaming, which means frames will only come in with a call go get_frame.
+
+        Frames still in the camera or its SDK are lost with the stream. A frame the driver had already read may
+        still reach the frame callbacks after this returns; it carries the stream_generation() of the stopped run.
         """
         pass
 

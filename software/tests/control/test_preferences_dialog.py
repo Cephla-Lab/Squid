@@ -565,6 +565,35 @@ class TestSaveAndCloseWorkflow:
             assert saved_config.get("GENERAL", "file_saving_option") == "OME_TIFF"
             assert saved_config.get("CAMERA_CONFIG", "binning_factor_default") == "2"
 
+    @pytest.mark.parametrize(
+        "checkbox, ini_key",
+        [
+            ("hardware_trigger_global_reset_checkbox", "hardware_trigger_global_reset"),
+            ("camera_trigger_ready_output_checkbox", "camera_trigger_ready_output"),
+        ],
+    )
+    def test_save_and_close_saves_a_camera_trigger_opt_in_changed_on_its_own(
+        self, qtbot, monkeypatch, sample_config, temp_config_file, checkbox, ini_key
+    ):
+        """Toggling only one of the camera trigger opt-ins is a change: Save writes it and offers the restart."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "HARDWARE_TRIGGER_GLOBAL_RESET", False)
+        monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", False)
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        getattr(dialog, checkbox).setChecked(True)
+        dialog.accept = MagicMock()
+        with patch.object(dialog, "_offer_restart_dialog") as mock_restart_dialog:
+            dialog._save_and_close()
+
+        dialog.accept.assert_called_once()
+        mock_restart_dialog.assert_called_once()
+        saved_config = ConfigParser()
+        saved_config.read(temp_config_file)
+        assert saved_config.get("GENERAL", ini_key) == "true"
+
 
 class TestUIInitialization:
     """Test UI is properly initialized from config."""

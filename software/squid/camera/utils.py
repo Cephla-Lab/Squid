@@ -324,6 +324,7 @@ class SimulatedCamera(AbstractCamera):
                 if self._streaming_thread.is_alive():
                     raise CameraError("Cannot start streaming, camera is inconsisten state")
 
+        self._stream_generation += 1  # frames of this run say so (CameraFrame.stream_generation)
         self._continue_streaming = True
         self._start_streaming_thread()
 
@@ -396,6 +397,35 @@ class SimulatedCamera(AbstractCamera):
         self._next_frame()
 
     @debug_log
+    def emit_hardware_triggered_frame(self):
+        """Produce one frame as if an external hardware trigger had arrived at the camera.
+
+        This is the simulated counterpart of a real camera's trigger input.  The simulated
+        microcontroller's sequencer calls it once per exposure, which is the only thing that
+        connects a simulated MCU trigger to a simulated frame; see
+        control.microscope.link_simulated_sequencer_to_camera().
+
+        Unlike _send_trigger_imp it does NOT sleep the frame time: the caller is the MCU's
+        timeline thread, which already paces the run, and blocking it there would double
+        every frame interval.
+        """
+        if self._acquisition_mode is not CameraAcquisitionMode.HARDWARE_TRIGGER:
+            raise CameraError(
+                f"An external trigger only produces a frame in HARDWARE_TRIGGER acquisition mode, "
+                f"but this camera is in {self._acquisition_mode}."
+            )
+        # Same rule as send_trigger(): a settings change that pauses streaming is in flight,
+        # so a real camera would be producing nothing usable. Fail loudly rather than hand
+        # back a frame from a half-reconfigured sensor.
+        if not self._trigger_lock.acquire(blocking=False):
+            raise CameraError("Camera settings change in progress, cannot serve a hardware trigger.")
+        try:
+            self._last_trigger_timestamp = time.time()
+            self._next_frame()
+        finally:
+            self._trigger_lock.release()
+
+    @debug_log
     def _next_frame(self):
         (binning_x, binning_y) = self.get_binning()
         width, height = self.get_resolution()
@@ -428,6 +458,7 @@ class SimulatedCamera(AbstractCamera):
             frame=self._process_raw_frame(self._current_raw_frame),
             frame_format=self.get_frame_format(),
             frame_pixel_format=self.get_pixel_format(),
+            stream_generation=self._stream_generation,
         )
 
         self._propogate_frame(self._current_frame)

@@ -3,6 +3,7 @@
 import pytest
 
 from control.core.live_controller import LiveController
+from control.core.sequenced_acquisition import EmissionFilterUnit
 from control.serial_peripherals import Dragonfly_Simulation
 from tests.control.spinning_disk_test_utils import build_simulated_microscope, enable_spinning_disk, make_channel
 
@@ -64,3 +65,7 @@ def test_closing_the_microscope_closes_the_dragonfly(scope):
     scope.close()
 
     assert scope.addons.dragonfly.closed
+
+
+def test_the_dragonfly_is_the_unit_a_channel_switch_moves(live):
+    assert live.emission_filter_unit() == EmissionFilterUnit("Dragonfly", applies_iris=False)
