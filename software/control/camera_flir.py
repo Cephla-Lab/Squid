@@ -18,10 +18,12 @@ from squid.abc import (
 from squid.config import CameraConfig, CameraPixelFormat, FLIRCameraModel, CameraSensor
 import control._def as _def
 
-# The nodes a LEVEL hardware trigger sets (HARDWARE_TRIGGER_MODE = LEVEL), in write order: the controller's pulse
-# width is the exposure (ExposureMode TriggerWidth), and a trigger that arrives during readout is disregarded
-# (TriggerOverlap Off) rather than taken as a corrupted frame. Each node is remembered before it is first written
-# and put back when hardware trigger mode is left, so a camera is never left in a mode this driver did not find it in.
+# The nodes a LEVEL hardware trigger sets (HARDWARE_TRIGGER_MODE = LEVEL), in write order: the selector before the
+# nodes it selects (TriggerMode and TriggerSource are written between it and the rest), a level activation before
+# TriggerWidth (which needs one; the controller's pulse width is the exposure), and TriggerOverlap Off so a trigger
+# that arrives during readout is disregarded rather than taken as a corrupted frame. Each node is remembered before
+# it is first written and put back, in reverse order, when hardware trigger mode is left, so a camera is never left
+# in a mode this driver did not find it in.
 LEVEL_TRIGGER_NODES = (
     ("TriggerSelector", "FrameStart"),
     ("TriggerActivation", "LevelHigh"),
@@ -718,6 +720,7 @@ class FLIRCamera(AbstractCamera):
     # Users should use add_frame_callback() and remove_frame_callback() instead
 
     def close(self):
+        self._restore_trigger_nodes_before_close()
         try:
             self.camera.DeInit()
             del self.camera
@@ -741,24 +744,32 @@ class FLIRCamera(AbstractCamera):
         """Sets the exposure time in ms. Disables auto-exposure."""
         use_strobe = self.trigger_mode == TriggerMode.HARDWARE  # true if using hardware trigger
         self.nodemap = self.camera.GetNodeMap()
-        node_auto_exposure = PySpin.CEnumerationPtr(self.nodemap.GetNode("ExposureAuto"))
-        node_auto_exposure_off = PySpin.CEnumEntryPtr(node_auto_exposure.GetEntryByName("Off"))
-        if not PySpin.IsReadable(node_auto_exposure_off) or not PySpin.IsWritable(node_auto_exposure):
-            raise CameraError("Unable to set exposure manually (cannot disable auto exposure)")
-
-        if node_auto_exposure.GetIntValue() != node_auto_exposure_off.GetValue():
-            self.auto_exposure_mode = PySpin.CEnumEntryPtr(node_auto_exposure.GetCurrentEntry()).GetValue()
-
-        node_auto_exposure.SetIntValue(node_auto_exposure_off.GetValue())
 
         if self._level_trigger_active():
-            # ExposureMode = TriggerWidth: the controller's pulse is the exposure, so ExposureTime is neither
-            # checked nor written (it is read-only in that mode). The value is what the pulse derives from.
+            # ExposureMode = TriggerWidth: the controller's pulse is the exposure, so neither ExposureTime nor
+            # ExposureAuto is touched (both are the camera's in that mode; ExposureAuto was turned off before
+            # TriggerWidth was set). The value is what the pulse derives from.
             self.exposure_time = exposure_time_ms
         else:
+            node_auto_exposure = PySpin.CEnumerationPtr(self.nodemap.GetNode("ExposureAuto"))
+            node_auto_exposure_off = PySpin.CEnumEntryPtr(node_auto_exposure.GetEntryByName("Off"))
+            if not PySpin.IsReadable(node_auto_exposure_off) or not PySpin.IsWritable(node_auto_exposure):
+                raise CameraError("Unable to set exposure manually (cannot disable auto exposure)")
+
+            if node_auto_exposure.GetIntValue() != node_auto_exposure_off.GetValue():
+                self.auto_exposure_mode = PySpin.CEnumEntryPtr(node_auto_exposure.GetCurrentEntry()).GetValue()
+
+            node_auto_exposure.SetIntValue(node_auto_exposure_off.GetValue())
+
             node_exposure_time = PySpin.CFloatPtr(self.nodemap.GetNode("ExposureTime"))
             if not PySpin.IsWritable(node_exposure_time):
-                raise CameraError("Unable to set exposure manually after disabling auto exposure")
+                # ExposureMode = TriggerWidth makes ExposureTime read-only: an earlier session that exited or crashed
+                # in LEVEL trigger mode leaves the camera there until it is power-cycled.
+                raise CameraError(
+                    "Unable to set exposure manually after disabling auto exposure "
+                    f"(ExposureMode={self._read_enum('ExposureMode')}; TriggerWidth means an earlier LEVEL-trigger "
+                    "session left the camera there: power-cycle the camera)"
+                )
 
             if use_strobe == False or self.is_global_shutter:
                 self.exposure_time = exposure_time_ms
@@ -836,9 +847,11 @@ class FLIRCamera(AbstractCamera):
         self._log.info("Camera is in LEVEL trigger + global reset mode.")
 
     def _entry_available(self, node_name: str, entry_name: str) -> bool:
-        """Whether this camera has `entry_name` on enumeration node `node_name` (read only, nothing written)."""
+        """Whether this camera model implements `entry_name` on enumeration node `node_name` (read only, nothing
+        written). IsImplemented, not IsReadable: an entry can be unavailable in the camera's current state (a level
+        activation while ExposureMode is Timed) and still be there once the switch sets that state."""
         node = PySpin.CEnumerationPtr(self.nodemap.GetNode(node_name))
-        return bool(PySpin.IsReadable(node) and PySpin.IsReadable(node.GetEntryByName(entry_name)))
+        return bool(PySpin.IsImplemented(node) and PySpin.IsImplemented(node.GetEntryByName(entry_name)))
 
     def _check_opt_in_support(self) -> None:
         """Refuse to open a camera that cannot do what an enabled trigger setting needs, naming the setting.
@@ -890,6 +903,22 @@ class FLIRCamera(AbstractCamera):
 
         for need in needs:
             require(*need)
+
+        # Node state survives DeInit until the camera is power-cycled. A camera found already in TriggerWidth or
+        # GlobalReset was left there by an earlier session that exited or crashed while hardware-triggered; the
+        # values it had before are unknown, so this driver would restore it to nothing it can vouch for.
+        found = []
+        if _def.HARDWARE_TRIGGER_MODE == HardwareTriggerMode.LEVEL:
+            found.append(("ExposureMode", "TriggerWidth"))
+        if _def.use_level_trigger_global_reset():
+            found.append(("SensorShutterMode", "GlobalReset"))
+        for node, left_in in found:
+            if self._read_enum(node) == left_in:
+                raise CameraError(
+                    f"This camera reports {node}={left_in} at open: an earlier session left it in LEVEL trigger mode "
+                    "and its original values are unknown. Power-cycle the camera, then start again."
+                )
+
         if line_needs:
             previous_line = self._read_enum("LineSelector")
             self._set_enum("LineSelector", READY_OUTPUT_LINE)
@@ -1378,8 +1407,9 @@ class FLIRCamera(AbstractCamera):
 
     def _restore_hardware_trigger_nodes(self) -> None:
         """Write back every node this driver changed for hardware trigger mode, to the value read before, in the
-        order they were changed. Nothing remembered (opt-ins off, EDGE) means nothing is written."""
-        for node_name, value in list(self._restore_on_leave.items()):
+        reverse of the order they were changed (TriggerWidth needs a level activation, so Timed goes back before
+        RisingEdge). Nothing remembered (opt-ins off, EDGE) means nothing is written."""
+        for node_name, value in reversed(list(self._restore_on_leave.items())):
             if isinstance(value, bool):
                 self._set_bool(node_name, value)
             else:
@@ -1401,8 +1431,19 @@ class FLIRCamera(AbstractCamera):
         )
 
     def _configure_hardware_trigger(self) -> None:
-        """What a hardware trigger switch sets once TriggerMode is On: the trigger input line, the EDGE or LEVEL
-        trigger nodes, and the driver's own mode record."""
+        """What a hardware trigger switch sets: TriggerMode On, the trigger input line, the EDGE or LEVEL trigger
+        nodes, and the driver's own mode record. The EDGE path is today's writes in today's order."""
+        if _def.HARDWARE_TRIGGER_MODE == HardwareTriggerMode.LEVEL:
+            # TriggerMode, TriggerSource and TriggerActivation are the selected trigger's: select it first.
+            self._remember("TriggerSelector")
+            self._set_enum("TriggerSelector", "FrameStart")
+
+        node_trigger_mode = PySpin.CEnumerationPtr(self.nodemap.GetNode("TriggerMode"))
+        node_trigger_mode_on = PySpin.CEnumEntryPtr(node_trigger_mode.GetEntryByName("On"))
+        if not PySpin.IsWritable(node_trigger_mode) or not PySpin.IsReadable(node_trigger_mode_on):
+            raise CameraError("Cannot toggle TriggerMode to On")
+        node_trigger_mode.SetIntValue(node_trigger_mode_on.GetValue())
+
         node_trigger_source = PySpin.CEnumerationPtr(self.nodemap.GetNode("TriggerSource"))
         node_trigger_source_line = PySpin.CEnumEntryPtr(
             node_trigger_source.GetEntryByName(_def.FLIR_TRIGGER_INPUT_LINE)
@@ -1412,7 +1453,11 @@ class FLIRCamera(AbstractCamera):
         node_trigger_source.SetIntValue(node_trigger_source_line.GetValue())
 
         if _def.HARDWARE_TRIGGER_MODE == HardwareTriggerMode.LEVEL:
-            for node_name, entry_name in LEVEL_TRIGGER_NODES:
+            for node_name, entry_name in LEVEL_TRIGGER_NODES[1:]:
+                if node_name == "ExposureMode":
+                    # TriggerWidth needs auto exposure off. Squid turns it off in every mode anyway (set_exposure_time),
+                    # so it is not remembered: Off is where this driver always leaves it.
+                    self._set_enum("ExposureAuto", "Off")
                 self._remember(node_name)
                 self._set_enum(node_name, entry_name)
             # The frame rate limiter would hold off a trigger; the controller paces the frames.
@@ -1434,19 +1479,33 @@ class FLIRCamera(AbstractCamera):
         self._apply_trigger_ready_output()
         self._refresh_global_reset_readout()
 
+    def _restore_trigger_nodes_before_close(self) -> None:
+        """Leave the camera as this driver found it: node state survives DeInit until power-off, and a camera left in
+        TriggerWidth / GlobalReset cannot have its exposure set by the next session. Writes nothing when nothing
+        was changed (opt-ins off, EDGE). Logged, not raised: close must still release the camera."""
+        if not self._restore_on_leave:
+            return
+        try:
+            if self.get_is_streaming():
+                self.stop_streaming()
+            self._set_enum("TriggerMode", "Off")
+            self._restore_hardware_trigger_nodes()
+        except Exception as ex:
+            self._log.error(f"Could not put the camera's trigger nodes back on close: {ex}")
+
     def _restore_previous_mode(self, previous: Optional[TriggerMode], setup_error: BaseException) -> None:
         """Put the camera back in `previous` after a hardware trigger setup failed part way.
 
-        TriggerMode is already On and some of the LEVEL nodes may be written; left so, the camera would take
-        triggers with timing it never confirmed. The remembered nodes go back first, then the previous mode's
-        trigger nodes, then the exposure (and, in hardware trigger mode, the strobe) for that mode. Never raises:
-        a rollback failure is logged with the original error, which the caller re-raises.
+        TriggerMode may be On and some of the LEVEL nodes written; left so, the camera would take triggers with
+        timing it never confirmed. The previous mode's trigger nodes go back first, then the remembered nodes (the
+        same order as leaving hardware trigger mode, and as the base drivers' rollback), then the exposure (and, in
+        hardware trigger mode, the strobe) for that mode. Never raises: a rollback failure is logged with the
+        original error, which the caller re-raises.
         """
         # Cleared before anything is put back: a restore that fails half way must not leave a record that says
         # global reset for a sensor that is not in it.
         self._global_reset_verified = False
         try:
-            self._restore_hardware_trigger_nodes()
             if previous == TriggerMode.SOFTWARE:
                 self._set_enum("TriggerMode", "On")
                 self._set_enum("TriggerSource", "Software")
@@ -1455,6 +1514,7 @@ class FLIRCamera(AbstractCamera):
                 self._set_enum("TriggerSource", _def.FLIR_TRIGGER_INPUT_LINE)
             else:  # CONTINUOUS, or never switched by this driver: the camera's power-on state
                 self._set_enum("TriggerMode", "Off")
+            self._restore_hardware_trigger_nodes()
             self.trigger_mode = previous
             self._refresh_global_reset_readout()
             self.update_camera_exposure_time()
@@ -1498,11 +1558,6 @@ class FLIRCamera(AbstractCamera):
 
             elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
                 previous = self.trigger_mode
-                node_trigger_mode_on = PySpin.CEnumEntryPtr(node_trigger_mode.GetEntryByName("On"))
-                if not PySpin.IsWritable(node_trigger_mode) or not PySpin.IsReadable(node_trigger_mode_on):
-                    raise CameraError("Cannot toggle TriggerMode to On")
-                node_trigger_mode.SetIntValue(node_trigger_mode_on.GetValue())
-
                 if self._hardware_trigger_setup_is_opt_in():
                     # The setup can fail after TriggerMode changed; then the previous mode is put back before the
                     # error leaves. With every trigger setting at its default this is today's unguarded path.
