@@ -3525,6 +3525,8 @@ class StageUtils(QDialog):
         try:
             self._hold_stage_for_loading()
         except StageMotionRefused as e:
+            if at_loading:
+                self._loading_hold_reason = self.AT_LOADING  # nothing moved: a stay waiting for the stage still waits
             self.log.info(f"Loading / scanning position refused: {e.reason}")
             QMessageBox.information(self, "Loading Position", f"{e}.")
             return
@@ -3565,21 +3567,33 @@ class StageUtils(QDialog):
 
     def enter_restored_loading_position(self):
         """Squid was closed at the loading position and starts there again: the stay holds the stage as it does after a
-        move there. A startup home still holding the stage (it does until the stage reports stopped) leaves the stay
-        unheld, which is logged; the move back takes it then."""
+        move there. A startup home still holding the stage (it does until the stage reports stopped) hands it straight
+        to the stay when it lets go (take_next): the stage is never free in between, so the control panel stays locked
+        and no other owner gets it. Until then the move back is refused."""
         self._loading_hold_reason = self.AT_LOADING
-        try:
-            self._hold_stage_for_loading()
-        except StageMotionRefused as e:
-            self.log.error(f"Restarted at the loading position while the stage is held ({e.reason}): not held there")
+        if self._loading_hold is None:
+            try:
+                self._loading_hold = self._stage_motion.take_next(lambda: self._loading_hold_reason)
+            except StageMotionRefused as e:
+                self.log.error(f"Restarted at the loading position while the stage is held ({e.reason}): not held")
+        if self._loading_hold is not None and not self._loading_hold.active:
+            self.log.warning(
+                f"Restarted at the loading position while the stage is held ({self._stage_motion.holder}): the stay "
+                "holds it once that lets go"
+            )
         self._was_live = False
         self._callback_loading_position_reached(True, None)
 
     def _hold_stage_for_loading(self):
         """Hold the stage-motion reservation, if not held already (it is from leaving the scanning position until
-        back at it). Raises StageMotionRefused, with nothing held, while something else holds it."""
+        back at it). Raises StageMotionRefused, with nothing held, while something else holds it; also while the
+        restored stay waits for it (enter_restored_loading_position), keeping its place."""
         if self._loading_hold is None:
             self._loading_hold = self._stage_motion.take(lambda: self._loading_hold_reason)
+            return
+        holder = self._stage_motion.holder  # read first: the stay may become active meanwhile
+        if not self._loading_hold.active:
+            raise StageMotionRefused(holder or "the stage is held")
 
     def _release_loading_hold(self):
         hold, self._loading_hold = self._loading_hold, None

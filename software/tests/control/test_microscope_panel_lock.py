@@ -6,6 +6,7 @@ owners takes the stage-motion reservation, so the Microscope locks the panel fro
 """
 
 import logging
+import threading
 
 import pytest
 
@@ -141,3 +142,35 @@ def test_old_firmware_warns_once_and_never_sends_the_lock(old_scope, caplog):
     assert warnings == [
         "This controller firmware cannot lock the control panel: its joystick still moves XY during acquisitions"
     ]
+
+
+def test_close_waits_for_a_lock_under_way_then_unlocks_last(scope):
+    """An owner taking the stage while Squid closes: its lock command, already past the closed check, must not land
+    after close()'s unlock and leave the joystick dead without Squid."""
+    scope, sim = scope
+    mcu = scope.low_level_drivers.microcontroller
+    real_set = mcu.set_panel_lock
+    in_lock, go_on = threading.Event(), threading.Event()
+    sent = []
+
+    def slow_set(locked):
+        if locked:
+            in_lock.set()
+            go_on.wait(5)
+        sent.append(locked)
+        real_set(locked)
+
+    mcu.set_panel_lock = slow_set
+    owner = threading.Thread(target=lambda: scope.stage_motion.take("a stage move from the control server is running"))
+    owner.start()
+    assert in_lock.wait(5)
+    closer = threading.Thread(target=scope.close)
+    closer.start()
+    closer.join(0.3)
+    assert closer.is_alive()  # close() waits for the lock under way
+    go_on.set()
+    closer.join(10)
+    owner.join(10)
+
+    assert sent == [True, False]  # close()'s unlock comes last
+    assert not sim.panel_locked

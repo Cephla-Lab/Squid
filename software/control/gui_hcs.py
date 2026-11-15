@@ -3835,10 +3835,11 @@ class HighContentScreeningGui(QMainWindow):
         """
         context = "restart" if for_restart else "shutdown"
 
-        # Closed while something holds the stage (the stay at the loading position, say), which locks the control
-        # panel: unlock it first, before any step below can fail and abort the rest (Microscope.close() unlocks it
-        # too), so the joystick works without Squid.
-        if self.microscope.stage_motion.holder is not None and self.microcontroller is not None:
+        # The control panel is locked while something holds the stage (the stay at the loading position, say). Stop
+        # that first (a lock under way ends, an owner taking the stage during the cleanup locks nothing), then unlock,
+        # before any step below can fail and abort the rest, so the joystick works without Squid.
+        self.microscope.stage_motion.stop_observing()
+        if self.microcontroller is not None:
             try:
                 self.microcontroller.unlock_panel()
             except Exception:

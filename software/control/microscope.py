@@ -1687,6 +1687,9 @@ class Microscope:
         except Exception as e:
             self._log.warning(f"Error closing stage: {e}")
 
+        # The unlock below must be the last panel command: a lock already under way (an owner that took the stage just
+        # before _closed was set) ends first, and none is sent after.
+        self.stage_motion.stop_observing()
         if self.low_level_drivers.microcontroller:
             try:
                 # A lock left by a stage owner (the stay at the loading position, a run that never ended) is not left

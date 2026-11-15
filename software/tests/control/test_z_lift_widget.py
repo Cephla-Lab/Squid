@@ -543,19 +543,20 @@ def test_shutdown_unlocks_the_control_panel_before_anything_can_fail():
     fake.log = MagicMock()
     fake.stage = MagicMock()
     fake.stage.get_pos.side_effect = RuntimeError("the first cleanup step fails")
-    hold = fake.microscope.stage_motion.take("the stage is at the loading position (return from it first)")
+    reservation = fake.microscope.stage_motion
+    panel = []
+    reservation.on_holder_changed = lambda holder: panel.append(holder is not None)
+    hold = reservation.take("the stage is at the loading position (return from it first)")
     with pytest.raises(RuntimeError):
         Gui._cleanup_common(fake, for_restart=False)
     fake.microcontroller.unlock_panel.assert_called_once_with()
 
-    fake.microcontroller.reset_mock()
-    hold.release()  # nothing holds the stage, so the panel is not locked: nothing sent
-    with pytest.raises(RuntimeError):
-        Gui._cleanup_common(fake, for_restart=False)
-    fake.microcontroller.unlock_panel.assert_not_called()
+    # The lock no longer follows the stage: an owner during or after the cleanup locks nothing again
+    hold.release()
+    reservation.take("a stage move from the control server is running")
+    assert panel == [True]
 
     fake.microcontroller.unlock_panel.side_effect = TimeoutError("the controller did not answer")
-    fake.microscope.stage_motion.take("an acquisition is running")
     with pytest.raises(RuntimeError, match="the first cleanup step fails"):  # a failed unlock does not stop cleanup
         Gui._cleanup_common(fake, for_restart=False)
 

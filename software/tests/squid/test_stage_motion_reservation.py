@@ -2,6 +2,7 @@
 stage, everyone else is refused with what holds it, whichever thread they ask from."""
 
 import threading
+import time
 
 import pytest
 
@@ -174,3 +175,92 @@ def test_the_last_call_the_observer_gets_says_who_holds_the_stage_now():
 
     assert reservation.holder is None
     assert seen and seen[-1] is None
+
+
+def test_a_release_cannot_tell_the_observer_after_the_next_take_returned():
+    """The observer sends a controller command: one sent after the next owner's take() returned would land between that
+    owner's own commands (the controller tracks one command at a time). A release paused between freeing the stage and
+    telling the observer must not let the next take return first."""
+    reservation = StageMotionReservation()
+    first = reservation.take("an acquisition is running")
+    events = []
+    reservation.on_holder_changed = lambda holder: events.append(("observer", holder))
+    real_tell = reservation._tell_observer
+    second_took = threading.Event()
+
+    def paused_tell():
+        if threading.current_thread().name == "releaser":
+            second_took.wait(0.5)  # the pause, as long as the next take needs (bounded: it may have to wait for us)
+        real_tell()
+
+    reservation._tell_observer = paused_tell
+    releaser = threading.Thread(target=first.release, name="releaser")
+    releaser.start()
+    while reservation.holder is not None and releaser.is_alive():
+        time.sleep(0.001)
+    second = reservation.take("a stage move from the control server is running")
+    events.append(("took", second.reason))
+    second_took.set()
+    releaser.join(5)
+
+    assert events == [
+        ("observer", None),
+        ("observer", "a stage move from the control server is running"),
+        ("took", "a stage move from the control server is running"),
+    ]
+
+
+# --- the next holder (take_next): a hold handed over without the stage ever being free -------------------------------
+
+
+def test_take_next_on_a_free_stage_holds_it_at_once():
+    reservation = StageMotionReservation()
+    seen = _observed(reservation)
+
+    hold = reservation.take_next("the stage is at the loading position (return from it first)")
+
+    assert hold.active and reservation.holder == "the stage is at the loading position (return from it first)"
+    assert seen == ["the stage is at the loading position (return from it first)"]
+
+
+def test_the_next_holder_gets_the_stage_straight_from_the_release():
+    reservation = StageMotionReservation()
+    home = reservation.take("the stage is homing")
+    seen = _observed(reservation)
+
+    stay = reservation.take_next("the stage is at the loading position (return from it first)")
+    assert not stay.active and not stay.released
+    assert reservation.holder == "the stage is homing" and seen == []  # queued: nothing changed yet
+    home.release()
+
+    assert stay.active and reservation.holder == "the stage is at the loading position (return from it first)"
+    assert seen == ["the stage is at the loading position (return from it first)"]  # never None: never free
+    with pytest.raises(StageMotionRefused, match="loading position"):
+        reservation.take("a stage move from the control server is running")
+    stay.release()
+    assert seen[-1] is None and reservation.holder is None
+
+
+def test_one_next_holder_at_most_and_take_still_refused():
+    reservation = StageMotionReservation()
+    reservation.take("the stage is homing")
+    reservation.take_next("the stage is at the loading position (return from it first)")
+
+    with pytest.raises(StageMotionRefused, match="the stage is homing"):
+        reservation.take_next("an acquisition is running")
+    with pytest.raises(StageMotionRefused, match="the stage is homing"):
+        reservation.take("an acquisition is running")
+
+
+def test_a_released_next_holder_leaves_the_queue():
+    reservation = StageMotionReservation()
+    home = reservation.take("the stage is homing")
+    stay = reservation.take_next("the stage is at the loading position (return from it first)")
+    seen = _observed(reservation)
+
+    stay.release()
+    assert stay.released and not stay.active and seen == []
+    home.release()
+
+    assert reservation.holder is None and seen == [None]
+    reservation.take_next("an acquisition is running")  # the slot is free again
