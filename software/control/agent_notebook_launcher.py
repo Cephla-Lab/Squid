@@ -22,7 +22,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Union
 
 import squid.logging
 
@@ -46,10 +46,17 @@ def read_log_tail(path: str, lines: int = 8) -> str:
         return ""
 
 
-def command_from_setting(setting: str, now: Optional[datetime] = None) -> List[str]:
+def command_from_setting(
+    setting: str, now: Optional[datetime] = None, windows: bool = sys.platform == "win32"
+) -> Union[List[str], str]:
     """The program and its arguments from the setting. `{timestamp}` in an argument becomes the time of the
-    start (YYYYMMDD-HHMMSS), so that each start can have its own folder. An empty setting gives []."""
+    start (YYYYMMDD-HHMMSS), so that each start can have its own folder. An empty setting gives [] (or "").
+
+    On Windows the result is the command line itself: Windows reads it (CreateProcess), with its own rules for
+    backslashes and quotes. The rules of POSIX would take the backslashes out of a path such as C:\\Tools."""
     stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    if windows:
+        return setting.strip().replace("{timestamp}", stamp)
     return [part.replace("{timestamp}", stamp) for part in shlex.split(setting, posix=True)]
 
 
@@ -152,7 +159,8 @@ class AgentNotebook:
                         **kwargs
                     )
             except OSError as e:
-                return f"The notebook program could not start ({command[0]}): {e}"
+                program = command if isinstance(command, str) else command[0]
+                return f"The notebook program could not start ({program}): {e}"
         deadline = time.monotonic() + self._wait_s
         while time.monotonic() < deadline:
             code = self.process.poll()

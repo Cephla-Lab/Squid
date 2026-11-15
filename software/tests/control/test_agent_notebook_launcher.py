@@ -109,6 +109,18 @@ def test_the_command_comes_from_the_setting_with_the_time_of_the_start():
     assert command_from_setting("   ", datetime(2026, 11, 13)) == []
 
 
+def test_on_windows_the_command_line_goes_to_windows_as_it_is():
+    # Windows reads the command line itself (CreateProcess): its backslashes and quotes are not those of POSIX.
+    setting = r'"C:\Program Files\Python\python.exe" -m my_notebook serve --run-dir C:\runs\run-{timestamp}'
+    command = command_from_setting(setting, datetime(2026, 11, 13, 1, 9, 30), windows=True)
+    assert command == r'"C:\Program Files\Python\python.exe" -m my_notebook serve --run-dir C:\runs\run-20261113-010930'
+    assert (
+        command_from_setting(r"C:\Tools\python.exe -m my_notebook", windows=True)
+        == r"C:\Tools\python.exe -m my_notebook"
+    )
+    assert command_from_setting("   ", windows=True) == ""
+
+
 def test_a_notebook_that_says_what_it_is_is_seen_and_a_closed_port_is_not(page_that_runs, a_different_program):
     assert notebook_runs(page_that_runs) is True and notebook_answers(page_that_runs) is True
     closed = f"http://127.0.0.1:{free_port()}/"
