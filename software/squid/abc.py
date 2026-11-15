@@ -389,6 +389,17 @@ class AbstractStage(metaclass=abc.ABCMeta):
     def get_config(self) -> StageConfig:
         return self._config
 
+    def has_own_joystick(self) -> bool:
+        """True if the controller of this stage has a joystick of its own that moves the stage without Squid (a
+        Prior ProScan). The joystick of the Cephla control panel is not one: the window locks it through the
+        microcontroller."""
+        return False
+
+    def set_joystick_lock(self, locked: bool) -> None:
+        """Turn the joystick of the stage's own controller off (locked) or on again. Returns when the controller
+        confirmed it, and raises when it did not. A stage with no joystick of its own does nothing."""
+        pass
+
     def wait_for_idle(self, timeout_s):
         start_time = time.time()
         while time.time() < start_time + timeout_s:

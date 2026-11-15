@@ -102,6 +102,10 @@ class InputShield(QObject):
 
 
 PANEL_NOT_LOCKED_WARNING = "The control panel is not locked: do not touch the joystick."
+# A stage controller with a joystick of its own (a Prior stage): that joystick is locked, the control panel is not.
+PANEL_NOT_LOCKED_STAGE_JOYSTICK_LOCKED_WARNING = (
+    "The control panel is not locked: do not touch it. The joystick of the stage is locked."
+)
 
 _BANNER_COLORS = {
     SessionState.AGENT: "#ffcc66",

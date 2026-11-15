@@ -15,6 +15,7 @@ import squid.logging
 from control.agent_session_stop import AgentSessionStopSequence
 from control.agent_session_widgets import AgentSessionBanner, InputShield
 from control.core.agent_session import AgentSession, AgentSessionRefused, SessionState
+from control.panel_lock import PanelLockRefused
 
 REFUSAL_DIALOG_OPEN = "a dialog or a menu is open in Squid"
 REFUSAL_PANEL_LOCK = "could not lock the control panel"
@@ -41,7 +42,8 @@ class AgentSessionProtection(QObject):
         parent=None,
     ) -> None:
         """lock_panel() locks the control panel for the session and returns when the controller did it; it raises
-        if the controller did not. unlock_panel() removes that lock. A second call of one of them changes nothing.
+        if the controller did not (PanelLockRefused when its text is the answer to the agent, as "could not lock the
+        joystick of the stage"). unlock_panel() removes that lock. A second call of one of them changes nothing.
         blocker() says why the agent must not get the control now (or None); it can run on any thread.
         snapshot(with_position) gives the microscope state for a handover."""
         super().__init__(parent)
@@ -139,6 +141,10 @@ class AgentSessionProtection(QObject):
         self._shield.set_active(True)
         try:
             self._lock_panel()
+        except PanelLockRefused as refusal:  # its text says what is not locked
+            self._log.exception("Could not lock the control panel for the agent session")
+            self.sync()
+            return str(refusal)
         except Exception:
             self._log.exception("Could not lock the control panel for the agent session")
             self.sync()

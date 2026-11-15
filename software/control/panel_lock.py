@@ -2,7 +2,8 @@
 
 Several features lock the panel: the loading position, a homing run, an agent session. Each adds its reason when it
 starts and removes it when it ends. The panel unlocks only when no reason is left, so the end of one feature does
-not unlock the panel under another.
+not unlock the panel under another. A stage controller with a joystick of its own (a Prior stage) is locked and
+unlocked with the panel.
 """
 
 from typing import Callable, FrozenSet, Set
@@ -10,6 +11,11 @@ from typing import Callable, FrozenSet, Set
 PANEL_LOCK_LOADING = "loading position"
 PANEL_LOCK_HOMING = "stage homing"
 PANEL_LOCK_AGENT = "agent session"
+
+
+class PanelLockRefused(Exception):
+    """A lock that must be confirmed was not. The text says what is not locked, for example "could not lock the
+    joystick of the stage"."""
 
 
 class PanelLockReasons:

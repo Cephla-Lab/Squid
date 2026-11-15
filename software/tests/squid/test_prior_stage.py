@@ -31,6 +31,7 @@ class FakeProScan:
         self.encoder_axes = 3
         self.sms = None
         self.sas = None
+        self.joystick_on = True  # the joystick is on after power-up
 
     # --- pyserial surface ---
     def write(self, data: bytes):
@@ -113,6 +114,11 @@ class FakeProScan:
             self.sms = int(cmd.split()[1])
         if cmd.startswith("SAS "):
             self.sas = int(cmd.split()[1])
+        # "H" turns the joystick off, "J" turns it on; "H 0" (as "H,0") turns it on too. Each answers "0".
+        if cmd == "H":
+            self.joystick_on = False
+        if cmd in ("J", "H 0", "H,0"):
+            self.joystick_on = True
         return b"0\r"
 
 
@@ -611,3 +617,40 @@ def test_startup_fails_when_the_controller_does_not_take_the_acceleration(fake, 
     monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"" if cmd.startswith("SAS ") else normal(self, cmd))
     with pytest.raises(squid.exceptions.SquidError, match="acceleration"):
         make_stage(fake)
+
+
+# --- The joystick of the ProScan: the window locks it with the control panel ---
+
+
+def test_the_prior_stage_has_a_joystick_of_its_own_and_startup_leaves_it_on(fake):
+    stage, ser = make_stage(fake)
+    assert stage.has_own_joystick() is True
+    assert ser.joystick_on and "H" not in ser.commands  # start-up sends "H 0", which keeps the joystick on
+
+
+def test_the_joystick_lock_turns_the_joystick_off_and_the_unlock_turns_it_on(fake):
+    stage, ser = make_stage(fake)
+    ser.commands.clear()
+    stage.set_joystick_lock(True)
+    assert not ser.joystick_on and not stage.joystick_enabled
+    stage.set_joystick_lock(False)
+    assert ser.joystick_on and stage.joystick_enabled
+    assert [c for c in ser.commands if c in ("H", "J")] == ["H", "J"]
+
+
+@pytest.mark.parametrize("locked, command", [(True, "H"), (False, "J")], ids=["lock", "unlock"])
+@pytest.mark.parametrize("answer", [b"", b"R\r"], ids=["no-answer", "other-answer"])
+def test_a_joystick_lock_that_the_controller_does_not_confirm_raises(fake, monkeypatch, locked, command, answer):
+    stage, ser = make_stage(fake)
+    normal = ser._reply
+    monkeypatch.setattr(ser, "_reply", lambda cmd: answer if cmd == command else normal(cmd))
+    with pytest.raises(squid.exceptions.SquidError, match="joystick"):
+        stage.set_joystick_lock(locked)
+
+
+def test_a_controller_error_to_the_joystick_lock_raises(fake, monkeypatch):
+    stage, ser = make_stage(fake)
+    normal = ser._reply
+    monkeypatch.setattr(ser, "_reply", lambda cmd: b"E,1\r" if cmd == "H" else normal(cmd))
+    with pytest.raises(Exception, match="E,1"):
+        stage.set_joystick_lock(True)

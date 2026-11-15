@@ -13,7 +13,7 @@ For the control server itself, see [Automated Acquisition via Scripts](automatio
 | State | Who drives | What Squid does |
 |-------|-----------|-----------------|
 | `none` | No session. | Nothing changes: the window and the server work as usual. |
-| `agent` | The agent. | The window ignores mouse and keyboard input, the control panel is locked, the terminal console refuses lines. A banner says so and has a **Take over** button. |
+| `agent` | The agent. | The window ignores mouse and keyboard input, the control panel (and the joystick of a Prior stage) is locked, the terminal console refuses lines. A banner says so and has a **Take over** button. |
 | `stopping` | Nobody yet. | A human asked for the control (or the session ends). The server refuses new action commands. Squid waits until the work of the agent has stopped. |
 | `human` | The human. | The window works as usual. The server refuses the action commands of the agent. The banner has **Hand back** and **End session**. |
 
@@ -94,6 +94,8 @@ The agent gets the control only when the microscope is free. The error text says
 - `a dialog or a menu is open in Squid`
 - `this controller cannot lock its control panel (firmware 1.8 or later is necessary)`, or
   `could not lock the control panel` if the controller did not confirm the lock
+- `could not lock the joystick of the stage` if a stage controller with a joystick of its own (a Prior stage) did
+  not confirm the lock
 - `a session exists` (begin), `no human is driving` (hand back)
 - `an agent session needs the Squid window` (the server runs with no window)
 - `Squid is closing`, `Squid did not answer`, or `the change failed in Squid (...)` with the error, if something
@@ -113,8 +115,9 @@ While the agent drives:
 
 - The window ignores clicks, keys, shortcuts, the wheel and drag-and-drop everywhere except on the banner. The
   widgets are not disabled, so the window still shows what the agent does.
-- The control panel (joystick and focus wheel) is locked. The lock is counted together with the locks of homing and
-  of the loading position: the end of a homing run inside a session does not unlock the panel.
+- The control panel (joystick and focus wheel) is locked, and so is the joystick of a stage controller that has one
+  of its own (see below). The lock is counted together with the locks of homing and of the loading position: the
+  end of a homing run inside a session does not unlock the panel.
 - The terminal console answers `Refused: the agent is driving` to each line (`Refused: a stop is in progress`
   during a stop).
 
@@ -166,6 +169,20 @@ Closing Squid asks for a confirmation, which is such a dialog: closing while the
 - In simulation the controller has no control panel, so a session begins with no panel lock. On a real controller
   with firmware older than 1.8 a session cannot begin, unless the setting below is on.
 
+## A stage with a joystick of its own
+
+A Prior stage controller has its own joystick, which moves the stage without Squid. Squid turns that joystick off
+(the command `H`) and on again (`J`) together with the control panel: for an agent session, for homing and at the
+loading position. Squid's own moves still work while the joystick is off.
+
+For an agent session the Prior controller must confirm the lock (it answers `0`). If it does not, the session does
+not begin (`could not lock the joystick of the stage`) and Squid turns the joystick on again. The Prior controller
+turns its joystick on when it is switched on, so a controller that was switched off and on during a lock has its
+joystick on again.
+
+A stage with no joystick of its own gets no command for this: the Cephla stage (its joystick is on the control
+panel, which the controller locks) and a PI focus stage.
+
 ## A controller that cannot lock its panel
 
 The panel lock needs controller firmware 1.8 or later. For an older controller there is one setting, off by
@@ -178,3 +195,7 @@ agent_session_allow_unlocked_panel = True
 With it a session can begin with no panel lock. The banner then also says "The control panel is not locked: do
 not touch the joystick." Nothing stops the joystick and the focus wheel: a hand on them moves the stage while the
 agent drives. Use the setting only when an operator is present.
+
+The setting is about the control panel only. The joystick of a Prior stage is still locked, and the session is
+still refused if the Prior controller does not confirm the lock. The banner then says "The control panel is not
+locked: do not touch it. The joystick of the stage is locked."

@@ -1263,3 +1263,27 @@ def test_pi_focus_swap_sequence_thaws_the_profile_on_restore():
     stage.move_z_to(3.0)
 
     assert not stage.is_profile_frozen()
+
+
+def test_a_stage_with_no_joystick_of_its_own_has_nothing_to_lock():
+    micro = get_test_micro()
+    cephla = squid.stage.cephla.CephlaStage(micro, squid.config.get_stage_config())
+    combined, _, _ = _sim_combined_stage()
+    with unittest.mock.patch.object(micro, "send_command") as sent:
+        for stage in (cephla, _sim_pi_stage(), combined):
+            assert stage.has_own_joystick() is False
+            stage.set_joystick_lock(True)
+            stage.set_joystick_lock(False)
+    sent.assert_not_called()  # the joystick of the Cephla control panel is locked through the microcontroller
+
+
+def test_a_combined_stage_locks_the_joystick_of_its_xy_stage():
+    xy = unittest.mock.create_autospec(squid.abc.AbstractStage, instance=True)
+    xy.has_own_joystick.return_value = True
+    combined = squid.stage.pi.CombinedStage(
+        xy_stage=xy, z_stage=_sim_pi_stage(), stage_config=squid.config.get_stage_config()
+    )
+    assert combined.has_own_joystick() is True
+    combined.set_joystick_lock(True)
+    combined.set_joystick_lock(False)
+    assert xy.set_joystick_lock.call_args_list == [unittest.mock.call(True), unittest.mock.call(False)]
