@@ -14,6 +14,7 @@ for a user already running ``HARDWARE_TRIGGER_MODE = LEVEL``.
 
 import ctypes
 import threading
+import time
 import types
 from configparser import ConfigParser
 from unittest import mock
@@ -130,8 +131,17 @@ class FakeToupcamSdk:
     }
 
     def __init__(
-        self, put_option_error=None, option_readback=None, io_error=None, io_readback=None, io_supported_mode=None
+        self,
+        put_option_error=None,
+        option_readback=None,
+        io_error=None,
+        io_readback=None,
+        io_supported_mode=None,
+        io_error_once=None,
     ):
+        self.closed = False
+        # (io line, control type) -> HRESULTException raised from the NEXT such IoControl call only.
+        self._io_error_once = dict(io_error_once or {})
         self.put_option_calls = []
         self.get_option_calls = []
         self.io_control_calls = []
@@ -160,10 +170,15 @@ class FakeToupcamSdk:
             return self._option_readback[option]
         return self._options.get(option, 0)
 
+    def Close(self):
+        self.closed = True
+
     def IoControl(self, index, control_type, value):
         self.io_control_calls.append((index, control_type, value))
         if (index, control_type) in self._io_error:
             raise self._io_error[(index, control_type)]
+        if (index, control_type) in self._io_error_once:
+            raise self._io_error_once.pop((index, control_type))
         if control_type == toupcam.TOUPCAM_IOCONTROLTYPE_GET_SUPPORTEDMODE:
             return self._io_supported_mode.get(index, 0x01 | 0x02)
         if control_type in self._IO_GET_TO_SET:
@@ -422,6 +437,26 @@ def test_toupcam_failed_re_arm_keeps_global_reset_verified(monkeypatch):
     assert cam.exposure_resets  # the strobe was refreshed after the rollback
 
 
+def test_toupcam_failed_re_arm_puts_the_ready_output_back(monkeypatch):
+    """EDGE trigger with the ready output on: the re-arm's IO setup resets GPIO1's inverter before the ready
+    output is applied again. A direction write refused in between must not leave the line active-high (the
+    controller would read busy as ready): the rollback applies the ready output again."""
+    _enable_global_reset(monkeypatch, enabled=False, trigger_mode=HardwareTriggerMode.EDGE)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", True)
+    sdk = FakeToupcamSdk()
+    cam = _make_toupcam(sdk)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert sdk._io_state[(_GPIO1, _SET_INVERTER)] == 1
+
+    sdk._io_error_once[(_GPIO1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_GPIODIR)] = toupcam.HRESULTException(0x80004005)
+    with pytest.raises(CameraError, match="GPIO1"):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+    assert sdk.get_Option(toupcam.TOUPCAM_OPTION_TRIGGER) == 2  # still hardware trigger, as before the re-arm
+    assert sdk._io_state[(_GPIO1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_GPIODIR)] == 1
+    assert sdk._io_state[(_GPIO1, _SET_INVERTER)] == 1  # active low again
+
+
 def test_toupcam_level_trigger_source_failure_rolls_back_with_the_opt_in_on(monkeypatch):
     """In LEVEL mode the trigger-source IO setup used to be logged and carried on from; with the opt-in on a
     refused setup must not be verified as a working global-reset mode, so it raises and the switch rolls back."""
@@ -614,7 +649,7 @@ def test_toupcam_trigger_ready_output_direction_sdk_error_raises(monkeypatch):
 # --- ToupCam: an opt-in the camera cannot do stops it from opening ---------------------------
 
 
-def _open_toupcam(monkeypatch, sdk, startup_mode=CameraAcquisitionMode.SOFTWARE_TRIGGER):
+def _open_toupcam(monkeypatch, sdk, startup_mode=CameraAcquisitionMode.SOFTWARE_TRIGGER, temperature_worker=None):
     """Run the real ToupcamCamera.__init__ over the fake SDK.
 
     Only the camera-wide setup that is not under test is stubbed. _configure_camera is reduced to the part that
@@ -629,7 +664,7 @@ def _open_toupcam(monkeypatch, sdk, startup_mode=CameraAcquisitionMode.SOFTWARE_
     cls = camera_toupcam.ToupcamCamera
     monkeypatch.setattr(cls, "_open", staticmethod(lambda index=None, sn=None: (sdk, toupcam_capabilities())))
     monkeypatch.setattr(cls, "_get_raw_exposure_time", lambda self: 20.0)
-    monkeypatch.setattr(cls, "_check_temperature", lambda self: None)
+    monkeypatch.setattr(cls, "_check_temperature", temperature_worker or (lambda self: None))
     monkeypatch.setattr(cls, "_configure_camera", lambda self: self._set_global_reset(self.get_acquisition_mode()))
     monkeypatch.setattr(cls, "_update_internal_settings", lambda self, send_exposure=True: None)
     monkeypatch.setattr(cls, "_log_startup_option_dump", lambda self: None)
@@ -669,6 +704,28 @@ def test_toupcam_gpio1_support_query_error_does_not_open_with_the_ready_output_o
 
     with pytest.raises(CameraError, match="Turn off CAMERA_TRIGGER_READY_OUTPUT"):
         _open_toupcam(monkeypatch, sdk)
+
+
+def test_toupcam_refused_at_open_closes_the_handle_and_stops_its_thread(monkeypatch):
+    """A refusal at open leaves nothing behind: the temperature thread, which holds the camera object, is told to
+    stop and the SDK handle is closed, so the next open in this process finds the camera free."""
+    _enable_global_reset(monkeypatch)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", False)
+    sdk = FakeToupcamSdk(put_option_error={_GLOBAL_RESET_OPTION: toupcam.HRESULTException(0x80004001)})
+    cameras = []
+
+    def temperature_worker(self):
+        cameras.append(self)
+        while not self.terminate_read_temperature_thread:
+            time.sleep(0.005)
+
+    with pytest.raises(CameraError, match="Turn off HARDWARE_TRIGGER_GLOBAL_RESET"):
+        _open_toupcam(monkeypatch, sdk, temperature_worker=temperature_worker)
+
+    assert sdk.closed is True
+    [cam] = cameras
+    cam.thread_read_temperature.join(timeout=2.0)
+    assert not cam.thread_read_temperature.is_alive()
 
 
 def test_toupcam_that_supports_both_opt_ins_opens_and_starts_its_stream(monkeypatch):
@@ -711,6 +768,7 @@ class FakeDcam:
         }
         self._attrs.update({int(k): v for k, v in (attrs or {}).items()})
         self._set_fails = {int(p) for p in set_fails}
+        self._set_fails_values = set()  # (property, value) pairs refused, e.g. one restore but not the setup
         self._readback = {int(k): v for k, v in (readback or {}).items()}
         self.set_calls = []
         self.get_calls = []
@@ -718,7 +776,7 @@ class FakeDcam:
 
     def prop_setvalue(self, idprop, value):
         self.set_calls.append((int(idprop), value))
-        if int(idprop) in self._set_fails:
+        if int(idprop) in self._set_fails or (int(idprop), value) in self._set_fails_values:
             return False
         self._props[int(idprop)] = value
         return True
@@ -994,6 +1052,29 @@ def test_hamamatsu_failed_setup_from_hardware_trigger_refreshes_the_strobe_for_t
     assert dcam._props[_TRIGGERACTIVE] == int(DCAMPROP.TRIGGERACTIVE.EDGE)
     assert cam._global_reset_active() is False
     assert cam.strobe_delays_pushed == [pytest.approx((4.4e-6 * 2304 + 0.0) * 1000.0)]
+
+
+def test_hamamatsu_partial_timing_restore_does_not_keep_global_reset_verified(monkeypatch):
+    """A re-arm verifies global reset again, then fails in the ready-output setup; the rollback puts
+    TRIGGER_GLOBALEXPOSURE back but the TRIGGERACTIVE restore is refused. The sensor's timing is mixed, so the
+    record must not say global reset, whatever the restore managed."""
+    _enable_hamamatsu_global_reset(monkeypatch)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", True)
+    dcam = FakeDcam()
+    cam = _make_hamamatsu(dcam)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert cam._global_reset_active() is True
+
+    dcam._readback[_OUT_POLARITY] = int(DCAMPROP.OUTPUTTRIGGER_POLARITY.POSITIVE)  # the ready output fails
+    dcam._set_fails_values.add((_TRIGGERACTIVE, int(DCAMPROP.TRIGGERACTIVE.EDGE)))  # and its restore is refused
+    with pytest.raises(CameraError, match="TRIGGERACTIVE|OUTPUTTRIGGER_POLARITY"):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+    assert int(dcam._props[_GLOBALEXPOSURE]) == int(
+        DCAMPROP.TRIGGER_GLOBALEXPOSURE.DELAYED
+    )  # that restore went through
+    assert int(dcam._props[_TRIGGERACTIVE]) == int(DCAMPROP.TRIGGERACTIVE.LEVEL)  # this one did not
+    assert cam._global_reset_active() is False
 
 
 def test_hamamatsu_refused_trigger_source_write_keeps_the_verified_global_reset(monkeypatch):

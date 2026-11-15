@@ -336,7 +336,15 @@ class ToupcamCamera(AbstractCamera):
         self.thread_read_temperature.start()
 
         self._configure_camera()
-        self._check_opt_in_support()
+        try:
+            self._check_opt_in_support()
+        except CameraError:
+            # Refused at open: nothing of this object may outlive the refusal. The temperature thread holds it,
+            # and an open SDK handle would keep the camera busy for the next open in this process.
+            self.terminate_read_temperature_thread = True
+            self.thread_read_temperature.join(timeout=3.0)  # its loop sleeps 2 s between reads
+            self._camera.Close()
+            raise
         self._start_raw_camera_stream()
         self._update_internal_settings()
 
@@ -1039,6 +1047,9 @@ class ToupcamCamera(AbstractCamera):
                 self._global_reset_verified = False
                 if previous_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
                     self._apply_global_reset_mode()
+                    # The EDGE-mode IO setup above resets GPIO1's inverter before the ready output is applied; a
+                    # failure in between would leave a ready line the controller reads the wrong way round.
+                    self._apply_trigger_ready_output()
                 self.set_exposure_time(self.get_exposure_time())
             except Exception as rollback_error:
                 self._log.error(
