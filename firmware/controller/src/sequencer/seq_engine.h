@@ -47,7 +47,7 @@ class SeqEngine {
     // terminal immediately, light off, motion stopped. No-op unless a sequence is running.
     // These must abort THROUGH the engine — cutting the lasers behind its back would let
     // the run complete 'successfully' with dark frames.
-    void abort(SeqError e);
+    void abort(SeqError e, uint32_t now_us);
     void tick(uint32_t now_us);
     SeqState state() const { return state_; }
     const SeqProgress& progress() const { return progress_; }
@@ -70,7 +70,7 @@ class SeqEngine {
     void watch_ready_lines();                        // stuck ready-line check: note every camera seen BUSY
     void retire_camera_timing(uint32_t now_us);      // drop camera deadlines that have passed
     void schedule_exposures(uint32_t k, uint32_t now_us);
-    void fail(SeqError e, uint8_t detail);
+    void fail(SeqError e, uint8_t detail, uint32_t now_us);
 
     SeqHal& hal_;
     SeqLoop loop_{};

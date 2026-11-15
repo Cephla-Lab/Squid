@@ -92,11 +92,11 @@ bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_a
     // that would leave the axis range part-way through.
     uint8_t bad_channel = 0;
     if (wait_timeout_us > kMaxDurationUs) {
-        fail(SeqError::BadDuration, 0);
+        fail(SeqError::BadDuration, 0, now_us);
         return true;
     }
     if (!stack_range_ok(stack_axis_start, &bad_channel)) {
-        fail(SeqError::StackOutOfRange, bad_channel);
+        fail(SeqError::StackOutOfRange, bad_channel, now_us);
         return true;
     }
     begin_prep(0, now_us);
@@ -107,8 +107,8 @@ bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_a
 
 void SeqEngine::cancel() { cancel_requested_ = true; }
 
-void SeqEngine::abort(SeqError e) {
-    if (running()) fail(e, 0);
+void SeqEngine::abort(SeqError e, uint32_t now_us) {
+    if (running()) fail(e, 0, now_us);
 }
 
 bool SeqEngine::command_stack(int32_t target, uint32_t now_us) {
@@ -149,7 +149,7 @@ void SeqEngine::finish(uint32_t now_us) {
         return;
     }
     if (!command_stack(stack_start_, now_us)) {
-        fail(SeqError::MoveFailed, loop_.stack_axis_id);
+        fail(SeqError::MoveFailed, loop_.stack_axis_id, now_us);
         return;
     }
     wait_deadline_us_ = now_us + wait_timeout_us_;
@@ -163,13 +163,13 @@ void SeqEngine::begin_prep(uint32_t k, uint32_t now_us) {
     const SeqChannel& ch = channels_[chi];
     // Stack axis
     if (!command_stack(stack_target_for(layer, chi), now_us)) {
-        fail(SeqError::MoveFailed, loop_.stack_axis_id);
+        fail(SeqError::MoveFailed, loop_.stack_axis_id, now_us);
         return;
     }
     // Filter wheel
     if (ch.filter_wheel != kNone) {
         if (!hal_.start_axis_move(ch.filter_wheel, ch.filter_target)) {
-            fail(SeqError::MoveFailed, ch.filter_wheel);
+            fail(SeqError::MoveFailed, ch.filter_wheel, now_us);
             return;
         }
     }
@@ -268,9 +268,18 @@ void SeqEngine::schedule_exposures(uint32_t k, uint32_t now_us) {
     state_ = SeqState::Exposing;
 }
 
-void SeqEngine::fail(SeqError e, uint8_t detail) {
+void SeqEngine::fail(SeqError e, uint8_t detail, uint32_t now_us) {
     hal_.all_off();
     hal_.stop_motion();
+    // all_off() cancelled the queued edges: a trigger that had not fired yet never reached its camera,
+    // so that camera owes no readout and no minimum period. One that had fired keeps both (the camera
+    // is busy whatever the run did), and tick() retires them when they pass.
+    for (uint8_t cam = 0; cam < kMaxCameras; cam++) {
+        if (trigger_valid_[cam] && !reached(now_us, last_trigger_us_[cam])) {
+            trigger_valid_[cam] = false;
+            readout_valid_[cam] = false;
+        }
+    }
     progress_.abort_error = (uint8_t)e;
     progress_.abort_detail = detail;
     state_ = SeqState::Failed;
@@ -313,10 +322,10 @@ void SeqEngine::tick(uint32_t now_us) {
                 break;
             }
             if (stuck_ready_cam_ >= 0) {
-                fail(SeqError::ReadyLineStuck, (uint8_t)stuck_ready_cam_);
+                fail(SeqError::ReadyLineStuck, (uint8_t)stuck_ready_cam_, now_us);
                 break;
             }
-            if (reached(now_us, wait_deadline_us_)) fail(SeqError::WaitTimeout, 0);
+            if (reached(now_us, wait_deadline_us_)) fail(SeqError::WaitTimeout, 0, now_us);
             break;
         case SeqState::Exposing: {
             if (!reached(now_us, cur_exposure_end_us_)) break;
@@ -340,7 +349,7 @@ void SeqEngine::tick(uint32_t now_us) {
                 break;
             }
             if (reached(now_us, wait_deadline_us_))
-                fail(SeqError::WaitTimeout, loop_.stack_axis_id);
+                fail(SeqError::WaitTimeout, loop_.stack_axis_id, now_us);
             break;
         default:
             break;
