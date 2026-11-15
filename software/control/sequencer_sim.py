@@ -415,6 +415,13 @@ class SimulatedSequencer:
                     self._state = sp.SeqState.EXPOSING
                     self._frames_fired += 1
                 for camera_id in cameras_in_mask(channel.camera_mask):
+                    # A callback can block (a camera slow to take its trigger) while the host aborts this run
+                    # and starts another: the step's remaining cameras must not be triggered into the new run.
+                    if abort.is_set():
+                        return
+                    with self._lock:
+                        if not self._owns_run(run_id):
+                            return
                     trigger = self.on_hardware_trigger
                     if trigger is not None:
                         trigger(camera_id)
