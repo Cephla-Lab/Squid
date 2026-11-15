@@ -123,26 +123,27 @@ bool seq_start(int32_t stack_start) {
 
 void seq_cancel() { engine.cancel(); }
 
-void seq_abort(seq::SeqError e) { engine.abort(e); }
+void seq_abort(seq::SeqError e) { engine.abort(e, micros()); }
 
 void seq_tick() {
+    const uint32_t now = micros();
     if (!engine.running()) {
-        engine.tick(micros());  // idle tick: retires the camera deadlines the last run left behind
+        engine.tick(now);  // idle tick: retires the camera deadlines the last run left behind
         return;
     }
     // Abort THROUGH the engine: loop() also forces the TTL ports LOW when the interlock opens,
     // and without this the run would complete "successfully" with dark frames.
     if (program_uses_ttl && (!INTERLOCK_OK() || event_timer_interlock_tripped())) {
-        engine.abort(seq::SeqError::InterlockOpen);
+        engine.abort(seq::SeqError::InterlockOpen, now);
         return;
     }
     // Edges that were never queued, or queued but never armed, would leave a trigger or a TTL
     // port asserted: abort, which releases them (fail -> all_off -> event_timer_cancel_all).
     if (hal.schedule_failed() || event_timer_arm_failed()) {
-        engine.abort(seq::SeqError::EdgeQueueFull);
+        engine.abort(seq::SeqError::EdgeQueueFull, now);
         return;
     }
-    engine.tick(micros());
+    engine.tick(now);
 }
 
 bool seq_running() { return engine.running(); }
