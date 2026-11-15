@@ -18,6 +18,7 @@ class FakeProScan:
     """Just enough of the ProScan ASCII protocol for PriorStage: CR-terminated replies, multi-line STAGE."""
 
     def __init__(self, *args, timeout=0.1, **kwargs):
+        self.closed = False
         self.timeout = timeout
         self.baudrate = kwargs.get("baudrate", 115200)
         self._buf = b""
@@ -33,6 +34,9 @@ class FakeProScan:
         self.sas = None
 
     # --- pyserial surface ---
+    def close(self):
+        self.closed = True
+
     def write(self, data: bytes):
         cmd = data.decode().strip()
         with self._lock:
@@ -118,7 +122,9 @@ class FakeProScan:
 
 @pytest.fixture
 def fake(monkeypatch):
-    instance = {}
+    """The fake controller behind every stage a test builds; the stages are closed afterwards, so their position
+    polling threads do not outlive the test (see test_close_stops_the_position_polling_thread)."""
+    instance = {"stages": []}
 
     def make_serial(*args, **kwargs):
         instance["fake"] = FakeProScan(*args, **kwargs)
@@ -130,12 +136,32 @@ def fake(monkeypatch):
         "comports",
         lambda: [SimpleNamespace(device="COM_FAKE", serial_number="FAKE_SN")],
     )
-    return instance
+    yield instance
+    for stage in instance["stages"]:
+        stage.close()
 
 
 def make_stage(fake, **kwargs):
     stage = squid.stage.prior.PriorStage(sn="FAKE_SN", **kwargs)
+    fake["stages"].append(stage)
     return stage, fake["fake"]
+
+
+def test_close_stops_the_position_polling_thread(fake):
+    """Each stage starts a daemon that polls the position every 250 ms for the life of the process. Left running
+    by every test that built a stage, forty of them slowed the rest of the CI shard and tripped tests that count
+    sleeps. close() ends the thread, releases the serial handle, and nothing restarts the polling afterwards."""
+    stage, ser = make_stage(fake)
+    thread = stage._pos_polling_thread
+    assert thread.is_alive()
+
+    stage.close()
+
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert ser.closed
+    stage._ensure_pos_polling_thread()
+    assert stage._pos_polling_thread is thread and not thread.is_alive()
 
 
 def test_init_reads_multiline_stage_reply_without_misaligning(fake):
@@ -336,7 +362,8 @@ def test_an_unclear_ini_setting_stops_start_up(fake):
 
 
 def test_positional_arguments_keep_their_places(fake):
-    squid.stage.prior.PriorStage("FAKE_SN", 115200, None, 150, 500)  # sn, baudrate, stage_config, speed, acceleration
+    stage = squid.stage.prior.PriorStage("FAKE_SN", 115200, None, 150, 500)  # sn, baudrate, stage_config, speed, accel
+    fake["stages"].append(stage)
     ser = fake["fake"]
     assert (ser.sms, ser.sas) == (150, 500)
     assert not [c for c in ser.commands if "ENCODER" in c]
@@ -611,3 +638,9 @@ def test_startup_fails_when_the_controller_does_not_take_the_acceleration(fake, 
     monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"" if cmd.startswith("SAS ") else normal(self, cmd))
     with pytest.raises(squid.exceptions.SquidError, match="acceleration"):
         make_stage(fake)
+
+
+def test_no_position_polling_thread_outlives_the_tests_above():
+    """Runs last in this file: every stage the tests above built has been closed, so no poller is left running
+    into the rest of the pytest process."""
+    assert [t.name for t in threading.enumerate() if t.name == "prior-pos-polling"] == []
