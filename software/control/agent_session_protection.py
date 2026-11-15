@@ -26,7 +26,7 @@ STOP_CAUSE_DIALOG = "a dialog opened in Squid"
 
 class AgentSessionProtection(QObject):
     _signal_session_changed = Signal()
-    _signal_transition = Signal(str, str, object)  # kind, note, a list that gets the answer
+    _signal_transition = Signal(str, str, object, object)  # kind, note, session id, a list that gets the answer
 
     def __init__(
         self,
@@ -106,33 +106,34 @@ class AgentSessionProtection(QObject):
 
     # --- the agent gets the control ---
 
-    def transition(self, kind: str, note: str = "") -> Optional[str]:
+    def transition(self, kind: str, note: str = "", session_id: Optional[str] = None) -> Optional[str]:
         """Give the control to the agent: kind is "begin" or "hand_back". Returns None, or why it was refused.
-        From any thread: the work is done on the GUI thread and the caller waits for it."""
+        From any thread: the work is done on the GUI thread and the caller waits for it. session_id: the session
+        that the request belongs to; a request for a session that is not the session of now is refused."""
         if QThread.currentThread() == self.thread():
-            return self._transition(kind, note)
+            return self._transition(kind, note, session_id)
         answer: List[Optional[str]] = []
-        self._signal_transition.emit(kind, note, answer)  # returns when the GUI thread did the work
+        self._signal_transition.emit(kind, note, session_id, answer)  # returns when the GUI thread did the work
         return answer[0] if answer else REFUSAL_NO_ANSWER
 
-    @Slot(str, str, object)
-    def _transition_for_another_thread(self, kind: str, note: str, answer: list) -> None:
-        answer.append(self._transition(kind, note))
+    @Slot(str, str, object, object)
+    def _transition_for_another_thread(self, kind: str, note: str, session_id: Optional[str], answer: list) -> None:
+        answer.append(self._transition(kind, note, session_id))
 
-    def _transition(self, kind: str, note: str) -> Optional[str]:
+    def _transition(self, kind: str, note: str, session_id: Optional[str] = None) -> Optional[str]:
         try:  # Qt swallows an exception of a slot that is called with a blocking connection
-            return self._give_control_to_the_agent(kind, note)
+            return self._give_control_to_the_agent(kind, note, session_id)
         except Exception as error:
             self._log.exception(f"The agent session change '{kind}' failed")
             self.sync()
             return f"the change failed in Squid ({type(error).__name__}: {error})"
 
-    def _give_control_to_the_agent(self, kind: str, note: str) -> Optional[str]:
+    def _give_control_to_the_agent(self, kind: str, note: str, session_id: Optional[str] = None) -> Optional[str]:
         if self._shut_down:
             return REFUSAL_CLOSING
         if QApplication.activeModalWidget() is not None or QApplication.activePopupWidget() is not None:
             return REFUSAL_DIALOG_OPEN
-        reason = self._session.why_not(kind)
+        reason = self._session.why_not(kind, session_id)  # also: is it a request for the session of now
         if reason:
             return reason
         # The protection first: from the moment the session says "agent", the server runs the commands of the agent.
@@ -147,7 +148,7 @@ class AgentSessionProtection(QObject):
             if kind == "begin":
                 self._session.begin()
             else:
-                self._session.hand_back(self._snapshot(True), note)
+                self._session.hand_back(self._snapshot(True), note, session_id)
         except AgentSessionRefused as refusal:  # something started between the question and the change
             self.sync()
             return str(refusal)
