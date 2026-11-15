@@ -157,6 +157,21 @@ def test_unlock_anyway_ends_stopping_and_reads_no_position_under_a_command(qtbot
     assert snapshots == [False] and status["handover"]["before"] == {"x_mm": None}
 
 
+def test_unlock_anyway_reads_no_position_while_an_acquisition_runs(qtbot, session, mpc, stage):
+    """An acquisition that a command started runs on after the command returned: no command is in progress, but
+    its moves can hold the stage (a PI stage holds its lock for the whole of a blocking move)."""
+    mpc.running = True
+    snapshots = []
+    seq = make(session, mpc, stage, snapshots=snapshots)
+    session.request_stop(SessionState.HUMAN, "take over")
+    seq.start()
+    qtbot.waitUntil(lambda: session.status()["waiting_for"] == [WAIT_ACQUISITION], timeout=2000)
+    assert session.in_flight == 0
+    seq.unlock_anyway()
+    assert session.state is SessionState.HUMAN and session.status()["unlocked_anyway"] is True
+    assert snapshots == [False] and session.status()["handover"]["before"] == {"x_mm": None}
+
+
 def test_start_two_times_is_one_sequence_and_stop_cancels_it(qtbot, session, mpc, stage):
     stage.stopped = False
     seq = make(session, mpc, stage)

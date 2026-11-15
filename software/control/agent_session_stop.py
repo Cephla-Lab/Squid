@@ -72,8 +72,10 @@ class AgentSessionStopSequence(QObject):
         self._timer.stop()
 
     def unlock_anyway(self) -> None:
-        """The human decides not to wait any more. The stage is not asked while a command is in progress."""
-        self._finish(with_position=self._session.in_flight == 0, unlocked_anyway=True)
+        """The human decides not to wait any more. The stage is not asked: something still holds the stop (a
+        command, an acquisition that runs on after its command returned, or a move), and on some stages a read of
+        the position waits for the lock that a move holds."""
+        self._finish(with_position=False, unlocked_anyway=True)
 
     def _finish(self, with_position: bool, unlocked_anyway: bool = False) -> None:
         """End the stop: the human gets the control (or the session ends). This does not depend on the snapshot:
