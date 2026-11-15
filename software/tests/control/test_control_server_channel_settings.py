@@ -6,6 +6,8 @@ channel (set_channel, the other of the two commands, an acquisition) got the sto
 disk in, the stored value is the confocal one, so the image never showed the new value.
 """
 
+import threading
+
 import pytest
 
 from control.core.config import ConfigRepository
@@ -205,3 +207,40 @@ def test_a_value_that_the_channel_file_cannot_hold_is_refused_and_nothing_is_sav
     assert response["success"] is False
     assert channel_file.read_text() == before
     assert _loaded(scope) == (CONFOCAL if confocal else WIDEFIELD)
+
+
+def test_two_callers_that_set_values_at_the_same_time_keep_both_values(scope, server, objective, monkeypatch):
+    """Each control server client runs on its own thread, and the live controls on the GUI thread. A caller that
+    saves its copy of the channel file must not undo a value that another caller saved meanwhile."""
+    repo = scope.config_repo
+    real_save = repo._save_yaml
+    first_save_started, let_first_save_finish = threading.Event(), threading.Event()
+    saves = []
+
+    def save_yaml(path, model):
+        saves.append(path)
+        if len(saves) == 1:  # holds the first caller in the middle of its save
+            first_save_started.set()
+            let_first_save_finish.wait(timeout=10)
+        real_save(path, model)
+
+    monkeypatch.setattr(repo, "_save_yaml", save_yaml)
+
+    def set_value(setting, value):
+        repo.update_channel_setting(objective, CHANNEL, setting, value)
+
+    exposure = threading.Thread(target=set_value, args=("ExposureTime", 77.0))
+    exposure.start()
+    assert first_save_started.wait(timeout=10)
+    intensity = threading.Thread(target=set_value, args=("IlluminationIntensity", 11.0))
+    intensity.start()
+    intensity.join(timeout=2)  # with no serialization, the second caller saves now, while the first one is held
+    let_first_save_finish.set()
+    exposure.join(timeout=10)
+    intensity.join(timeout=10)
+
+    assert _loaded(scope) == (77.0, 11.0)
+    read_again = ConfigRepository(base_path=repo.base_path)  # as the next start of Squid reads the files
+    read_again.set_profile("default")
+    (channel,) = read_again.get_merged_channels(objective)
+    assert (channel.exposure_time, channel.illumination_intensity) == (77.0, 11.0)
