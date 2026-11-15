@@ -708,6 +708,9 @@ class Microscope:
 
         self.addons = addons
         self.low_level_drivers = low_level_drivers
+        # The control panel is locked while anything holds the stage, from here on (the startup home included)
+        self._panel_lock_unsupported_logged = False  # firmware < 1.8 cannot lock it: said once per session
+        self.stage_motion.on_holder_changed = self._lock_panel_while_stage_held
 
         self._simulated = simulated
 
@@ -1325,6 +1328,33 @@ class Microscope:
 
         threading.Thread(target=release_once_stopped, daemon=True, name="stage-motion-release").start()
 
+    def _lock_panel_while_stage_held(self, holder: Optional[str]) -> None:
+        """The stage-motion observer: lock the control panel while anything holds the stage, unlock it when nothing
+        does. The joystick and the focus wheel are read by the controller firmware on its own, which drops them only
+        during a commanded move or a home: between moves (exposures, autofocus steps, the stay at the loading
+        position) they would still move the stage under its owner. Runs on the owner's thread before take() returns
+        and waits for the controller, so the lock is in place before the owner's first command. A refused command is
+        logged, not raised: the owner keeps the stage."""
+        mcu = self.low_level_drivers.microcontroller
+        if mcu is None or self._closed:  # close() unlocked it; the controller is gone
+            return
+        locked = holder is not None
+        if not mcu.supports_panel_lock():
+            if locked and not self._panel_lock_unsupported_logged:
+                self._panel_lock_unsupported_logged = True
+                self._log.warning(
+                    "This controller firmware cannot lock the control panel: its joystick still moves XY during"
+                    " acquisitions"
+                )
+            return
+        try:
+            mcu.set_panel_lock(locked)
+            mcu.wait_till_operation_is_completed()
+        except Exception as e:
+            self._log.error(
+                f"Could not {'lock' if locked else 'unlock'} the control panel ({holder or 'released'}): {e}"
+            )
+
     def _end_stage_homing(self, claim: StageHomingClaim) -> None:
         """StageHomingClaim's release, once the stage reported it stopped: resume live if it was running before, tell
         the listeners, and only then clear the claim.
@@ -1657,10 +1687,13 @@ class Microscope:
         except Exception as e:
             self._log.warning(f"Error closing stage: {e}")
 
+        # The unlock below must be the last panel command: a lock already under way (an owner that took the stage just
+        # before _closed was set) ends first, and none is sent after.
+        self.stage_motion.stop_observing()
         if self.low_level_drivers.microcontroller:
             try:
-                # A lock the GUI set (a Z lift system at the loading position) is not left behind: with Squid
-                # closed the joystick works on its own again.
+                # A lock left by a stage owner (the stay at the loading position, a run that never ended) is not left
+                # behind: with Squid closed the joystick works on its own again.
                 self.low_level_drivers.microcontroller.unlock_panel()
             except Exception as e:
                 self._log.warning(f"Error unlocking the control panel: {e}")
