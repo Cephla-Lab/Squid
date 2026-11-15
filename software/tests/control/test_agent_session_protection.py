@@ -465,24 +465,24 @@ def test_after_shut_down_nothing_follows_the_session(rig, qtbot):
     assert rig.protection.transition("begin") == "Squid is closing"
 
 
+def hand_back_from_a_server_thread(r, qtbot, session_id):
+    """transition("hand_back") from a thread that is not the GUI thread, as the control server calls it: the id
+    goes with the request. The wait is for the end of the thread, with a long limit for a loaded test computer;
+    the thread is a daemon, so a thread that a failed test leaves behind does not keep the tests from ending."""
+    answers = []
+    thread = threading.Thread(
+        target=lambda: answers.append(r.protection.transition("hand_back", "", session_id)), daemon=True
+    )
+    thread.start()
+    qtbot.waitUntil(lambda: not thread.is_alive(), timeout=10000)
+    thread.join()
+    return answers
+
+
 def test_a_hand_back_for_a_session_that_is_not_the_session_of_now_touches_nothing(rig, qtbot):
     begin(rig)
     take_over_and_wait(rig, qtbot)
-    answers = []
-    # From a thread that is not the GUI thread, as the control server calls it: the id goes with the request.
-    thread = threading.Thread(
-        target=lambda: answers.append(rig.protection.transition("hand_back", "", "an-earlier-one"))
-    )
-    thread.start()
-    qtbot.waitUntil(lambda: bool(answers), timeout=2000)
-    thread.join()
-    assert answers == ["this is not the agent session of now"]
+    assert hand_back_from_a_server_thread(rig, qtbot, "an-earlier-one") == ["this is not the agent session of now"]
     assert rig.session.state is SessionState.HUMAN and not rig.shield.is_active() and not rig.panel.locked
-    answers.clear()
-    thread = threading.Thread(
-        target=lambda: answers.append(rig.protection.transition("hand_back", "", rig.session.session_id))
-    )
-    thread.start()
-    qtbot.waitUntil(lambda: bool(answers), timeout=2000)
-    thread.join()
-    assert answers == [None] and rig.session.state is SessionState.AGENT and protected(rig)
+    assert hand_back_from_a_server_thread(rig, qtbot, rig.session.session_id) == [None]
+    assert rig.session.state is SessionState.AGENT and protected(rig)
