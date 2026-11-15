@@ -171,6 +171,27 @@ def test_a_command_that_can_not_start_is_a_reason_not_an_exception(tmp_path):
     assert "could not start" in reason and "no-such-program-for-the-notebook" in reason
 
 
+def test_squid_that_closes_during_the_start_starts_no_program(tmp_path):
+    # The quit of Squid comes while the start runs on its thread, before the program is started.
+    url = f"http://127.0.0.1:{free_port()}/"
+    (tmp_path / "idle.py").write_text("import time; time.sleep(60)")
+    notebook = AgentNotebook(
+        f'"{sys.executable}" "{tmp_path / "idle.py"}"',
+        url,
+        start_control_server=lambda: notebook.close(),
+        open_page=lambda address: None,
+        log_path=str(tmp_path / "agent_notebook.log"),
+        wait_s=0.6,
+    )
+    try:
+        reason = notebook.open()
+        assert notebook.process is None  # nothing that goes on after Squid
+        assert "closes" in reason
+    finally:
+        if notebook.process is not None:
+            notebook.process.kill()
+
+
 def test_with_no_command_and_no_page_the_reason_names_the_setting(tmp_path):
     notebook, events = make("", f"http://127.0.0.1:{free_port()}/", tmp_path)
     assert "agent_notebook_command" in notebook.open() and events == []

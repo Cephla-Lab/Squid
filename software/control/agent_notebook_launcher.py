@@ -16,6 +16,7 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -91,6 +92,10 @@ class AgentNotebook:
         self._log_path = log_path or default_log_path()
         self._wait_s = wait_s
         self.process: Optional[subprocess.Popen] = None  # the program, when this Squid started it
+        # close() and the start of the program take turns: a close during a start is either before the program
+        # starts (then it does not start) or after (then close() ends it).
+        self._lock = threading.Lock()
+        self._closed = False
 
     def open(self) -> Optional[str]:
         """Open the page of the notebook. Squid starts the control server each time (the agent of the notebook
@@ -116,13 +121,21 @@ class AgentNotebook:
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             kwargs["start_new_session"] = True
-        try:
-            with open(self._log_path, "wb") as log:  # the child keeps its own handle
-                self.process = subprocess.Popen(
-                    command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, close_fds=True, **kwargs
-                )
-        except OSError as e:
-            return f"The notebook program could not start ({command[0]}): {e}"
+        with self._lock:
+            if self._closed:
+                return "Squid closes: the notebook program was not started."
+            try:
+                with open(self._log_path, "wb") as log:  # the child keeps its own handle
+                    self.process = subprocess.Popen(
+                        command,
+                        stdin=subprocess.DEVNULL,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        close_fds=True,
+                        **kwargs
+                    )
+            except OSError as e:
+                return f"The notebook program could not start ({command[0]}): {e}"
         deadline = time.monotonic() + self._wait_s
         while time.monotonic() < deadline:
             code = self.process.poll()
@@ -132,7 +145,7 @@ class AgentNotebook:
                 self._open_page(self._url)
                 return None
             time.sleep(0.2)
-        self.close()
+        self._end_process()
         return self._failure(
             f"The notebook page did not answer at {self._url} in {self._wait_s:g} s; the program was ended."
         )
@@ -146,11 +159,18 @@ class AgentNotebook:
         )
 
     def close(self) -> None:
-        """End the program if this Squid started it. A notebook that someone else started is left alone."""
-        if self.process is None or self.process.poll() is not None:
+        """Squid closes: end the program if this Squid started it, and start none after this. A notebook that
+        someone else started is left alone."""
+        with self._lock:
+            self._closed = True
+        self._end_process()
+
+    def _end_process(self) -> None:
+        process = self.process
+        if process is None or process.poll() is not None:
             return
-        self.process.terminate()
+        process.terminate()
         try:
-            self.process.wait(5.0)
+            process.wait(5.0)
         except subprocess.TimeoutExpired:
-            self.process.kill()
+            process.kill()
