@@ -514,3 +514,99 @@ def test_squid_restarted_at_the_loading_position_holds_the_stage_there(qtbot):
     assert reservation.holder == AT_LOADING
     _back_to_scanning(qtbot, dialog)
     assert reservation.holder is None
+
+
+# --- the control panel lock follows the stage ------------------------------------------------------------------------
+
+
+@pytest.fixture
+def panel_scope(monkeypatch):
+    """A Microscope on a firmware-simulated controller that has the panel lock (sim.panel_locked is its state)."""
+    from control._def import FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE
+    from control.firmware_sim_serial import FirmwareSimSerial
+
+    import control.microcontroller
+
+    # strict=False: a whole Microscope also sends commands the sim's protocol whitelist lacks (watchdog, heartbeat)
+    sim = FirmwareSimSerial(strict=False, firmware_version=FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE)
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    scope = control.microscope.Microscope.build_from_global_config(True, skip_init=True)
+    yield scope, sim
+    scope.close()
+
+
+def _panel_during(mpc, sim):
+    """Record sim.panel_locked when the run reports its start."""
+    seen = []
+    mpc.callbacks = dataclasses.replace(
+        mpc.callbacks,
+        signal_acquisition_start=lambda *_: seen.append(sim.panel_locked),
+    )
+    return seen
+
+
+def test_an_acquisition_locks_the_control_panel_until_it_ends(panel_scope):
+    scope, sim = panel_scope
+    mpc, finished = _acquisition(scope)
+    during = _panel_during(mpc, sim)
+
+    assert mpc.run_acquisition() is True
+    _wait_until_done(mpc, finished)
+
+    assert mpc.last_end_reason == "completed"
+    assert during == [True] and not sim.panel_locked
+
+
+def test_an_aborted_acquisition_unlocks_the_control_panel(panel_scope):
+    scope, sim = panel_scope
+    mpc, finished = _acquisition(scope)
+    during = _panel_during(mpc, sim)
+    mpc.callbacks = dataclasses.replace(
+        mpc.callbacks,
+        signal_acquisition_start=lambda *a: (mpc.request_abort_aquisition(), during.append(sim.panel_locked)),
+    )
+
+    assert mpc.run_acquisition() is True
+    _wait_until_done(mpc, finished)
+
+    assert mpc.last_end_reason == "user_abort"
+    assert during == [True] and not sim.panel_locked
+
+
+def test_an_acquisition_that_fails_unlocks_the_control_panel(panel_scope):
+    from control.core.multi_point_controller import MultiPointWorker
+
+    scope, sim = panel_scope
+    mpc, finished = _acquisition(scope)
+    during = []
+
+    def camera_fails(worker, *args, **kwargs):
+        during.append(sim.panel_locked)
+        raise TimeoutError("the camera sent no frame")  # the worker ends the run as failed
+
+    with patch.object(MultiPointWorker, "acquire_at_position", camera_fails):
+        assert mpc.run_acquisition() is True
+        _wait_until_done(mpc, finished)
+
+    assert mpc.last_end_reason == "error"
+    assert during == [True] and not sim.panel_locked
+    assert scope.stage_motion.holder is None
+
+
+def test_a_start_that_fails_unlocks_the_control_panel(panel_scope, monkeypatch):
+    import control.core.multi_point_controller as mpc_module
+
+    scope, sim = panel_scope
+
+    class BrokenWorker:
+        def __init__(self, *args, **kwargs):
+            assert sim.panel_locked  # the run held the stage, so the panel locked
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(mpc_module, "MultiPointWorker", BrokenWorker)
+    mpc, _ = _acquisition(scope)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        mpc.run_acquisition()
+
+    assert not sim.panel_locked and scope.stage_motion.holder is None

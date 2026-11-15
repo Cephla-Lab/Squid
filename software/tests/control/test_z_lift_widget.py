@@ -479,9 +479,11 @@ def test_everything_locks_when_the_move_to_loading_starts_and_stays_locked_until
 
     live = MagicMock()
     live.is_live = False
-    stage_utils = StageUtils(MagicMock(), live, is_wellplate=False, stage_motion=StageMotionReservation())
+    reservation = StageMotionReservation()
+    panel = []  # the control panel lock follows the stage-motion hold (Microscope._lock_panel_while_stage_held)
+    reservation.on_holder_changed = lambda holder: panel.append(holder is not None)
+    stage_utils = StageUtils(MagicMock(), live, is_wellplate=False, stage_motion=reservation)
     qtbot.addWidget(stage_utils)
-    panel = []
 
     class _Gui:  # Qt connects bound methods through weak references: SimpleNamespace has none
         pass
@@ -496,7 +498,6 @@ def test_everything_locks_when_the_move_to_loading_starts_and_stays_locked_until
         _LOADING_POSITION_BLOCKED_WIDGETS=("navigationWidget", "liveControlWidget"),
         navigationWidget=QPushButton(),
         liveControlWidget=QPushButton(),
-        _set_control_panel_lock=panel.append,
     )
     for name in (
         "_connect_loading_position_lock",
@@ -535,22 +536,28 @@ def test_shutdown_unlocks_the_control_panel_before_anything_can_fail():
     class _Gui:
         pass
 
-    calls = []
     fake = _Gui()
-    fake._loading_position_locked = True
-    fake._set_control_panel_lock = lambda locked: calls.append(locked)
+    fake.microscope = MagicMock()
+    fake.microscope.stage_motion = StageMotionReservation()
+    fake.microcontroller = MagicMock()
     fake.log = MagicMock()
     fake.stage = MagicMock()
     fake.stage.get_pos.side_effect = RuntimeError("the first cleanup step fails")
+    hold = fake.microscope.stage_motion.take("the stage is at the loading position (return from it first)")
     with pytest.raises(RuntimeError):
         Gui._cleanup_common(fake, for_restart=False)
-    assert calls == [False]
+    fake.microcontroller.unlock_panel.assert_called_once_with()
 
-    calls.clear()
-    fake._loading_position_locked = False  # not at the loading position: nothing sent
+    fake.microcontroller.reset_mock()
+    hold.release()  # nothing holds the stage, so the panel is not locked: nothing sent
     with pytest.raises(RuntimeError):
         Gui._cleanup_common(fake, for_restart=False)
-    assert calls == []
+    fake.microcontroller.unlock_panel.assert_not_called()
+
+    fake.microcontroller.unlock_panel.side_effect = TimeoutError("the controller did not answer")
+    fake.microscope.stage_motion.take("an acquisition is running")
+    with pytest.raises(RuntimeError, match="the first cleanup step fails"):  # a failed unlock does not stop cleanup
+        Gui._cleanup_common(fake, for_restart=False)
 
 
 def test_a_restored_loading_position_starts_locked_with_the_return_ready(qtbot):
@@ -567,7 +574,10 @@ def test_a_restored_loading_position_starts_locked_with_the_return_ready(qtbot):
     stage.lift.min_mm, stage.lift.max_mm = 0.0, 32.0
     stage.get_config.return_value.Z_AXIS.MIN_POSITION = 0.0
     stage.get_config.return_value.Z_AXIS.MAX_POSITION = 6.0
-    stage_utils = StageUtils(stage, live, is_wellplate=False, stage_motion=StageMotionReservation())
+    reservation = StageMotionReservation()
+    panel = []  # the control panel lock follows the stage-motion hold (Microscope._lock_panel_while_stage_held)
+    reservation.on_holder_changed = lambda holder: panel.append(holder is not None)
+    stage_utils = StageUtils(stage, live, is_wellplate=False, stage_motion=reservation)
     qtbot.addWidget(stage_utils)
     guard = LiftMotionGuard(stage_utils)
     stage_utils.set_lift_motion_guard(guard)
@@ -575,7 +585,6 @@ def test_a_restored_loading_position_starts_locked_with_the_return_ready(qtbot):
     class _Gui:
         pass
 
-    panel = []
     fake = _Gui()
     fake.__dict__.update(
         stage=stage,
@@ -586,7 +595,6 @@ def test_a_restored_loading_position_starts_locked_with_the_return_ready(qtbot):
         _stage_homing_locked=False,
         _LOADING_POSITION_BLOCKED_WIDGETS=("navigationWidget",),
         navigationWidget=QPushButton(),
-        _set_control_panel_lock=panel.append,
         _restored_loading_state={"scanning_z_mm": 2.5, "lift_mm": 4.0, "lift_format": "glass slide"},
     )
     for name in (

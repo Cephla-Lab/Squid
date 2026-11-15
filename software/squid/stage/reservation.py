@@ -6,11 +6,18 @@ Microscope's StageMotionReservation before it moves anything and keeps it until 
 one is refused at once, with what holds the stage, instead of driving the stage under the first. The take is one locked
 step, so two owners starting at the same moment cannot both get it.
 
+One observer (on_holder_changed) hears each change of owner: the Microscope locks the control panel through it while
+anything holds the stage.
+
 No Qt here: headless code takes it the same way.
 """
 
 import threading
 from typing import Callable, Optional, Union
+
+import squid.logging
+
+_log = squid.logging.get_logger(__name__)
 
 # What holds the stage, as the refusal reads: "an acquisition is running". A callable is asked at each refusal, for an
 # owner whose state changes while it holds the stage (a move to the loading position, the stay there, the move back).
@@ -54,6 +61,13 @@ class StageMotionReservation:
     def __init__(self):
         self._lock = threading.Lock()
         self._hold: Optional[StageMotionHold] = None
+        # Called with the holder's reason after a take, and with None after the release that frees the stage; not for
+        # a refused take or a stale release. It runs on the thread that took or released, outside the lock, before
+        # take() returns: an owner moves nothing until it has run. An exception from it is logged, not raised.
+        self.on_holder_changed: Optional[Callable[[Optional[str]], None]] = None
+        # One observer call at a time, each told the holder as it is when it runs: of a release and the next take on
+        # two threads, the last call made always says who holds the stage now.
+        self._observer_lock = threading.Lock()
 
     @property
     def holder(self) -> Optional[str]:
@@ -67,11 +81,25 @@ class StageMotionReservation:
         with self._lock:
             if self._hold is not None:
                 raise StageMotionRefused(self._hold.reason)
-            self._hold = StageMotionHold(self, reason)
-            return self._hold
+            hold = self._hold = StageMotionHold(self, reason)
+        self._tell_observer()
+        return hold
 
     def _release(self, hold: StageMotionHold) -> None:
         with self._lock:
             hold._released = True
-            if self._hold is hold:
-                self._hold = None
+            if self._hold is not hold:
+                return
+            self._hold = None
+        self._tell_observer()
+
+    def _tell_observer(self) -> None:
+        observer = self.on_holder_changed
+        if observer is None:
+            return
+        with self._observer_lock:
+            holder = self.holder
+            try:
+                observer(holder)
+            except Exception:
+                _log.exception(f"The stage-motion observer failed (holder: {holder})")

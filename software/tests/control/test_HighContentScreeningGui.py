@@ -972,18 +972,6 @@ def test_tcp_home_is_refused_while_the_gui_drives_the_stage(qtbot, confirm_exit_
         end()
 
 
-def test_old_firmware_panel_lock_warning_is_logged_once(qtbot, confirm_exit_yes, caplog):
-    gui = _gui(qtbot)
-    assert not gui.microcontroller.supports_panel_lock()  # the simulated controller's firmware is older than 1.8
-    with caplog.at_level(logging.WARNING):
-        for _ in range(3):
-            gui.microscope.claim_stage_homing("TCP home").release_when_stopped()
-            qtbot.waitUntil(lambda: not gui.microscope.stage_homing_in_progress, timeout=2000)
-        gui._lock_stage_at_loading_position()  # the loading lock still asks for the panel lock
-        gui._unlock_stage_after_loading_position()
-    assert len([r for r in caplog.records if "cannot lock the control panel" in r.getMessage()]) == 1
-
-
 def test_home_x_timeout_says_homing_did_not_finish(qtbot, confirm_exit_yes, monkeypatch):
     gui = _gui(qtbot)
     _auto_confirm(monkeypatch)

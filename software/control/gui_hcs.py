@@ -685,8 +685,6 @@ class HighContentScreeningGui(QMainWindow):
         # Follows the Microscope's homing claim, whoever took it (Home stage, Home X/Y, TCP home): nothing moves.
         self._stage_homing_locked = False
         self._stage_homing_saved_enabled = {}
-        # Firmware < 1.8 cannot lock the control panel: said once per session, not at every home
-        self._panel_lock_unsupported_logged = False
         # A transient status-bar message for startup, shown once the window first appears (showEvent)
         self._startup_status_message: Optional[str] = None
 
@@ -2628,14 +2626,11 @@ class HighContentScreeningGui(QMainWindow):
         self._loading_position_saved_enabled = self._disable_widgets_saving_state(
             self._LOADING_POSITION_BLOCKED_WIDGETS
         )
-        self._set_control_panel_lock(True)
 
     def _unlock_stage_after_loading_position(self):
         if not self._loading_position_locked:
             return
         self._loading_position_locked = False
-        if not self._stage_homing_locked:
-            self._set_control_panel_lock(False)
         self._restore_widgets_state(self._loading_position_saved_enabled)
         self._loading_position_saved_enabled = {}
 
@@ -2650,8 +2645,9 @@ class HighContentScreeningGui(QMainWindow):
     def _relay_stage_homing_changed(self, active: bool) -> None:
         """Microscope homing listener, called from whichever thread takes or releases the claim. On the GUI thread
         the lock changes at once; from another thread (a TCP home, a release once the stage stopped) that thread
-        waits until the GUI thread has changed it. So the controls and the control panel lock command are in place
-        before that thread sends any homing command, and the changes apply in the order the Microscope made them."""
+        waits until the GUI thread has changed it. So the controls are in place before that thread sends any homing
+        command, and the changes apply in the order the Microscope made them. (The control panel lock follows the
+        claim's stage-motion hold, in the Microscope.)"""
         if QThread.currentThread() == self.thread():
             self._on_stage_homing_changed(active)
         else:
@@ -2660,9 +2656,9 @@ class HighContentScreeningGui(QMainWindow):
     @Slot(bool)
     def _on_stage_homing_changed(self, active: bool) -> None:
         """The homing lock follows the claim, whatever took it (Home stage, Home X/Y, TCP home): every stage, focus,
-        live and acquisition control is disabled and the control panel locked from the claim to its release, each
-        control getting back the state it had. Acts on the event itself: while the release's False is delivered the
-        claim is still held, so stage_homing_in_progress is still True."""
+        live and acquisition control is disabled from the claim to its release, each control getting back the state
+        it had. Acts on the event itself: while the release's False is delivered the claim is still held, so
+        stage_homing_in_progress is still True."""
         try:  # called through BlockingQueuedConnection too, where Qt would swallow an exception
             if active == self._stage_homing_locked:
                 return
@@ -2672,10 +2668,7 @@ class HighContentScreeningGui(QMainWindow):
                 self._stage_homing_saved_enabled = self._disable_widgets_saving_state(
                     self._STAGE_HOMING_BLOCKED_WIDGETS
                 )
-                self._set_control_panel_lock(True)
             else:
-                if not self._loading_position_locked:
-                    self._set_control_panel_lock(False)
                 self._restore_widgets_state(self._stage_homing_saved_enabled)
                 self._stage_homing_saved_enabled = {}
                 self.log.info("Stage homing ended: controls unlocked")
@@ -2839,22 +2832,6 @@ class HighContentScreeningGui(QMainWindow):
         if self._acquisition_holds_lift:
             self._acquisition_holds_lift = False
             self.zLiftWidget.motion_guard.release()
-
-    def _set_control_panel_lock(self, locked: bool):
-        """The control panel's joystick and wheel are driven by the controller firmware on its own: lock them too
-        (firmware >= 1.8; older firmware cannot, which is logged once per session: every home locks the panel)."""
-        mcu = self.microcontroller
-        if mcu is None:
-            return
-        if not mcu.supports_panel_lock():
-            if locked and not self._panel_lock_unsupported_logged:
-                self._panel_lock_unsupported_logged = True
-                self.log.warning("This controller firmware cannot lock the control panel: its joystick still moves XY")
-            return
-        try:
-            mcu.set_panel_lock(locked)
-        except Exception:
-            self.log.exception("Could not change the control panel lock")
 
     def _stage_moves_blocked_by_objective_swap(self, what: str) -> bool:
         """True (and logged) while an objective swap runs, on a Z lift system at the loading position, or while the
@@ -3858,10 +3835,14 @@ class HighContentScreeningGui(QMainWindow):
         """
         context = "restart" if for_restart else "shutdown"
 
-        # A Z lift system closed at the loading position: unlock the control panel first, before any step below
-        # can fail and abort the rest (Microscope.close() unlocks it too), so the joystick works without Squid.
-        if self._loading_position_locked:
-            self._set_control_panel_lock(False)
+        # Closed while something holds the stage (the stay at the loading position, say), which locks the control
+        # panel: unlock it first, before any step below can fail and abort the rest (Microscope.close() unlocks it
+        # too), so the joystick works without Squid.
+        if self.microscope.stage_motion.holder is not None and self.microcontroller is not None:
+            try:
+                self.microcontroller.unlock_panel()
+            except Exception:
+                self.log.exception("Could not unlock the control panel")
 
         # Cache position and settings
         try:
