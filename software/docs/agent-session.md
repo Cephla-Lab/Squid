@@ -127,7 +127,8 @@ While the agent drives:
    control panel work again.
 4. While Squid waits, the banner shows what it waits for. If this takes more than 30 seconds, the banner also has
    the button **Unlock anyway**. With it the human gets the control without waiting; the status then has
-   `unlocked_anyway: true`.
+   `unlocked_anyway: true`, and the recorded state has no stage position (Squid does not ask a stage that can be
+   busy).
 
 Squid leaves live view and the illumination as they are at the take over.
 
