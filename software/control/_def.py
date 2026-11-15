@@ -1067,6 +1067,10 @@ CHOSEN_READ = "INDIVIDUAL"
 # laser autofocus
 SUPPORT_LASER_AUTOFOCUS = False
 MAIN_CAMERA_MODEL = "MER2-1220-32U3M"
+# FLIR Blackfly S: the GPIO line the hardware trigger comes in on (TriggerSource). Line2 (pin 3) is
+# today's wiring. Line3 (pin 1) frees Line2 for the trigger-ready output (CAMERA_TRIGGER_READY_OUTPUT);
+# Line3 is input-only, 2.6-3.6 V high, 3.6 V documented GPI maximum: never a 5 V trigger on it.
+FLIR_TRIGGER_INPUT_LINE = "Line2"
 FOCUS_CAMERA_MODEL = "MER2-630-60U3M"
 FOCUS_CAMERA_EXPOSURE_TIME_MS = 2
 FOCUS_CAMERA_ANALOG_GAIN = 0
