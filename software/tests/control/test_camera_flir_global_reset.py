@@ -1,0 +1,650 @@
+"""Fake-nodemap tests for the FLIR driver's opt-in LEVEL trigger + global reset + trigger-ready output.
+
+No camera and no PySpin: tests/control/flir_test_utils.py installs a fake PySpin module before the
+driver is imported (Task 2). The hard rule under test is that with every opt-in at its default and
+HARDWARE_TRIGGER_MODE = EDGE, the driver issues exactly the camera writes it issues today.
+The opt-ins themselves (HARDWARE_TRIGGER_GLOBAL_RESET, CAMERA_TRIGGER_READY_OUTPUT and
+use_level_trigger_global_reset) belong to the base branch (#654) and are tested in
+test_camera_global_reset.py; this module tests only what PR A adds.
+"""
+
+import pytest
+
+import control._def
+
+
+def test_flir_trigger_input_line_defaults_to_line2():
+    assert control._def.FLIR_TRIGGER_INPUT_LINE == "Line2"
+
+
+import tests.control.flir_test_utils as ft  # noqa: E402  the repo's style; installs the fake PySpin first
+from control._def import HardwareTriggerMode, TriggerMode  # noqa: E402
+from squid.abc import CameraAcquisitionMode, CameraError  # noqa: E402
+import control.camera_flir as camera_flir  # noqa: E402
+
+
+def _edge(monkeypatch):
+    monkeypatch.setattr(control._def, "HARDWARE_TRIGGER_MODE", HardwareTriggerMode.EDGE)
+    monkeypatch.setattr(control._def, "HARDWARE_TRIGGER_GLOBAL_RESET", False)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", False)
+    monkeypatch.setattr(control._def, "FLIR_TRIGGER_INPUT_LINE", "Line2")
+
+
+def test_edge_hardware_trigger_writes_exactly_todays_nodes(monkeypatch):
+    _edge(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert nodemap.writes == [
+        ("TriggerMode", "On"),
+        ("TriggerSource", "Line2"),
+        ("TriggerActivation", "RisingEdge"),
+        ("ExposureAuto", "Off"),
+        ("ExposureTime", ft.ROLLING_EXPOSURE_US_AT_20MS),
+    ]
+    assert cam.strobe_pushes == [62.0]
+    assert cam.trigger_mode == TriggerMode.HARDWARE
+
+
+def test_continuous_writes_exactly_todays_nodes(monkeypatch):
+    _edge(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap, trigger_mode=TriggerMode.HARDWARE)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.CONTINUOUS)
+    assert nodemap.writes == [("TriggerMode", "Off"), ("ExposureAuto", "Off"), ("ExposureTime", 20000.0)]
+    assert cam.strobe_pushes == []
+
+
+def test_software_trigger_writes_exactly_todays_nodes(monkeypatch):
+    _edge(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+    assert nodemap.writes == [
+        ("TriggerMode", "On"),
+        ("TriggerSource", "Software"),
+        ("ExposureAuto", "Off"),
+        ("ExposureTime", 20000.0),
+    ]
+
+
+def _level(monkeypatch, global_reset=False, ready=False, line="Line2"):
+    monkeypatch.setattr(control._def, "HARDWARE_TRIGGER_MODE", HardwareTriggerMode.LEVEL)
+    monkeypatch.setattr(control._def, "HARDWARE_TRIGGER_GLOBAL_RESET", global_reset)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", ready)
+    monkeypatch.setattr(control._def, "FLIR_TRIGGER_INPUT_LINE", line)
+
+
+# The selector is written before the nodes it selects; ExposureAuto is off before TriggerWidth (which needs it so);
+# under TriggerWidth set_exposure_time touches neither ExposureAuto nor ExposureTime, so nothing follows the set.
+LEVEL_ENTRY_WRITES = [
+    ("TriggerSelector", "FrameStart"),
+    ("TriggerMode", "On"),
+    ("TriggerSource", "Line2"),
+    ("TriggerActivation", "LevelHigh"),
+    ("ExposureAuto", "Off"),
+    ("ExposureMode", "TriggerWidth"),
+    ("TriggerOverlap", "Off"),
+    ("AcquisitionFrameRateEnable", False),
+]
+
+
+def test_level_trigger_writes_the_trigger_width_node_set_and_no_exposure_time(monkeypatch):
+    _level(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert nodemap.writes == LEVEL_ENTRY_WRITES
+    assert cam.exposure_time == 20.0
+    assert cam.strobe_pushes == [62.0]  # LEVEL without global reset keeps the rolling strobe model
+
+
+def test_level_trigger_does_not_need_a_writable_exposure_time_node(monkeypatch):
+    _level(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("ExposureTime").writable = False
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)  # no raise
+    nodemap.writes.clear()
+    cam.set_exposure_time(5.0)
+    assert cam.exposure_time == 5.0
+    assert nodemap.writes == []  # neither ExposureTime nor ExposureAuto: both are the camera's under TriggerWidth
+
+
+def test_edge_still_requires_a_writable_exposure_time_node(monkeypatch):
+    _edge(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("ExposureTime").writable = False
+    with pytest.raises(CameraError, match="exposure"):
+        ft.make_flir(nodemap).set_exposure_time(5.0)
+
+
+# The restore runs in reverse write order (TriggerWidth needs a level activation, so Timed goes back before RisingEdge).
+LEVEL_LEAVE_WRITES = [
+    ("TriggerMode", "Off"),
+    ("AcquisitionFrameRateEnable", True),
+    ("TriggerOverlap", "Off"),
+    ("ExposureMode", "Timed"),
+    ("TriggerActivation", "RisingEdge"),
+    ("TriggerSelector", "FrameStart"),
+    ("ExposureAuto", "Off"),
+    ("ExposureTime", 20000.0),
+]
+
+
+def test_leaving_hardware_trigger_restores_only_what_level_changed(monkeypatch):
+    _level(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    nodemap.writes.clear()
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.CONTINUOUS)
+    assert nodemap.writes == LEVEL_LEAVE_WRITES
+    assert cam._restore_on_leave == {}
+
+
+def test_leaving_after_edge_writes_nothing_extra(monkeypatch):
+    _edge(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    nodemap.writes.clear()
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.CONTINUOUS)
+    assert nodemap.writes == [("TriggerMode", "Off"), ("ExposureAuto", "Off"), ("ExposureTime", 20000.0)]
+
+
+def test_remembered_values_survive_a_second_entry(monkeypatch):
+    _level(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    for _ in range(2):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+        nodemap.writes.clear()
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.CONTINUOUS)
+    assert nodemap.writes == LEVEL_LEAVE_WRITES  # the originals, not LevelHigh / TriggerWidth
+
+
+def _without_entry(nodemap, node_name, entry):
+    node = nodemap.node(node_name)
+    nodemap.add(ft.FakeEnumNode(node_name, [e for e in node.entries if e != entry], node.current))
+
+
+@pytest.mark.parametrize(
+    "previous, previous_writes",
+    [
+        (None, [("TriggerMode", "Off")]),
+        (TriggerMode.CONTINUOUS, [("TriggerMode", "Off")]),
+        (TriggerMode.SOFTWARE, [("TriggerMode", "On"), ("TriggerSource", "Software")]),
+    ],
+)
+def test_failed_level_setup_puts_the_previous_mode_back(monkeypatch, previous, previous_writes):
+    """No half switch: a camera without TriggerWidth is left in the mode it was in, not in LevelHigh with TriggerMode On."""
+    _level(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    _without_entry(nodemap, "ExposureMode", "TriggerWidth")
+    cam = ft.make_flir(nodemap, trigger_mode=previous)
+    with pytest.raises(CameraError, match="ExposureMode to TriggerWidth"):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert nodemap.writes == LEVEL_ENTRY_WRITES[:5] + previous_writes + [
+        # rollback: the previous mode's trigger nodes, then what was remembered in reverse order (ExposureMode was
+        # remembered before its write failed), then the exposure for that mode
+        ("ExposureMode", "Timed"),
+        ("TriggerActivation", "RisingEdge"),
+        ("TriggerSelector", "FrameStart"),
+        ("ExposureAuto", "Off"),
+        ("ExposureTime", 20000.0),
+    ]
+    assert cam.trigger_mode == previous
+    assert cam._restore_on_leave == {}
+    assert cam.strobe_pushes == []
+
+
+def test_rollback_failure_is_logged_and_the_setup_error_raised(monkeypatch, caplog):
+    _level(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("ExposureMode").writable = False  # the LEVEL write fails, and so does writing Timed back
+    cam = ft.make_flir(nodemap, trigger_mode=TriggerMode.SOFTWARE)
+    with pytest.raises(CameraError, match="ExposureMode to TriggerWidth"):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert "Could not put the camera back in its previous trigger mode" in caplog.text
+    assert "ExposureMode to TriggerWidth" in caplog.text  # the original error travels with the log line
+
+
+def test_edge_failure_with_default_settings_is_todays_behavior(monkeypatch):
+    """Defaults: today's code path and today's exception, no rollback writes."""
+    _edge(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    _without_entry(nodemap, "TriggerActivation", "RisingEdge")
+    cam = ft.make_flir(nodemap, trigger_mode=TriggerMode.SOFTWARE)
+    with pytest.raises(CameraError, match="RisingEdge"):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert nodemap.writes == [("TriggerMode", "On"), ("TriggerSource", "Line2")]
+    assert cam.trigger_mode == TriggerMode.SOFTWARE
+
+
+def test_global_reset_on_writes_and_reads_back_sensor_shutter_mode(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert nodemap.writes == LEVEL_ENTRY_WRITES + [("SensorShutterMode", "GlobalReset")]
+    assert cam.get_strobe_time() == camera_flir.GLOBAL_RESET_TRIGGER_LATENCY_US / 1000.0 == 0.0
+    assert cam.strobe_pushes == [0.0]
+
+
+@pytest.mark.parametrize(
+    "trigger_mode, global_reset",
+    [(HardwareTriggerMode.EDGE, False), (HardwareTriggerMode.LEVEL, False), (HardwareTriggerMode.EDGE, True)],
+)
+def test_global_reset_off_never_touches_sensor_shutter_mode(monkeypatch, trigger_mode, global_reset):
+    monkeypatch.setattr(control._def, "HARDWARE_TRIGGER_MODE", trigger_mode)
+    monkeypatch.setattr(control._def, "HARDWARE_TRIGGER_GLOBAL_RESET", global_reset)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", False)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert "SensorShutterMode" not in [name for name, _ in nodemap.writes]
+    assert cam.get_strobe_time() == 62.0
+
+
+def test_global_reset_readback_mismatch_raises(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("SensorShutterMode").readback = "Rolling"
+    with pytest.raises(CameraError, match="SensorShutterMode=Rolling"):
+        ft.make_flir(nodemap)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+
+def test_global_reset_missing_node_raises_when_on_and_is_untouched_when_off(monkeypatch):
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.remove("SensorShutterMode")
+    _level(monkeypatch, global_reset=True)
+    with pytest.raises(CameraError, match="HARDWARE_TRIGGER_GLOBAL_RESET"):
+        ft.make_flir(nodemap)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    _level(monkeypatch, global_reset=False)
+    nodemap.writes.clear()
+    ft.make_flir(nodemap)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert nodemap.writes == LEVEL_ENTRY_WRITES
+
+
+def test_global_reset_strobe_is_rolling_outside_hardware_trigger(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    cam = ft.make_flir(ft.bfs_u3_63s4_nodemap(), trigger_mode=TriggerMode.SOFTWARE)
+    assert cam.get_strobe_time() == 62.0
+
+
+def test_leaving_restores_sensor_shutter_mode_to_rolling(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    nodemap.writes.clear()
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.CONTINUOUS)
+    # remembered last, so put back first
+    assert nodemap.writes == LEVEL_LEAVE_WRITES[:1] + [("SensorShutterMode", "Rolling")] + LEVEL_LEAVE_WRITES[1:]
+
+
+def test_setting_and_trigger_mode_alone_do_not_mean_global_reset(monkeypatch):
+    """Only a confirmed switch puts the strobe on the global-reset model, not the setting plus trigger_mode HARDWARE."""
+    _level(monkeypatch, global_reset=True)
+    cam = ft.make_flir(ft.bfs_u3_63s4_nodemap(), trigger_mode=TriggerMode.HARDWARE)
+    assert cam._global_reset_active() is False
+    assert cam.get_strobe_time() == 62.0
+
+
+def test_global_reset_is_only_active_until_the_next_mode_change(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    cam = ft.make_flir(ft.bfs_u3_63s4_nodemap())
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert cam._global_reset_active() is True
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+    assert cam._global_reset_active() is False
+    assert cam.get_strobe_time() == 62.0
+
+
+def test_rejected_global_reset_puts_the_previous_mode_back(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("SensorShutterMode").readback = "Rolling"  # accepts the write, reports rolling
+    cam = ft.make_flir(nodemap, trigger_mode=TriggerMode.SOFTWARE)
+    with pytest.raises(CameraError, match="SensorShutterMode=Rolling"):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert nodemap.writes == LEVEL_ENTRY_WRITES + [
+        ("SensorShutterMode", "GlobalReset"),
+        ("TriggerMode", "On"),
+        ("TriggerSource", "Software"),
+        ("SensorShutterMode", "Rolling"),
+    ] + LEVEL_LEAVE_WRITES[1:6] + [("ExposureAuto", "Off"), ("ExposureTime", 20000.0)]
+    assert cam.trigger_mode == TriggerMode.SOFTWARE
+    assert cam._global_reset_active() is False
+    assert cam.strobe_pushes == []
+
+
+def test_failed_setup_from_hardware_trigger_refreshes_the_rolling_strobe(monkeypatch):
+    """Re-arming hardware trigger (the confocal path) and failing: still hardware-triggered, but on the rolling model."""
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("SensorShutterMode").readback = "Rolling"
+    cam = ft.make_flir(nodemap, trigger_mode=TriggerMode.HARDWARE)
+    with pytest.raises(CameraError, match="SensorShutterMode=Rolling"):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert cam.trigger_mode == TriggerMode.HARDWARE
+    assert cam._global_reset_active() is False
+    failed_at = nodemap.writes.index(("SensorShutterMode", "GlobalReset"))
+    assert nodemap.writes[failed_at + 1 : failed_at + 3] == [("TriggerMode", "On"), ("TriggerSource", "Line2")]
+    assert nodemap.writes[-2:] == [
+        ("ExposureAuto", "Off"),
+        ("ExposureTime", ft.ROLLING_EXPOSURE_US_AT_20MS),  # Timed is back, so ExposureTime is written again
+    ]
+    assert cam.strobe_pushes == [62.0]
+
+
+READY_WRITES = [
+    ("LineSelector", "Line2"),
+    ("V3_3Enable", False),
+    ("LineMode", "Output"),
+    ("LineSource", "FrameTriggerWait"),
+    ("LineInverter", True),
+]
+
+
+def test_trigger_input_line_setting_selects_the_trigger_source(monkeypatch):
+    _level(monkeypatch, line="Line3")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    ft.make_flir(nodemap)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert ("TriggerSource", "Line3") in nodemap.writes
+
+
+def test_unknown_trigger_input_line_raises(monkeypatch):
+    _level(monkeypatch, line="Line9")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap, trigger_mode=TriggerMode.CONTINUOUS)
+    with pytest.raises(CameraError, match="Line9"):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert nodemap.writes == [
+        ("TriggerSelector", "FrameStart"),
+        ("TriggerMode", "On"),
+        ("TriggerMode", "Off"),
+        ("TriggerSelector", "FrameStart"),
+        ("ExposureAuto", "Off"),
+        ("ExposureTime", 20000.0),
+    ]
+    assert cam.trigger_mode == TriggerMode.CONTINUOUS
+
+
+@pytest.mark.parametrize("trigger_mode", [HardwareTriggerMode.EDGE, HardwareTriggerMode.LEVEL])
+def test_ready_output_off_writes_no_line_nodes(monkeypatch, trigger_mode):
+    monkeypatch.setattr(control._def, "HARDWARE_TRIGGER_MODE", trigger_mode)
+    monkeypatch.setattr(control._def, "HARDWARE_TRIGGER_GLOBAL_RESET", False)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", False)
+    monkeypatch.setattr(control._def, "FLIR_TRIGGER_INPUT_LINE", "Line3")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    ft.make_flir(nodemap)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert not [name for name, _ in nodemap.writes if name.startswith("Line") or name == "V3_3Enable"]
+
+
+def test_ready_output_on_configures_line2_as_frame_trigger_wait_active_low(monkeypatch):
+    _level(monkeypatch, global_reset=True, ready=True, line="Line3")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    ft.make_flir(nodemap)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    expected = [w if w != ("TriggerSource", "Line2") else ("TriggerSource", "Line3") for w in LEVEL_ENTRY_WRITES]
+    assert nodemap.writes == expected + [("SensorShutterMode", "GlobalReset")] + READY_WRITES
+
+
+def test_rejected_ready_output_puts_the_previous_mode_back(monkeypatch):
+    """The global reset written on the way in is undone too; the Line nodes are not (never remembered, design 6.2)."""
+    _level(monkeypatch, global_reset=True, ready=True, line="Line3")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("LineSource").readback = "ExposureActive"
+    cam = ft.make_flir(nodemap, trigger_mode=TriggerMode.SOFTWARE)
+    with pytest.raises(CameraError, match="LineSource=ExposureActive"):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    after_failure = nodemap.writes[nodemap.writes.index(("LineInverter", True)) + 1 :]
+    assert after_failure == [("TriggerMode", "On"), ("TriggerSource", "Software"), ("SensorShutterMode", "Rolling")] + (
+        LEVEL_LEAVE_WRITES[1:6] + [("ExposureAuto", "Off"), ("ExposureTime", 20000.0)]
+    )
+    assert cam.trigger_mode == TriggerMode.SOFTWARE
+    assert cam._global_reset_active() is False
+
+
+def test_ready_output_source_readback_mismatch_raises(monkeypatch):
+    _level(monkeypatch, ready=True, line="Line3")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("LineSource").readback = "ExposureActive"
+    with pytest.raises(CameraError, match="LineSource=ExposureActive"):
+        ft.make_flir(nodemap)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+
+def test_ready_output_inverter_readback_mismatch_raises(monkeypatch):
+    _level(monkeypatch, ready=True, line="Line3")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("LineInverter").SetValue = lambda v: nodemap.writes.append(
+        ("LineInverter", v)
+    )  # write recorded, value never changes
+    with pytest.raises(CameraError, match="LineInverter"):
+        ft.make_flir(nodemap)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+
+def test_ready_output_missing_node_raises(monkeypatch):
+    _level(monkeypatch, ready=True, line="Line3")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.remove("LineSource")
+    with pytest.raises(CameraError, match="CAMERA_TRIGGER_READY_OUTPUT"):
+        ft.make_flir(nodemap)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+
+def test_ready_output_not_configured_outside_hardware_trigger(monkeypatch):
+    _level(monkeypatch, ready=True, line="Line3")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    ft.make_flir(nodemap)._set_acquisition_mode_imp(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+    assert not [name for name, _ in nodemap.writes if name.startswith("Line")]
+
+
+def test_ready_output_stays_configured_on_leaving(monkeypatch):
+    _level(monkeypatch, ready=True, line="Line3")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    nodemap.writes.clear()
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.CONTINUOUS)
+    assert not [name for name, _ in nodemap.writes if name.startswith("Line")]
+
+
+from squid.config import CameraConfig, CameraPixelFormat, CameraVariant  # noqa: E402
+
+
+def test_check_opt_in_support_touches_nothing_with_default_settings(monkeypatch):
+    _edge(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    ft.make_flir(nodemap)._check_opt_in_support()
+    assert nodemap.lookups == [] and nodemap.writes == []
+
+
+def test_without_global_reset_does_not_open_with_the_opt_in_on(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.remove("SensorShutterMode")
+    with pytest.raises(CameraError, match="Turn off HARDWARE_TRIGGER_GLOBAL_RESET"):
+        ft.make_flir(nodemap)._check_opt_in_support()
+    assert nodemap.writes == []
+
+
+def test_without_trigger_width_does_not_open_in_level_mode(monkeypatch):
+    _level(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    _without_entry(nodemap, "ExposureMode", "TriggerWidth")
+    with pytest.raises(CameraError, match="HARDWARE_TRIGGER_MODE"):
+        ft.make_flir(nodemap)._check_opt_in_support()
+
+
+def test_without_frame_trigger_wait_does_not_open_with_the_ready_output_on(monkeypatch):
+    _level(monkeypatch, ready=True, line="Line3")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    _without_entry(nodemap, "LineSource", "FrameTriggerWait")
+    with pytest.raises(CameraError, match="Turn off CAMERA_TRIGGER_READY_OUTPUT"):
+        ft.make_flir(nodemap)._check_opt_in_support()
+    # the line had to be selected to see its entries, and is put back even on a refusal
+    assert nodemap.writes == [("LineSelector", "Line2"), ("LineSelector", "Line0")]
+
+
+def test_ready_output_refuses_line2_as_the_trigger_input(monkeypatch):
+    _level(monkeypatch, ready=True, line="Line2")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    with pytest.raises(CameraError, match="FLIR_TRIGGER_INPUT_LINE"):
+        ft.make_flir(nodemap)._check_opt_in_support()
+    assert nodemap.lookups == [] and nodemap.writes == []
+
+
+def test_unknown_trigger_input_line_does_not_open(monkeypatch):
+    _edge(monkeypatch)
+    monkeypatch.setattr(control._def, "FLIR_TRIGGER_INPUT_LINE", "Line9")
+    with pytest.raises(CameraError, match="Line9"):
+        ft.make_flir(ft.bfs_u3_63s4_nodemap())._check_opt_in_support()
+
+
+def test_camera_that_supports_everything_passes_the_open_check(monkeypatch):
+    _level(monkeypatch, global_reset=True, ready=True, line="Line3")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    ft.make_flir(nodemap)._check_opt_in_support()  # no raise
+    assert nodemap.writes == [("LineSelector", "Line2"), ("LineSelector", "Line0")]
+
+
+def test_open_checks_support_before_the_first_node_write(monkeypatch):
+    """_open_camera reaches the check right after the nodemap is read, before it writes anything, and a refusal
+    tears the camera down. Driven through _open_camera directly: FLIRCamera.__init__ cannot run on this branch or
+    on master (its `self.is_color = False` collides with AbstractCamera's read-only is_color property; separate PR).
+    """
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.remove("SensorShutterMode")
+    camera = ft.FakeCamera(nodemap)
+    cam = ft.make_flir(nodemap)
+    cam.camera = None  # not opened yet
+    cam.sn = None
+    cam.py_spin_system.GetCameras.return_value = ft.FakeCameraList(camera)
+    monkeypatch.setattr(camera_flir, "get_device_info_full", lambda *a, **k: {})
+    config = CameraConfig(camera_type=CameraVariant.FLIR, default_pixel_format=CameraPixelFormat.MONO16)
+    with pytest.raises(CameraError, match="Turn off HARDWARE_TRIGGER_GLOBAL_RESET"):
+        cam._open_camera(config)
+    assert nodemap.writes == []
+    assert camera.deinit_calls == 1 and cam.camera is None  # a refusal at open leaves nothing behind
+    cam.py_spin_system.ReleaseInstance.assert_called_once()
+
+
+import time  # noqa: E402
+
+
+def test_readout_table_lookup():
+    assert camera_flir.global_reset_readout_ms("Bit14", "Mono16") == 33.3
+    assert camera_flir.global_reset_readout_ms("Bit14", "Mono8") == 33.3
+    assert camera_flir.global_reset_readout_ms("Bit10", "Mono8") == 16.9
+    assert camera_flir.global_reset_readout_ms("Bit10", "Mono10") == 50.0
+    with pytest.raises(CameraError, match="Bit12"):
+        camera_flir.global_reset_readout_ms("Bit12", "Mono12p")
+
+
+def _triggered(cam, seconds_ago):
+    cam._trigger_sent.set()
+    cam._last_trigger_timestamp = time.time() - seconds_ago
+
+
+def test_readiness_under_global_reset_waits_out_the_readout(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    cam = ft.make_flir(ft.bfs_u3_63s4_nodemap(), exposure_ms=5.0)  # nodemap: Bit14 / Mono16
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert cam._global_reset_readout_ms == 33.3
+    _triggered(cam, 0.030)  # window = 1.5 x (5 + 0 + 33.3 + 4) ms = 63.45 ms
+    assert cam.get_ready_for_trigger() is False
+    _triggered(cam, 0.070)
+    assert cam.get_ready_for_trigger() is True
+
+
+def test_readiness_without_global_reset_is_unchanged(monkeypatch):
+    _edge(monkeypatch)
+    cam = ft.make_flir(ft.bfs_u3_63s4_nodemap(), exposure_ms=5.0)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert cam._global_reset_readout_ms == 0.0
+    _triggered(cam, 0.030)  # window = 1.5 x (5 + 62 + 4) ms = 106.5 ms, as today
+    assert cam.get_ready_for_trigger() is False
+    _triggered(cam, 0.120)
+    assert cam.get_ready_for_trigger() is True
+
+
+def test_pixel_format_change_under_global_reset_refreshes_the_window(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap, exposure_ms=5.0)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    cam.set_pixel_format(CameraPixelFormat.MONO8)  # writes PixelFormat Mono8 + AdcBitDepth Bit10
+    assert ("PixelFormat", "Mono8") in nodemap.writes and ("AdcBitDepth", "Bit10") in nodemap.writes
+    assert cam._global_reset_readout_ms == 16.9
+
+
+def test_leaving_hardware_trigger_zeroes_the_readout_window(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    cam = ft.make_flir(ft.bfs_u3_63s4_nodemap())
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.CONTINUOUS)
+    assert cam._global_reset_readout_ms == 0.0
+
+
+def _settable_is_color(monkeypatch):
+    """close() assigns self.is_color, which AbstractCamera made a read-only property (#530): a pre-existing bug fixed
+    in its own PR. Until then the tests give the FLIR class a settable one so the real close() can run."""
+    monkeypatch.setattr(camera_flir.FLIRCamera, "is_color", property(lambda self: False, lambda self, value: None))
+
+
+def test_close_puts_back_what_level_changed(monkeypatch):
+    """FLIR node state survives DeInit until power-off: a session that exits hardware-triggered must not leave the next
+    one a camera stuck in TriggerWidth / GlobalReset (whose ExposureTime it could not write)."""
+    _settable_is_color(monkeypatch)
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    camera = cam.camera
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    nodemap.writes.clear()
+    cam.close()
+    assert nodemap.writes == LEVEL_LEAVE_WRITES[:1] + [("SensorShutterMode", "Rolling")] + LEVEL_LEAVE_WRITES[1:6]
+    assert cam._restore_on_leave == {}
+    assert camera.deinit_calls == 1 and cam.camera is None
+
+
+def test_close_after_edge_writes_nothing(monkeypatch):
+    _settable_is_color(monkeypatch)
+    _edge(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    nodemap.writes.clear()
+    cam.close()
+    assert nodemap.writes == []
+
+
+def test_open_refuses_a_camera_left_in_trigger_width(monkeypatch):
+    """Found in LEVEL state (a crash while hardware-triggered): its original values are unknown, so it is refused with
+    the remedy rather than restored to a guess."""
+    _level(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("ExposureMode").current = "TriggerWidth"
+    with pytest.raises(CameraError, match="ExposureMode=TriggerWidth.*ower-cycle"):
+        ft.make_flir(nodemap)._check_opt_in_support()
+    assert nodemap.writes == []
+
+
+def test_open_refuses_a_camera_left_in_global_reset(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("SensorShutterMode").current = "GlobalReset"
+    with pytest.raises(CameraError, match="SensorShutterMode=GlobalReset.*ower-cycle"):
+        ft.make_flir(nodemap)._check_opt_in_support()
+
+
+def test_unwritable_exposure_time_error_names_the_exposure_mode(monkeypatch):
+    """With defaults, the first switch after a LEVEL crash fails on ExposureTime: the message must point at the cause."""
+    _edge(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("ExposureMode").current = "TriggerWidth"
+    nodemap.node("ExposureTime").writable = False
+    with pytest.raises(CameraError, match="ExposureMode=TriggerWidth"):
+        ft.make_flir(nodemap).set_exposure_time(5.0)
