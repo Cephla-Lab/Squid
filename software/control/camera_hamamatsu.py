@@ -213,33 +213,37 @@ class HamamatsuCamera(AbstractCamera):
         self._read_thread_running.clear()
 
     @staticmethod
-    def _last_dcam_error_string_direct(last_error: DCAMERR):
-
+    def _last_dcam_error_string_direct(last_error) -> str:
+        """'<code>:<NAME>' for a DCAMERR (or its raw integer code), '<code>:UNKNOWN_ERROR' for a code the
+        enum does not list."""
+        code = int(last_error)
         reverse_error_map = {enum_entry.value: enum_name for (enum_name, enum_entry) in DCAMERR.__members__.items()}
-
-        if last_error not in reverse_error_map:
-            return f"{last_error}:{reverse_error_map[last_error]}"
-        else:
-            return f"{last_error}:UNKNOWN_ERROR"
+        return f"{code}:{reverse_error_map.get(code, 'UNKNOWN_ERROR')}"
 
     def _last_dcam_error_string(self):
         return HamamatsuCamera._last_dcam_error_string_direct(self._camera.lasterr())
 
     def set_exposure_time(self, exposure_time_ms: float):
-        camera_exposure_time_s = exposure_time_ms / 1000.0
-        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
-            strobe_time_ms = self.get_strobe_time()
-            camera_exposure_time_s += strobe_time_ms / 1000.0
-            if self._hw_set_strobe_delay_ms_fn:
-                self._log.debug(f"Setting hw strobe time to {strobe_time_ms} [ms]")
-                self._hw_set_strobe_delay_ms_fn(strobe_time_ms)
+        # Hold the trigger lock so DCAM prop_setvalue never runs concurrently with
+        # cap_firetrigger from the live trigger thread: that overlap deadlocks inside
+        # the DCAM SDK (GUI freezes on rapid exposure changes during live).
+        # send_trigger drops triggers while this is held; the lock is reentrant, so
+        # callers that already hold it (set_sensor_mode, set_region_of_interest) are fine.
+        with self._trigger_lock:
+            camera_exposure_time_s = exposure_time_ms / 1000.0
+            if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                strobe_time_ms = self.get_strobe_time()
+                camera_exposure_time_s += strobe_time_ms / 1000.0
+                if self._hw_set_strobe_delay_ms_fn:
+                    self._log.debug(f"Setting hw strobe time to {strobe_time_ms} [ms]")
+                    self._hw_set_strobe_delay_ms_fn(strobe_time_ms)
 
-        if not self._set_prop(DCAM_IDPROP.EXPOSURETIME, camera_exposure_time_s):
-            raise CameraError(f"Failed to set exposure time to {exposure_time_ms=} ({camera_exposure_time_s=} [s])")
+            if not self._set_prop(DCAM_IDPROP.EXPOSURETIME, camera_exposure_time_s):
+                raise CameraError(f"Failed to set exposure time to {exposure_time_ms=} ({camera_exposure_time_s=} [s])")
 
-        self._exposure_time_ms = exposure_time_ms
-        self._trigger_sent.clear()
-        return True
+            self._exposure_time_ms = exposure_time_ms
+            self._trigger_sent.clear()
+            return True
 
     def get_exposure_time(self) -> float:
         return self._exposure_time_ms

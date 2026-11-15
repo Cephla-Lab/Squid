@@ -9,6 +9,7 @@ from qtpy.QtWidgets import QMessageBox
 
 from control.widgets_z_lift import LiftMotionGuard, LoadingPositionButton, ZLiftWidget
 from squid.stage.lift import LiftHeights
+from squid.stage.reservation import StageMotionReservation
 
 
 class _FakeLift:
@@ -296,7 +297,7 @@ def test_stage_utils_dialog_toggle_follows_the_lift_guard(qtbot):
 
     live = MagicMock()
     live.is_live = False
-    dialog = StageUtils(MagicMock(), live, is_wellplate=False)
+    dialog = StageUtils(MagicMock(), live, is_wellplate=False, stage_motion=StageMotionReservation())
     qtbot.addWidget(dialog)
     guard = LiftMotionGuard(dialog)
     dialog.set_lift_motion_guard(guard)
@@ -322,7 +323,7 @@ def test_a_failed_return_from_loading_stays_at_loading(qtbot):
 
     live = MagicMock()
     live.is_live = False
-    dialog = StageUtils(MagicMock(), live, is_wellplate=False)
+    dialog = StageUtils(MagicMock(), live, is_wellplate=False, stage_motion=StageMotionReservation())
     qtbot.addWidget(dialog)
     guard = LiftMotionGuard(dialog)
     dialog.set_lift_motion_guard(guard)
@@ -354,7 +355,7 @@ def _stage_utils_dialog(qtbot, is_live, keep_live_off_at_loading):
     live.is_live = is_live
     live.stop_live.side_effect = lambda: setattr(live, "is_live", False)
     live.start_live.side_effect = lambda: setattr(live, "is_live", True)
-    dialog = StageUtils(MagicMock(), live, is_wellplate=False)
+    dialog = StageUtils(MagicMock(), live, is_wellplate=False, stage_motion=StageMotionReservation())
     qtbot.addWidget(dialog)
     dialog.keep_live_off_at_loading = keep_live_off_at_loading
     return dialog, live
@@ -422,7 +423,7 @@ def _dialog_at_loading(qtbot, saved_z_mm):
     live.is_live = False
     stage = MagicMock()
     stage._scanning_position_z_mm = saved_z_mm
-    dialog = StageUtils(stage, live, is_wellplate=False)
+    dialog = StageUtils(stage, live, is_wellplate=False, stage_motion=StageMotionReservation())
     qtbot.addWidget(dialog)
     dialog.ask_objective_return = True
     dialog.slide_position = "loading"
@@ -478,7 +479,7 @@ def test_everything_locks_when_the_move_to_loading_starts_and_stays_locked_until
 
     live = MagicMock()
     live.is_live = False
-    stage_utils = StageUtils(MagicMock(), live, is_wellplate=False)
+    stage_utils = StageUtils(MagicMock(), live, is_wellplate=False, stage_motion=StageMotionReservation())
     qtbot.addWidget(stage_utils)
     panel = []
 
@@ -566,7 +567,7 @@ def test_a_restored_loading_position_starts_locked_with_the_return_ready(qtbot):
     stage.lift.min_mm, stage.lift.max_mm = 0.0, 32.0
     stage.get_config.return_value.Z_AXIS.MIN_POSITION = 0.0
     stage.get_config.return_value.Z_AXIS.MAX_POSITION = 6.0
-    stage_utils = StageUtils(stage, live, is_wellplate=False)
+    stage_utils = StageUtils(stage, live, is_wellplate=False, stage_motion=StageMotionReservation())
     qtbot.addWidget(stage_utils)
     guard = LiftMotionGuard(stage_utils)
     stage_utils.set_lift_motion_guard(guard)
