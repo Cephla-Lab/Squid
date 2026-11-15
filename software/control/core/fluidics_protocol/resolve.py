@@ -8,7 +8,12 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from control.acquisition_yaml_loader import AcquisitionYAMLData, parse_acquisition_yaml, read_coordinates_csv
+from control.acquisition_yaml_loader import (
+    CHANNEL_OVERRIDES_ONLY_SERVER,
+    AcquisitionYAMLData,
+    parse_acquisition_yaml,
+    read_coordinates_csv,
+)
 from control.core.fluidics_protocol.ports import FluidicsPort, plan_seconds
 from control.models.fluidics_protocol import (
     CoordinatesBlock,
@@ -113,16 +118,24 @@ def coordinates_block_from_acquisition(data: AcquisitionYAMLData, source_path: s
     )
 
 
+def _parse_without_channel_overrides(path: str):
+    """A protocol does not apply channel_overrides, so a file that has them is refused, not read without them."""
+    data = parse_acquisition_yaml(path)
+    if data.channel_overrides:
+        raise ValueError(CHANNEL_OVERRIDES_ONLY_SERVER)
+    return data
+
+
 def _load_settings_source(ref: str, base_dir: str) -> SettingsBlock:
     path = os.path.normpath(os.path.join(base_dir, ref))
-    return settings_block_from_acquisition(parse_acquisition_yaml(path), path)
+    return settings_block_from_acquisition(_parse_without_channel_overrides(path), path)
 
 
 def _load_coordinates_source(ref: str, base_dir: str) -> CoordinatesBlock:
     path = os.path.normpath(os.path.join(base_dir, ref))
     if path.lower().endswith(".csv"):
         return CoordinatesBlock(source="coordinates CSV", source_path=path, regions=read_coordinates_csv(path))
-    return coordinates_block_from_acquisition(parse_acquisition_yaml(path), path)
+    return coordinates_block_from_acquisition(_parse_without_channel_overrides(path), path)
 
 
 def resolve_protocol(protocol: ProtocolFile, base_dir, fluidics: Optional[FluidicsPort] = None) -> ResolvedProtocol:

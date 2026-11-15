@@ -19,6 +19,7 @@ from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
 from control.core.multi_point_utils import (
     AcquisitionParameters,
+    channel_with_overrides,
     MultiPointControllerFunctions,
     OverallProgressUpdate,
     RegionProgressUpdate,
@@ -150,6 +151,7 @@ class MultiPointWorker:
         self.base_path = acquisition_parameters.base_path
         self.experiment_path = os.path.join(self.base_path or "", self.experiment_ID or "")
         self.selected_configurations = acquisition_parameters.selected_configurations
+        self.channel_overrides = acquisition_parameters.channel_overrides
 
         # Pre-compute acquisition metadata that remains constant throughout the run.
         try:
@@ -1322,8 +1324,12 @@ class MultiPointWorker:
                 and (self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0)
             ):
                 configuration_name_AF = MULTIPOINT_AUTOFOCUS_CHANNEL
-                config_AF = self.liveController.get_channel_by_name(
-                    self.objectiveStore.current_objective, configuration_name_AF
+                # An overridden channel focuses with the values of this run, as it images with them.
+                config_AF = channel_with_overrides(
+                    self.liveController.get_channel_by_name(
+                        self.objectiveStore.current_objective, configuration_name_AF
+                    ),
+                    self.channel_overrides.get(configuration_name_AF),
                 )
                 self._select_config(config_AF)
                 if (
