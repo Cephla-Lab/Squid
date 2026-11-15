@@ -10,8 +10,12 @@ import threading
 
 import pytest
 
+import control._def
 from control.core.config import ConfigRepository
+from control.core.multi_point_controller import MultiPointController
+from control.core.multi_point_utils import MultiPointControllerFunctions
 from control.microscope_control_server import MicroscopeControlServer
+import tests.control.test_stubs as ts
 from tests.control.spinning_disk_test_utils import build_simulated_microscope
 
 CHANNEL = "Fluorescence 405 nm Ex"  # the channel of the illumination file that the test utils write
@@ -244,3 +248,59 @@ def test_two_callers_that_set_values_at_the_same_time_keep_both_values(scope, se
     read_again.set_profile("default")
     (channel,) = read_again.get_merged_channels(objective)
     assert (channel.exposure_time, channel.illumination_intensity) == (77.0, 11.0)
+
+
+def _multi_point_controller(scope, callbacks) -> MultiPointController:
+    """A MultiPointController on the live controller of the microscope, as the control server uses it."""
+    controller = MultiPointController(
+        microscope=scope,
+        live_controller=scope.live_controller,
+        autofocus_controller=ts.get_test_autofocus_controller(
+            scope.camera, scope.stage, scope.live_controller, scope.low_level_drivers.microcontroller
+        ),
+        scan_coordinates=ts.get_test_scan_coordinates(scope.objective_store, scope.stage, scope.camera),
+        callbacks=callbacks,
+        objective_store=scope.objective_store,
+        laser_autofocus_controller=ts.get_test_laser_autofocus_controller(scope),
+    )
+    controller.set_base_path(ts.new_acquisition_base_path())
+    controller.start_new_experiment("channel settings")
+    return controller
+
+
+@BOTH_MODES
+def test_an_acquisition_takes_its_images_with_the_values_that_a_client_set(scope, server, monkeypatch, confocal):
+    """Before, an acquisition loaded the stored values of the channel (the confocal ones with the spinning disk in),
+    so a value that a client set had no effect on the images."""
+    monkeypatch.setattr(control._def, "MERGE_CHANNELS", False)
+    scope.live_controller.toggle_confocal_widefield(confocal)
+    server._cmd_set_exposure(exposure_ms=77.0, channel=CHANNEL)
+    server._cmd_set_illumination_intensity(channel=CHANNEL, intensity=11.0)
+
+    finished = threading.Event()
+    applied = []  # (channel, intensity) that the acquisition applies for each image
+    exposures = []  # exposure of the camera at each image
+
+    callbacks = MultiPointControllerFunctions(
+        signal_acquisition_start=lambda params: None,
+        signal_acquisition_finished=finished.set,
+        signal_new_image=lambda frame, info: exposures.append(scope.camera.get_exposure_time()),
+        signal_current_configuration=lambda config: applied.append((config.name, config.illumination_intensity)),
+        signal_current_fov=lambda x_mm, y_mm: None,
+        signal_overall_progress=lambda progress: None,
+        signal_region_progress=lambda progress: None,
+    )
+    controller = _multi_point_controller(scope, callbacks)
+    stage_config = scope.stage.get_config()
+    controller.scanCoordinates.add_single_fov_region(
+        "A1",
+        center_x=stage_config.X_AXIS.MIN_POSITION + 1.0,
+        center_y=stage_config.Y_AXIS.MIN_POSITION + 1.0,
+        center_z=stage_config.Z_AXIS.MIN_POSITION + 0.1,
+    )
+    controller.set_selected_configurations([CHANNEL])  # as the run_acquisition command does
+    controller.run_acquisition()
+    assert finished.wait(timeout=30)
+
+    assert applied and all(entry == (CHANNEL, 11.0) for entry in applied)
+    assert exposures and all(exposure == 77.0 for exposure in exposures)
