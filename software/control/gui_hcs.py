@@ -2850,10 +2850,13 @@ class HighContentScreeningGui(QMainWindow):
             parent=self,
         )
 
-    def run_agent_session_transition(self, kind: str, note: str = "") -> Optional[str]:
+    def run_agent_session_transition(
+        self, kind: str, note: str = "", session_id: Optional[str] = None
+    ) -> Optional[str]:
         """Give the control of the microscope to the agent: kind is "begin" or "hand_back". Returns None, or why
-        it was refused. The control server calls this from its thread; the work is done on the GUI thread."""
-        return self._agent_protection.transition(kind, note)
+        it was refused. The control server calls this from its thread; the work is done on the GUI thread.
+        session_id: the session that the request belongs to, or None."""
+        return self._agent_protection.transition(kind, note, session_id)
 
     def _agent_session_blocker(self) -> Optional[str]:
         """Why the agent must not get the control now, or None. Runs on whichever thread asks: plain reads only."""

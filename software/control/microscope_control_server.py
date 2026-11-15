@@ -9,6 +9,7 @@ The server accepts JSON commands and returns JSON responses.
 """
 
 import contextlib
+import contextvars
 import functools
 import inspect
 import json
@@ -33,6 +34,10 @@ try:
     QT_AVAILABLE = True
 except ImportError:
     QT_AVAILABLE = False
+
+# The session_id of the request that this thread serves, for the handlers of the session commands. A request with no
+# session_id has None: nothing is checked, as before.
+_REQUEST_SESSION_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("request_session_id", default=None)
 
 
 class AcquisitionResult(TypedDict):
@@ -337,15 +342,17 @@ class MicroscopeControlServer:
             if self._server_socket:
                 self._server_socket.close()
 
-    def _execute(self, command: str, params: dict) -> dict:
-        """Run one command and return the response dict."""
+    def _execute(self, command: str, params: dict, session_id: Optional[str] = None) -> dict:
+        """Run one command and return the response dict. session_id: the agent session that the client says its
+        request belongs to; the request is refused when that is not the session of now."""
         if command not in self._commands:
             return {"success": False, "error": f"Unknown command: {command}"}
+        request_session_id = _REQUEST_SESSION_ID.set(session_id)
         try:
             # The agent session admits the command first. While a stop is in progress or a human drives, only reads,
             # ping and the session commands are served. An action command is counted while it runs, so that a take
             # over knows when the agent's work ended.
-            with self.microscope.agent_session.admit(command):
+            with self.microscope.agent_session.admit(command, session_id):
                 # While the stage homes, only reads, ping and the session commands are served: anything else could
                 # move an axis, change the light path or start live under the homing sequence.
                 if (
@@ -362,6 +369,8 @@ class MicroscopeControlServer:
         except Exception as e:
             self._log.error(f"Command '{command}' failed: {e}\n{traceback.format_exc()}")
             return {"success": False, "error": str(e)}
+        finally:
+            _REQUEST_SESSION_ID.reset(request_session_id)
 
     def _handle_client(self, client_socket: socket.socket):
         """Handle a single client connection."""
@@ -397,7 +406,7 @@ class MicroscopeControlServer:
             command = request.get("command")
             params = request.get("params", {})
 
-            response = self._execute(command, params)
+            response = self._execute(command, params, request.get("session_id"))
 
             # Send response
             client_socket.sendall((json.dumps(response) + "\n").encode("utf-8"))
@@ -678,10 +687,11 @@ class MicroscopeControlServer:
 
     def _give_control_to_the_agent(self, kind: str, note: str = "") -> None:
         """Begin and hand back give the control to the agent. The window does them on the GUI thread, so that its
-        input shield and the control panel lock are in place before the agent can send a command."""
+        input shield and the control panel lock are in place before the agent can send a command. The session_id
+        of the request goes with the change."""
         if self.gui is None:
             raise AgentSessionRefused("an agent session needs the Squid window")
-        refusal = self.gui.run_agent_session_transition(kind, note)
+        refusal = self.gui.run_agent_session_transition(kind, note, _REQUEST_SESSION_ID.get())
         if refusal:
             raise AgentSessionRefused(refusal)
 
@@ -694,7 +704,8 @@ class MicroscopeControlServer:
     @schema_method
     def _cmd_take_over(self) -> Dict[str, Any]:
         """Take the control from the agent for a human. Returns the state after the call ('stopping' at first)."""
-        state = self.microscope.agent_session.request_stop(SessionState.HUMAN, "take over")
+        session = self.microscope.agent_session
+        state = session.request_stop(SessionState.HUMAN, "take over", session_id=_REQUEST_SESSION_ID.get())
         return {"state": state.value}
 
     @schema_method
@@ -709,7 +720,7 @@ class MicroscopeControlServer:
     @schema_method
     def _cmd_end_agent_session(self) -> Dict[str, Any]:
         """End the agent session. From 'agent' it goes through 'stopping' first."""
-        return {"state": self.microscope.agent_session.end().value}
+        return {"state": self.microscope.agent_session.end(session_id=_REQUEST_SESSION_ID.get()).value}
 
     @schema_method
     def _cmd_get_agent_session(self) -> Dict[str, Any]:
@@ -1501,6 +1512,7 @@ def send_command(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     timeout: float = 30.0,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Send a command to the microscope control server.
@@ -1513,11 +1525,15 @@ def send_command(
         host: Server host
         port: Server port
         timeout: Socket timeout in seconds
+        session_id: The agent session that the command belongs to. The server refuses the command when that is
+            not its session of now.
 
     Returns:
         Server response as a dictionary
     """
     request = {"command": command, "params": params or {}}
+    if session_id is not None:
+        request["session_id"] = session_id
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)

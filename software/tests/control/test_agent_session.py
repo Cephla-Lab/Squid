@@ -258,3 +258,73 @@ def test_snapshot_gives_none_for_hardware_that_does_not_answer():
     snap = snapshot_microscope(microscope)  # a handover must not wait for one value
     assert (snap["x_mm"], snap["y_mm"], snap["z_mm"], snap["exposure_ms"]) == (None, None, None, None)
     assert (snap["objective"], snap["channel"], snap["is_live"]) == ("20x", "BF LED matrix full", True)
+
+
+NOT_NOW = "this is not the agent session of now"
+
+
+def test_each_change_with_the_id_of_an_earlier_session_is_refused():
+    s = AgentSession()
+    first = s.begin()
+    s.end()
+    s.finish_stop(None)
+    second = s.begin()
+    with pytest.raises(AgentSessionRefused, match=NOT_NOW):
+        with s.admit("move_to", session_id=first):
+            pass
+    for change in (
+        lambda: s.request_stop(SessionState.HUMAN, "take over", session_id=first),
+        lambda: s.end(session_id=first),
+    ):
+        with pytest.raises(AgentSessionRefused, match=NOT_NOW):
+            change()
+    assert s.state is SessionState.AGENT and s.in_flight == 0  # nothing changed
+    with s.admit("move_to", session_id=second):
+        assert s.in_flight == 1
+    with s.admit("move_to"):  # no id: as before
+        pass
+    assert s.request_stop(SessionState.HUMAN, "take over", session_id=second) is SessionState.STOPPING
+
+
+def test_a_hand_back_with_the_id_of_an_earlier_session_is_refused():
+    s = AgentSession()
+    first = s.begin()
+    s.end()
+    s.finish_stop(None)
+    stopped_for_human(s)  # a second session, and a human drives
+    second = s.session_id
+    assert s.why_not("hand_back", session_id=first) == NOT_NOW and s.why_not("hand_back", session_id=second) is None
+    with pytest.raises(AgentSessionRefused, match=NOT_NOW):
+        s.hand_back({}, "x", session_id=first)
+    assert s.state is SessionState.HUMAN and s.status()["handover_count"] == 0
+    s.hand_back({}, "x", session_id=second)
+    assert s.state is SessionState.AGENT
+
+
+def test_an_end_while_a_human_drives_checks_the_id():
+    s = AgentSession()
+    first = s.begin()
+    s.end()
+    s.finish_stop(None)
+    stopped_for_human(s)  # a second session, and a human drives
+    second = s.session_id
+    with pytest.raises(AgentSessionRefused, match=NOT_NOW):
+        s.end(session_id=first)
+    assert s.state is SessionState.HUMAN
+    assert s.end(session_id=second) is SessionState.NONE
+
+
+def test_a_command_with_a_session_id_is_refused_when_there_is_no_session():
+    s = AgentSession()
+    with pytest.raises(AgentSessionRefused, match=NOT_NOW):
+        with s.admit("move_to", session_id="an-earlier-one"):
+            pass
+    with pytest.raises(AgentSessionRefused, match=NOT_NOW):
+        s.end(session_id="an-earlier-one")
+    with pytest.raises(AgentSessionRefused, match=NOT_NOW):
+        s.request_stop(SessionState.HUMAN, "take over", session_id="an-earlier-one")
+    assert s.why_not("begin", session_id="an-earlier-one") == NOT_NOW  # a begin never has the id of a session
+    with s.admit("get_position", session_id="an-earlier-one"):  # a read changes nothing: it is served
+        pass
+    with s.admit("move_to"):  # with no id and no session: as before
+        pass

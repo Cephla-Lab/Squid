@@ -1,6 +1,9 @@
 """The control server asks the agent session for admission, and serves the session commands."""
 
 import inspect
+import json
+import socket
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,16 +18,18 @@ class FakeGui:
         self.microscope = microscope
         self.refuse_with = None
         self.calls = []
+        self.session_ids = []
 
-    def run_agent_session_transition(self, kind, note=""):
+    def run_agent_session_transition(self, kind, note="", session_id=None):
         self.calls.append((kind, note))
+        self.session_ids.append(session_id)
         if self.refuse_with:
             return self.refuse_with
         try:
             if kind == "begin":
                 self.microscope.agent_session.begin()
             else:
-                self.microscope.agent_session.hand_back(snapshot_microscope(self.microscope), note)
+                self.microscope.agent_session.hand_back(snapshot_microscope(self.microscope), note, session_id)
         except AgentSessionRefused as e:
             return str(e)
         return None
@@ -145,3 +150,49 @@ def test_homing_gate_applies_to_actions_and_not_to_session_commands(server, hand
 
 def test_unknown_command_is_still_an_error(server):
     assert server._execute("fly", {}) == {"success": False, "error": "Unknown command: fly"}
+
+
+NOT_NOW = {"success": False, "error": "this is not the agent session of now"}
+
+
+def test_the_server_passes_the_session_id_of_the_request_to_each_change(server, handler):
+    session = server.microscope.agent_session
+    session.begin()
+    for command, params in (("move_to", {"x_mm": 1.0}), ("take_over", {}), ("end_agent_session", {})):
+        assert server._execute(command, params, session_id="not-this-one") == NOT_NOW
+    assert session.state is SessionState.AGENT
+    handler.assert_not_called()
+    server._log.error.assert_not_called()  # a refusal is not an error of the server
+    assert server._execute("move_to", {"x_mm": 1.0}, session_id=session.session_id)["success"] is True
+    assert server._execute("take_over", {}, session_id=session.session_id)["result"] == {"state": "stopping"}
+
+
+def test_a_hand_back_carries_the_session_id_to_the_window(server):
+    session = human_drives(server)
+    assert server._execute("hand_back", {"note": "x"}, session_id="not-this-one") == NOT_NOW
+    assert session.state is SessionState.HUMAN and server.gui.session_ids == ["not-this-one"]
+    assert server._execute("hand_back", {"note": "x"}, session_id=session.session_id)["success"] is True
+    assert session.state is SessionState.AGENT and server.gui.session_ids[-1] == session.session_id
+
+
+def test_the_session_id_of_one_request_is_not_used_for_the_next(server):
+    human_drives(server)
+    assert server._execute("hand_back", {"note": "x"}, session_id="not-this-one") == NOT_NOW
+    assert server._execute("hand_back", {"note": "x"})["success"] is True  # a request with no id: as before
+    assert server.gui.session_ids == ["not-this-one", None]
+
+
+def test_a_request_over_tcp_carries_the_session_id_to_the_check(server, handler):
+    server.microscope.agent_session.begin()
+    server._connection_semaphore = threading.Semaphore(0)
+    ours, theirs = socket.socketpair()
+    with ours:
+        ours.sendall(b'{"command": "move_to", "params": {}, "session_id": "not-this-one"}\n')
+        server._handle_client(theirs)
+        assert json.loads(ours.recv(65536)) == NOT_NOW
+    handler.assert_not_called()
+    ours, theirs = socket.socketpair()
+    with ours:
+        ours.sendall(b'{"command": "move_to", "params": {}}\n')  # a request with no id: as before
+        server._handle_client(theirs)
+        assert json.loads(ours.recv(65536)) == {"success": True, "result": {"moved": True}}

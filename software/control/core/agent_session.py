@@ -25,6 +25,7 @@ SESSION_COMMANDS = frozenset({"begin_agent_session", "take_over", "hand_back", "
 REFUSAL_STOPPING = "a stop is in progress"
 REFUSAL_HUMAN = "a human is driving"
 REFUSAL_AGENT_DRIVES = "the agent is driving"
+REFUSAL_NOT_NOW = "this is not the agent session of now"
 
 
 # The state from which the agent can get the control, and the refusal text in another state.
@@ -136,13 +137,22 @@ class AgentSession:
             return "the console is running a line"
         return None
 
-    def why_not(self, kind: str) -> Optional[str]:
+    def _check_session_id(self, session_id: Optional[str]) -> None:
+        """A client can say which session its request belongs to. A request for a session that is not the session
+        of now is refused: the session ended, and a different one can have begun. Called with the lock held, in
+        the block that makes the change. With no id, nothing is checked."""
+        if session_id is not None and session_id != self._session_id:
+            raise AgentSessionRefused(REFUSAL_NOT_NOW)
+
+    def why_not(self, kind: str, session_id: Optional[str] = None) -> Optional[str]:
         """Why "begin" or "hand_back" would be refused at this moment, or None. It changes nothing. For a caller
         that must prepare something before the change; the change itself asks again."""
         if kind not in _GIVE_CONTROL_FROM:
             raise ValueError(f"kind must be one of {sorted(_GIVE_CONTROL_FROM)}")
         reason = self._blocker() if self._blocker is not None else None
         with self._lock:
+            if session_id is not None and session_id != self._session_id:
+                return REFUSAL_NOT_NOW
             return self._refusal_to_give_control(kind, reason)
 
     def begin(self) -> str:
@@ -162,11 +172,13 @@ class AgentSession:
         self._notify(SessionState.NONE, SessionState.AGENT)
         return session_id
 
-    def request_stop(self, then: SessionState, cause: str) -> SessionState:
-        """Take the control from the agent. `then` is HUMAN (take over) or NONE (end). Returns the state after."""
+    def request_stop(self, then: SessionState, cause: str, session_id: Optional[str] = None) -> SessionState:
+        """Take the control from the agent. `then` is HUMAN (take over) or NONE (end). Returns the state after.
+        With a session_id, the request is refused when that is not the session of now."""
         if then not in (SessionState.HUMAN, SessionState.NONE):
             raise ValueError("then must be HUMAN or NONE")
         with self._lock:
+            self._check_session_id(session_id)
             old = self._state
             if old is SessionState.NONE:
                 raise AgentSessionRefused("no agent session")
@@ -203,9 +215,10 @@ class AgentSession:
         self._notify(SessionState.STOPPING, new)
         return new
 
-    def hand_back(self, snapshot: dict, note: str = "") -> None:
+    def hand_back(self, snapshot: dict, note: str = "", session_id: Optional[str] = None) -> None:
         reason = self._blocker() if self._blocker is not None else None
         with self._lock:
+            self._check_session_id(session_id)
             reason = self._refusal_to_give_control("hand_back", reason)
             if reason:
                 raise AgentSessionRefused(reason)
@@ -216,8 +229,10 @@ class AgentSession:
             self._unlocked_anyway = False
         self._notify(SessionState.HUMAN, SessionState.AGENT)
 
-    def end(self) -> SessionState:
+    def end(self, session_id: Optional[str] = None) -> SessionState:
+        """End the session. With a session_id, the end is refused when that is not the session of now."""
         with self._lock:
+            self._check_session_id(session_id)
             old = self._state
             if old is SessionState.NONE:
                 raise AgentSessionRefused("no agent session")
@@ -227,7 +242,7 @@ class AgentSession:
         if old is SessionState.HUMAN:
             self._notify(SessionState.HUMAN, SessionState.NONE)
             return SessionState.NONE
-        return self.request_stop(SessionState.NONE, "end")
+        return self.request_stop(SessionState.NONE, "end", session_id)  # it checks the id again, with its change
 
     def _clear_session(self) -> None:
         """Called with the lock held."""
@@ -236,13 +251,17 @@ class AgentSession:
         self._handover_count = 0
 
     @contextlib.contextmanager
-    def admit(self, command: str):
+    def admit(self, command: str, session_id: Optional[str] = None):
         """Admission of one control-server command. A read or a session command is admitted in every state. Another
         command is refused while a stop is in progress or a human drives, and is counted while it runs. The check
-        and the count are under one lock."""
+        and the count are under one lock.
+
+        session_id: the session that the client says its command belongs to. A command for a session that is not
+        the session of now is refused. A session command checks its id in the call that makes its change."""
         counted = False
         if not is_read_command(command) and command not in SESSION_COMMANDS:
             with self._lock:
+                self._check_session_id(session_id)
                 if self._state is SessionState.STOPPING:
                     raise AgentSessionRefused(REFUSAL_STOPPING)
                 if self._state is SessionState.HUMAN:

@@ -58,6 +58,27 @@ send_command("hand_back", {"note": "looked at one organism"})
 send_command("end_agent_session")
 ```
 
+### A command for one session: `session_id`
+
+A client can put the identifier of its session next to `command` and `params`:
+
+```python
+began = send_command("begin_agent_session")["result"]            # {"state": "agent", "session_id": "5f0c..."}
+send_command("move_to", {"x_mm": 20.0}, session_id=began["session_id"])
+# on the wire: {"command": "move_to", "params": {"x_mm": 20.0}, "session_id": "5f0c..."}
+```
+
+Squid then serves the command only when that session is the session of now. If the session ended, and also if a
+different session began after it, the answer is the error `this is not the agent session of now`, and nothing
+changes. This is for a program that reads the state at intervals: between two reads, a human can end its session
+and a different program can begin one.
+
+- The check is for every command that changes something: the action commands, `take_over`, `hand_back` and
+  `end_agent_session`.
+- `ping` and the `get_*` commands are served with any identifier: they change nothing.
+- `begin_agent_session` with an identifier is refused: a session that begins has no identifier yet.
+- A command with no `session_id` works as before.
+
 ### The session status
 
 `get_agent_session` returns:
@@ -83,6 +104,8 @@ The two states are in memory only.
 - `ping`, every `get_*` command and the session commands are accepted in every state.
 - Every other command is refused with `a stop is in progress` in `stopping` and with `a human is driving` in
   `human`.
+- A command with a `session_id` that is not the session of now is refused with
+  `this is not the agent session of now` (see above).
 
 ### When `begin_agent_session` and `hand_back` are refused
 
@@ -155,7 +178,9 @@ Closing Squid asks for a confirmation, which is such a dialog: closing while the
 
 ## Known limits
 
-- The server cannot tell two programs apart. A second script that sends commands is treated as the agent.
+- The server cannot tell two programs apart. A second script that sends commands is treated as the agent. A
+  program that sends its `session_id` with each command is protected from one case: its commands do not go to a
+  session that a different program began.
 - If the agent stops sending commands, nothing happens until a human clicks **Take over**.
 - A restart of Squid ends the session. The two recorded microscope states are lost.
 - The handover shows the microscope state before and after the human drove. It does not list each action.
