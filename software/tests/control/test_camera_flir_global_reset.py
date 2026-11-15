@@ -216,3 +216,120 @@ def test_edge_failure_with_default_settings_is_todays_behavior(monkeypatch):
         cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
     assert nodemap.writes == [("TriggerMode", "On"), ("TriggerSource", "Line2")]
     assert cam.trigger_mode == TriggerMode.SOFTWARE
+
+
+def test_global_reset_on_writes_and_reads_back_sensor_shutter_mode(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert nodemap.writes == LEVEL_ENTRY_WRITES + [("SensorShutterMode", "GlobalReset"), ("ExposureAuto", "Off")]
+    assert cam.get_strobe_time() == camera_flir.GLOBAL_RESET_TRIGGER_LATENCY_US / 1000.0 == 0.0
+    assert cam.strobe_pushes == [0.0]
+
+
+@pytest.mark.parametrize(
+    "trigger_mode, global_reset",
+    [(HardwareTriggerMode.EDGE, False), (HardwareTriggerMode.LEVEL, False), (HardwareTriggerMode.EDGE, True)],
+)
+def test_global_reset_off_never_touches_sensor_shutter_mode(monkeypatch, trigger_mode, global_reset):
+    monkeypatch.setattr(control._def, "HARDWARE_TRIGGER_MODE", trigger_mode)
+    monkeypatch.setattr(control._def, "HARDWARE_TRIGGER_GLOBAL_RESET", global_reset)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", False)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert "SensorShutterMode" not in [name for name, _ in nodemap.writes]
+    assert cam.get_strobe_time() == 62.0
+
+
+def test_global_reset_readback_mismatch_raises(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("SensorShutterMode").readback = "Rolling"
+    with pytest.raises(CameraError, match="SensorShutterMode=Rolling"):
+        ft.make_flir(nodemap)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+
+def test_global_reset_missing_node_raises_when_on_and_is_untouched_when_off(monkeypatch):
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.remove("SensorShutterMode")
+    _level(monkeypatch, global_reset=True)
+    with pytest.raises(CameraError, match="HARDWARE_TRIGGER_GLOBAL_RESET"):
+        ft.make_flir(nodemap)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    _level(monkeypatch, global_reset=False)
+    nodemap.writes.clear()
+    ft.make_flir(nodemap)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert nodemap.writes == LEVEL_ENTRY_WRITES + [("ExposureAuto", "Off")]
+
+
+def test_global_reset_strobe_is_rolling_outside_hardware_trigger(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    cam = ft.make_flir(ft.bfs_u3_63s4_nodemap(), trigger_mode=TriggerMode.SOFTWARE)
+    assert cam.get_strobe_time() == 62.0
+
+
+def test_leaving_restores_sensor_shutter_mode_to_rolling(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    nodemap.writes.clear()
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.CONTINUOUS)
+    assert nodemap.writes == LEVEL_LEAVE_WRITES[:6] + [("SensorShutterMode", "Rolling")] + LEVEL_LEAVE_WRITES[6:]
+
+
+def test_setting_and_trigger_mode_alone_do_not_mean_global_reset(monkeypatch):
+    """Only a confirmed switch puts the strobe on the global-reset model, not the setting plus trigger_mode HARDWARE."""
+    _level(monkeypatch, global_reset=True)
+    cam = ft.make_flir(ft.bfs_u3_63s4_nodemap(), trigger_mode=TriggerMode.HARDWARE)
+    assert cam._global_reset_active() is False
+    assert cam.get_strobe_time() == 62.0
+
+
+def test_global_reset_is_only_active_until_the_next_mode_change(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    cam = ft.make_flir(ft.bfs_u3_63s4_nodemap())
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert cam._global_reset_active() is True
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+    assert cam._global_reset_active() is False
+    assert cam.get_strobe_time() == 62.0
+
+
+def test_rejected_global_reset_puts_the_previous_mode_back(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("SensorShutterMode").readback = "Rolling"  # accepts the write, reports rolling
+    cam = ft.make_flir(nodemap, trigger_mode=TriggerMode.SOFTWARE)
+    with pytest.raises(CameraError, match="SensorShutterMode=Rolling"):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert nodemap.writes == LEVEL_ENTRY_WRITES + [("SensorShutterMode", "GlobalReset")] + LEVEL_LEAVE_WRITES[1:6] + [
+        ("SensorShutterMode", "Rolling"),
+        ("TriggerMode", "On"),
+        ("TriggerSource", "Software"),
+        ("ExposureAuto", "Off"),
+        ("ExposureTime", 20000.0),
+    ]
+    assert cam.trigger_mode == TriggerMode.SOFTWARE
+    assert cam._global_reset_active() is False
+    assert cam.strobe_pushes == []
+
+
+def test_failed_setup_from_hardware_trigger_refreshes_the_rolling_strobe(monkeypatch):
+    """Re-arming hardware trigger (the confocal path) and failing: still hardware-triggered, but on the rolling model."""
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.node("SensorShutterMode").readback = "Rolling"
+    cam = ft.make_flir(nodemap, trigger_mode=TriggerMode.HARDWARE)
+    with pytest.raises(CameraError, match="SensorShutterMode=Rolling"):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert cam.trigger_mode == TriggerMode.HARDWARE
+    assert cam._global_reset_active() is False
+    assert nodemap.writes[-4:] == [
+        ("TriggerMode", "On"),
+        ("TriggerSource", "Line2"),
+        ("ExposureAuto", "Off"),
+        ("ExposureTime", ft.ROLLING_EXPOSURE_US_AT_20MS),  # Timed is back, so ExposureTime is written again
+    ]
+    assert cam.strobe_pushes == [62.0]

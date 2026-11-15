@@ -29,6 +29,12 @@ LEVEL_TRIGGER_NODES = (
     ("TriggerOverlap", "Off"),
 )
 
+# Trigger-to-exposure latency under SensorShutterMode = GlobalReset, in microseconds: with every row starting to
+# expose at the trigger, this is the whole strobe delay pushed to the controller (the rolling model's rows x line
+# time collapses to it). 0 until bench check B2 measures it on the BFS-U3-63S4; a value that is too small fires the
+# illumination before the sensor exposes, so the measurement replaces it, never a guess.
+GLOBAL_RESET_TRIGGER_LATENCY_US = 0
+
 
 class ReadType:
     """
@@ -562,6 +568,9 @@ class FLIRCamera(AbstractCamera):
         # Node values as the camera had them before this driver's LEVEL / global-reset setup first wrote them,
         # written back on every switch out of hardware trigger mode and when such a setup fails part way.
         self._restore_on_leave: Dict[str, Union[str, bool]] = {}
+        # True only while the camera has confirmed LEVEL trigger + global reset (the HARDWARE_TRIGGER_GLOBAL_RESET
+        # opt-in): set by _apply_global_reset_mode after the read-back, cleared on every acquisition mode change.
+        self._global_reset_verified: bool = False
 
         # below are values for IMX226 (MER2-1220-32U3M) - to make configurable
         self.row_period_us = 10
@@ -735,8 +744,49 @@ class FLIRCamera(AbstractCamera):
         """
         Given the current exposure time, return the strobe time such that
         get_strobe_time() + get_exposure_time() == total frame time. In milliseconds.
+
+        Under a confirmed global reset every row starts exposing at the trigger, so the strobe
+        delay is the sensor's trigger latency alone; otherwise the rolling-shutter model.
         """
+        if self._global_reset_active():
+            return GLOBAL_RESET_TRIGGER_LATENCY_US / 1000.0
         return self.strobe_delay_us / 1000.0
+
+    def _global_reset_active(self) -> bool:
+        """True while the camera has confirmed LEVEL trigger + global reset.
+
+        The driver's own record of the read-back, not the setting plus the trigger mode: after a setup the
+        camera refused, those two would still say global reset. With the opt-in off it is never set.
+        """
+        return self._global_reset_verified
+
+    def _apply_global_reset_mode(self) -> None:
+        """Put the sensor in global reset (SensorShutterMode = GlobalReset), read it back, or raise.
+
+        Called only from _configure_hardware_trigger, after the LEVEL node set, and a no-op unless the
+        HARDWARE_TRIGGER_GLOBAL_RESET opt-in is on together with HARDWARE_TRIGGER_MODE = LEVEL (global reset is
+        meaningless with a fixed-width EDGE trigger). SensorShutterMode is a Guru node other FLIR models may not
+        expose or let a host write, so with the opt-in off it is never touched. The previous value is remembered
+        and put back on leaving hardware trigger mode.
+        """
+        if not _def.use_level_trigger_global_reset():
+            return
+        try:
+            self._remember("SensorShutterMode")
+            self._set_enum("SensorShutterMode", "GlobalReset")
+        except CameraError as ex:
+            raise CameraError(
+                f"This camera rejected SensorShutterMode = GlobalReset ({ex}). "
+                "Turn off HARDWARE_TRIGGER_GLOBAL_RESET or use a camera that supports it."
+            ) from ex
+        read_back = self._read_enum("SensorShutterMode")
+        if read_back != "GlobalReset":
+            raise CameraError(
+                f"This camera accepted the global reset write but reports SensorShutterMode={read_back} instead "
+                "of GlobalReset. Refusing to acquire with rolling-shutter strobe timing."
+            )
+        self._global_reset_verified = True
+        self._log.info("Camera is in LEVEL trigger + global reset mode.")
 
     def update_camera_exposure_time(self):
         self.set_exposure_time(self.exposure_time)
@@ -1218,6 +1268,9 @@ class FLIRCamera(AbstractCamera):
 
         self.frame_ID_offset_hardware_trigger = None
         self.trigger_mode = TriggerMode.HARDWARE
+        # Before _set_acquisition_mode_imp's exposure refresh, so the strobe delay pushed to the controller is the
+        # global-reset one and not the rolling-shutter one. A no-op with the opt-in off.
+        self._apply_global_reset_mode()
 
     def _restore_previous_mode(self, previous: Optional[TriggerMode], setup_error: BaseException) -> None:
         """Put the camera back in `previous` after a hardware trigger setup failed part way.
@@ -1227,6 +1280,9 @@ class FLIRCamera(AbstractCamera):
         trigger nodes, then the exposure (and, in hardware trigger mode, the strobe) for that mode. Never raises:
         a rollback failure is logged with the original error, which the caller re-raises.
         """
+        # Cleared before anything is put back: a restore that fails half way must not leave a record that says
+        # global reset for a sensor that is not in it.
+        self._global_reset_verified = False
         try:
             self._restore_hardware_trigger_nodes()
             if previous == TriggerMode.SOFTWARE:
@@ -1248,6 +1304,8 @@ class FLIRCamera(AbstractCamera):
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
         """Set the acquisition mode of the camera."""
         with self._pause_streaming():
+            # Unconfirmed from here on, whatever this switch does: only a global reset read-back sets it again.
+            self._global_reset_verified = False
             self.nodemap = self.camera.GetNodeMap()
             node_trigger_mode = PySpin.CEnumerationPtr(self.nodemap.GetNode("TriggerMode"))
 
