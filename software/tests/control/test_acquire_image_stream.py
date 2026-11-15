@@ -5,6 +5,7 @@ view. The simulated camera takes the trigger anyway, so the fault showed only on
 start, each image over the control server failed with "Camera is not streaming, cannot send trigger" until Live
 was pressed one time in the window."""
 
+import contextlib
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -88,21 +89,25 @@ def test_the_hardware_trigger_mode_gets_the_stream_too():
     assert events == ["start stream", "hardware trigger", "frame"]
 
 
-def test_in_the_continuous_mode_the_stream_stops_again_after_the_image():
-    """There the camera runs free while it streams. The Live button stops the stream in this mode."""
+def test_in_the_continuous_mode_an_image_does_not_start_the_stream():
+    """There the camera runs free, and only Live turns the light on. A stream started here gave a dark frame."""
     scope, events = _scope(TriggerMode.CONTINUOUS, streaming=False)
-    Microscope.acquire_image(scope)
-    assert events == ["start stream", "frame", "stop stream"]
-    scope, events = _scope(TriggerMode.CONTINUOUS, streaming=True)  # live view is on: its stream is not stopped
+    with pytest.raises(RuntimeError, match="start Live first"):
+        Microscope.acquire_image(scope)
+    assert events == []  # no stream, no frame
+    scope.live_controller.use_current_channel.assert_not_called()
+    scope, events = _scope(TriggerMode.CONTINUOUS, streaming=True)  # live view is on: it gives the frame
     Microscope.acquire_image(scope)
     assert events == ["frame"]
 
 
-def test_in_the_continuous_mode_the_stream_stops_also_when_no_frame_comes():
-    scope, events = _scope(TriggerMode.CONTINUOUS, streaming=False, frame=None)
-    with pytest.raises(RuntimeError, match="read_frame"):
+@pytest.mark.parametrize("trigger_mode", [TriggerMode.SOFTWARE, TriggerMode.HARDWARE, TriggerMode.CONTINUOUS])
+def test_an_image_never_stops_the_stream(trigger_mode):
+    """Live can start while the image waits for its frame, and then uses the same stream."""
+    scope, _ = _scope(trigger_mode, streaming=False)
+    with contextlib.suppress(RuntimeError):
         Microscope.acquire_image(scope)
-    assert events == ["start stream", "frame", "stop stream"]
+    scope.camera.stop_streaming.assert_not_called()
 
 
 def test_a_camera_that_does_not_start_its_stream_gives_a_clear_error():
