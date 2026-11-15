@@ -38,6 +38,12 @@ ValidationResult validate(const SeqLoop& loop, const SeqChannel* channels,
             return err(SeqError::BadChannel, i);
         if (c.intensity_dac != kNone && c.intensity_dac >= n_dacs)
             return err(SeqError::BadChannel, i);
+        // A piezo stack lives on a DAC too, and PREP writes the stack target before the intensity
+        // pre-arm (seq_engine.cpp begin_prep): on the same DAC the intensity would replace the
+        // layer's position, and the settle gate would not notice.
+        if (loop.stack_axis_type == (uint8_t)StackAxisType::Piezo && c.intensity_dac != kNone &&
+            c.intensity_dac == loop.stack_axis_id)
+            return err(SeqError::BadChannel, i);
         // Every deadline the engine derives from one exposure (illumination on and off, readout
         // done) lies at most lead + strobe + exposure + readout past the trigger, so that SUM has
         // to respect the bound too, not only each term: the parts are bounded one by one above.

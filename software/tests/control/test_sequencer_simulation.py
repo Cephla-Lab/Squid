@@ -80,6 +80,19 @@ class BlockingTrigger(TriggerRecorder):
             self.gate.wait(RUN_TIMEOUT_S)
 
 
+def two_camera_program(n_layers=4):
+    """A one-channel piezo stack that triggers cameras 0 and 1 together."""
+    loop = minimal_program().loop.replace(
+        stack_axis_type=sp.StackAxisType.PIEZO, stack_axis_id=0, dz=100, n_layers=n_layers
+    )
+    camera = sp.SeqCameraSpec(trigger_mode=sp.TriggerMode.LEVEL, strobe_delay_us=300, readout_time_us=10000)
+    return minimal_program(
+        loop=loop,
+        channels=(sp.SeqChannelSpec(exposure_us=5000, camera_mask=0b11, illum_ttl_mask=1),),
+        cameras=(camera, camera),
+    )
+
+
 def stack_program(n_channels=2, n_layers=3, **loop_overrides):
     """A piezo stack with `n_channels` channels, all on camera 0."""
     loop = minimal_program().loop.replace(
@@ -489,13 +502,50 @@ class TestAllowTableWhileRunning:
         assert recorder.count == 1 + program.n_frames
 
     def test_a_second_run_while_running_is_refused(self, mcu):
-        mcu.seq_upload(stack_program(n_channels=2, n_layers=16))
+        """The dispatcher refuses the second SEQ_RUN, but the one status byte reports IN_PROGRESS for as long
+        as the first run is in flight, so the refusal surfaces when that run ends: a clean Done plus
+        CMD_EXECUTION_ERROR. The run is held inside its first trigger until the second command is in; at the
+        test speed-up a free-running program could otherwise finish before it, and the second run would go."""
+        recorder = BlockingTrigger()
+        sequencer_of(mcu).on_hardware_trigger = recorder
+        program = stack_program(n_channels=2, n_layers=16)
+        mcu.seq_upload(program)
         mcu.seq_run(0)
-        _wait_until(lambda: mcu.seq_status.frames_fired >= 1, "the run to start")
+        _wait_until(lambda: recorder.count >= 1, "the run to start")
+
+        mcu.seq_run(0)  # refused: latched behind the run in flight
+        recorder.gate.set()
+        with pytest.raises(CommandAborted) as exc:
+            mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
+
+        assert exc.value.seq_status.state == sp.SeqState.DONE  # the first run ran to its end, untouched
+        assert exc.value.seq_status.error == sp.SeqError.NONE
+        assert exc.value.seq_status.frames_fired == program.n_frames
+        assert recorder.count == program.n_frames
+        assert exc.value.recoverable  # the refused command never acted
+
+    def test_an_aborted_run_does_not_trigger_its_remaining_cameras_into_the_next_run(self, mcu):
+        """Two cameras per frame. The old thread is held inside camera 0's trigger while the host aborts the
+        run and starts another: on waking it must not go on to trigger camera 1 for the old run."""
+        recorder = BlockingTrigger()
+        sequencer_of(mcu).on_hardware_trigger = recorder
+        program = two_camera_program(n_layers=4)
+        mcu.seq_upload(program)
+        mcu.seq_run(0)
+        _wait_until(lambda: recorder.count >= 1, "the old run's first trigger")
+        old_thread = sequencer_of(mcu)._thread
+        mcu.turn_off_all_ports()
+        mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
+        assert mcu.seq_status.error == sp.SeqError.HOST_ABORT
 
         mcu.seq_run(0)
-        with pytest.raises(CommandAborted):
-            mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
+        recorder.gate.set()  # the old thread wakes inside the first step of its camera loop
+        mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
+        _wait_until(lambda: not old_thread.is_alive(), "the old timeline thread to exit")
+        assert mcu.seq_status.state == sp.SeqState.DONE
+        assert mcu.seq_status.frames_fired == program.n_frames
+        # The one held trigger of the old run (camera 0), then only the new run's two per frame.
+        assert recorder.count == 1 + 2 * program.n_frames
 
 
 class TestTimeline:

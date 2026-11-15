@@ -153,6 +153,10 @@ class CommandAborted(RuntimeError):
     moved, so a plain resend is safe. It is False for aborts where the motor
     state is uncertain (ack timeout / checksum failure after retries), which
     should be recovered by re-homing rather than blindly resending.
+    A SEQ_* command follows the same rule through `seq_status.refused`: True when
+    the engine refused it (a bad program, Busy, NotCommitted, a stack out of
+    range: nothing moved, no frame fired), False when a run failed under way
+    (frames fired, the stack axis moved), so the caller re-syncs before a retry.
 
     `seq_status` is the decoded sequencer status (SeqError + detail + frames_fired) that
     came back with a failed SEQ_* command, and None for every other command.
@@ -1945,6 +1949,9 @@ class Microcontroller:
         wait_till_operation_is_completed(timeout) sized for the whole burst.
         """
         self._require_hardware_sequencer("seq_run")
+        # _int_to_payload() wraps silently: a value outside int32 would arrive as a different, valid-looking position.
+        if not -(2**31) <= int(round(stack_start)) <= 2**31 - 1:
+            raise ValueError(f"seq_run: stack_start {stack_start} does not fit the int32 SEQ_RUN payload")
         payload = self._int_to_payload(stack_start, 4)
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SEQ_RUN
@@ -2196,9 +2203,12 @@ class Microcontroller:
                     # for a completion the firmware says will never arrive.
                     seq_status = self._seq_status if self._sequencer_owns_pending_command() else None
                     reason = "firmware reported CMD_EXECUTION_ERROR"
+                    # A sequencer command is safe to resend only when the engine refused it before acting;
+                    # a run that failed under way has fired frames and moved the stack axis.
+                    recoverable = seq_status is None or seq_status.refused
                     if seq_status is not None:
                         reason = f"{reason}: {seq_status}"
-                    self.abort_current_command(reason=reason, recoverable=True, seq_status=seq_status)
+                    self.abort_current_command(reason=reason, recoverable=recoverable, seq_status=seq_status)
                 elif (
                     self.mcu_cmd_execution_in_progress
                     and self._cmd_id_mcu != self._cmd_id

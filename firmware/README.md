@@ -450,7 +450,7 @@ visibly instead of completing with dark frames. `seq_load()` rejects anything th
 controller profile cannot do (camera beyond the trigger count, a ready line the controller
 lacks, a TTL port that does not exist).
 
-**Serial transport** (firmware 1.7; `src/commands/sequence_commands.*`, `src/sequencer/seq_staging.*`,
+**Serial transport** (firmware 2.0; `src/commands/sequence_commands.*`, `src/sequencer/seq_staging.*`,
 wire contract in `src/sequencer/seq_wire.h`). A v1 command carries 5 payload bytes and the
 protocol tracks ONE pending command, which shapes everything:
 
@@ -467,8 +467,10 @@ sequence runs the dispatcher refuses every opcode except `HEARTBEAT`, `SEQ_CANCE
 `TURN_OFF_ALL_PORTS` and `RESET` (one allow-table, natively tested), and the joystick / focus
 wheel are ignored. `TURN_OFF_ALL_PORTS` and `RESET` abort the run through the engine; the
 shutdown command itself still reports success. Opcodes 44–50 and status bytes 19–21 are left
-to the Z encoder interface (firmware 1.6). **Firmware older than 1.7 answers these opcodes
-with success and does nothing — the host must gate on the version.**
+to the Z encoder interface (firmware 1.6). **Firmware without the sequencer (every release
+through 1.9) answers these opcodes with success and does nothing.** The host does not trust the
+version number for this: at connection it sends an empty `SEQ_COMMIT`, which only sequencer
+firmware refuses, and every `seq_*` call raises when that probe found no sequencer.
 
 **Bench self-test** (`src/sequencer/seq_selftest.*`, never shipped): runs a canned 3-layer ×
 2-channel program every 2 s with no host, to put trigger / illumination / stack-axis timing

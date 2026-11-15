@@ -74,10 +74,11 @@ bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_a
     progress_ = SeqProgress{};
     progress_.total_layers = loop_.n_layers;
     progress_.total_channels = loop_.n_channels;
+    // The camera deadlines (readout done, minimum trigger period) are NOT cleared here: they belong
+    // to the cameras, not to the run, and the previous run may have ended microseconds ago.
     for (uint8_t i = 0; i < kMaxCameras; i++) {
-        trigger_valid_[i] = false;
-        readout_valid_[i] = false;
         seen_busy_[i] = false;
+        stuck_watch_[i] = false;
     }
     stuck_ready_cam_ = -1;
     overlap_hold_valid_ = false;
@@ -199,7 +200,7 @@ bool SeqEngine::hw_ready_for(uint32_t k, uint32_t now_us) {
         const SeqCameraConfig& cc = cams_[cam];
         if (cc.ready_line != kNone) {
             if (hal_.ready_line(cc.ready_line) != (bool)cc.ready_active_high) return false;
-            if (trigger_valid_[cam] && !seen_busy_[cam]) {
+            if (stuck_watch_[cam] && !seen_busy_[cam]) {
                 // Reads ready, but was never busy since its last trigger. Give a slow line
                 // kReadyStuckMinUs to react before calling it stuck.
                 if ((uint32_t)(now_us - last_trigger_us_[cam]) < kReadyStuckMinUs) return false;
@@ -248,6 +249,7 @@ void SeqEngine::schedule_exposures(uint32_t k, uint32_t now_us) {
         last_trigger_us_[cam] = now_us + lead;
         trigger_valid_[cam] = true;
         seen_busy_[cam] = false;
+        stuck_watch_[cam] = true;
         readout_done_us_[cam] = now_us + end_off + cc.readout_time_us;
         readout_valid_[cam] = true;
         if (end_off > max_end_off) max_end_off = end_off;
@@ -277,12 +279,26 @@ void SeqEngine::fail(SeqError e, uint8_t detail) {
 void SeqEngine::watch_ready_lines() {
     for (uint8_t cam = 0; cam < n_cameras_; cam++) {
         const SeqCameraConfig& cc = cams_[cam];
-        if (cc.ready_line == kNone || !trigger_valid_[cam] || seen_busy_[cam]) continue;
+        if (cc.ready_line == kNone || !stuck_watch_[cam] || seen_busy_[cam]) continue;
         if (hal_.ready_line(cc.ready_line) != (bool)cc.ready_active_high) seen_busy_[cam] = true;
     }
 }
 
+// Validation bounds every duration, not the gap between two uses of one camera (three 800 s
+// exposures on another camera fit), and a run's Done does not end its cameras' readout. So each
+// deadline is dropped the moment it passes, whether or not a run is on: a timestamp left standing
+// for 2^31 us would read as still ahead and hold its channel until WaitTimeout.
+void SeqEngine::retire_camera_timing(uint32_t now_us) {
+    for (uint8_t cam = 0; cam < kMaxCameras; cam++) {
+        if (readout_valid_[cam] && reached(now_us, readout_done_us_[cam])) readout_valid_[cam] = false;
+        if (trigger_valid_[cam] &&
+            reached(now_us, last_trigger_us_[cam] + cams_[cam].min_trigger_period_us))
+            trigger_valid_[cam] = false;
+    }
+}
+
 void SeqEngine::tick(uint32_t now_us) {
+    retire_camera_timing(now_us);
     if (running()) watch_ready_lines();
     switch (state_) {
         case SeqState::WaitHw:

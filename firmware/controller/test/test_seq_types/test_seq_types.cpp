@@ -95,6 +95,22 @@ void test_stepper_axis_out_of_range_rejected(void) {
                             (uint8_t)validate(l, ch, cams, 1, 8, 8).error);
 }
 
+// A piezo stack is driven from a DAC, and PREP writes the stack target before the intensity pre-arm:
+// a channel whose intensity DAC is the stack DAC would move the stack to its intensity.
+void test_intensity_dac_on_the_piezo_stack_dac_rejected(void) {
+    SeqLoop l = good_loop();  // piezo stack on DAC 7
+    SeqChannel ch[2] = {good_channel(), good_channel()};
+    ch[1].intensity_dac = 7;
+    SeqCameraConfig cams[1] = {cam_level()};
+    ValidationResult r = validate(l, ch, cams, 1, 8, 8);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::BadChannel, (uint8_t)r.error);
+    TEST_ASSERT_EQUAL_UINT8(1, r.detail);
+    // A stepper stack axis is not a DAC: the same id is fine there.
+    l.stack_axis_type = (uint8_t)StackAxisType::Stepper;
+    l.stack_axis_id = 7;
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)validate(l, ch, cams, 1, 8, 8).error);
+}
+
 void test_channel_count_bounds(void) {
     SeqLoop l = good_loop();
     l.n_channels = 0;
@@ -164,6 +180,7 @@ int main(int, char**) {
     RUN_TEST(test_zero_exposure_rejected_with_channel_index);
     RUN_TEST(test_camera_mask_beyond_configured_cameras_rejected);
     RUN_TEST(test_stepper_axis_out_of_range_rejected);
+    RUN_TEST(test_intensity_dac_on_the_piezo_stack_dac_rejected);
     RUN_TEST(test_channel_count_bounds);
     RUN_TEST(test_exposure_deadline_sum_is_bounded);
     RUN_TEST(test_ttl_channel_cameras_must_share_a_strobe_delay);

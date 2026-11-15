@@ -133,11 +133,26 @@ class TestCancelAndFailure:
     def test_cancel_mid_run_keeps_the_frames_already_fired(self, rig):
         mcu, _camera, recorder = rig
         program = stack_program(n_channels=2, n_layers=16)  # 32 frames
+        # Hold the run inside its second trigger until the cancel is in: at the test speed-up the whole
+        # program runs in milliseconds, and a cancel that lands after the last frame cancels nothing.
+        sequencer = mcu._serial.sequencer
+        to_camera = sequencer.on_hardware_trigger
+        gate = threading.Event()
+        triggers = []
+
+        def hold_the_second_trigger(camera_id):
+            to_camera(camera_id)
+            triggers.append(camera_id)
+            if len(triggers) == 2:
+                gate.wait(RUN_TIMEOUT_S)
+
+        sequencer.on_hardware_trigger = hold_the_second_trigger
 
         mcu.seq_upload(program)
         mcu.seq_run(0)
         _wait_until(lambda: recorder.count >= 2, "the run to fire a couple of frames")
         mcu.seq_cancel()
+        gate.set()
         mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
 
         assert mcu.seq_status.error == sp.SeqError.CANCELED

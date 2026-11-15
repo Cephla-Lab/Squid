@@ -68,6 +68,7 @@ class SeqEngine {
     void finish(uint32_t now_us);         // end of run or cancel: return move, then Done
     bool hw_ready_for(uint32_t k, uint32_t now_us);  // WAIT gate (design §5.2)
     void watch_ready_lines();                        // stuck ready-line check: note every camera seen BUSY
+    void retire_camera_timing(uint32_t now_us);      // drop camera deadlines that have passed
     void schedule_exposures(uint32_t k, uint32_t now_us);
     void fail(SeqError e, uint8_t detail);
 
@@ -90,6 +91,11 @@ class SeqEngine {
     uint32_t overlap_hold_until_us_ = 0;
     bool overlap_hold_valid_ = false;
     // Timestamps carry explicit valid flags: 0 is a legitimate micros() value (it wraps).
+    // The camera timing model outlives the run that set it: a camera is still reading out (and its
+    // minimum trigger period still running) when a one-frame run reports Done, and the next run's
+    // first frame has to wait for it like any other frame. retire_camera_timing() clears each flag
+    // once its deadline has passed, every tick, running or idle, so no timestamp gets old enough
+    // (2^31 us) for the wrap-safe comparison to read it as still ahead.
     uint32_t last_trigger_us_[kMaxCameras]{};
     bool trigger_valid_[kMaxCameras]{};
     uint32_t readout_done_us_[kMaxCameras]{};
@@ -99,6 +105,7 @@ class SeqEngine {
     // went busy is stuck (shorted cable, an output nobody configured): hw_ready_for() reports it
     // here and tick() fails with ReadyLineStuck instead of triggering without waiting.
     bool seen_busy_[kMaxCameras]{};
+    bool stuck_watch_[kMaxCameras]{};  // a trigger of THIS run went to the camera: its line owes a busy
     int8_t stuck_ready_cam_ = -1;
     bool cancel_requested_ = false;
     bool loaded_ = false;
