@@ -142,9 +142,20 @@ measure used is saved there as `plane_<index>.tiff`, after the sweep.
 
 The reply has `z_mm` (the Z after the autofocus), `moved_um`, `planes` (from below; each with `z_mm`,
 `focus_measure`, and `path` when `save_dir` was given), `best_index`, `measure`, `stopped_early` and `seconds`.
-The command is refused while an acquisition or another autofocus runs. Live view is stopped for the sweep and
-started again. The values of the Autofocus panel of the window do not change. If the camera gives no frame, the
-stage goes back to its start Z and the command fails.
+`z_mm` is the position that the stage reports. With a `step_um` that is not a whole number of motor steps, it can
+differ a little from the `z_mm` of the sharpest plane: the stage rounds each move.
+
+The command holds the stage for its whole sweep. It is refused while anything else holds the stage (an acquisition,
+the loading position, a homing, a stage move of a client) and while another autofocus runs. While the sweep runs,
+each of them is refused. Live view is stopped for the sweep and started again. The camera stream is started if it
+is off (after `stop_live`). The values of the Autofocus panel of the window do not change.
+
+When the command fails, it says where the stage is:
+- The camera gives no frame, or the sweep fails in its middle: the stage goes back to its start Z.
+- The sweep does not end in 120 s: it is stopped, and the stage is at its sharpest plane so far.
+- The sweep does not stop (a camera that does not answer): stage moves stay refused until it ends.
+
+The MCP bridge waits 160 s for the reply of `autofocus` (30 s for each other command).
 
 ### Channel & Illumination
 

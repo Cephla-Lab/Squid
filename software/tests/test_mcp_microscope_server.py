@@ -37,3 +37,16 @@ def test_a_tool_call_is_forwarded_as_its_command():
 
     assert send.call_args.args[:2] == ("move_to", {"x_mm": 1.0})
     assert json.loads(content[0].text) == {"moved_to": {"x_mm": 1.0}}
+
+
+def test_the_bridge_waits_for_an_autofocus_as_long_as_the_server_works_on_it():
+    from control.microscope_control_server import MicroscopeControlServer
+
+    longest = MicroscopeControlServer._AUTOFOCUS_TIMEOUT_S + MicroscopeControlServer._AUTOFOCUS_STOP_S
+    with patch.object(mcp_microscope_server, "send_command", return_value={"success": True, "result": {}}) as send:
+        asyncio.run(mcp_microscope_server.call_tool("microscope_autofocus", {}))
+        asyncio.run(mcp_microscope_server.call_tool("microscope_move_to", {"x_mm": 1.0}))
+
+    autofocus, move = send.call_args_list
+    assert autofocus.kwargs["timeout"] > longest  # the reply of a long sweep is not lost
+    assert move.kwargs["timeout"] == 30.0  # each other command as before

@@ -5,6 +5,7 @@ frame). The window's Autofocus button does the same sweep on frames in memory in
 
 import os
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,7 @@ import tifffile
 import control._def
 from control._def import FocusMeasureOperator, TriggerMode
 from control.core.auto_focus_controller import AutoFocusController
+from squid.stage.reservation import StageMotionRefused, StageMotionReservation
 
 FOCUS_Z_MM = 1.2000
 
@@ -56,13 +58,20 @@ class FakeCamera:
         self._scene = rng.integers(200, 4000, (400, 400)).astype(np.float32)
         self.callbacks_enabled = True
         self.frames_read = 0
+        self.streaming = True
+
+    def get_is_streaming(self):
+        return self.streaming
+
+    def start_streaming(self):
+        self.streaming = True
 
     def send_trigger(self, illumination_time=None):
         pass
 
     def read_frame(self):
         self.frames_read += 1
-        if not self._frames:
+        if not self._frames or not self.streaming:  # a real camera refuses a trigger when it does not stream
             return None
         blur = abs(self._stage.z_mm - FOCUS_Z_MM) * 1000.0 / 2.0
         image = cv2.GaussianBlur(self._scene, (0, 0), blur) if blur > 0.05 else self._scene
@@ -78,6 +87,20 @@ class FakeCamera:
         return 10.0
 
 
+class PausedCamera(FakeCamera):
+    """Its frames wait until the test lets them go."""
+
+    def __init__(self, stage, frames=True):
+        super().__init__(stage, frames)
+        self.reading = threading.Event()
+        self.go = threading.Event()
+
+    def read_frame(self):
+        self.reading.set()
+        assert self.go.wait(20)
+        return super().read_frame()
+
+
 class Hold:
     def __enter__(self):
         return self
@@ -89,11 +112,11 @@ class Hold:
         return True
 
 
-def make_server(start_um_from_focus=4.0, frames=True, gui=False, stage_class=FakeStage):
+def make_server(start_um_from_focus=4.0, frames=True, gui=False, stage_class=FakeStage, camera_class=FakeCamera):
     from control.microscope_control_server import MicroscopeControlServer
 
     stage = stage_class(FOCUS_Z_MM + start_um_from_focus / 1000.0)
-    camera = FakeCamera(stage, frames)
+    camera = camera_class(stage, frames)
     live = MagicMock()
     live.is_live = False
     live.trigger_mode = TriggerMode.SOFTWARE
@@ -106,15 +129,13 @@ def make_server(start_um_from_focus=4.0, frames=True, gui=False, stage_class=Fak
         live_controller=live,
         low_level_drivers=SimpleNamespace(microcontroller=controller_board),
         addons=SimpleNamespace(nl5=None),
+        stage_motion=StageMotionReservation(),  # who drives the stage: one owner at a time
     )
     with patch.object(MicroscopeControlServer, "__init__", lambda self: None):
         server = MicroscopeControlServer()
     server._log = MagicMock()
     server.microscope = microscope
-    server.multipoint_controller = MagicMock()
-    server.multipoint_controller.acquisition_in_progress.return_value = False
     server._own_autofocus_controller = None  # as __init__ makes it
-    server._autofocus_lock = threading.Lock()
     server.gui = None
     if gui:  # the window has its own controller, with the values of its Autofocus panel
         shown = []
@@ -205,16 +226,118 @@ def test_autofocus_checks_its_inputs(kwargs, message):
     assert stage.z_mm == start_z and camera.frames_read == 0
 
 
-def test_autofocus_is_refused_during_an_acquisition_and_during_another_autofocus():
-    server, stage, camera = make_server(gui=True)
-    server.multipoint_controller.acquisition_in_progress.return_value = True
-    with pytest.raises(RuntimeError, match="an acquisition is running"):
+@pytest.mark.parametrize(
+    "holder",
+    ["an acquisition is running", "the stage is at the loading position", "the stage is homing"],
+)
+def test_autofocus_is_refused_while_something_else_holds_the_stage(holder):
+    server, stage, camera = make_server()
+    start_z = stage.z_mm
+    hold = server.microscope.stage_motion.take(holder)  # as the acquisition, the loading position and the homing do
+    with pytest.raises(StageMotionRefused, match=holder):
         server._cmd_autofocus()
-    server.multipoint_controller.acquisition_in_progress.return_value = False
+    assert stage.z_mm == start_z and camera.frames_read == 0 and server._own_autofocus_controller is None
+    hold.release()
+    assert server._cmd_autofocus(n_planes=5, step_um=2.0)["planes"]  # the stage is free: the autofocus runs
+
+
+def test_autofocus_is_refused_while_the_autofocus_of_the_window_runs():
+    server, stage, camera = make_server(gui=True)
     server.gui.autofocusController.autofocus_in_progress = True  # the Autofocus button of the window
     with pytest.raises(RuntimeError, match="an autofocus is running"):
         server._cmd_autofocus()
-    assert camera.frames_read == 0
+    assert camera.frames_read == 0 and server.microscope.stage_motion.holder is None
+
+
+def test_autofocus_holds_the_stage_for_the_whole_sweep_and_a_second_client_is_refused():
+    server, _, camera = make_server(camera_class=PausedCamera)
+    results, errors = [], []
+
+    def client():
+        try:
+            results.append(server._cmd_autofocus(n_planes=5, step_um=2.0))
+        except RuntimeError as error:
+            errors.append(error)
+
+    first = threading.Thread(target=client)
+    first.start()
+    assert camera.reading.wait(10)  # the sweep of the first client waits for its first frame
+    assert server.microscope.stage_motion.holder == "an autofocus from the control server is running"
+    client()  # the second client, at the same time
+    camera.go.set()
+    first.join(20)
+    assert len(results) == 1 and len(errors) == 1  # exactly one autofocus, and one refusal
+    assert isinstance(errors[0], StageMotionRefused) and "an autofocus from the control server" in str(errors[0])
+    assert server.microscope.stage_motion.holder is None
+
+
+# The thread of the sweep raises the error of the camera, as it did before: the uncaught-exception log has it.
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_a_sweep_that_fails_after_some_planes_is_an_error_and_the_stage_goes_back():
+    server, stage, camera = make_server()
+    start_z = stage.z_mm
+    read_frame = camera.read_frame
+
+    def fails_at_the_third_frame():
+        if camera.frames_read == 2:
+            raise RuntimeError("the camera lost its connection")
+        return read_frame()
+
+    camera.read_frame = fails_at_the_third_frame
+    with pytest.raises(RuntimeError, match="autofocus failed: the camera lost its connection"):
+        server._cmd_autofocus(n_planes=9, step_um=2.0)
+    assert stage.z_mm == pytest.approx(start_z)  # not left in the middle of the sweep
+    assert server.microscope.stage_motion.holder is None
+
+
+def test_an_autofocus_that_runs_too_long_is_stopped_and_the_stage_is_free_again(monkeypatch):
+    server, _, camera = make_server()
+    read_frame = camera.read_frame
+    camera.read_frame = lambda: time.sleep(0.05) or read_frame()
+    monkeypatch.setattr(type(server), "_AUTOFOCUS_TIMEOUT_S", 0.12)
+    with pytest.raises(RuntimeError, match="did not end in .* and was stopped"):
+        server._cmd_autofocus(n_planes=50, step_um=0.1)
+    assert server._own_autofocus_controller.autofocus_in_progress is False and camera.frames_read < 50
+    assert server.microscope.stage_motion.holder is None
+
+
+def test_an_autofocus_that_does_not_stop_keeps_the_stage_until_it_ends(monkeypatch):
+    server, _, camera = make_server(camera_class=PausedCamera)  # a camera that does not answer
+    monkeypatch.setattr(type(server), "_AUTOFOCUS_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(type(server), "_AUTOFOCUS_STOP_S", 0.1)
+    with pytest.raises(RuntimeError, match="does not stop"):
+        server._cmd_autofocus(n_planes=5, step_um=2.0)
+    assert server.microscope.stage_motion.holder == "an autofocus that did not stop still runs"
+    with pytest.raises(StageMotionRefused, match="did not stop"):
+        server._cmd_autofocus(n_planes=5, step_um=2.0)  # nothing else moves the stage under the sweep
+    camera.go.set()  # the camera answers at last: the sweep ends
+    deadline = time.monotonic() + 20
+    while server.microscope.stage_motion.holder is not None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert server.microscope.stage_motion.holder is None
+
+
+def test_autofocus_starts_the_camera_stream_when_it_is_off():
+    server, _, camera = make_server()
+    camera.streaming = False  # as after the stop_live of a client
+    result = server._cmd_autofocus(n_planes=5, step_um=2.0)
+    assert camera.streaming is True and result["planes"]  # the frames came
+
+
+def test_the_sweep_of_the_window_reads_no_position_for_each_plane_and_keeps_no_planes():
+    # The Autofocus button and the autofocus of an acquisition work as before: the planes are for the command only.
+    server, stage, _ = make_server(gui=True)
+    controller = server.gui.autofocusController
+    reads = []
+    get_pos = stage.get_pos
+    stage.get_pos = lambda: reads.append(1) or get_pos()
+    controller.set_N(5)
+    controller.set_deltaZ(2.0)
+    controller.autofocus(focus_map_override=True)
+    controller.wait_till_autofocus_has_completed()
+    assert reads == [] and controller.last_planes == []
+    assert server._cmd_autofocus(n_planes=5, step_um=2.0)["planes"]  # the command still gets its planes
+    assert controller.report_planes is False  # and the window's sweep is as before again
 
 
 def test_a_camera_that_gives_no_frame_is_an_error_and_the_stage_goes_back():
@@ -235,22 +358,3 @@ def test_with_a_window_its_controller_is_used_and_its_panel_values_stay():
     assert (controller.N, controller.deltaZ) == (10, pytest.approx(0.001524))
     assert controller.focus_measure_operator is None and controller.keep_plane_images is False
     assert abs(stage.z_mm - FOCUS_Z_MM) * 1000.0 <= 2.0
-
-
-def test_two_clients_at_one_time_get_one_autofocus():
-    server, _, _ = make_server()
-    results, errors = [], []
-
-    def client():
-        try:
-            results.append(server._cmd_autofocus(n_planes=9, step_um=1.0))
-        except RuntimeError as error:
-            errors.append(str(error))
-
-    threads = [threading.Thread(target=client) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(30)
-    assert len(results) + len(errors) == 2 and len(results) >= 1
-    assert all("an autofocus is running" in error for error in errors)

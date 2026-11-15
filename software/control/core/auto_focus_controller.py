@@ -50,8 +50,13 @@ class AutoFocusController:
         # the focus measure of this run (None: the setting FOCUS_MEASURE_OPERATOR), and if the plane images are kept.
         self.focus_measure_operator: Optional[control._def.FocusMeasureOperator] = None
         self.keep_plane_images = False
-        # What the last contrast autofocus measured: (z_mm, focus measure, image or None) for each plane, from below.
+        # Off for the Autofocus button and for an acquisition: their sweep reads no position for each plane.
+        self.report_planes = False
+        # With report_planes, what the last contrast autofocus measured: (z_mm, focus measure, image or None) for
+        # each plane, from below.
         self.last_planes: list = []
+        # The error that ended the last contrast autofocus before its end, or None.
+        self.last_error: Optional[BaseException] = None
 
     def set_N(self, N):
         self.N = N
@@ -109,6 +114,7 @@ class AutoFocusController:
 
         self._keep_running.set()
         self.last_planes = []
+        self.last_error = None
         self._autofocus_worker = AutofocusWorker(
             self, self._on_autofocus_completed, self._image_to_display_fn, self._keep_running
         )
@@ -130,6 +136,10 @@ class AutoFocusController:
 
         # update the state
         self.autofocus_in_progress = False
+
+    def abort(self) -> None:
+        """Ask the sweep that runs to stop. It stops after its plane and goes to its sharpest plane so far."""
+        self._keep_running.clear()
 
     def wait_till_autofocus_has_completed(self):
         while self.autofocus_in_progress:
