@@ -7,6 +7,8 @@ Tests for the _cmd_run_acquisition_from_yaml command.
 import pytest
 from unittest.mock import MagicMock, patch
 
+from squid.stage.reservation import StageMotionReservation
+
 
 def create_mock_channel(name: str) -> MagicMock:
     """Create a mock channel configuration."""
@@ -23,6 +25,7 @@ def create_mock_server(objective: str = "20x", channels: list = None):
         channels = ["BF LED matrix full", "Fluorescence 488 nm Ex"]
 
     mock_microscope = MagicMock()
+    mock_microscope.stage_motion = StageMotionReservation()  # free: a MagicMock holder would refuse every start
     mock_microscope.objective_store.current_objective = objective
     mock_microscope.stage.get_pos.return_value = MagicMock(z_mm=1.0)
     mock_microscope.camera = MagicMock()
@@ -33,6 +36,7 @@ def create_mock_server(objective: str = "20x", channels: list = None):
 
     mock_multipoint = MagicMock()
     mock_multipoint.acquisition_in_progress.return_value = False
+    mock_multipoint.last_start_refusal = None
     mock_multipoint.experiment_ID = "test_experiment"
     # What set_selected_configurations would have resolved for these channels
     mock_multipoint.selected_configurations = mock_channels

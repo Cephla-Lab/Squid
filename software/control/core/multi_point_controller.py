@@ -33,9 +33,13 @@ from control.core.memory_profiler import MemoryMonitor, log_memory
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
+from squid.stage.reservation import StageMotionHold, StageMotionRefused
 import squid.acquisition_state
 import squid.logging
 from control.acquisition_history_recorder import NullAcquisitionHistoryRecorder
+
+# What a running acquisition holds the stage-motion reservation as (Microscope.stage_motion)
+ACQUISITION_RUNNING = "an acquisition is running"
 
 NoOpCallbacks = MultiPointControllerFunctions(
     signal_acquisition_start=lambda *a, **kw: None,
@@ -250,6 +254,10 @@ class MultiPointController:
         self.history_recorder = NullAcquisitionHistoryRecorder()
         self._history_entry_id: Optional[str] = None
         self._starting = False  # a run_acquisition call is between its refusals and its worker thread
+        # The stage-motion reservation held by the run under way (Microscope.stage_motion): taken before the start
+        # blocker, given back when the run ends or its start fails. Why the last start was refused, or None.
+        self._stage_motion_hold: Optional[StageMotionHold] = None
+        self.last_start_refusal: Optional[str] = None
         self._expected_image_count = 0
         self.use_manual_focus_map = False
         self.base_path = None
@@ -262,8 +270,9 @@ class MultiPointController:
         self.focus_map = None
         self.region_laser_af_offsets = {}
         self.gen_focus_map = False
-        # Optional check run before every start (GUI widgets, workflow runner, TCP server): returns why the acquisition
-        # must not start now, or None. A Z lift system uses it to refuse a start while the lift is moving.
+        # Optional check run before every start (GUI widgets, workflow runner, TCP server), once the run holds the
+        # stage: returns why the acquisition must not start now, or None. A Z lift system uses it to refuse a start
+        # while the lift is moving.
         self.start_blocker: Optional[Callable[[], Optional[str]]] = None
         self.focus_map_storage = []
         self.already_using_fmap = False
@@ -317,14 +326,20 @@ class MultiPointController:
     def _another_acquisition_in_progress(self) -> bool:
         """True while a start is between its refusals and its worker thread, or a worker thread is running: a start
         refused or failing then belongs to a second caller (Snap Images during a flexible acquisition), not to the run
-        in progress."""
-        return self._starting or (self.thread is not None and self.thread.is_alive())
+        in progress. A start holding the stage counts too: it takes the stage before it marks itself starting."""
+        return (
+            self._starting
+            or self.microscope.stage_motion.holder == ACQUISITION_RUNNING
+            or (self.thread is not None and self.thread.is_alive())
+        )
 
-    def _signal_failed_start(self) -> None:
+    def _signal_failed_start(self, another_run_holds_the_stage: bool = False) -> None:
         """Tell the callers a start went nowhere, so the UI they put into its acquiring state is released. Not while
         another acquisition is being started or is running: acquisition_finished would end the GUI's acquiring state
-        (and the Gallery's pause) under a run still going, and that run reports its own end."""
-        if self._another_acquisition_in_progress():
+        (and the Gallery's pause, and its Z lift claim) under a run still going, and that run reports its own end.
+        another_run_holds_the_stage: this start was refused because another start holds the stage, which it takes
+        before it marks itself starting."""
+        if another_run_holds_the_stage or self._another_acquisition_in_progress():
             self._log.warning("A start failed while an acquisition is in progress; that run reports its own end")
             return
         try:
@@ -332,11 +347,13 @@ class MultiPointController:
         except Exception:
             self._log.exception("acquisition_finished callback failed after a failed acquisition start")
 
-    def _end_refused_start(self, acquire_current_fov: bool, run_protocol_info: Optional[dict]) -> None:
+    def _end_refused_start(
+        self, acquire_current_fov: bool, run_protocol_info: Optional[dict], another_run_holds_the_stage: bool = False
+    ) -> None:
         """Close out a start refused before anything was prepared: record it and tell the callers."""
         self.last_end_reason = "failed_to_start"
         self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry_id=None)
-        self._signal_failed_start()
+        self._signal_failed_start(another_run_holds_the_stage)
 
     def _start_prewarmed_job_runner(self):
         """Start a job runner subprocess that warms up in the background.
@@ -795,28 +812,37 @@ class MultiPointController:
         self.protocol_info = None
         self.last_end_reason = None
         self.last_image_count = 0
+        self.last_start_refusal = None
         if not self.validate_acquisition_settings():
             self._end_refused_start(acquire_current_fov, run_protocol_info)  # tells the callers, to re-enable the UI
             return False
-        refusal = self.start_blocker() if self.start_blocker is not None else None
+        refusal = self._hold_stage_for_run()
         if refusal:
             self._log.error(f"Acquisition not started: {refusal}")
-            self._end_refused_start(acquire_current_fov, run_protocol_info)
-            return False
-        self._start_per_acquisition_log()
-
-        # Start memory monitoring for the acquisition (if enabled)
-        if control._def.ENABLE_MEMORY_PROFILING:
-            self._memory_monitor = MemoryMonitor(
-                sample_interval_ms=200,
-                process_name="main",
-                track_children=True,
-                log_interval_s=30.0,  # Log every 30 seconds during acquisition
+            self.last_start_refusal = refusal
+            self._end_refused_start(
+                acquire_current_fov, run_protocol_info, another_run_holds_the_stage=refusal == ACQUISITION_RUNNING
             )
-            self._memory_monitor.start("ACQUISITION_START")
-            log_memory("ACQUISITION START", include_children=True)
+            return False
+        try:
+            self._start_per_acquisition_log()
+
+            # Start memory monitoring for the acquisition (if enabled)
+            if control._def.ENABLE_MEMORY_PROFILING:
+                self._memory_monitor = MemoryMonitor(
+                    sample_interval_ms=200,
+                    process_name="main",
+                    track_children=True,
+                    log_interval_s=30.0,  # Log every 30 seconds during acquisition
+                )
+                self._memory_monitor.start("ACQUISITION_START")
+                log_memory("ACQUISITION START", include_children=True)
+        except BaseException:
+            self._release_stage_after_run()  # before the protected region: nothing below runs to give it back
+            raise
 
         thread_started = False
+        start_raised = False  # the start ended in an exception: a move of its may have left the stage moving
         hardware_prepared = False
         own_history_entry_id: Optional[str] = None  # the history entry this call records as started, once it does
         expected_image_count = 0
@@ -1104,13 +1130,22 @@ class MultiPointController:
             # Signal after worker creation so backpressure_controller is available
             self.callbacks.signal_acquisition_start(acquisition_params)
 
-            self.thread = Thread(target=self.multiPointWorker.run, name="Acquisition thread", daemon=True)
+            self.thread = Thread(
+                target=self._run_worker,
+                args=(self.multiPointWorker, self._stage_motion_hold),
+                name="Acquisition thread",
+                daemon=True,
+            )
             self.thread.start()
             thread_started = True
+        except BaseException:
+            start_raised = True
+            raise
         finally:
             if starting_here:
                 self._starting = False
             if not thread_started:
+                self._release_stage_after_run(after_failed_move=start_raised)
                 # Acquisition never launched a worker — close out the breadcrumb so the
                 # watchdog doesn't later misread the lingering "running" state as a hang.
                 self._run_state_writer.end("error", None)
@@ -1208,13 +1243,59 @@ class MultiPointController:
             self._history_entry_id = None
         # Each group runs even when the other one fails, and the end of the run is reported either way: otherwise the
         # GUI stays in "acquiring" with no acquisition left to abort (e.g. after the stage stopped answering).
-        for restore in (self._restore_software_state_after_acquisition, self._restore_hardware_after_acquisition):
-            try:
-                restore()
-            except Exception:
-                self._log.exception(f"Restoring after the acquisition failed in {restore.__name__}")
+        try:
+            self._restore_software_state_after_acquisition()
+        except Exception:
+            self._log.exception("Restoring after the acquisition failed in _restore_software_state_after_acquisition")
+        try:
+            self._restore_hardware_after_acquisition()
+            hardware_restored = True
+        except Exception:
+            self._log.exception("Restoring after the acquisition failed in _restore_hardware_after_acquisition")
+            hardware_restored = False
+        # The stage is done with (the move back to the start position included): the next owner may take it. A move
+        # back that raised may have left it moving: then not before the stage reports it stopped.
+        self._release_stage_after_run(after_failed_move=not hardware_restored)
         # emit the acquisition finished signal to enable the UI
         self.callbacks.signal_acquisition_finished()
+
+    def _run_worker(self, worker: MultiPointWorker, hold: StageMotionHold) -> None:
+        """The acquisition thread. A worker whose teardown raised never reported its end, so _on_acquisition_completed
+        never gave the stage back: give it back here, once the stage reports stopped (it may have been moving). When
+        the completion ran, the hold the controller has now is not this run's (none, or the next run's)."""
+        try:
+            worker.run()
+        finally:
+            if self._stage_motion_hold is hold:
+                self._log.error("The acquisition ended without reporting its end")
+                self._release_stage_after_run(after_failed_move=True)
+
+    def _hold_stage_for_run(self) -> Optional[str]:
+        """Take the stage-motion reservation for this run, then ask the start blocker. Returns why the run must not
+        start (nothing held then), or None with the reservation held until _release_stage_after_run."""
+        try:
+            hold = self.microscope.stage_motion.take(ACQUISITION_RUNNING)
+        except StageMotionRefused as e:
+            return e.reason
+        try:
+            refusal = self.start_blocker() if self.start_blocker is not None else None
+        except BaseException:
+            hold.release()
+            raise
+        if refusal:
+            hold.release()
+            return refusal
+        self._stage_motion_hold = hold
+        return None
+
+    def _release_stage_after_run(self, after_failed_move: bool = False) -> None:
+        hold, self._stage_motion_hold = self._stage_motion_hold, None
+        if hold is None:
+            return
+        if after_failed_move:
+            self.microscope.release_stage_motion_when_stopped(hold, after_failed_move=True)
+        else:
+            hold.release()
 
     def _restore_software_state_after_acquisition(self):
         """The steps that talk to no device, so a dead controller cannot stop them."""

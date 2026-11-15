@@ -382,33 +382,37 @@ class HamamatsuCamera(AbstractCamera):
         self._read_thread_running.clear()
 
     @staticmethod
-    def _last_dcam_error_string_direct(last_error: DCAMERR):
-
+    def _last_dcam_error_string_direct(last_error) -> str:
+        """'<code>:<NAME>' for a DCAMERR (or its raw integer code), '<code>:UNKNOWN_ERROR' for a code the
+        enum does not list."""
+        code = int(last_error)
         reverse_error_map = {enum_entry.value: enum_name for (enum_name, enum_entry) in DCAMERR.__members__.items()}
-
-        if last_error not in reverse_error_map:
-            return f"{last_error}:{reverse_error_map[last_error]}"
-        else:
-            return f"{last_error}:UNKNOWN_ERROR"
+        return f"{code}:{reverse_error_map.get(code, 'UNKNOWN_ERROR')}"
 
     def _last_dcam_error_string(self):
         return HamamatsuCamera._last_dcam_error_string_direct(self._camera.lasterr())
 
     def set_exposure_time(self, exposure_time_ms: float):
-        camera_exposure_time_s = exposure_time_ms / 1000.0
-        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
-            strobe_time_ms = self.get_strobe_time()
-            camera_exposure_time_s += strobe_time_ms / 1000.0
-            if self._hw_set_strobe_delay_ms_fn:
-                self._log.debug(f"Setting hw strobe time to {strobe_time_ms} [ms]")
-                self._hw_set_strobe_delay_ms_fn(strobe_time_ms)
+        # Hold the trigger lock so DCAM prop_setvalue never runs concurrently with
+        # cap_firetrigger from the live trigger thread: that overlap deadlocks inside
+        # the DCAM SDK (GUI freezes on rapid exposure changes during live).
+        # send_trigger drops triggers while this is held; the lock is reentrant, so
+        # callers that already hold it (set_sensor_mode, set_region_of_interest) are fine.
+        with self._trigger_lock:
+            camera_exposure_time_s = exposure_time_ms / 1000.0
+            if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                strobe_time_ms = self.get_strobe_time()
+                camera_exposure_time_s += strobe_time_ms / 1000.0
+                if self._hw_set_strobe_delay_ms_fn:
+                    self._log.debug(f"Setting hw strobe time to {strobe_time_ms} [ms]")
+                    self._hw_set_strobe_delay_ms_fn(strobe_time_ms)
 
-        if not self._set_prop(DCAM_IDPROP.EXPOSURETIME, camera_exposure_time_s):
-            raise CameraError(f"Failed to set exposure time to {exposure_time_ms=} ({camera_exposure_time_s=} [s])")
+            if not self._set_prop(DCAM_IDPROP.EXPOSURETIME, camera_exposure_time_s):
+                raise CameraError(f"Failed to set exposure time to {exposure_time_ms=} ({camera_exposure_time_s=} [s])")
 
-        self._exposure_time_ms = exposure_time_ms
-        self._trigger_sent.clear()
-        return True
+            self._exposure_time_ms = exposure_time_ms
+            self._trigger_sent.clear()
+            return True
 
     def get_exposure_time(self) -> float:
         return self._exposure_time_ms
@@ -470,8 +474,9 @@ class HamamatsuCamera(AbstractCamera):
 
         In LEVEL the camera's exposure is the width of the trigger pulse (the
         microcontroller holds it for strobe delay + illumination on time); with global
-        reset every row starts exposing at the trigger, so the rows x line-interval wait
-        in get_strobe_time() disappears. There is deliberately no fallback: acquiring with
+        reset every row starts exposing together, so the rows x line-interval wait in
+        get_strobe_time() gives way to the sensor's few-line start-up latency. There is
+        deliberately no fallback: acquiring with
         rolling timing against a global-reset sensor (or the reverse) puts the strobe in
         the wrong place, which silently ruins the images.
         """
@@ -559,21 +564,30 @@ class HamamatsuCamera(AbstractCamera):
 
         self._log.info("Camera output trigger 1 is configured as TRIGGER READY, active low.")
 
+    # Where the exposure starts after the trigger in global reset. Hamamatsu documents the delay from the
+    # trigger edge to the global exposure start as 3 line intervals plus up to 1 line interval of jitter
+    # (C15440-20UP instruction manual, figure 11-8), so the strobe waits the full 4: one line too long costs
+    # a sliver of dark integration, while light before integration loses signal from every short exposure.
+    # A model from the manual, not a measurement; the bench handoff carries the scope check.
+    _GLOBAL_RESET_TRIGGER_LATENCY_LINES = 4
+
     def get_strobe_time(self) -> float:
-        resolution = self.get_resolution()
-        line_interval_s = self._camera.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL) * resolution[1]
+        line_interval_s = self._camera.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL)
         trigger_delay_s = self._camera.prop_getvalue(DCAM_IDPROP.TRIGGERDELAY)
 
+        # prop_getvalue returns False on failure: checked before the row count multiplies it into a zero.
         if isinstance(line_interval_s, bool) or isinstance(trigger_delay_s, bool):
             raise CameraError("Failed to get strobe delay properties from camera")
 
         if self._global_reset_active():
-            # In global reset every row starts exposing at the trigger, so the
-            # rows x line-interval wait for the last row to start is gone; what is left
-            # is the trigger delay the camera itself imposes.
-            return trigger_delay_s * 1000.0
+            # In global reset every row starts exposing together, so the rows x line-interval wait for the
+            # last row to start is gone. What is left is TRIGGERDELAY (the programmable delay, which Squid
+            # never sets, so normally 0) plus the sensor's own latency before the exposure starts.
+            latency_s = self._GLOBAL_RESET_TRIGGER_LATENCY_LINES * line_interval_s
+            return (trigger_delay_s + latency_s) * 1000.0
 
-        return (line_interval_s + trigger_delay_s) * 1000.0
+        rows = self.get_resolution()[1]
+        return (rows * line_interval_s + trigger_delay_s) * 1000.0
 
     # READOUTSPEED values for the ORCA-Fusion BT (C15440-20UP), slowest (best SNR)
     # first. DCAM's own value texts are just the numbers, so we name the modes
