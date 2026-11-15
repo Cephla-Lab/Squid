@@ -278,13 +278,27 @@ class PriorStage(AbstractStage):
         else:
             raise ValueError(f"Acceleration must be between 1 and {self.acceleration_limit}")
 
+    def has_own_joystick(self) -> bool:
+        return True
+
+    def set_joystick_lock(self, locked: bool) -> None:
+        """The command "H" turns the joystick off (the stage and Z axes; a joystick move in progress ends first), "J" turns it
+        on again. The controller answers "0" to each. Raises SquidError for any other answer, and for no answer: the
+        controller can have taken the command all the same. The controller turns the joystick on at power-up."""
+        command = "H" if locked else "J"
+        reply = self._send_command(command)
+        if reply != "0":
+            raise SquidError(
+                f"Prior stage did not confirm that the joystick is {'off' if locked else 'on'}: "
+                f"'{command}' got {reply!r}"
+            )
+        self.joystick_enabled = not locked
+
     def enable_joystick(self):
-        self._send_command("J")
-        self.joystick_enabled = True
+        self.set_joystick_lock(False)
 
     def disable_joystick(self):
-        self._send_command("H")
-        self.joystick_enabled = False
+        self.set_joystick_lock(True)
 
     def get_encoder_axes(self) -> Optional[int]:
         """The axes moving under encoder control, as the controller's bit mask (X=1, Y=2, Z=4; 0 = none). None if

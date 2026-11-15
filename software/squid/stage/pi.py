@@ -498,6 +498,13 @@ class CombinedStage(AbstractStage):
     def is_referenced(self) -> bool:
         return self._z.is_referenced()
 
+    def has_own_joystick(self) -> bool:
+        return self._xy.has_own_joystick() or self._z.has_own_joystick()
+
+    def set_joystick_lock(self, locked: bool) -> None:
+        self._xy.set_joystick_lock(locked)
+        self._z.set_joystick_lock(locked)
+
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True, objective_lowered: bool = False):
         xy_requested = x or y or theta
         if xy_requested:
