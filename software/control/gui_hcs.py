@@ -45,10 +45,21 @@ from control._def import *
 from control.laser_engine_widget import LaserEngineWidget
 from control.versalase_widget import VersaLaseWidget
 from control.NL5Widget import NL5Widget
-from control.panel_lock import PANEL_LOCK_AGENT, PANEL_LOCK_HOMING, PANEL_LOCK_LOADING, PanelLockReasons
+from control.panel_lock import (
+    PANEL_LOCK_AGENT,
+    PANEL_LOCK_HOMING,
+    PANEL_LOCK_LOADING,
+    PanelLockReasons,
+    PanelLockRefused,
+)
 from control.agent_session_protection import AgentSessionProtection
 from control.agent_session_stop import AgentSessionStopSequence
-from control.agent_session_widgets import PANEL_NOT_LOCKED_WARNING, AgentSessionBanner, InputShield
+from control.agent_session_widgets import (
+    PANEL_NOT_LOCKED_STAGE_JOYSTICK_LOCKED_WARNING,
+    PANEL_NOT_LOCKED_WARNING,
+    AgentSessionBanner,
+    InputShield,
+)
 from control.core.agent_session import snapshot_microscope
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
@@ -2875,25 +2886,29 @@ class HighContentScreeningGui(QMainWindow):
         return mcu is not None and mcu.supports_panel_lock()
 
     def _lock_panel_for_agent_session(self) -> None:
-        """Lock the control panel for the agent session and wait for the controller to confirm it. Raises if it
-        does not: the agent must not drive while the joystick can move the stage. (_set_control_panel_lock only
-        logs a failure, which is correct for homing but not here.) A second call changes nothing."""
+        """Lock the control panel, and the joystick of a stage that has one of its own, for the agent session, and
+        wait for each controller to confirm it. Raises PanelLockRefused if one does not: the agent must not drive
+        while a joystick can move the stage. (For homing, _set_control_panel_lock only logs a failure.) A second
+        call changes nothing."""
         if PANEL_LOCK_AGENT in self._panel_lock.held():
             return
-        can_lock = self._controller_can_lock_its_panel()
-        if can_lock:
-            # Held from before the send: if the answer of the controller does not come, the controller can still
-            # have locked the panel, and the unlock on the failure path must unlock it.
-            self._panel_lock.add_locked(PANEL_LOCK_AGENT)
-            self.microcontroller.set_panel_lock(True)
-            self.microcontroller.wait_till_operation_is_completed()
+        # Held from before the send: if the answer of a controller does not come, the controller can still have
+        # locked, and the unlock on the failure path must unlock it.
+        self._panel_lock.add_locked(PANEL_LOCK_AGENT)
+        self._set_control_panel_lock(True, confirmed=True)
         # A real controller that cannot lock its panel gets here only with AGENT_SESSION_ALLOW_UNLOCKED_PANEL
         # (the session blocker refuses it otherwise): the banner tells the operator. Simulation has no panel.
-        unlocked = not can_lock and not self._is_simulation
-        self._agent_banner.set_panel_warning(PANEL_NOT_LOCKED_WARNING if unlocked else "")
-        if unlocked:
-            self.log.warning("Agent session: the control panel is not locked (the controller firmware cannot lock it)")
-        self._panel_lock.add_locked(PANEL_LOCK_AGENT)
+        if self._controller_can_lock_its_panel() or self._is_simulation:
+            self._agent_banner.set_panel_warning("")
+            return
+        stage_joystick_locked = self.stage.has_own_joystick()
+        self._agent_banner.set_panel_warning(
+            PANEL_NOT_LOCKED_STAGE_JOYSTICK_LOCKED_WARNING if stage_joystick_locked else PANEL_NOT_LOCKED_WARNING
+        )
+        self.log.warning(
+            "Agent session: the control panel is not locked (the controller firmware cannot lock it)"
+            + ("; the joystick of the stage is locked" if stage_joystick_locked else "")
+        )
 
     def _claim_lift_for_acquisition(self):
         """MultiPointController.start_blocker on a Z lift system: hold the lift for the acquisition, or say why not."""
@@ -2919,21 +2934,43 @@ class HighContentScreeningGui(QMainWindow):
             self._acquisition_holds_lift = False
             self.zLiftWidget.motion_guard.release()
 
-    def _set_control_panel_lock(self, locked: bool):
-        """The control panel's joystick and wheel are driven by the controller firmware on its own: lock them too
-        (firmware >= 1.8; older firmware cannot, which is logged once per session: every home locks the panel)."""
+    def _set_control_panel_lock(self, locked: bool, confirmed: bool = False):
+        """The one place that locks and unlocks what moves the stage without Squid. PanelLockReasons calls it for
+        the first reason and after the last one; the agent session locks with it too.
+        - The control panel's joystick and wheel are driven by the controller firmware on its own (firmware >= 1.8;
+          older firmware cannot, which is logged once per session: every home locks the panel).
+        - A stage controller with a joystick of its own (a Prior stage) turns that joystick off. Any other stage
+          does nothing.
+        confirmed=False (homing, the loading position, every unlock): a failure is logged, and the second is sent
+        whatever the first did. confirmed=True (the agent session): each lock waits for its confirmation, and the
+        first that is not confirmed raises PanelLockRefused."""
         mcu = self.microcontroller
-        if mcu is None:
-            return
-        if not mcu.supports_panel_lock():
-            if locked and not self._panel_lock_unsupported_logged:
-                self._panel_lock_unsupported_logged = True
-                self.log.warning("This controller firmware cannot lock the control panel: its joystick still moves XY")
+        if self._controller_can_lock_its_panel():
+
+            def send_to_the_control_panel():
+                mcu.set_panel_lock(locked)
+                if confirmed:
+                    mcu.wait_till_operation_is_completed()
+
+            self._send_panel_lock(send_to_the_control_panel, "the control panel", locked, confirmed)
+        elif mcu is not None and locked and not confirmed and not self._panel_lock_unsupported_logged:
+            self._panel_lock_unsupported_logged = True
+            self.log.warning("This controller firmware cannot lock the control panel: its joystick still moves XY")
+        self._send_panel_lock(
+            lambda: self.stage.set_joystick_lock(locked), "the joystick of the stage", locked, confirmed
+        )
+
+    def _send_panel_lock(self, send, what: str, locked: bool, confirmed: bool) -> None:
+        if confirmed:
+            try:
+                send()
+            except Exception as error:
+                raise PanelLockRefused(f"could not lock {what}") from error
             return
         try:
-            mcu.set_panel_lock(locked)
+            send()
         except Exception:
-            self.log.exception("Could not change the control panel lock")
+            self.log.exception(f"Could not {'lock' if locked else 'unlock'} {what}")
 
     def _stage_moves_blocked_by_objective_swap(self, what: str) -> bool:
         """True (and logged) while an objective swap runs, on a Z lift system at the loading position, or while the

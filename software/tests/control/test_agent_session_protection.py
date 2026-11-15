@@ -13,6 +13,7 @@ from control.agent_session_protection import AgentSessionProtection
 from control.agent_session_stop import WAIT_STAGE, AgentSessionStopSequence
 from control.agent_session_widgets import AgentSessionBanner, InputShield
 from control.core.agent_session import AgentSession, AgentSessionRefused, SessionState
+from control.panel_lock import PanelLockRefused
 
 AGENT_HAS_CONTROL = (SessionState.AGENT, SessionState.STOPPING)
 
@@ -144,6 +145,15 @@ def test_a_panel_lock_that_fails_refuses_begin_and_leaves_no_shield(rig):
     rig.panel.fail = True
     assert rig.protection.transition("begin") == "could not lock the control panel"
     assert rig.session.state is SessionState.NONE and not rig.shield.is_active() and not rig.panel.locked
+
+
+def test_a_lock_refusal_that_names_what_was_not_locked_is_the_answer(rig, monkeypatch):
+    def refused():
+        raise PanelLockRefused("could not lock the joystick of the stage")
+
+    monkeypatch.setattr(rig.protection, "_lock_panel", refused)
+    assert rig.protection.transition("begin") == "could not lock the joystick of the stage"
+    assert rig.session.state is SessionState.NONE and not rig.shield.is_active()
 
 
 def test_a_refusal_after_the_protection_takes_the_protection_off_again(rig):
