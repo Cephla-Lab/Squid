@@ -924,6 +924,29 @@ def test_z_stabilization_time(monkeypatch, use_pi, tol_min_um, expected_s):
     assert squid.stage.utils.z_stabilization_time_s() == pytest.approx(expected_s)
 
 
+def _this_threads_sleeps(monkeypatch, record):
+    """Route the calling thread's time.sleep() to ``record``; every other thread keeps sleeping for real.
+
+    squid.stage.pi sleeps through the time module itself, so patching its sleep patches the whole process.
+    Threads left running by earlier tests in the same pytest process (simulated microcontrollers, camera
+    read loops) call time.sleep too: counted, they turn one settle into several (the CI failure of
+    test_pi_focus_sub_window_settle_does_not_hold_the_stage_lock), and given a no-op sleep they spin.
+    Only the test thread moves the stage here, so only its sleeps are of interest.
+    """
+    import threading
+
+    real_sleep = time.sleep
+    test_thread = threading.get_ident()
+
+    def sleep(seconds):
+        if threading.get_ident() == test_thread:
+            record(seconds)
+        else:
+            real_sleep(seconds)
+
+    monkeypatch.setattr(squid.stage.pi.time, "sleep", sleep)
+
+
 @pytest.mark.parametrize(
     "move, kwargs, settles",
     [
@@ -938,7 +961,7 @@ def test_z_stabilization_time(monkeypatch, use_pi, tol_min_um, expected_s):
 )
 def test_pi_focus_moves_within_the_window_get_a_fixed_settle(monkeypatch, move, kwargs, settles):
     sleeps = []
-    monkeypatch.setattr(squid.stage.pi.time, "sleep", sleeps.append)
+    _this_threads_sleeps(monkeypatch, sleeps.append)
     sim = _make_referenced_sim()
     stage = squid.stage.pi.PIFocusStage(sim, on_target_tolerance=(0.0001, 0.0005, 0.1), sub_window_settle_s=0.02)
     stage.move_z_to(1.0)  # 1 mm: no settle
@@ -955,7 +978,7 @@ def test_pi_focus_moves_within_the_window_get_a_fixed_settle(monkeypatch, move, 
 
 def test_pi_focus_without_window_policy_never_adds_a_settle(monkeypatch):
     sleeps = []
-    monkeypatch.setattr(squid.stage.pi.time, "sleep", sleeps.append)
+    _this_threads_sleeps(monkeypatch, sleeps.append)
     stage = squid.stage.pi.PIFocusStage(_make_referenced_sim(), sub_window_settle_s=0.02)
     stage.move_z(0.00005)
     stage.move_z_to(1.0)
@@ -968,13 +991,13 @@ def test_pi_focus_sub_window_settle_does_not_hold_the_stage_lock(monkeypatch):
     )
     held = []
 
-    def sleep(_):
+    def probe_lock(_):
         acquired = threading_probe(stage._lock)
         held.append(not acquired)
 
-    monkeypatch.setattr(squid.stage.pi.time, "sleep", sleep)
+    _this_threads_sleeps(monkeypatch, probe_lock)
     stage.move_z(0.00005)
-    assert held == [False]
+    assert held == [False]  # one settle, taken with the lock free
 
 
 def threading_probe(lock):
@@ -1002,10 +1025,7 @@ def test_pi_focus_settle_decision_uses_this_moves_window(monkeypatch):
         _make_referenced_sim(), on_target_tolerance=(0.0001, 0.0005, 0.1), sub_window_settle_s=0.02
     )
     sleeps = []
-
-    def sleep(s):
-        sleeps.append(s)
-
+    _this_threads_sleeps(monkeypatch, sleeps.append)
     real_move_relative = stage._c414.move_relative
 
     def move_relative_then_other_thread_widens_window(*a, **k):
@@ -1013,7 +1033,6 @@ def test_pi_focus_settle_decision_uses_this_moves_window(monkeypatch):
         stage._on_target_tol_mm = 0.0005  # as if a concurrent 5 um move had just sized the window
         return out
 
-    monkeypatch.setattr(squid.stage.pi.time, "sleep", sleep)
     stage._c414.move_relative = move_relative_then_other_thread_widens_window
     stage.move_z(0.0003)  # 0.3 um > its own 0.1 um window: no settle, whatever the cache says later
     assert sleeps == []
@@ -1143,7 +1162,7 @@ def _profile_c414(gcs, tmp_path):
 
 
 def test_c414_swap_release_and_reengage_move_nothing_and_ramp_back(tmp_path, monkeypatch):
-    monkeypatch.setattr(squid.stage.pi.time, "sleep", lambda s: None)
+    _this_threads_sleeps(monkeypatch, lambda s: None)
     gcs = _ProfileFakeGcs(pos=3.9863)
     stage = _profile_c414(gcs, tmp_path)
     state = tmp_path / "cache" / "pi_focus_profile.json"
@@ -1187,7 +1206,7 @@ def test_c414_servo_release_freezes_the_profile_when_not_already_frozen(tmp_path
 
 
 def test_c414_ramp_spreads_a_long_move_over_table_rate(tmp_path, monkeypatch):
-    monkeypatch.setattr(squid.stage.pi.time, "sleep", lambda s: None)
+    _this_threads_sleeps(monkeypatch, lambda s: None)
     gcs = _ProfileFakeGcs(pos=0.05)
     stage = _profile_c414(gcs, tmp_path)
     stage.freeze_profile()
@@ -1202,7 +1221,7 @@ def test_c414_ramp_spreads_a_long_move_over_table_rate(tmp_path, monkeypatch):
 
 
 def test_c414_initialize_picks_up_a_profile_left_frozen(tmp_path, monkeypatch):
-    monkeypatch.setattr(squid.stage.pi.time, "sleep", lambda s: None)
+    _this_threads_sleeps(monkeypatch, lambda s: None)
     gcs = _ProfileFakeGcs(pos=7.19, profile_on=False, servo_on=False)
     stage = _profile_c414(gcs, tmp_path)
     state = tmp_path / "cache" / "pi_focus_profile.json"
@@ -1239,7 +1258,7 @@ def test_c414_initialize_with_the_generator_on_drops_a_stale_state_file(tmp_path
 
 
 def test_c414_profile_left_frozen_without_a_saved_setpoint_keeps_ramping(tmp_path, monkeypatch):
-    monkeypatch.setattr(squid.stage.pi.time, "sleep", lambda s: None)
+    _this_threads_sleeps(monkeypatch, lambda s: None)
     gcs = _ProfileFakeGcs(pos=3.0, profile_on=False)
     stage = _profile_c414(gcs, tmp_path)
 
