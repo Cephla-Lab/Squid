@@ -40,7 +40,7 @@ Restart Squid after a change.
    of the program's output. The output is in `agent_notebook.log` in Squid's log folder.
 
 A notebook program that Squid started ends when Squid closes, unless `agent_notebook_end_at_close` is `False`.
-A program that someone else started is left alone.
+On Linux and macOS, the programs that it started end too. A program that someone else started is left alone.
 
 ## What the notebook program must do
 
@@ -53,6 +53,3 @@ The program must answer `GET <agent_notebook_url>api/service` with a JSON object
 
 Squid uses this to tell the notebook from a different program that has the same port. Until the program is ready,
 it gives a different answer or none.
-
-A notebook program can begin an agent session when it starts. The Squid window then shows the banner of the
-session and ignores input until you press Take over.
