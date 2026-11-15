@@ -9,6 +9,7 @@ import pytest
 
 import control._def
 import control.acquisition_yaml_loader
+import control.core.multi_point_worker
 import control.microscope
 import control.widgets
 import tests.control.test_MultiPointController as mpc_tests
@@ -66,14 +67,23 @@ def run(tmp_path):
     seen = []
     callbacks = dataclasses.replace(
         tracker.get_callbacks(),
-        signal_current_configuration=lambda config: seen.append((config.name, config.exposure_time)),
+        signal_current_configuration=lambda config: seen.append(
+            (config.name, config.exposure_time, config.illumination_intensity)
+        ),
     )
     mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=callbacks)
     mpc_tests.add_some_coordinates(mpc)
     mpc_tests.select_some_configs(mpc, scope.objective_store.current_objective)
     mpc.set_base_path(str(tmp_path))
     first = mpc.selected_configurations[0]
-    return SimpleNamespace(mpc=mpc, tracker=tracker, seen=seen, name=first.name, stored_exposure=first.exposure_time)
+    return SimpleNamespace(
+        mpc=mpc,
+        tracker=tracker,
+        seen=seen,
+        name=first.name,
+        stored_exposure=first.exposure_time,
+        stored_intensity=first.illumination_intensity,
+    )
 
 
 def test_no_overrides_gives_the_selected_channels_themselves(run):
@@ -107,7 +117,8 @@ def test_a_run_uses_the_overrides_and_the_stored_channels_stay_as_they_are(run, 
     assert run.mpc.run_acquisition(channel_overrides=overrides)
     assert run.tracker.started_event.wait(5) and run.tracker.finished_event.wait(10)
     # every image of the run used the override; after the run the controller puts the stored channel back
-    assert run.seen.count((run.name, 21.5)) >= 2 and (run.name, run.stored_exposure) not in run.seen[:-1]
+    mine = [s[:2] for s in run.seen[:-1] if s[0] == run.name]
+    assert len(mine) >= 2 and set(mine) == {(run.name, 21.5)}
     assert "21.5" in (tmp_path / "exp" / "acquisition.yaml").read_text()
     assert run.mpc.selected_configurations[0].exposure_time == run.stored_exposure
 
@@ -116,7 +127,7 @@ def test_a_run_with_no_overrides_uses_the_stored_values(run, tmp_path):
     run.mpc.start_new_experiment("exp", add_timestamp=False)
     assert run.mpc.run_acquisition()
     assert run.tracker.started_event.wait(5) and run.tracker.finished_event.wait(10)
-    assert (run.name, run.stored_exposure) in run.seen
+    assert (run.name, run.stored_exposure, run.stored_intensity) in run.seen
 
 
 def test_the_server_passes_the_overrides_to_the_experiment_and_to_the_run(tmp_path):
@@ -170,6 +181,23 @@ def test_an_override_for_an_rgb_channel_is_refused():
     configs = [SimpleNamespace(name="BF LED matrix full_RGB")]
     with pytest.raises(ValueError, match="RGB"):
         configurations_with_overrides(configs, {"BF LED matrix full_RGB": {"exposure_time_ms": 20.0}})
+
+
+def test_contrast_autofocus_on_an_overridden_channel_uses_the_override(run, monkeypatch):
+    # the autofocus channel is looked up by name at each autofocus: it must carry the run's values too
+    monkeypatch.setattr(control.core.multi_point_worker, "MULTIPOINT_AUTOFOCUS_CHANNEL", run.name)
+    autofocus = MagicMock()
+    monkeypatch.setattr(run.mpc.autofocusController, "autofocus", autofocus)
+    monkeypatch.setattr(run.mpc.autofocusController, "wait_till_autofocus_has_completed", lambda: None)
+    run.mpc.set_af_flag(True)
+    overrides = {run.name: {"exposure_time_ms": 21.5, "illumination_intensity": 7.0}}
+    run.mpc.start_new_experiment("exp", add_timestamp=False, channel_overrides=overrides)
+    assert run.mpc.run_acquisition(channel_overrides=overrides)
+    assert run.tracker.started_event.wait(30) and run.tracker.finished_event.wait(30)
+    assert autofocus.called
+    # every selection of the channel in the run used the override; the last one puts the stored channel back
+    mine = [s for s in run.seen[:-1] if s[0] == run.name]
+    assert mine and set(mine) == {(run.name, 21.5, 7.0)}
 
 
 @pytest.mark.parametrize("widget_class_name", ["WellplateMultiPointWidget", "FlexibleMultiPointWidget"])

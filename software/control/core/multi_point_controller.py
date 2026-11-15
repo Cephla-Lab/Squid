@@ -21,6 +21,7 @@ from control.core.multi_point_utils import (
     MultiPointControllerFunctions,
     ScanPositionInformation,
     AcquisitionParameters,
+    channel_with_overrides,
     piezo_z_range_problem,
 )
 from control.core.scan_coordinates import ScanCoordinates
@@ -69,17 +70,7 @@ def configurations_with_overrides(configurations: list, channel_overrides: Optio
     rgb = sorted(name for name in channel_overrides if "RGB" in name)
     if rgb:
         raise ValueError(f"channel_overrides is not supported for an RGB channel: {rgb}")
-    effective = []
-    for config in configurations:
-        settings = channel_overrides.get(config.name)
-        if settings:
-            config = config.model_copy(deep=True)
-            if "exposure_time_ms" in settings:
-                config.exposure_time = settings["exposure_time_ms"]
-            if "illumination_intensity" in settings:
-                config.illumination_intensity = settings["illumination_intensity"]
-        effective.append(config)
-    return effective
+    return [channel_with_overrides(config, channel_overrides.get(config.name)) for config in configurations]
 
 
 def _save_acquisition_yaml(
@@ -1225,6 +1216,7 @@ class MultiPointController:
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,
             region_laser_af_offsets=region_laser_af_offsets if region_laser_af_offsets is not None else {},
+            channel_overrides=dict(channel_overrides or {}),
         )
 
     def _on_acquisition_completed(self):
