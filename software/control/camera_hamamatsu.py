@@ -522,10 +522,12 @@ class HamamatsuCamera(AbstractCamera):
             self._apply_level_trigger_global_reset()
             self._apply_trigger_ready_output()
         except Exception as setup_error:
-            self._global_reset_verified = False
             try:
                 self._set_prop_or_raise(DCAM_IDPROP.TRIGGERSOURCE, previous_source, "TRIGGERSOURCE")
                 self._restore_trigger_timing()
+                # The camera's own (rolling) trigger timing is back, whichever step above had verified global
+                # reset before a later one failed.
+                self._global_reset_verified = False
                 # The exposure (and, if that mode is hardware trigger, the strobe) for the mode it is in again.
                 self.set_exposure_time(self._exposure_time_ms)
             except Exception as rollback_error:
@@ -822,8 +824,6 @@ class HamamatsuCamera(AbstractCamera):
 
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
         with self._pause_streaming():
-            # Unconfirmed from here on, whatever this switch does: only a global reset read-back sets it again.
-            self._global_reset_verified = False
             if acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
                 dcam_trigger_source = DCAMPROP.TRIGGERSOURCE.SOFTWARE
             elif acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
@@ -848,6 +848,9 @@ class HamamatsuCamera(AbstractCamera):
             if not self._set_prop(DCAM_IDPROP.TRIGGERSOURCE, dcam_trigger_source):
                 self._log.error(f"Failed to set acquisition mode to {acquisition_mode=}")
                 return False
+            # The sensor has left the mode it was verified in (a write the camera refused above leaves it, and
+            # the record, as they were); only the global reset read-back below sets the record again.
+            self._global_reset_verified = False
 
             # Before the exposure/strobe refresh below, so the strobe delay pushed to the
             # microcontroller matches the exposure mode the sensor is actually in.
