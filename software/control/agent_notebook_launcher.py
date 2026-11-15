@@ -29,6 +29,7 @@ import squid.logging
 LOG_FILE_NAME = "agent_notebook.log"
 SERVICE_PATH = "api/service"  # after the address of the page: what the program is
 NOTEBOOK_ROLE = "agent-notebook"
+SERVICE_ANSWER_MAX_BYTES = 64 * 1024  # the answer at api/service is a small JSON object
 START_WAIT_S = 20.0  # how long the program gets to answer at its page
 
 
@@ -68,10 +69,18 @@ def notebook_runs(url: str, timeout_s: float = 0.5) -> bool:
     there, and no answer, are both False."""
     try:
         with urllib.request.urlopen(url.rstrip("/") + "/" + SERVICE_PATH, timeout=timeout_s) as response:
-            said = json.loads(response.read())
+            # The answer is a small JSON object. An answer that is longer, or that does not end in time, is not it.
+            deadline = time.monotonic() + timeout_s
+            body = b""
+            while len(body) <= SERVICE_ANSWER_MAX_BYTES and time.monotonic() < deadline:
+                part = response.read1(SERVICE_ANSWER_MAX_BYTES + 1 - len(body))
+                if not part:
+                    said = json.loads(body)
+                    return isinstance(said, dict) and said.get("role") == NOTEBOOK_ROLE
+                body += part
+            return False
     except (urllib.error.URLError, OSError, ValueError):
         return False
-    return isinstance(said, dict) and said.get("role") == NOTEBOOK_ROLE
 
 
 class AgentNotebook:

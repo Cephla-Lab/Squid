@@ -15,6 +15,7 @@ from datetime import datetime
 import pytest
 
 from control.agent_notebook_launcher import (
+    SERVICE_ANSWER_MAX_BYTES,
     AgentNotebook,
     command_from_setting,
     notebook_answers,
@@ -114,6 +115,47 @@ def test_a_notebook_that_says_what_it_is_is_seen_and_a_closed_port_is_not(page_t
     assert notebook_runs(closed) is False and notebook_answers(closed) is False
     # Something answers there, and it does not say that it is the notebook.
     assert notebook_runs(a_different_program) is False and notebook_answers(a_different_program) is True
+
+
+def test_a_program_whose_answer_does_not_end_is_not_the_notebook_and_the_question_ends():
+    # A different program at the address streams at api/service: its answer never ends.
+    port = free_port()
+
+    class Stream(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            try:
+                while True:
+                    self.wfile.write(b" ")
+                    self.wfile.flush()
+                    time.sleep(0.05)
+            except OSError:
+                pass
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Stream)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    said = []
+    question = threading.Thread(target=lambda: said.append(notebook_runs(f"http://127.0.0.1:{port}/")), daemon=True)
+    try:
+        question.start()
+        question.join(5.0)
+        assert not question.is_alive()  # the question has a time limit for the whole answer
+        assert said == [False]
+    finally:
+        server.shutdown()
+
+
+def test_an_answer_longer_than_the_limit_is_not_the_notebook():
+    url, server = serve(lambda path: WHAT_IT_IS + b" " * SERVICE_ANSWER_MAX_BYTES)  # still valid JSON
+    try:
+        assert notebook_runs(url) is False
+    finally:
+        server.shutdown()
 
 
 def test_a_notebook_that_runs_already_gets_the_control_server_and_is_opened(page_that_runs, tmp_path):
