@@ -184,3 +184,24 @@ def test_a_channel_name_that_does_not_exist_is_refused_with_the_names_that_do(sc
         server._cmd_set_illumination_intensity(channel="Fluorescence 999 nm Ex", intensity=11.0)
 
     assert _loaded(scope) == WIDEFIELD
+
+
+@BOTH_MODES
+@pytest.mark.parametrize(
+    "command, params",
+    [("set_exposure", {"exposure_ms": 0.0}), ("set_illumination_intensity", {"intensity": 150.0})],
+    ids=["exposure 0", "intensity 150"],
+)
+def test_a_value_that_the_channel_file_cannot_hold_is_refused_and_nothing_is_saved(
+    scope, server, objective, tmp_path, confocal, command, params
+):
+    """The file loader refuses such a value and then drops the whole file of the objective at the next start."""
+    scope.live_controller.toggle_confocal_widefield(confocal)
+    channel_file = tmp_path / "user_profiles" / "default" / "channel_configs" / f"{objective}.yaml"
+    before = channel_file.read_text()
+
+    response = server._execute(command, {"channel": CHANNEL, **params})
+
+    assert response["success"] is False
+    assert channel_file.read_text() == before
+    assert _loaded(scope) == (CONFOCAL if confocal else WIDEFIELD)

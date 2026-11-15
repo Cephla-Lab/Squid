@@ -916,6 +916,9 @@ class ConfigRepository:
 
         Returns:
             True if update was successful, False otherwise
+
+        Raises:
+            ValueError: the value is out of the limits of the model (e.g. an exposure of 0). Nothing is saved.
         """
         profile = profile or self._current_profile
         if not profile:
@@ -1013,6 +1016,11 @@ class ConfigRepository:
                 setattr(acq_channel.camera_settings, field, value)
             elif location == "illumination":
                 acq_channel.illumination_settings.intensity = value
+
+        # The setattr calls above do not check the limits of the model. Check them here, as the loader does: a value
+        # that the loader refuses must not reach the file (the loader then drops the whole file of the objective).
+        # Raises a ValueError (pydantic's ValidationError) before anything is saved or cached.
+        obj_config = ObjectiveChannelConfig.model_validate(obj_config.model_dump())
 
         # Save
         self.save_objective_config(profile, objective, obj_config)
