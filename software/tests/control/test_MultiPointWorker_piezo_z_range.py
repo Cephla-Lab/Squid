@@ -39,7 +39,7 @@ def _channel(name):
 def _worker(piezo_at_um, piezo_z_range_um, nz=4, z_stacking_config="FROM BOTTOM"):
     w = MultiPointWorker.__new__(MultiPointWorker)
     w.z_stack_order = "CHANNEL FIRST"
-    w._sequenced_program = None  # software-sequenced (the sequenced branch is decided once per acquisition)
+    w._sequenced_bursts = []  # software-sequenced (decided once per acquisition)
     w.NZ = nz
     # 2 µm; __init__ resolves FROM TOP's sign once, so the fixture carries it the way a built worker does.
     w.deltaZ = -0.002 if z_stacking_config == "FROM TOP" else 0.002

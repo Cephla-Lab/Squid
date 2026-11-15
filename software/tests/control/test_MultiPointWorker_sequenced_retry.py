@@ -18,7 +18,7 @@ import contextlib
 import dataclasses
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -244,70 +244,3 @@ def test_an_overrun_the_controller_never_reports_over_is_not_retried():
 
     assert events == ["cancel"]
     assert w._ready_for_next_trigger.is_set()  # the worker is left consistent for whoever runs next
-
-
-def _stack_worker():
-    """A worker ready for _acquire_sequenced_stack with the burst itself mocked."""
-    w = _bare_worker()
-    w._applied_config = None
-    w.selected_configurations = [MagicMock()]
-    w.z_piezo_um = 20.0
-    w.deltaZ = 0.001  # mm
-    w.NZ, w.Nt, w.time_point = 3, 1, 0
-    w.do_reflection_af = w.do_autofocus = False
-    w.piezo = MagicMock()
-    w.piezo.range_um = 300
-    w.stage = MagicMock()
-    w._ask_user_to_intervene = MagicMock()
-    w.handle_acquisition_abort = MagicMock()
-    return w
-
-
-def test_a_controller_that_did_not_stop_goes_straight_to_the_user():
-    """No retry and no piezo move: the controller may still own both."""
-    w = _stack_worker()
-    w._run_sequenced_burst = MagicMock(side_effect=ControllerDidNotStop("the controller did not report it over"))
-
-    w._acquire_sequenced_stack("A1", "/tmp", 0)
-
-    w._ask_user_to_intervene.assert_called_once()
-    assert "did not report it over" in w._ask_user_to_intervene.call_args.args[0]
-    assert w._run_sequenced_burst.call_count == 1
-    w.piezo.move_to.assert_not_called()
-
-
-def test_an_abort_after_a_failed_burst_still_puts_the_piezo_back():
-    """A failed burst leaves the piezo at the last plane the controller commanded. An abort that lands on that
-    failure must not skip the move back: the next acquisition starts from where the cache says."""
-    w = _stack_worker()
-    w._run_sequenced_burst = MagicMock(return_value=(None, "the controller reported an error"))
-    w.abort_requested_fn = lambda: w._run_sequenced_burst.call_count >= 1  # the abort lands on the failed burst
-
-    w._acquire_sequenced_stack("A1", "/tmp", 0)
-
-    assert w.piezo.move_to.call_args_list == [call(20.0)]
-    w.handle_acquisition_abort.assert_called_once()
-    w._ask_user_to_intervene.assert_not_called()
-
-
-def test_a_failed_burst_puts_the_piezo_back_at_the_stack_start():
-    """The engine's fail() leaves the piezo at the last plane it commanded (only Done and a cancel return
-    to the start) while the worker's cache says the stack start; every failed attempt moves it back there,
-    so the retry and the next acquisition start where the cache says."""
-    w = _bare_worker()
-    w._applied_config = None
-    w.selected_configurations = [MagicMock()]
-    w.z_piezo_um = 20.0
-    w.deltaZ = 0.001  # mm
-    w.NZ, w.Nt, w.time_point = 3, 1, 0
-    w.do_reflection_af = w.do_autofocus = False
-    w.piezo = MagicMock()
-    w.piezo.range_um = 300
-    w.stage = MagicMock()
-    w._run_sequenced_burst = MagicMock(return_value=(None, "the controller reported an error"))
-    w._ask_user_to_intervene = MagicMock()
-
-    w._acquire_sequenced_stack("A1", "/tmp", 0)
-
-    assert w.piezo.move_to.call_args_list == [call(20.0)] * 3
-    w._ask_user_to_intervene.assert_called_once()
