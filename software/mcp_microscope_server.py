@@ -45,13 +45,18 @@ _schemas_cache: Optional[dict] = None
 
 MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB limit to prevent memory exhaustion
 
+DEFAULT_TIMEOUT_S = 30.0  # how long the bridge waits for the reply of a command
+# A command that the server works on for longer than that, with its own wait.
+# autofocus: the server stops a sweep after 120 s and waits 30 s more for it to stop.
+COMMAND_TIMEOUT_S = {"autofocus": 160.0}
+
 
 def send_command(
     command: str,
     params: Optional[dict] = None,
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
-    timeout: float = 30.0,
+    timeout: float = DEFAULT_TIMEOUT_S,
 ) -> dict:
     """Send a command to the microscope control server."""
     request = {"command": command, "params": params or {}}
@@ -171,7 +176,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
     # Run the blocking socket call in a thread pool
     loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(None, lambda: send_command(command, arguments))
+    timeout = COMMAND_TIMEOUT_S.get(command, DEFAULT_TIMEOUT_S)
+    response = await loop.run_in_executor(None, lambda: send_command(command, arguments, timeout=timeout))
 
     if response.get("success"):
         result = response.get("result", {})

@@ -12,6 +12,8 @@ import contextlib
 import functools
 import inspect
 import json
+import math
+import os
 import socket
 import threading
 import time
@@ -208,11 +210,24 @@ def schema_method(func: Callable) -> Callable:
 
 # What a control-server move holds the stage-motion reservation as (Microscope.stage_motion)
 TCP_STAGE_MOVE = "a stage move from the control server is running"
+# What the autofocus command holds it as, for its whole sweep
+TCP_AUTOFOCUS = "an autofocus from the control server is running"
+TCP_AUTOFOCUS_NOT_STOPPED = "an autofocus that did not stop still runs"
 
 _ACQUISITION_NOT_STARTED = (
     "Acquisition did not start: the microcontroller stayed busy (home the stage or power-cycle the "
     "controller) or the run was aborted before its worker launched; see the microscope log."
 )
+
+
+class _AutofocusDoesNotStop(Exception):
+    """The sweep of the autofocus command was told to stop and still runs. controller: the one that runs it."""
+
+    def __init__(self, controller, limit_s: float):
+        super().__init__(
+            f"autofocus did not end in {limit_s:.0f} s and does not stop: stage moves are refused until it ends"
+        )
+        self.controller = controller
 
 
 class MicroscopeControlServer:
@@ -264,6 +279,7 @@ class MicroscopeControlServer:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._python_exec_enabled = False  # Disabled by default for security
+        self._own_autofocus_controller = None  # autofocus with no window: made at the first use
         self._connection_semaphore = threading.Semaphore(MAX_CONNECTIONS)
 
         # Auto-discover commands by finding all _cmd_* methods
@@ -664,12 +680,165 @@ class MicroscopeControlServer:
 
         return status
 
+    _AUTOFOCUS_TIMEOUT_S = 120.0  # then the sweep is told to stop
+    _AUTOFOCUS_STOP_S = 30.0  # how long the command then waits for the sweep to stop
+
     @schema_method
-    def _cmd_autofocus(self) -> Dict[str, Any]:
-        """Run autofocus routine (not yet implemented)."""
-        # This would need to be implemented based on the autofocus controller
-        # For now, raise not implemented
-        raise NotImplementedError("Autofocus via control server not yet implemented")
+    def _cmd_autofocus(
+        self,
+        n_planes: int = Field(10, description="Number of planes (3 to 50)", ge=3, le=50),
+        step_um: float = Field(1.524, description="Distance between two planes in um (more than 0, at most 50)"),
+        measure: Optional[str] = Field(
+            None, description="Focus measure for this call: LAPE, GLVA or TENENGRAD. Default: the setting of Squid"
+        ),
+        save_dir: Optional[str] = Field(
+            None,
+            description="Absolute path of a folder; created if missing. The part of each plane that the measure "
+            "used is saved there as plane_<index>.tiff",
+        ),
+    ) -> Dict[str, Any]:
+        """Run the contrast autofocus of Squid at the current position and move to the sharpest plane.
+
+        The planes are around the current Z, n_planes steps of step_um. It is the sweep of the Autofocus button:
+        the frames stay in memory, the measure is taken on the centre of the image, and the sweep stops early when
+        the measure falls clearly below its largest value. The reply has the Z, the planes with their focus
+        measure (from below), the index of the sharpest plane, and the time. Refused while anything else holds
+        the stage (an acquisition, the loading position, a homing, a stage move of a client) or while another
+        autofocus runs. Live view is stopped for the sweep and started again."""
+        # schema_method fills defaults; it does not enforce limits, so the limits are checked here.
+        if isinstance(n_planes, bool) or not isinstance(n_planes, int) or not 3 <= n_planes <= 50:
+            raise ValueError("n_planes must be a whole number from 3 to 50")
+        if (
+            isinstance(step_um, bool)
+            or not isinstance(step_um, (int, float))
+            or not math.isfinite(step_um)
+            or not 0 < step_um <= 50
+        ):
+            raise ValueError("step_um must be a number above 0 and at most 50")
+        operator = None
+        if measure is not None:
+            names = [option.name for option in control._def.FocusMeasureOperator]
+            if str(measure).upper() not in names:
+                raise ValueError(f"measure must be one of {', '.join(names)}")
+            operator = control._def.FocusMeasureOperator[str(measure).upper()]
+        if save_dir is not None and not os.path.isabs(save_dir):
+            raise ValueError("save_dir must be an absolute path")
+        # The stage, for the whole sweep. The autofocus is refused while an acquisition (also one that prepares), a
+        # move to or from the loading position, a homing or a stage move of a client holds the stage, and each of
+        # them is refused while the sweep runs. Two clients at one time: one of them gets the refusal.
+        hold = self.microscope.stage_motion.take(TCP_AUTOFOCUS)
+        sweep_ended = True
+        try:
+            return self._autofocus_with_the_stage(n_planes, step_um, operator, save_dir)
+        except _AutofocusDoesNotStop as still_running:
+            sweep_ended = False
+            controller = still_running.controller
+            raise RuntimeError(str(still_running)) from None
+        finally:
+            if sweep_ended:
+                hold.release()
+            else:  # the sweep can still move Z: the stage stays held until its thread ends
+                hold.reason = TCP_AUTOFOCUS_NOT_STOPPED
+                threading.Thread(
+                    target=lambda: (controller.wait_till_autofocus_has_completed(), hold.release()),
+                    daemon=True,
+                    name="autofocus-stage-release",
+                ).start()
+
+    def _autofocus_with_the_stage(self, n_planes: int, step_um: float, operator, save_dir: Optional[str]) -> dict:
+        """The sweep of _cmd_autofocus, for a caller that holds the stage."""
+        from control.core.auto_focus_controller import AutoFocusController
+
+        if self.gui is not None:  # the window's controller: the planes also go to its display
+            controller = self.gui.autofocusController
+        else:
+            if self._own_autofocus_controller is None:
+                self._own_autofocus_controller = AutoFocusController(
+                    self.microscope.camera,
+                    self.microscope.stage,
+                    self.microscope.live_controller,
+                    self.microscope.low_level_drivers.microcontroller,
+                    lambda: None,
+                    lambda image: None,
+                    self.microscope.addons.nl5,
+                )
+            controller = self._own_autofocus_controller
+        if controller.autofocus_in_progress:  # the Autofocus button of the window
+            raise RuntimeError("an autofocus is running")
+        camera = self.microscope.camera
+        if not camera.get_is_streaming():  # after stop_live: a real camera refuses a trigger when it does not stream
+            camera.start_streaming()
+        # The values of the window's Autofocus panel are put back after the sweep.
+        panel = (
+            controller.N,
+            controller.deltaZ,
+            controller.focus_measure_operator,
+            controller.keep_plane_images,
+            controller.report_planes,
+        )
+        start_z_mm = self.microscope.stage.get_pos().z_mm
+        began = time.monotonic()
+        controller.set_N(n_planes)
+        controller.set_deltaZ(step_um)
+        controller.focus_measure_operator = operator
+        controller.keep_plane_images = save_dir is not None
+        controller.report_planes = True
+        stopped = False
+        try:
+            controller.autofocus(focus_map_override=True)  # the sweep, also when the window uses a focus map
+            deadline = began + self._AUTOFOCUS_TIMEOUT_S
+            while controller.autofocus_in_progress:
+                if time.monotonic() > deadline:
+                    if stopped:
+                        raise _AutofocusDoesNotStop(controller, self._AUTOFOCUS_TIMEOUT_S)
+                    stopped = True
+                    controller.abort()  # it stops after its plane and goes to its sharpest plane so far
+                    deadline = time.monotonic() + self._AUTOFOCUS_STOP_S
+                time.sleep(0.005)
+            planes = list(controller.last_planes)
+            error = controller.last_error
+        finally:
+            (
+                controller.N,
+                controller.deltaZ,
+                controller.focus_measure_operator,
+                controller.keep_plane_images,
+                controller.report_planes,
+            ) = panel
+        seconds = time.monotonic() - began
+        if stopped:
+            raise RuntimeError(
+                f"autofocus did not end in {self._AUTOFOCUS_TIMEOUT_S:.0f} s and was stopped; "
+                "the stage is at its sharpest plane so far"
+            )
+        if error is not None:
+            # The sweep ended in its middle, without its moves to the sharpest plane: go back to where the stage was.
+            self.microscope.stage.move_z_to(start_z_mm)
+            raise RuntimeError(f"autofocus failed: {error}; the stage is back at its start Z") from error
+        if not planes:
+            # The sweep of Squid ends at the lowest plane when no frame came: go back to where the stage was.
+            self.microscope.stage.move_z_to(start_z_mm)
+            raise RuntimeError("autofocus got no frame from the camera; the stage is back at its start Z")
+
+        measures = [float(focus_measure) for _, focus_measure, _ in planes]
+        reply_planes = [{"z_mm": z_mm, "focus_measure": value} for (z_mm, _, _), value in zip(planes, measures)]
+        if save_dir is not None:  # after the sweep: a file write does not delay a plane
+            import tifffile
+
+            os.makedirs(save_dir, exist_ok=True)
+            for index, ((_, _, image), plane) in enumerate(zip(planes, reply_planes)):
+                plane["path"] = os.path.join(save_dir, f"plane_{index:02d}.tiff")
+                tifffile.imwrite(plane["path"], image)
+        z_mm = self.microscope.stage.get_pos().z_mm
+        return {
+            "z_mm": z_mm,
+            "moved_um": (z_mm - start_z_mm) * 1000.0,
+            "best_index": measures.index(max(measures)),
+            "planes": reply_planes,
+            "measure": (operator or control._def.FOCUS_MEASURE_OPERATOR).name,
+            "stopped_early": len(planes) < n_planes,
+            "seconds": round(seconds, 2),
+        }
 
     @schema_method
     def _cmd_acquire_laser_af_image(
