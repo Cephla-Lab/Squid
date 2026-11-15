@@ -102,27 +102,41 @@ def test_overrides_go_on_copies(run):
     assert run.mpc.selected_configurations == stored and stored[0].exposure_time == run.stored_exposure != 21.5
 
 
+def test_an_intensity_override_goes_on_a_copy(run):
+    stored = list(run.mpc.selected_configurations)
+    effective = run.mpc.effective_configurations({run.name: {"illumination_intensity": 7.25}})
+    assert effective[0].illumination_intensity == 7.25 and effective[0] is not stored[0]
+    assert effective[0].exposure_time == run.stored_exposure  # not named, not changed
+    assert stored[0].illumination_intensity == run.stored_intensity != 7.25
+
+
 def test_an_override_for_a_channel_that_is_not_selected_is_refused(run):
     with pytest.raises(ValueError, match="not selected"):
         run.mpc.effective_configurations({"No Such Channel": {"exposure_time_ms": 21.5}})
 
 
 def test_the_saved_channel_file_of_the_experiment_shows_the_overrides(run, tmp_path):
-    run.mpc.start_new_experiment("exp", add_timestamp=False, channel_overrides={run.name: {"exposure_time_ms": 21.5}})
-    assert "21.5" in (tmp_path / "exp" / "acquisition_channels.yaml").read_text()
+    overrides = {run.name: {"exposure_time_ms": 21.5, "illumination_intensity": 7.25}}
+    run.mpc.start_new_experiment("exp", add_timestamp=False, channel_overrides=overrides)
+    saved = (tmp_path / "exp" / "acquisition_channels.yaml").read_text()
+    assert "21.5" in saved and "7.25" in saved
     assert run.mpc.selected_configurations[0].exposure_time == run.stored_exposure
+    assert run.mpc.selected_configurations[0].illumination_intensity == run.stored_intensity
 
 
 def test_a_run_uses_the_overrides_and_the_stored_channels_stay_as_they_are(run, tmp_path):
-    overrides = {run.name: {"exposure_time_ms": 21.5}}
+    overrides = {run.name: {"exposure_time_ms": 21.5, "illumination_intensity": 7.25}}
     run.mpc.start_new_experiment("exp", add_timestamp=False, channel_overrides=overrides)
     assert run.mpc.run_acquisition(channel_overrides=overrides)
     assert run.tracker.started_event.wait(5) and run.tracker.finished_event.wait(10)
     # every image of the run used the override; after the run the controller puts the stored channel back
-    mine = [s[:2] for s in run.seen[:-1] if s[0] == run.name]
-    assert len(mine) >= 2 and set(mine) == {(run.name, 21.5)}
-    assert "21.5" in (tmp_path / "exp" / "acquisition.yaml").read_text()
+    mine = [s for s in run.seen[:-1] if s[0] == run.name]
+    assert len(mine) >= 2 and set(mine) == {(run.name, 21.5, 7.25)}
+    assert run.seen[-1] == (run.name, run.stored_exposure, run.stored_intensity)
+    channels = (tmp_path / "exp" / "acquisition.yaml").read_text().split("channel_overrides:")[0]
+    assert "21.5" in channels and "7.25" in channels
     assert run.mpc.selected_configurations[0].exposure_time == run.stored_exposure
+    assert run.mpc.selected_configurations[0].illumination_intensity == run.stored_intensity
 
 
 def test_a_run_with_no_overrides_uses_the_stored_values(run, tmp_path):
