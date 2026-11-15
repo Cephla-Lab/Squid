@@ -23,9 +23,9 @@ pip install platformio
 brew install platformio
 ```
 
-`pio run -t upload` flashes the board with the [Teensy Loader](https://www.pjrc.com/teensy/loader.html) application, which PlatformIO bundles in its Teensy platform tools (`tool-teensy`) — there is no separate uploader to install. During upload the Teensy Loader window opens, the board is automatically rebooted into the bootloader, and the firmware is flashed.
+`pio run -t upload` flashes the board with the command-line Teensy loader (`teensy_loader_cli`) from PlatformIO's Teensy platform tools (`tool-teensy`) — there is no separate uploader to install. The upload asks only the chosen board to reboot into the bootloader, programs it, and checks that it comes back running (see [Choosing the board by serial number](#choosing-the-board-by-serial-number)). The [Teensy Loader](https://www.pjrc.com/teensy/loader.html) window is used only for a lone board that has no USB serial port.
 
-> **Note:** The Teensy Loader is a graphical application, so uploading normally requires a desktop (display) environment. On platforms where the GUI app is unavailable (e.g. Linux ARM), PlatformIO automatically falls back to the command-line loader (`teensy_loader_cli`).
+> **Note:** Close the Teensy Loader application before uploading; the upload is refused while it is open. On platforms without the Teensy Loader tools (e.g. Linux ARM), PlatformIO falls back to `teensy_loader_cli` with its own reboot, which cannot pick a board: connect only one there.
 
 On Linux, install the [PJRC udev rules](https://www.pjrc.com/teensy/00-teensy.rules) into `/etc/udev/rules.d/` so non-root users can flash. A copy ships with PlatformIO at `~/.platformio/packages/tool-teensy/00-teensy.rules`.
 
@@ -57,16 +57,32 @@ number the Teensy Loader shows, or the USB serial number that `pio device list` 
 USB, so `1234567` and `12345670` name the same board; both are accepted.)
 
 The upload is also refused when the chosen board is a different model from the one the environment
-builds for (for example, a joystick image aimed at the controller), and while any *other* Teensy is
-in the bootloader: `--upload-port` only decides which board is asked to reboot, while the Teensy
-Loader programs whichever board is in the bootloader, so a second board waiting there could receive
-the image. Unplug or power-cycle that board first. After programming, the board must
-reboot and come back running with the same serial number within 30 seconds, or the upload is
-reported as failed. The checks live in [`tools/teensy_select_upload.py`](tools/teensy_select_upload.py).
+builds for (for example, a joystick image aimed at the controller), while the Teensy Loader
+application is open, and while any *other* Teensy is in the bootloader. The loader programs
+whichever board is in the bootloader, so only the chosen board may be there. Unplug or power-cycle
+the other board first.
 
-Selecting by serial number needs the Teensy Loader application. On platforms that fall back to
-`teensy_loader_cli` (Linux ARM), `--upload-port` is refused and a bare upload flashes the first board
-found, so connect only one there.
+How the chosen board is flashed:
+
+1. Only that board is asked to reboot into the bootloader, through its own USB serial port (opened
+   at 134 baud, Teensyduino's reboot request). Close Squid or any serial monitor that holds the port.
+   A board already in the bootloader (program button pressed) is not asked.
+2. The upload waits until that board, and no other, is in the bootloader, then `teensy_loader_cli`
+   programs it and exits. An `error writing to Teensy` is retried up to three times in all.
+3. The board must come back running with the same serial number within 30 seconds, and no other
+   board may have entered the bootloader meanwhile, or the upload is reported as failed.
+
+A board without a USB serial port cannot be asked to reboot: if it is the only Teensy connected, the
+Teensy Loader flashes it as before; otherwise press its program button and rerun. The checks live in
+[`tools/teensy_select_upload.py`](tools/teensy_select_upload.py).
+
+The upload used to go through the Teensy Loader application with only `-port=`. With three boards
+connected it ignored the port ("Found 3 Teensy boards, but using auto-search") and flashed a different
+board, which is why the loader is now driven directly.
+
+Selecting by serial number needs `teensy_ports` and `teensy_loader_cli` in `tool-teensy`. On platforms
+that fall back to the `teensy-cli` protocol (Linux ARM), `--upload-port` is refused and a bare upload
+flashes the first board found, so connect only one there.
 
 ### Choosing the controller at upload time
 
