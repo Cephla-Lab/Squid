@@ -322,4 +322,5 @@ def make_flir(nodemap: FakeNodemap, trigger_mode=None, exposure_ms: float = 20.0
     cam.frame_ID_offset_hardware_trigger = 0
     cam._restore_on_leave = {}
     cam._global_reset_verified = False
+    cam._global_reset_readout_ms = 0.0
     return cam

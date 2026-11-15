@@ -43,6 +43,33 @@ GLOBAL_RESET_TRIGGER_LATENCY_US = 0
 READY_OUTPUT_LINE = "Line2"
 READY_OUTPUT_LINE_INVERTER = True
 
+# Sensor readout time in ms per (AdcBitDepth, PixelFormat) as the camera reports them, used only under a confirmed
+# global reset: there the strobe term of the frame time is ~0, so live view would re-trigger while the sensor still
+# reads out, and with TriggerOverlap Off the camera silently drops those triggers. Seeded with 1/fps from FLIR's
+# BFS-U3-63S4 frame-rate table at 3072 x 2048 (14-bit: 30 fps in every format; 10-bit: format dependent), provisional
+# until bench check B4 measures the trigger-ready gap. "*" = every format at that depth.
+GLOBAL_RESET_READOUT_MS: Dict[Tuple[str, str], float] = {
+    ("Bit10", "Mono8"): 16.9,
+    ("Bit10", "Mono10p"): 25.0,
+    ("Bit10", "Mono12p"): 33.3,
+    ("Bit10", "Mono10"): 50.0,
+    ("Bit10", "Mono12"): 50.0,
+    ("Bit10", "Mono16"): 50.0,
+    ("Bit14", "*"): 33.3,
+}
+
+
+def global_reset_readout_ms(adc_bit_depth: str, pixel_format: str) -> float:
+    """The readout time for a (AdcBitDepth, PixelFormat) pair the camera reports, or raise: an unknown pair would
+    otherwise get a readiness window that lets live view trigger into the readout."""
+    for key in ((adc_bit_depth, pixel_format), (adc_bit_depth, "*")):
+        if key in GLOBAL_RESET_READOUT_MS:
+            return GLOBAL_RESET_READOUT_MS[key]
+    raise CameraError(
+        f"No readout time known for AdcBitDepth={adc_bit_depth}, PixelFormat={pixel_format} under global reset; "
+        "add it to GLOBAL_RESET_READOUT_MS"
+    )
+
 
 class ReadType:
     """
@@ -579,6 +606,8 @@ class FLIRCamera(AbstractCamera):
         # True only while the camera has confirmed LEVEL trigger + global reset (the HARDWARE_TRIGGER_GLOBAL_RESET
         # opt-in): set by _apply_global_reset_mode after the read-back, cleared on every acquisition mode change.
         self._global_reset_verified: bool = False
+        # Readout time added to the live-view readiness window while global reset is confirmed, else 0.
+        self._global_reset_readout_ms: float = 0.0
 
         # below are values for IMX226 (MER2-1220-32U3M) - to make configurable
         self.row_period_us = 10
@@ -869,6 +898,16 @@ class FLIRCamera(AbstractCamera):
                     require(*need)
             finally:
                 self._set_enum("LineSelector", previous_line)
+
+    def _refresh_global_reset_readout(self) -> None:
+        """Re-read the readout time the readiness window adds under a confirmed global reset (0 otherwise), keyed by
+        the ADC depth and pixel format the camera reports, not the ones Squid asked for."""
+        if self._global_reset_active():
+            self._global_reset_readout_ms = global_reset_readout_ms(
+                self._read_enum("AdcBitDepth"), self._read_enum("PixelFormat")
+            )
+        else:
+            self._global_reset_readout_ms = 0.0
 
     def _apply_trigger_ready_output(self) -> None:
         """Drive Line2 as the trigger-ready signal (FrameTriggerWait), LOW = ready, read it back, or raise.
@@ -1239,6 +1278,8 @@ class FLIRCamera(AbstractCamera):
             self.strobe_delay_us = self.exposure_delay_us + self.row_period_us * self.pixel_size_byte * (
                 self.row_numbers - 1
             )
+        # A format change changes the readout the global-reset readiness window waits out.
+        self._refresh_global_reset_readout()
 
     def get_pixel_format(self) -> CameraPixelFormat:
         """Returns the current pixel format."""
@@ -1391,6 +1432,7 @@ class FLIRCamera(AbstractCamera):
         # global-reset one and not the rolling-shutter one. A no-op with the opt-in off.
         self._apply_global_reset_mode()
         self._apply_trigger_ready_output()
+        self._refresh_global_reset_readout()
 
     def _restore_previous_mode(self, previous: Optional[TriggerMode], setup_error: BaseException) -> None:
         """Put the camera back in `previous` after a hardware trigger setup failed part way.
@@ -1414,6 +1456,7 @@ class FLIRCamera(AbstractCamera):
             else:  # CONTINUOUS, or never switched by this driver: the camera's power-on state
                 self._set_enum("TriggerMode", "Off")
             self.trigger_mode = previous
+            self._refresh_global_reset_readout()
             self.update_camera_exposure_time()
         except Exception as rollback_error:
             self._log.error(
@@ -1436,6 +1479,7 @@ class FLIRCamera(AbstractCamera):
                 node_trigger_mode.SetIntValue(node_trigger_mode_off.GetValue())
                 self.trigger_mode = TriggerMode.CONTINUOUS
                 self._restore_hardware_trigger_nodes()
+                self._refresh_global_reset_readout()
 
             elif acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
                 node_trigger_mode_on = PySpin.CEnumEntryPtr(node_trigger_mode.GetEntryByName("On"))
@@ -1450,6 +1494,7 @@ class FLIRCamera(AbstractCamera):
                 node_trigger_source.SetIntValue(node_trigger_source_software.GetValue())
                 self.trigger_mode = TriggerMode.SOFTWARE
                 self._restore_hardware_trigger_nodes()
+                self._refresh_global_reset_readout()
 
             elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
                 previous = self.trigger_mode
@@ -1512,8 +1557,13 @@ class FLIRCamera(AbstractCamera):
         self._trigger_sent.set()
 
     def _get_ready_for_trigger_imp(self) -> bool:
-        """Returns true if the camera is ready for another trigger."""
-        if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):
+        """Returns true if the camera is ready for another trigger.
+
+        Runs on the live trigger thread: no SDK call. Under a confirmed global reset the frame time has no
+        strobe term, so the readout the sensor still does after the exposure is added to the window.
+        """
+        window_ms = self.get_total_frame_time() + self._global_reset_readout_ms + 4
+        if time.time() - self._last_trigger_timestamp > 1.5 * window_ms / 1000.0:
             self._trigger_sent.clear()
         return not self._trigger_sent.is_set()
 

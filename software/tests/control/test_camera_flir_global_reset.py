@@ -529,3 +529,60 @@ def test_open_checks_support_before_the_first_node_write(monkeypatch):
     assert nodemap.writes == []
     assert camera.deinit_calls == 1 and cam.camera is None  # a refusal at open leaves nothing behind
     cam.py_spin_system.ReleaseInstance.assert_called_once()
+
+
+import time  # noqa: E402
+
+
+def test_readout_table_lookup():
+    assert camera_flir.global_reset_readout_ms("Bit14", "Mono16") == 33.3
+    assert camera_flir.global_reset_readout_ms("Bit14", "Mono8") == 33.3
+    assert camera_flir.global_reset_readout_ms("Bit10", "Mono8") == 16.9
+    assert camera_flir.global_reset_readout_ms("Bit10", "Mono10") == 50.0
+    with pytest.raises(CameraError, match="Bit12"):
+        camera_flir.global_reset_readout_ms("Bit12", "Mono12p")
+
+
+def _triggered(cam, seconds_ago):
+    cam._trigger_sent.set()
+    cam._last_trigger_timestamp = time.time() - seconds_ago
+
+
+def test_readiness_under_global_reset_waits_out_the_readout(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    cam = ft.make_flir(ft.bfs_u3_63s4_nodemap(), exposure_ms=5.0)  # nodemap: Bit14 / Mono16
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert cam._global_reset_readout_ms == 33.3
+    _triggered(cam, 0.030)  # window = 1.5 x (5 + 0 + 33.3 + 4) ms = 63.45 ms
+    assert cam.get_ready_for_trigger() is False
+    _triggered(cam, 0.070)
+    assert cam.get_ready_for_trigger() is True
+
+
+def test_readiness_without_global_reset_is_unchanged(monkeypatch):
+    _edge(monkeypatch)
+    cam = ft.make_flir(ft.bfs_u3_63s4_nodemap(), exposure_ms=5.0)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert cam._global_reset_readout_ms == 0.0
+    _triggered(cam, 0.030)  # window = 1.5 x (5 + 62 + 4) ms = 106.5 ms, as today
+    assert cam.get_ready_for_trigger() is False
+    _triggered(cam, 0.120)
+    assert cam.get_ready_for_trigger() is True
+
+
+def test_pixel_format_change_under_global_reset_refreshes_the_window(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    cam = ft.make_flir(nodemap, exposure_ms=5.0)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    cam.set_pixel_format(CameraPixelFormat.MONO8)  # writes PixelFormat Mono8 + AdcBitDepth Bit10
+    assert ("PixelFormat", "Mono8") in nodemap.writes and ("AdcBitDepth", "Bit10") in nodemap.writes
+    assert cam._global_reset_readout_ms == 16.9
+
+
+def test_leaving_hardware_trigger_zeroes_the_readout_window(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    cam = ft.make_flir(ft.bfs_u3_63s4_nodemap())
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.CONTINUOUS)
+    assert cam._global_reset_readout_ms == 0.0
