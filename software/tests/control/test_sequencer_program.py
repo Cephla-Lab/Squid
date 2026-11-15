@@ -403,6 +403,22 @@ class TestValidate:
             minimal_program(channels=(channel,)).validate()
         assert exc.value.error == SeqError.BAD_CHANNEL
 
+    def test_rejects_an_intensity_dac_that_is_the_piezo_stack_dac(self):
+        """The firmware's PREP writes the stack target to its DAC and then pre-arms the intensity: on the same
+        DAC the intensity would replace the layer's position (twin of the firmware check)."""
+        program = minimal_program(channels=(SeqChannelSpec(exposure_us=100, intensity_dac=0, intensity=1000),))
+        assert program.loop.stack_axis_type == StackAxisType.PIEZO and program.loop.stack_axis_id == 0
+        with pytest.raises(ProgramValidationError) as exc:
+            program.validate()
+        assert exc.value.error == SeqError.BAD_CHANNEL
+        assert exc.value.detail == 0
+        # A stepper stack axis is not a DAC: the same id is fine there.
+        stepper = minimal_program(
+            loop=program.loop.replace(stack_axis_type=StackAxisType.STEPPER, stack_axis_id=0),
+            channels=program.channels,
+        )
+        stepper.validate()
+
     def test_reports_the_offending_channel_index_as_detail(self):
         channels = (SeqChannelSpec(exposure_us=100), SeqChannelSpec(exposure_us=0))
         with pytest.raises(ProgramValidationError) as exc:

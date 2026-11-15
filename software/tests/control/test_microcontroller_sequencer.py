@@ -72,8 +72,12 @@ class RecordingSerial(AbstractCephlaMicroSerial):
             command = bytes(data)
             self.commands.append(command)
             status = self.status
+            theta = self.theta
             if self.sequencer and is_probe(command):
-                status = CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR  # Staging::commit() refuses a zero-length program
+                # Staging::commit() refuses a zero-length program, and seq_fill_status() names the refusal
+                # in the status bytes of the same packet.
+                status = CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
+                theta = status_as_theta(sp.SeqState.IDLE, sp.SeqError.BAD_PROGRAM)
             self._buffer.extend(
                 SimSerial.response_bytes_for(
                     data[0],
@@ -81,7 +85,7 @@ class RecordingSerial(AbstractCephlaMicroSerial):
                     0,
                     0,
                     0,
-                    self.theta,
+                    theta,
                     False,
                     False,
                     firmware_version=self.firmware_version,
@@ -305,6 +309,14 @@ class TestSeqRunAndCancel:
         # byte 6: 0 = every channel of the program, n = channel n-1 alone (sequence_commands.cpp)
         assert [run[6] for run in runs] == [0, 1, 4]
 
+    @pytest.mark.parametrize("stack_start", [-(2**31) - 1, 2**31])
+    def test_run_refuses_a_stack_start_outside_int32(self, mcu_and_serial, stack_start):
+        """The payload is an int32; a value outside it would wrap into a different, valid-looking position."""
+        mcu, serial = mcu_and_serial
+        with pytest.raises(ValueError, match="int32"):
+            mcu.seq_run(stack_start)
+        assert serial.commands_of_type(CMD_SET.SEQ_RUN) == []
+
     def test_run_does_not_wait(self, mcu_and_serial):
         mcu, serial = mcu_and_serial
         mcu.seq_run(0)
@@ -409,6 +421,57 @@ class TestSequencerFailureReporting:
         assert exc.value.seq_status.error == sp.SeqError.READY_LINE_STUCK
         assert exc.value.seq_status.detail == 2
         assert exc.value.seq_status.frames_fired == 5
+        # Five frames fired and the stack axis moved: a plain resend would repeat part of the acquisition.
+        assert exc.value.recoverable is False
+
+    @pytest.mark.parametrize(
+        "error, frames_fired, recoverable",
+        [
+            (sp.SeqError.BUSY, 7, True),  # the count is the running sequence's, not this command's
+            (sp.SeqError.NOT_COMMITTED, 0, True),
+            (sp.SeqError.STACK_OUT_OF_RANGE, 0, True),  # checked before the first move
+            (sp.SeqError.BAD_DURATION, 0, True),
+            (sp.SeqError.WAIT_TIMEOUT, 0, False),  # the stack axis was commanded
+            (sp.SeqError.MOVE_FAILED, 0, False),
+            (sp.SeqError.HOST_ABORT, 3, False),
+        ],
+    )
+    def test_only_a_refusal_before_acting_is_recoverable(self, mcu_and_serial, error, frames_fired, recoverable):
+        """`recoverable` promises that a resend is safe. The engine keeps that promise only for commands it refused
+        before acting; a run that failed under way leaves frames fired and the stack axis moved."""
+        mcu, serial = mcu_and_serial
+        serial.theta = status_as_theta(sp.SeqState.FAILED, error, frames_fired=frames_fired)
+        serial.status = CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
+
+        mcu.seq_run(0)
+        with pytest.raises(CommandAborted) as exc:
+            mcu.wait_till_operation_is_completed()
+
+        assert exc.value.recoverable is recoverable
+
+    def test_a_command_refused_during_a_run_surfaces_as_recoverable_when_the_run_ends(self, mcu_and_serial):
+        """The dispatcher refuses a command while a run is in flight without recording a sequencer error, and the
+        one status byte reports the refusal only once the run is terminal: a clean run plus CMD_EXECUTION_ERROR.
+        The refused command never acted, so it is safe to resend."""
+        mcu, serial = mcu_and_serial
+        serial.theta = status_as_theta(sp.SeqState.DONE, sp.SeqError.NONE, frames_fired=32)
+        serial.status = CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
+
+        mcu.move_x_usteps(10)  # a move sent into a run
+        with pytest.raises(CommandAborted) as exc:
+            mcu.wait_till_operation_is_completed()
+
+        assert exc.value.seq_status is None  # a plain move: the sequencer does not own this failure
+        assert exc.value.recoverable
+
+        mcu.acknowledge_aborted_command()
+        mcu.seq_run(0)  # the same refusal reported against a sequencer command
+        with pytest.raises(CommandAborted) as exc:
+            mcu.wait_till_operation_is_completed()
+
+        assert exc.value.seq_status.state == sp.SeqState.DONE
+        assert exc.value.seq_status.error == sp.SeqError.NONE
+        assert exc.value.recoverable
 
     def test_a_non_sequencer_command_failure_is_unchanged(self, mcu_and_serial):
         mcu, serial = mcu_and_serial
@@ -430,3 +493,4 @@ class TestSequencerFailureReporting:
             mcu.seq_upload(golden_program())
 
         assert "BAD_PROGRAM" in str(exc.value)
+        assert exc.value.recoverable  # refused before acting: safe to resend

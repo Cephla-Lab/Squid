@@ -666,6 +666,64 @@ void test_min_trigger_period_enforced(void) {
         TEST_ASSERT_TRUE(hal.plans[i].t_assert_us - hal.plans[i - 1].t_assert_us >= 50000);
 }
 
+// A camera's readout and minimum trigger period outlive the run: a one-frame run is Done at its
+// exposure end, and the host's next SEQ_RUN (the next channel of the same FOV) can land while the
+// camera is still reading out. Its first frame waits like any other frame would.
+void test_camera_cooldown_carries_over_to_the_next_run(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    l.z_settle_us = 0;
+    l.return_to_start = 0;
+    SeqChannel ch[1] = {good_channel()};      // exposure 10000
+    SeqCameraConfig cams[1] = {cam_level()};  // strobe 500, readout 20000
+    cams[0].min_trigger_period_us = 60000;
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000));
+    run_until(e, hal, 20000);  // past the exposure end (10500): Done, the readout still under way
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000));
+    run_until(e, hal, 200000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL(2, (int)hal.plans.size());
+    // No trigger before the readout is done, and none inside the minimum trigger period.
+    TEST_ASSERT_TRUE(hal.plans[1].t_assert_us >= hal.plans[0].t_deassert_us + 20000);
+    TEST_ASSERT_TRUE(hal.plans[1].t_assert_us >= hal.plans[0].t_assert_us + 60000);
+}
+
+// Camera deadlines are retired as soon as they pass. Left standing, one goes stale: the wrap-safe
+// comparison reads a timestamp more than 2^31 us old as still ahead, and an idle camera would hold
+// its channel until WaitTimeout. Validation bounds each duration, not the gap between two uses of
+// one camera, which here is three 800 s exposures on the other camera.
+void test_a_reached_camera_deadline_is_retired_before_it_can_go_stale(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 2;
+    l.n_channels = 4;
+    l.z_settle_us = 0;
+    l.return_to_start = 0;
+    SeqChannel ch[4] = {good_channel(), good_channel(), good_channel(), good_channel()};
+    ch[0].exposure_us = 1000;
+    ch[0].camera_mask = 0x01;
+    for (int i = 1; i < 4; i++) {
+        ch[i].exposure_us = 800000000;  // 800 s: inside kMaxDurationUs
+        ch[i].camera_mask = 0x02;
+    }
+    SeqCameraConfig cams[2] = {cam_level(), cam_level()};
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)e.load(l, ch, cams, 2).error);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000));
+    // About 4800 s of virtual time (the clock wraps once): 10 ms ticks keep the test quick.
+    for (int i = 0; i < 600000 && e.state() != SeqState::Done && e.state() != SeqState::Failed; i++) {
+        hal.now_us += 10000;
+        e.tick(hal.now_us);
+    }
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT32(8, e.progress().frames_fired);
+}
+
 // Whole-run invariants over a mixed program (property-style, deterministic inputs).
 void test_run_invariants(void) {
     FakeHal hal;
@@ -1142,6 +1200,8 @@ int main(int, char**) {
     RUN_TEST(test_no_overlap_when_readout_unsafe);
     RUN_TEST(test_cancel_finishes_current_exposure_then_stops);
     RUN_TEST(test_min_trigger_period_enforced);
+    RUN_TEST(test_camera_cooldown_carries_over_to_the_next_run);
+    RUN_TEST(test_a_reached_camera_deadline_is_retired_before_it_can_go_stale);
     RUN_TEST(test_run_invariants);
     RUN_TEST(test_filter_target_is_passed_as_absolute_usteps);
     RUN_TEST(test_loaded_program_runs_again_with_a_new_stack_start);

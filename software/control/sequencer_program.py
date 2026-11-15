@@ -142,6 +142,31 @@ class SeqError(IntEnum):
     EDGE_QUEUE_FULL = 18
 
 
+# The errors with which the engine turns a command down BEFORE acting on it: nothing moved and no
+# frame was fired for it, so a plain resend is safe. Every other error fails a run under way. The
+# frames_fired that rides along in the status is the running (or last) sequence's count, which is
+# why the class of the error decides and not that count. NONE belongs here too: the dispatcher
+# refuses every opcode but the keepalive, cancel and the safety commands while a run is in flight,
+# records no sequencer error for it, and the CMD_EXECUTION_ERROR surfaces once the run is over, with
+# the run's own clean status (seq_command_refused() in serial_communication.cpp).
+REFUSED_BEFORE_ACTING = frozenset(
+    {
+        SeqError.NONE,
+        SeqError.BAD_LAYER_COUNT,
+        SeqError.BAD_CHANNEL_COUNT,
+        SeqError.BAD_STACK_AXIS,
+        SeqError.BAD_CHANNEL,
+        SeqError.BAD_CAMERA,
+        SeqError.BAD_EXPOSURE,
+        SeqError.BAD_DURATION,
+        SeqError.STACK_OUT_OF_RANGE,  # SeqEngine::start() checks the whole stack before the first move
+        SeqError.BUSY,
+        SeqError.BAD_PROGRAM,
+        SeqError.NOT_COMMITTED,
+    }
+)
+
+
 class SeqState(IntEnum):
     """seq_engine.h SeqState.  Three bits of the status byte -- append only."""
 
@@ -560,6 +585,19 @@ class SequencerProgram(_Replaceable):
                 raise ProgramValidationError(
                     SeqError.BAD_CHANNEL, i, f"intensity_dac {channel.intensity_dac} must be 0..{N_DACS - 1} or NONE_ID"
                 )
+            # A piezo stack lives on a DAC too, and the firmware's PREP writes the stack target before the
+            # intensity pre-arm: on the same DAC the intensity would replace the layer's position.
+            if (
+                self.loop.stack_axis_type == StackAxisType.PIEZO
+                and channel.intensity_dac != NONE_ID
+                and channel.intensity_dac == self.loop.stack_axis_id
+            ):
+                raise ProgramValidationError(
+                    SeqError.BAD_CHANNEL,
+                    i,
+                    f"intensity_dac {channel.intensity_dac} is the piezo stack DAC: the intensity pre-arm would "
+                    "overwrite the layer's stack target",
+                )
 
         # Anything still out of range is a field that does not fit its wire type.
         try:
@@ -689,6 +727,12 @@ class SequencerStatus:
     @property
     def error_name(self) -> str:
         return _error_name(self.error)
+
+    @property
+    def refused(self) -> bool:
+        """The engine refused the command before acting on it, so a plain resend is safe. False for a run
+        that failed under way: frames were fired and the stack axis moved, so the caller re-syncs first."""
+        return self.error in REFUSED_BEFORE_ACTING
 
     @property
     def is_terminal(self) -> bool:

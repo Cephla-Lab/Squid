@@ -122,7 +122,10 @@ void seq_cancel() { engine.cancel(); }
 void seq_abort(seq::SeqError e) { engine.abort(e); }
 
 void seq_tick() {
-    if (!engine.running()) return;
+    if (!engine.running()) {
+        engine.tick(micros());  // idle tick: retires the camera deadlines the last run left behind
+        return;
+    }
     // Abort THROUGH the engine: loop() also forces the TTL ports LOW when the interlock opens,
     // and without this the run would complete "successfully" with dark frames. The interlock only
     // concerns the TTL (laser) ports, and only the channel(s) THIS run lights (SEQ_RUN's selector).
