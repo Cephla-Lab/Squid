@@ -742,6 +742,11 @@ class FakeDcam:
         return [value for (prop, value) in self.set_calls if prop == int(idprop)]
 
 
+# The sensor's trigger-to-exposure latency under global reset, 3 line intervals plus up to 1 of jitter, at
+# FakeDcam's default line interval.
+_GLOBAL_RESET_LATENCY_MS = 4 * 4.4e-6 * 1000.0
+
+
 def _make_hamamatsu(dcam):
     cam = object.__new__(camera_hamamatsu.HamamatsuCamera)
     cam._camera = dcam
@@ -822,9 +827,9 @@ def test_hamamatsu_global_reset_on_sets_level_and_globalreset(monkeypatch):
     props_in_order = [prop for (prop, _) in dcam.set_calls if prop in (_TRIGGERACTIVE, _GLOBALEXPOSURE)]
     assert props_in_order == [_TRIGGERACTIVE, _GLOBALEXPOSURE]
     # ...and the mode must be in effect before the exposure/strobe refresh, so the
-    # microcontroller is told the global-reset strobe delay (trigger delay only) rather
-    # than the rolling rows x line-interval one.
-    assert cam.strobe_delays_pushed == [pytest.approx(0.5)]
+    # microcontroller is told the global-reset strobe delay (trigger delay plus the sensor's
+    # start-up latency) rather than the rolling rows x line-interval one.
+    assert cam.strobe_delays_pushed == [pytest.approx(0.5 + _GLOBAL_RESET_LATENCY_MS)]
 
 
 def test_hamamatsu_global_reset_set_failure_raises(monkeypatch):
@@ -886,7 +891,7 @@ def test_hamamatsu_strobe_time_default_is_rolling_model(monkeypatch):
     assert cam.get_strobe_time() == pytest.approx(expected_ms)
 
 
-def test_hamamatsu_strobe_time_global_reset_is_trigger_delay_only(monkeypatch):
+def test_hamamatsu_strobe_time_global_reset_is_trigger_delay_plus_sensor_latency(monkeypatch):
     _enable_hamamatsu_global_reset(monkeypatch)
     monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", False)
     dcam = FakeDcam(props={DCAM_IDPROP.TRIGGERDELAY: 0.0005})
@@ -894,7 +899,21 @@ def test_hamamatsu_strobe_time_global_reset_is_trigger_delay_only(monkeypatch):
 
     cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
 
-    assert cam.get_strobe_time() == pytest.approx(0.5)
+    assert cam.get_strobe_time() == pytest.approx(0.5 + _GLOBAL_RESET_LATENCY_MS)
+
+
+@pytest.mark.parametrize("line_interval_s", [4.43e-6, 9.74e-6, 160e-6], ids=["4.4us", "9.7us", "160us"])
+def test_hamamatsu_global_reset_strobe_is_four_line_intervals_of_the_current_scan(monkeypatch, line_interval_s):
+    """With TRIGGERDELAY at 0 the strobe is the sensor's documented start-up latency alone: 3 line intervals
+    plus up to 1 of jitter, read from the camera so it follows the scan mode. The row count no longer enters."""
+    _enable_hamamatsu_global_reset(monkeypatch)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", False)
+    dcam = FakeDcam(props={DCAM_IDPROP.INTERNAL_LINEINTERVAL: line_interval_s, DCAM_IDPROP.TRIGGERDELAY: 0.0})
+    cam = _make_hamamatsu(dcam)
+
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+    assert cam.get_strobe_time() == pytest.approx((3 + 1) * line_interval_s * 1000.0)
 
 
 def test_hamamatsu_setting_and_trigger_source_alone_do_not_mean_global_reset(monkeypatch):
@@ -992,7 +1011,8 @@ def test_hamamatsu_refused_trigger_source_write_keeps_the_verified_global_reset(
     assert cam._global_reset_active() is True
     cam.strobe_delays_pushed.clear()
     cam.set_exposure_time(cam._exposure_time_ms)
-    assert cam.strobe_delays_pushed == [pytest.approx(0.0)]  # TRIGGERDELAY only: the global-reset model
+    # TRIGGERDELAY (0) plus the sensor's start-up latency: the global-reset model
+    assert cam.strobe_delays_pushed == [pytest.approx(_GLOBAL_RESET_LATENCY_MS)]
 
 
 # --- Hamamatsu: leaving hardware trigger puts the camera's own trigger timing back -------------
