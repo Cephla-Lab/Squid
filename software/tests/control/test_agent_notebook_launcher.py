@@ -297,6 +297,15 @@ def test_squid_that_closes_during_the_start_starts_no_program(tmp_path):
             notebook.process.kill()
 
 
+def test_a_setting_that_can_not_be_read_is_a_reason_that_names_the_setting(tmp_path):
+    notebook, events = make(
+        'python3 -m my_notebook --run-dir "/data/runs', f"http://127.0.0.1:{free_port()}/", tmp_path
+    )
+    reason = notebook.open()
+    assert "agent_notebook_command" in reason and "quotation" in reason
+    assert events == [] and notebook.process is None
+
+
 def test_with_no_command_and_no_page_the_reason_names_the_setting(tmp_path):
     notebook, events = make("", f"http://127.0.0.1:{free_port()}/", tmp_path)
     assert "agent_notebook_command" in notebook.open() and events == []

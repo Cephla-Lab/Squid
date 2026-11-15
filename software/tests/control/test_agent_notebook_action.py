@@ -68,6 +68,20 @@ def test_a_start_that_fails_shows_its_reason(qtbot):
     assert warning.call_args.args[0] is window and "ended with code 3" in warning.call_args.args[2]
 
 
+def test_a_start_that_raises_shows_the_error_and_the_entry_works_again(qtbot):
+    window, entry, _ = make(qtbot)
+
+    def open_that_raises():
+        raise OSError("Permission denied: the log folder")
+
+    entry.notebook.open = open_that_raises
+    with patch.object(QMessageBox, "warning") as warning:
+        entry.action.trigger()
+        qtbot.waitUntil(entry.action.isEnabled, timeout=5000)  # not disabled until a restart
+    warning.assert_called_once()
+    assert "Permission denied: the log folder" in warning.call_args.args[2]
+
+
 def test_a_start_that_works_shows_no_message_and_close_ends_the_program(qtbot):
     _, entry, _ = make(qtbot)
     entry.notebook.may_end.set()

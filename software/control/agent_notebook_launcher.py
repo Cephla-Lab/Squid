@@ -119,7 +119,10 @@ class AgentNotebook:
             # The program that this Squid started runs and is busy. A second program would take its place here,
             # and the close of Squid would then not end the first one.
             return f"The notebook program that Squid started runs, but it does not answer at {self._url}. Try again."
-        command = command_from_setting(self._setting)
+        try:
+            command = command_from_setting(self._setting)
+        except ValueError as e:  # e.g. a quote that does not close
+            return f"Squid can not read the setting agent_notebook_command ({e}): {self._setting}"
         if not runs and not command:
             return f"No notebook answers at {self._url}, and the setting agent_notebook_command is empty."
         if not runs and notebook_answers(self._url):

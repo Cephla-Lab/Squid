@@ -8,7 +8,10 @@ from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QAction, QMessageBox
 
 import control._def
+import squid.logging
 from control.agent_notebook_launcher import AgentNotebook
+
+_log = squid.logging.get_logger(__name__)
 
 
 class AgentNotebookAction(QObject):
@@ -42,7 +45,16 @@ class AgentNotebookAction(QObject):
 
     def _start(self) -> None:
         self.action.setEnabled(False)  # one start at a time
-        threading.Thread(target=lambda: self._finished.emit(self.notebook.open()), daemon=True).start()
+        threading.Thread(target=self._open, daemon=True).start()
+
+    def _open(self) -> None:
+        # The entry must get its result in each case, or it stays disabled until a restart.
+        try:
+            reason = self.notebook.open()
+        except Exception as e:
+            _log.exception("The start of the Agent Notebook failed")
+            reason = f"The start of the notebook failed: {e}"
+        self._finished.emit(reason)
 
     def _show_result(self, reason) -> None:
         self.action.setEnabled(True)
