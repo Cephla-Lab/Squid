@@ -448,3 +448,84 @@ def test_ready_output_stays_configured_on_leaving(monkeypatch):
     nodemap.writes.clear()
     cam._set_acquisition_mode_imp(CameraAcquisitionMode.CONTINUOUS)
     assert not [name for name, _ in nodemap.writes if name.startswith("Line")]
+
+
+from squid.config import CameraConfig, CameraPixelFormat, CameraVariant  # noqa: E402
+
+
+def test_check_opt_in_support_touches_nothing_with_default_settings(monkeypatch):
+    _edge(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    ft.make_flir(nodemap)._check_opt_in_support()
+    assert nodemap.lookups == [] and nodemap.writes == []
+
+
+def test_without_global_reset_does_not_open_with_the_opt_in_on(monkeypatch):
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.remove("SensorShutterMode")
+    with pytest.raises(CameraError, match="Turn off HARDWARE_TRIGGER_GLOBAL_RESET"):
+        ft.make_flir(nodemap)._check_opt_in_support()
+    assert nodemap.writes == []
+
+
+def test_without_trigger_width_does_not_open_in_level_mode(monkeypatch):
+    _level(monkeypatch)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    _without_entry(nodemap, "ExposureMode", "TriggerWidth")
+    with pytest.raises(CameraError, match="HARDWARE_TRIGGER_MODE"):
+        ft.make_flir(nodemap)._check_opt_in_support()
+
+
+def test_without_frame_trigger_wait_does_not_open_with_the_ready_output_on(monkeypatch):
+    _level(monkeypatch, ready=True, line="Line3")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    _without_entry(nodemap, "LineSource", "FrameTriggerWait")
+    with pytest.raises(CameraError, match="Turn off CAMERA_TRIGGER_READY_OUTPUT"):
+        ft.make_flir(nodemap)._check_opt_in_support()
+    # the line had to be selected to see its entries, and is put back even on a refusal
+    assert nodemap.writes == [("LineSelector", "Line2"), ("LineSelector", "Line0")]
+
+
+def test_ready_output_refuses_line2_as_the_trigger_input(monkeypatch):
+    _level(monkeypatch, ready=True, line="Line2")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    with pytest.raises(CameraError, match="FLIR_TRIGGER_INPUT_LINE"):
+        ft.make_flir(nodemap)._check_opt_in_support()
+    assert nodemap.lookups == [] and nodemap.writes == []
+
+
+def test_unknown_trigger_input_line_does_not_open(monkeypatch):
+    _edge(monkeypatch)
+    monkeypatch.setattr(control._def, "FLIR_TRIGGER_INPUT_LINE", "Line9")
+    with pytest.raises(CameraError, match="Line9"):
+        ft.make_flir(ft.bfs_u3_63s4_nodemap())._check_opt_in_support()
+
+
+def test_camera_that_supports_everything_passes_the_open_check(monkeypatch):
+    _level(monkeypatch, global_reset=True, ready=True, line="Line3")
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    ft.make_flir(nodemap)._check_opt_in_support()  # no raise
+    assert nodemap.writes == [("LineSelector", "Line2"), ("LineSelector", "Line0")]
+
+
+def test_open_checks_support_before_the_first_node_write(monkeypatch):
+    """_open_camera reaches the check right after the nodemap is read, before it writes anything, and a refusal
+    tears the camera down. Driven through _open_camera directly: FLIRCamera.__init__ cannot run on this branch or
+    on master (its `self.is_color = False` collides with AbstractCamera's read-only is_color property; separate PR).
+    """
+    _level(monkeypatch, global_reset=True)
+    nodemap = ft.bfs_u3_63s4_nodemap()
+    nodemap.remove("SensorShutterMode")
+    camera = ft.FakeCamera(nodemap)
+    cam = ft.make_flir(nodemap)
+    cam.camera = None  # not opened yet
+    cam.sn = None
+    cam.py_spin_system.GetCameras.return_value = ft.FakeCameraList(camera)
+    monkeypatch.setattr(camera_flir, "get_device_info_full", lambda *a, **k: {})
+    config = CameraConfig(camera_type=CameraVariant.FLIR, default_pixel_format=CameraPixelFormat.MONO16)
+    with pytest.raises(CameraError, match="Turn off HARDWARE_TRIGGER_GLOBAL_RESET"):
+        cam._open_camera(config)
+    assert nodemap.writes == []
+    assert camera.deinit_calls == 1 and cam.camera is None  # a refusal at open leaves nothing behind
+    cam.py_spin_system.ReleaseInstance.assert_called_once()

@@ -623,6 +623,16 @@ class FLIRCamera(AbstractCamera):
 
         self.camera.Init()
         self.nodemap = self.camera.GetNodeMap()
+        try:
+            self._check_opt_in_support()
+        except CameraError:
+            # Refused at open: nothing of this object may outlive the refusal (the teardown the driver's own
+            # shutdown does), so the camera is free for the next open in this process.
+            self.camera.DeInit()
+            self.camera = None
+            self.camera_list.Clear()
+            self.py_spin_system.ReleaseInstance()
+            raise
 
         # Determine if color camera
         self.is_color = CameraPixelFormat.is_color_format(camera_config.default_pixel_format)
@@ -795,6 +805,70 @@ class FLIRCamera(AbstractCamera):
             )
         self._global_reset_verified = True
         self._log.info("Camera is in LEVEL trigger + global reset mode.")
+
+    def _entry_available(self, node_name: str, entry_name: str) -> bool:
+        """Whether this camera has `entry_name` on enumeration node `node_name` (read only, nothing written)."""
+        node = PySpin.CEnumerationPtr(self.nodemap.GetNode(node_name))
+        return bool(PySpin.IsReadable(node) and PySpin.IsReadable(node.GetEntryByName(entry_name)))
+
+    def _check_opt_in_support(self) -> None:
+        """Refuse to open a camera that cannot do what an enabled trigger setting needs, naming the setting.
+
+        Called from _open_camera right after the nodemap is read, so a machine configured for a capability its
+        camera lacks fails at startup rather than at its first hardware trigger switch. With every setting at its
+        default it asks the camera nothing. The only write it makes (LineSelector, with the ready output on, because
+        the LineMode / LineSource entries are those of the selected line) is put back before it returns.
+        """
+        needs = []  # (node, entry, needed by, remedy)
+        if _def.FLIR_TRIGGER_INPUT_LINE != "Line2":
+            needs.append(
+                (
+                    "TriggerSource",
+                    _def.FLIR_TRIGGER_INPUT_LINE,
+                    "FLIR_TRIGGER_INPUT_LINE",
+                    "Set FLIR_TRIGGER_INPUT_LINE to a line this camera has.",
+                )
+            )
+        if _def.HARDWARE_TRIGGER_MODE == HardwareTriggerMode.LEVEL:
+            needs += [
+                (node, entry, "HARDWARE_TRIGGER_MODE = LEVEL", "Set HARDWARE_TRIGGER_MODE = EDGE.")
+                for node, entry in LEVEL_TRIGGER_NODES
+            ]
+        if _def.use_level_trigger_global_reset():
+            needs.append(
+                (
+                    "SensorShutterMode",
+                    "GlobalReset",
+                    "HARDWARE_TRIGGER_GLOBAL_RESET",
+                    "Turn off HARDWARE_TRIGGER_GLOBAL_RESET.",
+                )
+            )
+        line_needs = []
+        if _def.CAMERA_TRIGGER_READY_OUTPUT:
+            if _def.FLIR_TRIGGER_INPUT_LINE == READY_OUTPUT_LINE:
+                raise CameraError(
+                    f"FLIR_TRIGGER_INPUT_LINE is {READY_OUTPUT_LINE}, the only line that can drive the trigger-ready "
+                    "output: one pin cannot be both. Set FLIR_TRIGGER_INPUT_LINE = Line3 (pin 1) or turn off "
+                    "CAMERA_TRIGGER_READY_OUTPUT."
+                )
+            ready = ("CAMERA_TRIGGER_READY_OUTPUT", "Turn off CAMERA_TRIGGER_READY_OUTPUT.")
+            needs.append(("LineSelector", READY_OUTPUT_LINE) + ready)
+            line_needs = [("LineMode", "Output") + ready, ("LineSource", "FrameTriggerWait") + ready]
+
+        def require(node, entry, needed_by, remedy):
+            if not self._entry_available(node, entry):
+                raise CameraError(f"This camera does not support {node} = {entry}, which {needed_by} needs. {remedy}")
+
+        for need in needs:
+            require(*need)
+        if line_needs:
+            previous_line = self._read_enum("LineSelector")
+            self._set_enum("LineSelector", READY_OUTPUT_LINE)
+            try:
+                for need in line_needs:
+                    require(*need)
+            finally:
+                self._set_enum("LineSelector", previous_line)
 
     def _apply_trigger_ready_output(self) -> None:
         """Drive Line2 as the trigger-ready signal (FrameTriggerWait), LOW = ready, read it back, or raise.
