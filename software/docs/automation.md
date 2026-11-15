@@ -79,8 +79,11 @@ channel_overrides:
 
 - Each entry can give one value or the two values. The limits are 0.1 to 10000 ms and 0 to 100 %.
 - The channel must be one of the `channels` of the file.
-- The values are used for the images of that run and are written to the `acquisition.yaml` and
-  `acquisition_channels.yaml` of its folder. The stored channel settings of the profile are not changed.
+- The values are used for the images and the contrast autofocus of that run, and are written to the
+  `acquisition.yaml` and `acquisition_channels.yaml` of its folder. The stored channel settings of the profile are not
+  changed.
+- The `acquisition.yaml` of the run folder keeps the `channel_overrides` key, so a run of that file uses the same
+  values again.
 - Only the control server applies `channel_overrides` (`run_acquisition_from_yaml`, which
   `scripts/run_acquisition.py` uses). A file that has the key is refused when it is loaded or dropped in the GUI,
   and when a fluidics protocol refers to it.

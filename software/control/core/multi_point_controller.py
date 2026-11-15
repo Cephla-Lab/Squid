@@ -129,6 +129,10 @@ def _save_acquisition_yaml(
         },
         "channels": [_serialize_for_yaml(ch) for ch in params.selected_configurations],
     }
+    if params.channel_overrides:
+        # The loaders read only the names from `channels`: a run of this file applies the overrides again, and a
+        # loader that does not apply them refuses the file.
+        yaml_dict["channel_overrides"] = params.channel_overrides
 
     # Add widget-specific scan section
     if widget_type == "wellplate":

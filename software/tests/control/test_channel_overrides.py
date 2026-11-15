@@ -16,6 +16,8 @@ import tests.control.test_MultiPointController as mpc_tests
 import tests.control.test_stubs as ts
 from control.acquisition_yaml_loader import CHANNEL_OVERRIDES_ONLY_SERVER, AcquisitionYAMLData, parse_acquisition_yaml
 from control.core.fluidics_protocol import resolve
+from control.core.multi_point_controller import _save_acquisition_yaml
+from control.core.multi_point_utils import ScanPositionInformation
 from tests.control.test_microscope_control_server import SAMPLE_WELLPLATE_YAML, create_mock_server
 
 CHANNEL = "Fluorescence 488 nm Ex"
@@ -198,6 +200,24 @@ def test_contrast_autofocus_on_an_overridden_channel_uses_the_override(run, monk
     # every selection of the channel in the run used the override; the last one puts the stored channel back
     mine = [s for s in run.seen[:-1] if s[0] == run.name]
     assert mine and set(mine) == {(run.name, 21.5, 7.0)}
+
+
+def test_the_saved_acquisition_file_keeps_the_overrides(run, tmp_path):
+    # a run of the saved file must use the same light settings, and the window must refuse it as it refuses the input
+    overrides = {run.name: {"exposure_time_ms": 21.5, "illumination_intensity": 7.0}}
+    run.mpc.timestamp_acquisition_started = 0.0  # run_acquisition sets it
+    info = ScanPositionInformation.from_scan_coordinates(run.mpc.scanCoordinates)
+    _save_acquisition_yaml(
+        run.mpc.build_params(info, channel_overrides=overrides), str(tmp_path), widget_type="flexible"
+    )
+    assert parse_acquisition_yaml(str(tmp_path / "acquisition.yaml")).channel_overrides == overrides
+
+
+def test_the_saved_acquisition_file_of_a_run_with_no_overrides_has_no_key(run, tmp_path):
+    run.mpc.timestamp_acquisition_started = 0.0  # run_acquisition sets it
+    info = ScanPositionInformation.from_scan_coordinates(run.mpc.scanCoordinates)
+    _save_acquisition_yaml(run.mpc.build_params(info), str(tmp_path), widget_type="flexible")
+    assert "channel_overrides" not in (tmp_path / "acquisition.yaml").read_text()
 
 
 @pytest.mark.parametrize("widget_class_name", ["WellplateMultiPointWidget", "FlexibleMultiPointWidget"])
