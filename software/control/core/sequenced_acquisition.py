@@ -56,6 +56,11 @@ class BurstOutcome(enum.Enum):
     ASK_USER = "ask_user"  # stop and hand the decision to the user (pause when supported, else fail)
 
 
+class ControllerDidNotStop(RuntimeError):
+    """The controller never reported a cancelled run over. Nothing may restart the camera or send another
+    SEQ_RUN under a run that may still be firing; the user has to look at the controller first."""
+
+
 def outcome_after_failed_burst(attempt: int) -> BurstOutcome:
     """What to do after sequenced attempt number `attempt` (1-based) of a FOV failed."""
     return BurstOutcome.RETRY if attempt < MAX_ATTEMPTS_PER_FOV else BurstOutcome.ASK_USER
@@ -224,6 +229,8 @@ def ineligibility_reason(
     camera_drives_ready_line: bool,
     z_stack_order: str,
     nz: int,
+    dz_um: float = 0.0,
+    piezo_range_um: Optional[float] = None,
     emission_filter_unit: Optional[EmissionFilterUnit],
     nl5_configured: bool,
 ) -> Optional[str]:
@@ -250,6 +257,13 @@ def ineligibility_reason(
         return "the camera is not in hardware trigger mode"
     if not use_piezo:
         return "the z-stack does not use the piezo (stepper z-stacks are not sequenced yet)"
+    if nz > 1 and dz_um and piezo_range_um and piezo_step_lsb(dz_um, piezo_range_um, False) == 0:
+        # The program carries the step in DAC counts, truncated toward zero (piezo_step_lsb): a step below one
+        # count would image every layer at the same z while the metadata says otherwise.
+        return (
+            f"the z step of {dz_um:.4f} um is below one DAC count of the {piezo_range_um:.0f} um piezo "
+            f"({piezo_range_um / 65535:.4f} um): the controller would image every layer at the same z"
+        )
     if nz > 1 and z_stack_order != "CHANNEL FIRST":
         # The program runs every channel at each z level. A Z FIRST acquisition would write the same
         # files, but acquiring them in another physical order is a different experiment (bleaching,

@@ -20,9 +20,12 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
+import pytest
+
 from control.core.multi_point_utils import CaptureInfo
 from control.core.multi_point_worker import MultiPointWorker
 from control.core.pending_captures import PendingCaptures
+from control.core.sequenced_acquisition import ControllerDidNotStop
 from control.sequencer_program import SeqError, SeqState, SequencerStatus
 
 
@@ -204,7 +207,8 @@ def test_an_overrun_sequence_is_cancelled_before_the_camera_is_restarted():
     w._wait_for_sequence = overrun
     w._overdue_cancel_wait_s = lambda: 1.0
     w.microcontroller.seq_cancel.side_effect = lambda: events.append("cancel")
-    w.microcontroller.is_busy.side_effect = [True, False]
+    # Only the controller's own word that the run is over counts, not the host's busy flag.
+    w.microcontroller.reported_idle_since_last_command.side_effect = [False, True]
     w.microcontroller.seq_status = SequencerStatus(SeqState.DONE, SeqError.CANCELED, 0, 1)
     start_streaming = w.camera.start_streaming
 
@@ -216,6 +220,74 @@ def test_an_overrun_sequence_is_cancelled_before_the_camera_is_restarted():
     frames, reason = w._run_sequenced_burst(_captures(3), 1000)
     assert frames is None
     assert events == ["cancel", "camera restart"]
+
+
+def test_an_overrun_the_controller_never_reports_over_is_not_retried():
+    """The cancel wait expires with no word from the controller (a wedged run, or a dead link: is_busy() would
+    have been cleared by the read loop's abort without anything stopping). The camera is not restarted under
+    a run that may still be firing, and the burst is handed to the user instead of retried."""
+    w = _bare_worker()
+    events = []
+
+    def overrun(timeout):
+        raise TimeoutError("the hardware sequence did not finish")
+
+    w._wait_for_sequence = overrun
+    w._overdue_cancel_wait_s = lambda: 0.0
+    w.microcontroller.seq_cancel.side_effect = lambda: events.append("cancel")
+    w.microcontroller.reported_idle_since_last_command.return_value = False
+    w.microcontroller.is_busy.return_value = False  # the host's flag says idle; it is not evidence
+    w.camera.start_streaming = lambda: events.append("camera restart")
+
+    with pytest.raises(ControllerDidNotStop, match="did not report it over"):
+        w._run_sequenced_burst(_captures(3), 1000)
+
+    assert events == ["cancel"]
+    assert w._ready_for_next_trigger.is_set()  # the worker is left consistent for whoever runs next
+
+
+def _stack_worker():
+    """A worker ready for _acquire_sequenced_stack with the burst itself mocked."""
+    w = _bare_worker()
+    w._applied_config = None
+    w.selected_configurations = [MagicMock()]
+    w.z_piezo_um = 20.0
+    w.deltaZ = 0.001  # mm
+    w.NZ, w.Nt, w.time_point = 3, 1, 0
+    w.do_reflection_af = w.do_autofocus = False
+    w.piezo = MagicMock()
+    w.piezo.range_um = 300
+    w.stage = MagicMock()
+    w._ask_user_to_intervene = MagicMock()
+    w.handle_acquisition_abort = MagicMock()
+    return w
+
+
+def test_a_controller_that_did_not_stop_goes_straight_to_the_user():
+    """No retry and no piezo move: the controller may still own both."""
+    w = _stack_worker()
+    w._run_sequenced_burst = MagicMock(side_effect=ControllerDidNotStop("the controller did not report it over"))
+
+    w._acquire_sequenced_stack("A1", "/tmp", 0)
+
+    w._ask_user_to_intervene.assert_called_once()
+    assert "did not report it over" in w._ask_user_to_intervene.call_args.args[0]
+    assert w._run_sequenced_burst.call_count == 1
+    w.piezo.move_to.assert_not_called()
+
+
+def test_an_abort_after_a_failed_burst_still_puts_the_piezo_back():
+    """A failed burst leaves the piezo at the last plane the controller commanded. An abort that lands on that
+    failure must not skip the move back: the next acquisition starts from where the cache says."""
+    w = _stack_worker()
+    w._run_sequenced_burst = MagicMock(return_value=(None, "the controller reported an error"))
+    w.abort_requested_fn = lambda: w._run_sequenced_burst.call_count >= 1  # the abort lands on the failed burst
+
+    w._acquire_sequenced_stack("A1", "/tmp", 0)
+
+    assert w.piezo.move_to.call_args_list == [call(20.0)]
+    w.handle_acquisition_abort.assert_called_once()
+    w._ask_user_to_intervene.assert_not_called()
 
 
 def test_a_failed_burst_puts_the_piezo_back_at_the_stack_start():
