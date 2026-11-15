@@ -25,10 +25,6 @@ from control.core.agent_session import SESSION_COMMANDS, AgentSessionRefused, Se
 from squid.stage.reservation import StageMotionRefused
 
 import control._def  # Module import for runtime access to MCP-modifiable settings
-
-# The session_id of the request that this thread serves, for the handlers of the session commands. A request with no
-# session_id has None: nothing is checked, as before.
-_REQUEST_SESSION_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("request_session_id", default=None)
 import control.utils
 
 # Qt imports for thread-safe GUI operations
@@ -38,6 +34,10 @@ try:
     QT_AVAILABLE = True
 except ImportError:
     QT_AVAILABLE = False
+
+# The session_id of the request that this thread serves, for the handlers of the session commands. A request with no
+# session_id has None: nothing is checked, as before.
+_REQUEST_SESSION_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("request_session_id", default=None)
 
 
 class AcquisitionResult(TypedDict):
