@@ -239,9 +239,7 @@ class HamamatsuCamera(AbstractCamera):
                     self._hw_set_strobe_delay_ms_fn(strobe_time_ms)
 
             if not self._set_prop(DCAM_IDPROP.EXPOSURETIME, camera_exposure_time_s):
-                raise CameraError(
-                    f"Failed to set exposure time to {exposure_time_ms=} ({camera_exposure_time_s=} [s])"
-                )
+                raise CameraError(f"Failed to set exposure time to {exposure_time_ms=} ({camera_exposure_time_s=} [s])")
 
             self._exposure_time_ms = exposure_time_ms
             self._trigger_sent.clear()
