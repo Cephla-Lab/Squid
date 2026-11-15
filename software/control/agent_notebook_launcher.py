@@ -106,6 +106,10 @@ class AgentNotebook:
         Returns None, or the reason why there is no page (for a message to the user). It can take wait_s: do not
         call it on the GUI thread."""
         runs = notebook_runs(self._url)
+        if not runs and self.process is not None and self.process.poll() is None:
+            # The program that this Squid started runs and is busy. A second program would take its place here,
+            # and the close of Squid would then not end the first one.
+            return f"The notebook program that Squid started runs, but it does not answer at {self._url}. Try again."
         command = command_from_setting(self._setting)
         if not runs and not command:
             return f"No notebook answers at {self._url}, and the setting agent_notebook_command is empty."

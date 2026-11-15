@@ -206,6 +206,34 @@ def test_close_ends_the_programs_that_the_notebook_program_started(tmp_path):
                 pass
 
 
+def test_a_second_click_while_the_program_of_squid_does_not_answer_starts_no_second_program(tmp_path):
+    # The program answers once, then it is busy: each later request waits.
+    port = free_port()
+    url = f"http://127.0.0.1:{port}/"
+    busy_after_one = PAGE_PROGRAM.replace(
+        "    def do_GET(self):\n",
+        "    answered = 0\n"
+        "    def do_GET(self):\n"
+        "        if Page.answered:\n"
+        "            import time; time.sleep(60)\n"
+        "        Page.answered += 1\n",
+    )
+    (tmp_path / "page.py").write_text(busy_after_one)
+    notebook, events = make(f'"{sys.executable}" "{tmp_path / "page.py"}" {port}', url, tmp_path)
+    first = None
+    try:
+        assert notebook.open() is None
+        first = notebook.process
+        reason = notebook.open()
+        assert notebook.process is first and first.poll() is None  # Squid still owns the program that it started
+        assert "does not answer" in reason
+        notebook.close()
+        assert first.poll() is not None  # and ends it at the close
+    finally:
+        if first is not None and first.poll() is None:
+            first.kill()
+
+
 def test_squid_that_closes_during_the_start_starts_no_program(tmp_path):
     # The quit of Squid comes while the start runs on its thread, before the program is started.
     url = f"http://127.0.0.1:{free_port()}/"
