@@ -14,6 +14,7 @@ No Qt in this module: the window gives the functions that start the control serv
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -166,11 +167,27 @@ class AgentNotebook:
         self._end_process()
 
     def _end_process(self) -> None:
+        """End the program. On Linux and macOS the programs that it started end too: they are in its process
+        group (it starts in a session of its own). On Windows only the program itself ends."""
         process = self.process
         if process is None or process.poll() is not None:
             return
-        process.terminate()
+        _end(process, force=False)
         try:
             process.wait(5.0)
         except subprocess.TimeoutExpired:
+            _end(process, force=True)
+            process.wait(5.0)
+
+
+def _end(process: subprocess.Popen, force: bool) -> None:
+    if sys.platform == "win32":
+        if force:
             process.kill()
+        else:
+            process.terminate()
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+    except ProcessLookupError:
+        pass  # each program of the group has ended already

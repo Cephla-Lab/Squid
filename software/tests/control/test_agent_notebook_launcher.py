@@ -4,9 +4,12 @@ The notebook is a separate program. Squid does not import it: it has a command l
 settings. With no command (the default) there is no menu entry."""
 
 import http.server
+import os
+import signal
 import socket
 import sys
 import threading
+import time
 from datetime import datetime
 
 import pytest
@@ -169,6 +172,38 @@ def test_a_command_that_can_not_start_is_a_reason_not_an_exception(tmp_path):
     notebook, events = make("no-such-program-for-the-notebook --serve", url, tmp_path)
     reason = notebook.open()
     assert "could not start" in reason and "no-such-program-for-the-notebook" in reason
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a process group of POSIX")
+def test_close_ends_the_programs_that_the_notebook_program_started(tmp_path):
+    # The command can be a wrapper (a script, an environment runner) that starts the notebook as its own child.
+    port = free_port()
+    url = f"http://127.0.0.1:{port}/"
+    pid_file = tmp_path / "child.pid"
+    (tmp_path / "page.py").write_text(PAGE_PROGRAM)
+    (tmp_path / "wrapper.py").write_text(
+        "import subprocess, sys\n"
+        f"child = subprocess.Popen([sys.executable, {str(tmp_path / 'page.py')!r}, sys.argv[1]])\n"
+        f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+        "child.wait()\n"
+    )
+    notebook, events = make(f'"{sys.executable}" "{tmp_path / "wrapper.py"}" {port}', url, tmp_path)
+    child_pid = None
+    try:
+        assert notebook.open() is None
+        child_pid = int(pid_file.read_text())
+        notebook.close()
+        assert notebook.process.poll() is not None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and notebook_answers(url):
+            time.sleep(0.1)
+        assert not notebook_answers(url)  # the notebook itself ended too
+    finally:
+        if child_pid is not None:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def test_squid_that_closes_during_the_start_starts_no_program(tmp_path):
