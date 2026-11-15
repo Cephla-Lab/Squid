@@ -70,12 +70,13 @@ def home_stage_confirmation_text(has_z_lift: bool) -> str:
     return f"{moves} The stage will not return to where it is now."
 
 
-CONFIG_SIGNATURE_FORMAT = 2  # bump when the fields or their rendering below change
+CONFIG_SIGNATURE_FORMAT = 3  # bump when the fields or their rendering below change
 
 
 def _number(value) -> str:
-    """A number as text, independent of how the setting was written: floats by repr, ints and bools as ints."""
-    if isinstance(value, (bool, int)):
+    """A number as text, independent of how the setting was written: bools as 0 or 1, every other number by the repr of
+    its float, so 500, 500.0 and 5e2 read the same (saving Preferences rewrites an ini's 500 as 500.0)."""
+    if isinstance(value, bool):
         return str(int(value))
     return repr(float(value))
 

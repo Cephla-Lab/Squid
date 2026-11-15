@@ -388,7 +388,10 @@ def test_startup_asks_only_when_a_piezo_only_system_homes_xy(monkeypatch, piezo_
 
 
 def test_piezo_only_decline_closes_the_hardware_and_raises(piezo_only, monkeypatch, closes):
-    """Declining quits Squid: the Microscope releases what it opened and is never handed out."""
+    """Declining quits Squid. A startup that homes the stage asks while the controller starts, before anything else is
+    opened: the controller closes itself, and no Microscope is built or handed out."""
+    sim = _scope_sim()
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
     home = MagicMock()
     monkeypatch.setattr(control.microscope.Microscope, "home_xyz", home)
     with pytest.raises(StartupHomingDeclined):
@@ -396,7 +399,7 @@ def test_piezo_only_decline_closes_the_hardware_and_raises(piezo_only, monkeypat
             True, confirm_objective_lowered=lambda stage_homes: False
         )
     home.assert_not_called()
-    assert len(closes) == 1
+    assert closes == [] and CMD_SET.INITIALIZE not in sim.command_log
 
 
 @pytest.mark.parametrize("lowered", [True, False])
@@ -725,7 +728,7 @@ def test_signature_is_the_same_in_another_process():
 
 def test_signature_text_starts_with_the_format_and_covers_every_axis():
     lines = config_signature_text().split("\n")
-    assert lines[0] == "format=2"
+    assert lines[0] == "format=3"
     assert len(lines) == 1 + 3 * 13 + 5  # + the objective piezo's DAC
     assert all("=" in line for line in lines)
 
@@ -809,6 +812,16 @@ def test_equal_values_written_differently_sign_the_same(monkeypatch):
     b = config_signature()
     monkeypatch.setattr(control._def, "X_MOTOR_I_HOLD", 0.50)
     assert config_signature() == b
+
+
+@pytest.mark.parametrize("name", ["MAX_VELOCITY_X_mm", "MAX_ACCELERATION_Z_mm", "MICROSTEPPING_DEFAULT_Y"])
+def test_an_int_and_the_equal_float_sign_the_same(monkeypatch, name):
+    """Saving Preferences rewrites an ini's max_acceleration_x_mm = 500 as 500.0: the same setting, the same
+    signature."""
+    monkeypatch.setattr(control._def, name, 500)
+    a = config_signature()
+    monkeypatch.setattr(control._def, name, 500.0)
+    assert config_signature() == a
 
 
 def test_format_version_changes_the_signature(monkeypatch):
@@ -1127,6 +1140,41 @@ def _scope_sim():
     """A 1.9 controller for a whole Microscope, which also sends commands the sim's protocol whitelist lacks
     (SET_WATCHDOG_TIMEOUT, HEARTBEAT): those are answered, not refused."""
     return FirmwareSimSerial(strict=False, firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+
+
+def test_piezo_only_cold_start_asks_once_before_the_controller_is_initialized(monkeypatch, piezo_only):
+    sim = _scope_sim()
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    asked = []
+    scope = control.microscope.Microscope.build_from_global_config(
+        True,
+        confirm_objective_lowered=lambda stage_homes: asked.append((stage_homes, list(sim.command_log))) or True,
+    )
+    try:
+        assert len(asked) == 1 and asked[0][0] is True  # once, saying the stage homes
+        assert asked[0][1][-1] == CMD_SET.RESET and CMD_SET.INITIALIZE not in asked[0][1]
+        assert scope.startup_homing is StartupHoming.HOMED
+    finally:
+        scope.close()
+
+
+def test_declining_a_cold_start_keeps_the_controller_homed(monkeypatch, piezo_only):
+    """A changed setting makes the startup cold; declining the stop sign must not cost the homing: with the setting
+    put back, the next launch is still warm."""
+    sim = _homed(_scope_sim())
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    velocity = control._def.MAX_VELOCITY_X_mm
+    monkeypatch.setattr(control._def, "MAX_VELOCITY_X_mm", velocity + 1)
+    with pytest.raises(StartupHomingDeclined):
+        control.microscope.Microscope.build_from_global_config(
+            True, confirm_objective_lowered=lambda stage_homes: False
+        )
+    for code in (CMD_SET.INITIALIZE, CMD_SET.SET_MAX_VELOCITY_ACCELERATION, CMD_SET.STORE_CONFIG_SIGNATURE):
+        assert code not in sim.command_log
+    monkeypatch.setattr(control._def, "MAX_VELOCITY_X_mm", velocity)
+    sim.reconnect(1)
+    sim.command_log.clear()
+    assert Microcontroller(serial_device=sim).startup_was_warm
 
 
 def test_microscope_warm_start_skips_homing_and_prompt(monkeypatch, piezo_only):
