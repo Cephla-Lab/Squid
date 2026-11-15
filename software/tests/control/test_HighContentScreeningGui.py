@@ -1601,7 +1601,8 @@ def test_agent_session_needs_a_panel_lock_that_the_controller_confirms(qtbot, co
     _wait_for_the_human(gui, qtbot)
     assert calls[2:] == [("lock", False, "human")]
 
-    # The controller does not confirm the lock: the human keeps the control.
+    # The controller does not confirm the lock: the human keeps the control. The controller can have locked the
+    # panel and only its answer is late, so Squid unlocks it again.
     def no_answer(*args, **kwargs):
         raise TimeoutError("no answer from the controller")
 
@@ -1610,6 +1611,7 @@ def test_agent_session_needs_a_panel_lock_that_the_controller_confirms(qtbot, co
         assert gui.run_agent_session_transition("hand_back", "") == "could not lock the control panel"
     assert session.state is SessionState.HUMAN and not gui._agent_shield.is_active()
     assert PANEL_LOCK_AGENT not in gui._panel_lock.held()
+    assert calls[3:] == [("lock", True, "human"), ("lock", False, "human")]
 
 
 def test_agent_session_with_no_panel_lock_needs_the_setting_and_warns(qtbot, confirm_exit_yes, monkeypatch, caplog):

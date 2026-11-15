@@ -2882,6 +2882,9 @@ class HighContentScreeningGui(QMainWindow):
             return
         can_lock = self._controller_can_lock_its_panel()
         if can_lock:
+            # Held from before the send: if the answer of the controller does not come, the controller can still
+            # have locked the panel, and the unlock on the failure path must unlock it.
+            self._panel_lock.add_locked(PANEL_LOCK_AGENT)
             self.microcontroller.set_panel_lock(True)
             self.microcontroller.wait_till_operation_is_completed()
         # A real controller that cannot lock its panel gets here only with AGENT_SESSION_ALLOW_UNLOCKED_PANEL
