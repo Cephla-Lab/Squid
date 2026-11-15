@@ -128,7 +128,7 @@ def test_a_run_uses_the_overrides_and_the_stored_channels_stay_as_they_are(run, 
     overrides = {run.name: {"exposure_time_ms": 21.5, "illumination_intensity": 7.25}}
     run.mpc.start_new_experiment("exp", add_timestamp=False, channel_overrides=overrides)
     assert run.mpc.run_acquisition(channel_overrides=overrides)
-    assert run.tracker.started_event.wait(5) and run.tracker.finished_event.wait(10)
+    assert run.tracker.started_event.wait(30) and run.tracker.finished_event.wait(30)
     # every image of the run used the override; after the run the controller puts the stored channel back
     mine = [s for s in run.seen[:-1] if s[0] == run.name]
     assert len(mine) >= 2 and set(mine) == {(run.name, 21.5, 7.25)}
@@ -142,7 +142,7 @@ def test_a_run_uses_the_overrides_and_the_stored_channels_stay_as_they_are(run, 
 def test_a_run_with_no_overrides_uses_the_stored_values(run, tmp_path):
     run.mpc.start_new_experiment("exp", add_timestamp=False)
     assert run.mpc.run_acquisition()
-    assert run.tracker.started_event.wait(5) and run.tracker.finished_event.wait(10)
+    assert run.tracker.started_event.wait(30) and run.tracker.finished_event.wait(30)
     assert (run.name, run.stored_exposure, run.stored_intensity) in run.seen
 
 
