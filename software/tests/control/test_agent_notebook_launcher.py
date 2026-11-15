@@ -260,6 +260,30 @@ def test_close_ends_the_programs_that_the_notebook_program_started(tmp_path):
                 pass
 
 
+def test_a_program_that_does_not_end_does_not_stop_the_close_of_squid(tmp_path, monkeypatch):
+    # close() runs while Squid closes. A program that survives the forced end is reported, not raised: the rest
+    # of the close of Squid (the hardware) must still run.
+    import subprocess
+
+    import control.agent_notebook_launcher as launcher
+
+    class DoesNotEnd:
+        pid = 1  # not used: the test replaces the two calls that would signal it
+        signals = []
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("notebook", timeout)
+
+    monkeypatch.setattr(launcher, "_end", lambda process, force: DoesNotEnd.signals.append(force))
+    notebook = make("", f"http://127.0.0.1:{free_port()}/", tmp_path)[0]
+    notebook.process = DoesNotEnd()
+    notebook.close()  # no exception
+    assert DoesNotEnd.signals == [False, True]  # asked to end, then forced
+
+
 def test_a_second_click_while_the_program_of_squid_does_not_answer_starts_no_second_program(tmp_path):
     # The program answers once, then it is busy: each later request waits.
     port = free_port()

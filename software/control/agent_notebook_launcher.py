@@ -201,7 +201,13 @@ class AgentNotebook:
             process.wait(5.0)
         except subprocess.TimeoutExpired:
             _end(process, force=True)
-            process.wait(5.0)
+            try:
+                process.wait(5.0)
+            except subprocess.TimeoutExpired:
+                # Reported, not raised: this runs while Squid closes, and the rest of its close must still run.
+                squid.logging.get_logger(__name__).error(
+                    f"The notebook program (pid {process.pid}) did not end after a forced end"
+                )
 
 
 def _end(process: subprocess.Popen, force: bool) -> None:
