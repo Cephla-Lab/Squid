@@ -1897,6 +1897,11 @@ ENABLE_MCP_SERVER_SUPPORT = True  # Set to False to hide all MCP-related menu it
 CONTROL_SERVER_HOST = "127.0.0.1"
 CONTROL_SERVER_PORT = 5050
 ANTHROPIC_API_KEY = None  # Set via GUI (Settings > Set Anthropic API Key...)
+# An agent session locks the control panel (joystick, focus wheel), which needs controller firmware 1.8 or
+# later. True lets a session begin on a controller that cannot lock its panel; the banner then tells the
+# operator not to touch the joystick. Off by default: without the lock, a hand on the joystick moves the
+# stage while the agent drives.
+AGENT_SESSION_ALLOW_UNLOCKED_PANEL = False
 
 
 # Slack Notifications - send real-time notifications during acquisition
