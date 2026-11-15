@@ -422,6 +422,9 @@ class SimulatedSequencer:
                 for camera_id in cameras_in_mask(channel.camera_mask):
                     # A callback can block (a camera slow to take its trigger) while the host aborts this run
                     # and starts another: the step's remaining cameras must not be triggered into the new run.
+                    # A thread descheduled between this check and the call can still deliver one late trigger;
+                    # closing that window would mean holding the lock across a callback the tests deliberately
+                    # block. Accepted for the simulator (Codex round 2).
                     if abort.is_set():
                         return
                     with self._lock:

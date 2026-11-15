@@ -229,6 +229,8 @@ def eligible_kwargs(**overrides):
         camera_drives_ready_line=False,
         z_stack_order="CHANNEL FIRST",
         nz=3,
+        dz_um=1.0,
+        piezo_range_um=300.0,
         emission_filter_unit=None,
         nl5_configured=False,
     )
@@ -265,6 +267,8 @@ def test_a_plain_fluorescence_piezo_stack_is_eligible():
             "at most 16",
         ),
         (dict(nz=40_000), "at most 65535"),
+        # A step below one DAC count (300 um / 65535 = 0.0046 um) truncates to no movement in the program.
+        (dict(dz_um=0.004), "DAC count"),
         # An NL5 scan unit triggers the camera itself and takes its channel and laser power at every channel
         # switch; a burst does neither.
         (dict(nl5_configured=True), "NL5"),

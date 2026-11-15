@@ -724,6 +724,34 @@ void test_a_reached_camera_deadline_is_retired_before_it_can_go_stale(void) {
     TEST_ASSERT_EQUAL_UINT32(8, e.progress().frames_fired);
 }
 
+// An abort inside the illumination lead cancels a trigger that never reached the camera: that camera owes
+// no readout, so the next run's first exposure goes out at once. A trigger that had fired keeps its cooldown
+// (test_camera_cooldown_carries_over_to_the_next_run).
+void test_an_abort_before_the_trigger_fires_leaves_no_cooldown(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    l.z_settle_us = 0;
+    l.return_to_start = 0;
+    SeqChannel ch[1] = {good_channel()};
+    ch[0].illum_lead_us = 60000;    // the trigger edge is queued 60 ms ahead
+    ch[0].exposure_us = 10000000;   // 10 s: a deadline left standing would outlast the 5 s wait timeout
+    SeqCameraConfig cams[1] = {cam_level()};
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)e.load(l, ch, cams, 1).error);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000));
+    run_until(e, hal, 1000);  // the exposure is scheduled, its edge 60 ms away
+    TEST_ASSERT_EQUAL(1, (int)hal.plans.size());
+    e.abort(SeqError::HostAbort, hal.now_us);  // all_off() cancels the queued edge
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
+    const uint32_t restart = hal.now_us;
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000));
+    run_until(e, hal, restart + 5000);
+    TEST_ASSERT_EQUAL(2, (int)hal.plans.size());  // not held until the cancelled exposure "ends"
+    TEST_ASSERT_TRUE((uint32_t)(hal.plans[1].t_assert_us - restart) <= 60000 + 1000);
+}
+
 // Whole-run invariants over a mixed program (property-style, deterministic inputs).
 void test_run_invariants(void) {
     FakeHal hal;
@@ -954,7 +982,7 @@ void test_stack_range_accounts_for_channel_offsets_and_negative_dz(void) {
 void test_abort_turns_everything_off_and_stops_motion(void) {
     FakeHal hal;
     SeqEngine e(hal);
-    e.abort(SeqError::InterlockOpen);  // idle: no-op
+    e.abort(SeqError::InterlockOpen, hal.now_us);  // idle: no-op
     TEST_ASSERT_EQUAL(0, (int)hal.calls.size());
     SeqLoop l = good_loop();
     l.stack_axis_type = (uint8_t)StackAxisType::Stepper;
@@ -966,13 +994,13 @@ void test_abort_turns_everything_off_and_stops_motion(void) {
     e.load(l, ch, cams, 1);
     TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 1000));
     run_for(e, hal, 5000);  // mid-move
-    e.abort(SeqError::InterlockOpen);
+    e.abort(SeqError::InterlockOpen, hal.now_us);
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::InterlockOpen, e.progress().abort_error);
     TEST_ASSERT_TRUE(saw(hal, "all_off"));
     TEST_ASSERT_TRUE(saw(hal, "stop_motion"));
     size_t n = hal.calls.size();
-    e.abort(SeqError::HostAbort);  // already terminal: no second shutdown, error preserved
+    e.abort(SeqError::HostAbort, hal.now_us);  // already terminal: no second shutdown, error preserved
     TEST_ASSERT_EQUAL((int)n, (int)hal.calls.size());
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::InterlockOpen, e.progress().abort_error);
 }
@@ -990,7 +1018,7 @@ void test_abort_during_exposure_is_terminal_immediately(void) {
     e.start(hal.now_us, 5000000, 40000);
     for (int i = 0; i < 1000 && e.state() != SeqState::Exposing; i++) run_for(e, hal, 100);
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Exposing, (uint8_t)e.state());
-    e.abort(SeqError::HostAbort);
+    e.abort(SeqError::HostAbort, hal.now_us);
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
     run_for(e, hal, 100000);
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
@@ -1202,6 +1230,7 @@ int main(int, char**) {
     RUN_TEST(test_min_trigger_period_enforced);
     RUN_TEST(test_camera_cooldown_carries_over_to_the_next_run);
     RUN_TEST(test_a_reached_camera_deadline_is_retired_before_it_can_go_stale);
+    RUN_TEST(test_an_abort_before_the_trigger_fires_leaves_no_cooldown);
     RUN_TEST(test_run_invariants);
     RUN_TEST(test_filter_target_is_passed_as_absolute_usteps);
     RUN_TEST(test_loaded_program_runs_again_with_a_new_stack_start);

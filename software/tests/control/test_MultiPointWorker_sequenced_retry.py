@@ -20,9 +20,12 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from control.core.multi_point_utils import CaptureInfo
 from control.core.multi_point_worker import MultiPointWorker
 from control.core.pending_captures import PendingCaptures
+from control.core.sequenced_acquisition import ControllerDidNotStop
 from control.sequencer_program import SeqError, SeqState, SequencerStatus
 
 
@@ -204,7 +207,8 @@ def test_an_overrun_sequence_is_cancelled_before_the_camera_is_restarted():
     w._wait_for_sequence = overrun
     w._overdue_cancel_wait_s = lambda: 1.0
     w.microcontroller.seq_cancel.side_effect = lambda: events.append("cancel")
-    w.microcontroller.is_busy.side_effect = [True, False]
+    # Only the controller's own word that the run is over counts, not the host's busy flag.
+    w.microcontroller.reported_idle_since_last_command.side_effect = [False, True]
     w.microcontroller.seq_status = SequencerStatus(SeqState.DONE, SeqError.CANCELED, 0, 1)
     start_streaming = w.camera.start_streaming
 
@@ -216,3 +220,27 @@ def test_an_overrun_sequence_is_cancelled_before_the_camera_is_restarted():
     frames, reason = w._run_sequenced_burst(_captures(3), 1000, None)
     assert frames is None
     assert events == ["cancel", "camera restart"]
+
+
+def test_an_overrun_the_controller_never_reports_over_is_not_retried():
+    """The cancel wait expires with no word from the controller (a wedged run, or a dead link: is_busy() would
+    have been cleared by the read loop's abort without anything stopping). The camera is not restarted under
+    a run that may still be firing, and the burst is handed to the user instead of retried."""
+    w = _bare_worker()
+    events = []
+
+    def overrun(timeout):
+        raise TimeoutError("the hardware sequence did not finish")
+
+    w._wait_for_sequence = overrun
+    w._overdue_cancel_wait_s = lambda: 0.0
+    w.microcontroller.seq_cancel.side_effect = lambda: events.append("cancel")
+    w.microcontroller.reported_idle_since_last_command.return_value = False
+    w.microcontroller.is_busy.return_value = False  # the host's flag says idle; it is not evidence
+    w.camera.start_streaming = lambda: events.append("camera restart")
+
+    with pytest.raises(ControllerDidNotStop, match="did not report it over"):
+        w._run_sequenced_burst(_captures(3), 1000, None)
+
+    assert events == ["cancel"]
+    assert w._ready_for_next_trigger.is_set()  # the worker is left consistent for whoever runs next

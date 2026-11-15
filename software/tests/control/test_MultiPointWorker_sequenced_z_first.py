@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import squid.abc
 from control.core.multi_point_worker import MultiPointWorker
-from control.core.sequenced_acquisition import ChannelPlan, burst_plans, piezo_um_to_dac
+from control.core.sequenced_acquisition import ChannelPlan, ControllerDidNotStop, burst_plans, piezo_um_to_dac
 from control.piezo import PiezoStage
 
 NZ = 3
@@ -214,6 +214,42 @@ def test_a_failed_burst_puts_the_piezo_back_at_the_stack_start():
     moves = w.piezo._mc.set_piezo_um.call_args_list[moves_before:]
     assert [m.args[0] for m in moves] == [START_UM] * 3
     assert w.piezo.position == START_UM
+
+
+def test_a_controller_that_did_not_stop_goes_straight_to_the_user():
+    """The burst's cancel got no answer from the controller: no retry and no piezo move, since the controller
+    may still own both; the user is told why."""
+    w = _worker([A, B], "Z FIRST")
+    moves_before = w.piezo._mc.set_piezo_um.call_count
+
+    def run(captures, stack_start, channel):
+        w.runs.append(captures[0].configuration.name)
+        raise ControllerDidNotStop("the controller did not report it over")
+
+    w._run_sequenced_burst = run
+
+    w._acquire_sequenced_stack("A1", "/tmp", 0, af_succeeded=True)
+
+    assert w.runs == ["A"]
+    w._ask_user_to_intervene.assert_called_once()
+    assert "did not report it over" in w._ask_user_to_intervene.call_args.args[0]
+    assert w.piezo._mc.set_piezo_um.call_count == moves_before
+
+
+def test_an_abort_after_a_failed_burst_still_puts_the_piezo_back():
+    """A failed burst leaves the piezo at the last plane the controller commanded. An abort that lands on that
+    failure must not skip the move back: the next acquisition starts from where the cache says."""
+    w = _worker([A, B], "Z FIRST", failing={("A", 1)})
+    w.abort_requested_fn = lambda: len(w.runs) >= 1  # the abort lands on the failed burst
+    moves_before = w.piezo._mc.set_piezo_um.call_count
+
+    w._acquire_sequenced_stack("A1", "/tmp", 0, af_succeeded=True)
+
+    assert [r["captures"][0][1] for r in w.runs] == ["A"]
+    moves = w.piezo._mc.set_piezo_um.call_args_list[moves_before:]
+    assert [m.args[0] for m in moves] == [START_UM]
+    assert w.handle_acquisition_abort.called
+    w._ask_user_to_intervene.assert_not_called()
 
 
 def test_af_per_stack_re_anchors_before_every_burst_but_the_first():

@@ -43,6 +43,7 @@ from control.core.sequenced_acquisition import (
     burst_plans,
     BurstOutcome,
     ChannelPlan,
+    ControllerDidNotStop,
     build_program,
     burst_failure_reason,
     camera_record,
@@ -1428,6 +1429,8 @@ class MultiPointWorker:
             camera_drives_ready_line=control._def.CAMERA_TRIGGER_READY_OUTPUT,
             z_stack_order=self.z_stack_order,
             nz=self.NZ,
+            dz_um=self.deltaZ * 1000,
+            piezo_range_um=self.piezo.range_um if self.piezo is not None else None,
             emission_filter_unit=self.liveController.emission_filter_unit(),
             nl5_configured=self.microscope.addons.nl5 is not None,
         )
@@ -1556,21 +1559,27 @@ class MultiPointWorker:
         longest_step_s = max(self._step_time_us(program, channel) for channel in program.channels) / 1e6
         return longest_step_s + program.wait_timeout_us / 1e6 + 5.0
 
-    def _stop_overdue_sequence(self) -> None:
+    def _stop_overdue_sequence(self) -> bool:
         """The host gave up waiting, but the controller may still be running the burst: cancel it and wait
-        for a terminal state before anything else touches the camera or the controller.
+        for the controller to report the run over before anything else touches the camera or the controller.
 
         Restarting the camera under a run that keeps firing would leave its frames pairing with nothing,
-        and the retry's SEQ_RUN would be refused while the controller is busy.
+        and the retry's SEQ_RUN would be refused while the controller is busy. Only the controller's own
+        word counts (reported_idle_since_last_command); is_busy() is the host's flag, which a link failure
+        clears without stopping anything. Returns whether that word came.
         """
         self._log.warning("The hardware sequence overran the host's deadline: cancelling it.")
         self.microcontroller.seq_cancel()
         deadline = time.time() + self._overdue_cancel_wait_s()
         while time.time() < deadline:
-            if not self.microcontroller.is_busy():
-                return
+            if self.microcontroller.reported_idle_since_last_command():
+                return True
             self._sleep(0.005)
-        self._log.error("The controller did not finish the cancelled sequence; a retry is refused while it runs.")
+        self._log.error(
+            "The controller did not report the cancelled sequence over; the camera is left alone and the burst "
+            "is not retried while the run may still be firing."
+        )
+        return False
 
     def _wait_for_sequence(self, timeout_s: float) -> None:
         """Wait for the pending SEQ_RUN. A user abort cancels the run (the controller finishes
@@ -1619,7 +1628,11 @@ class MultiPointWorker:
                 self.microcontroller.acknowledge_aborted_command()  # consumed here: the burst is given up below
             except TimeoutError as e:
                 run_error = e
-                self._stop_overdue_sequence()
+                if not self._stop_overdue_sequence():
+                    raise ControllerDidNotStop(
+                        f"the hardware sequence overran the host's deadline ({e}) and the controller did not "
+                        "report it over after the cancel"
+                    )
             # The last frames may still be on their way over USB. What can still arrive is bounded
             # by what the controller FIRED, not by what was expected: a run it refused (interlock
             # open, stack out of range) fired nothing, and waiting for "the last expected frame"
@@ -1755,13 +1768,22 @@ class MultiPointWorker:
             while frames is None:
                 attempt += 1
                 self._log.info(f"Hardware sequence: {which}, attempt {attempt}.")
-                frames, reason = self._run_sequenced_burst(captures(), stack_start, channel)
-                if frames is not None or self.abort_requested_fn():
+                try:
+                    frames, reason = self._run_sequenced_burst(captures(), stack_start, channel)
+                except ControllerDidNotStop as e:
+                    # The controller may still be running the stack: the piezo is its, and so is the camera.
+                    self._ask_user_to_intervene(
+                        intervention_message(region_id=region_id, fov=fov, attempts=attempt, last_reason=str(e))
+                    )
+                    return
+                if frames is not None:
                     break
                 # A failed run leaves the piezo where the controller stopped it (the engine's fail() does not
                 # return to the start; Done and a cancel do) while the cache still says the stack start. Put it
-                # back, so the retry and whatever acquisition comes next start from where the cache says.
+                # back before anything else, an abort included: the next acquisition starts where the cache says.
                 self.piezo.move_to(start_um)
+                if self.abort_requested_fn():
+                    break
                 # O1 (Hongquan, 2026-09-20): retry, retry again, then ask the user to intervene.
                 if outcome_after_failed_burst(attempt) == BurstOutcome.ASK_USER:
                     self._ask_user_to_intervene(
