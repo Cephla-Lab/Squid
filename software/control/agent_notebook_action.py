@@ -50,8 +50,11 @@ class AgentNotebookAction(QObject):
             QMessageBox.warning(self._window, "Agent Notebook", reason)
 
     def close(self) -> None:
-        """End the notebook program if this Squid started it (the application closes)."""
-        self.notebook.close()
+        """The application closes: end the notebook program if this Squid started it. With the setting
+        agent_notebook_end_at_close off, the program goes on: a notebook that has its own sessions can be read
+        while Squid is closed."""
+        if control._def.AGENT_NOTEBOOK_END_AT_CLOSE:
+            self.notebook.close()
 
 
 def add_agent_notebook_to_utils_menu(

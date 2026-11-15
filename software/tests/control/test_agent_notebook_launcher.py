@@ -15,6 +15,7 @@ from control.agent_notebook_launcher import (
     AgentNotebook,
     command_from_setting,
     notebook_answers,
+    notebook_runs,
 )
 
 
@@ -24,33 +25,53 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+# A notebook program says what it is at api/service; each other path is its page.
+WHAT_IT_IS = b'{"role": "agent-notebook", "kind": "home", "version": "0.0.1"}'
 PAGE_PROGRAM = (
     "import http.server, sys\n"
     "class Page(http.server.BaseHTTPRequestHandler):\n"
     "    def do_GET(self):\n"
-    "        self.send_response(200); self.end_headers(); self.wfile.write(b'notebook')\n"
+    "        is_service = self.path == '/api/service'\n"
+    "        self.send_response(200)\n"
+    "        self.send_header('Content-Type', 'application/json' if is_service else 'text/html')\n"
+    "        self.end_headers()\n"
+    f"        self.wfile.write({WHAT_IT_IS!r} if is_service else b'notebook')\n"
     "    def log_message(self, *args): pass\n"
     "http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Page).serve_forever()\n"
 )
 
 
-@pytest.fixture
-def page_that_runs():
-    """A page that answers already (someone started the notebook before)."""
+def serve(answer_for):
+    """A program that answers on a free port: answer_for(path) gives the body. Returns (the address, the server)."""
     port = free_port()
 
     class Page(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"notebook")
+            self.wfile.write(answer_for(self.path))
 
         def log_message(self, *args):
             pass
 
     server = http.server.HTTPServer(("127.0.0.1", port), Page)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{port}/"
+    return f"http://127.0.0.1:{port}/", server
+
+
+@pytest.fixture
+def page_that_runs():
+    """A notebook that answers already (someone started it before)."""
+    url, server = serve(lambda path: WHAT_IT_IS if path == "/api/service" else b"notebook")
+    yield url
+    server.shutdown()
+
+
+@pytest.fixture
+def a_different_program():
+    """A program that is not the notebook, at the address of the notebook: it answers the same to each path."""
+    url, server = serve(lambda path: b"notebook")
+    yield url
     server.shutdown()
 
 
@@ -84,15 +105,27 @@ def test_the_command_comes_from_the_setting_with_the_time_of_the_start():
     assert command_from_setting("   ", datetime(2026, 11, 13)) == []
 
 
-def test_a_page_that_answers_is_seen_and_a_closed_port_is_not(page_that_runs):
-    assert notebook_answers(page_that_runs) is True
-    assert notebook_answers(f"http://127.0.0.1:{free_port()}/") is False
+def test_a_notebook_that_says_what_it_is_is_seen_and_a_closed_port_is_not(page_that_runs, a_different_program):
+    assert notebook_runs(page_that_runs) is True and notebook_answers(page_that_runs) is True
+    closed = f"http://127.0.0.1:{free_port()}/"
+    assert notebook_runs(closed) is False and notebook_answers(closed) is False
+    # Something answers there, and it does not say that it is the notebook.
+    assert notebook_runs(a_different_program) is False and notebook_answers(a_different_program) is True
 
 
-def test_a_notebook_that_runs_already_is_only_opened(page_that_runs, tmp_path):
+def test_a_notebook_that_runs_already_gets_the_control_server_and_is_opened(page_that_runs, tmp_path):
     notebook, events = make(f"{sys.executable} -c pass", page_that_runs, tmp_path)
     assert notebook.open() is None
-    assert events == [f"open {page_that_runs}"]  # no control server start, no second program
+    # The notebook can run with the control server of Squid off (it was started by hand): the entry turns it on.
+    assert events == ["control server", f"open {page_that_runs}"]
+    assert notebook.process is None  # no second program
+
+
+def test_a_different_program_at_the_address_is_not_taken_as_the_notebook(a_different_program, tmp_path):
+    notebook, events = make(f"{sys.executable} -c pass", a_different_program, tmp_path)
+    reason = notebook.open()
+    assert reason == f"A different program answers at {a_different_program}. Squid does not start the notebook."
+    assert events == [] and notebook.process is None  # no control server, no program, no page
 
 
 def test_squid_starts_the_control_server_and_the_program_then_opens_the_page(tmp_path):
@@ -104,8 +137,9 @@ def test_squid_starts_the_control_server_and_the_program_then_opens_the_page(tmp
         assert notebook.open() is None
         assert events == ["control server", f"open {url}"]  # the agent of the notebook needs the control server
         assert notebook_answers(url)
-        assert notebook.open() is None  # a second click: the page only
-        assert events == ["control server", f"open {url}", f"open {url}"]
+        assert notebook.open() is None  # a second click: the control server again (it can be off), and the page
+        assert events == ["control server", f"open {url}", "control server", f"open {url}"]
+        assert notebook_runs(url)
     finally:
         notebook.close()
     assert notebook.process.wait(10) is not None and not notebook_answers(url)  # Squid ends what it started

@@ -4,9 +4,14 @@ The notebook is a separate program: a local web page with a chat, a notebook tha
 operates the microscope, and who is driving. Squid does not import it. Squid has a command line (the setting
 agent_notebook_command) and the address of the page (agent_notebook_url). With no command there is no menu entry.
 
+The notebook program says what it is: it answers GET <address>api/service with a JSON object that has
+"role": "agent-notebook". Squid opens a page, and starts the control server for it, only when the program at the
+address says so.
+
 No Qt in this module: the window gives the functions that start the control server and open a page.
 """
 
+import json
 import os
 import shlex
 import subprocess
@@ -20,6 +25,8 @@ from typing import Callable, List, Optional
 import squid.logging
 
 LOG_FILE_NAME = "agent_notebook.log"
+SERVICE_PATH = "api/service"  # after the address of the page: what the program is
+NOTEBOOK_ROLE = "agent-notebook"
 START_WAIT_S = 20.0  # how long the program gets to answer at its page
 
 
@@ -54,6 +61,17 @@ def notebook_answers(url: str, timeout_s: float = 0.5) -> bool:
         return False
 
 
+def notebook_runs(url: str, timeout_s: float = 0.5) -> bool:
+    """True only when the program at the address says that it is the notebook. A different program that answers
+    there, and no answer, are both False."""
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/" + SERVICE_PATH, timeout=timeout_s) as response:
+            said = json.loads(response.read())
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+    return isinstance(said, dict) and said.get("role") == NOTEBOOK_ROLE
+
+
 class AgentNotebook:
     """The notebook as the window uses it: open() makes sure that the page is there and opens it."""
 
@@ -75,18 +93,23 @@ class AgentNotebook:
         self.process: Optional[subprocess.Popen] = None  # the program, when this Squid started it
 
     def open(self) -> Optional[str]:
-        """Open the page of the notebook. A notebook that runs already is only opened. Else Squid starts the
-        control server (the agent of the notebook talks to it), starts the program, and waits for its page.
+        """Open the page of the notebook. Squid starts the control server each time (the agent of the notebook
+        talks to it, and a notebook that someone started by hand can run while the server is off). A notebook that
+        runs already is then opened. Else Squid starts the program, and waits until it says that it is the notebook.
 
         Returns None, or the reason why there is no page (for a message to the user). It can take wait_s: do not
         call it on the GUI thread."""
-        if notebook_answers(self._url):
+        runs = notebook_runs(self._url)
+        command = command_from_setting(self._setting)
+        if not runs and not command:
+            return f"No notebook answers at {self._url}, and the setting agent_notebook_command is empty."
+        if not runs and notebook_answers(self._url):
+            # The port has a program that is not the notebook. Squid starts nothing for it and opens nothing.
+            return f"A different program answers at {self._url}. Squid does not start the notebook."
+        self._start_control_server()
+        if runs:
             self._open_page(self._url)
             return None
-        command = command_from_setting(self._setting)
-        if not command:
-            return f"No notebook answers at {self._url}, and the setting agent_notebook_command is empty."
-        self._start_control_server()
         os.makedirs(os.path.dirname(os.path.abspath(self._log_path)), exist_ok=True)
         kwargs = {}
         if sys.platform == "win32":
@@ -105,7 +128,7 @@ class AgentNotebook:
             code = self.process.poll()
             if code is not None:
                 return self._failure(f"The notebook program ended with code {code}.")
-            if notebook_answers(self._url):
+            if notebook_runs(self._url):
                 self._open_page(self._url)
                 return None
             time.sleep(0.2)

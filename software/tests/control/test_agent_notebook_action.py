@@ -113,3 +113,13 @@ def test_with_a_command_the_entry_is_in_the_utils_menu_and_shows_the_control_ser
     utils.actions()[0].trigger()
     qtbot.waitUntil(server_entry.isChecked, timeout=5000)  # the notebook started the server: the window shows it
     assert started == [1]
+
+
+def test_with_end_at_close_off_the_program_stays_when_squid_closes(qtbot, monkeypatch):
+    monkeypatch.setattr(control._def, "AGENT_NOTEBOOK_END_AT_CLOSE", False)
+    _, entry, _ = make(qtbot)
+    entry.close()
+    assert entry.notebook.closed is False  # the notebook has its sessions: it goes on when Squid closes
+    monkeypatch.setattr(control._def, "AGENT_NOTEBOOK_END_AT_CLOSE", True)
+    entry.close()
+    assert entry.notebook.closed is True

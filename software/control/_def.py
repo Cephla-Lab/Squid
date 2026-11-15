@@ -1899,6 +1899,8 @@ ENABLE_MCP_SERVER_SUPPORT = True  # Set to False to hide all MCP-related menu it
 #   agent_notebook_command = python3 -m my_notebook serve --run-dir /data/runs/run-{timestamp}
 AGENT_NOTEBOOK_COMMAND = ""
 AGENT_NOTEBOOK_URL = "http://127.0.0.1:5003/"
+# True (the default): a notebook program that Squid started ends when Squid closes. False: it goes on.
+AGENT_NOTEBOOK_END_AT_CLOSE = True
 CONTROL_SERVER_HOST = "127.0.0.1"
 CONTROL_SERVER_PORT = 5050
 ANTHROPIC_API_KEY = None  # Set via GUI (Settings > Set Anthropic API Key...)
