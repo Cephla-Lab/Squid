@@ -35,6 +35,14 @@ LEVEL_TRIGGER_NODES = (
 # illumination before the sensor exposes, so the measurement replaces it, never a guess.
 GLOBAL_RESET_TRIGGER_LATENCY_US = 0
 
+# The trigger-ready output (CAMERA_TRIGGER_READY_OUTPUT): Line2 (pin 3) is the only non-isolated line of the
+# Blackfly S that can be an output (Line1 is the slow opto-isolated one), so the trigger input has to be another
+# line (FLIR_TRIGGER_INPUT_LINE). FrameTriggerWait is HIGH while the camera can take the next trigger; the controller's
+# ready input is pulled up, so an unplugged cable reads HIGH, and HIGH therefore has to mean NOT ready: the line is
+# inverted, LOW = ready. Bench check B3 confirms the value at the controller pin.
+READY_OUTPUT_LINE = "Line2"
+READY_OUTPUT_LINE_INVERTER = True
+
 
 class ReadType:
     """
@@ -788,6 +796,43 @@ class FLIRCamera(AbstractCamera):
         self._global_reset_verified = True
         self._log.info("Camera is in LEVEL trigger + global reset mode.")
 
+    def _apply_trigger_ready_output(self) -> None:
+        """Drive Line2 as the trigger-ready signal (FrameTriggerWait), LOW = ready, read it back, or raise.
+
+        Called only from _configure_hardware_trigger and a no-op unless the CAMERA_TRIGGER_READY_OUTPUT opt-in is
+        on. The controller gates the next trigger on this line, so a line configured as something else would
+        either stall the sequence or let it fire blind; neither may be discovered silently. The Line nodes are not
+        remembered or restored: the output stays meaningful for the next run, and nothing in the switch undoes it.
+        """
+        if not _def.CAMERA_TRIGGER_READY_OUTPUT:
+            return
+        try:
+            self._set_enum("LineSelector", READY_OUTPUT_LINE)
+            self._set_bool("V3_3Enable", False)  # the pin is GPIO, not the 3.3 V rail
+            self._set_enum("LineMode", "Output")
+            self._set_enum("LineSource", "FrameTriggerWait")
+            self._set_bool("LineInverter", READY_OUTPUT_LINE_INVERTER)
+        except CameraError as ex:
+            raise CameraError(
+                f"This camera rejected the trigger-ready output setup on {READY_OUTPUT_LINE} ({ex}). "
+                "Turn off CAMERA_TRIGGER_READY_OUTPUT or use a camera that supports it."
+            ) from ex
+        source = self._read_enum("LineSource")
+        if source != "FrameTriggerWait":
+            raise CameraError(
+                f"This camera reports {READY_OUTPUT_LINE} LineSource={source} instead of FrameTriggerWait. "
+                "Refusing to let a controller gate triggers on a line that is not trigger-ready."
+            )
+        inverter = bool(PySpin.CBooleanPtr(self.nodemap.GetNode("LineInverter")).GetValue())
+        if inverter != READY_OUTPUT_LINE_INVERTER:
+            raise CameraError(
+                f"This camera reports the {READY_OUTPUT_LINE} LineInverter as {inverter} instead of "
+                f"{READY_OUTPUT_LINE_INVERTER} (LOW = ready at the controller). An unplugged ready cable would read as ready."
+            )
+        self._log.info(
+            f"Camera {READY_OUTPUT_LINE} is configured as the trigger-ready output (FrameTriggerWait), active low."
+        )
+
     def update_camera_exposure_time(self):
         self.set_exposure_time(self.exposure_time)
 
@@ -1271,6 +1316,7 @@ class FLIRCamera(AbstractCamera):
         # Before _set_acquisition_mode_imp's exposure refresh, so the strobe delay pushed to the controller is the
         # global-reset one and not the rolling-shutter one. A no-op with the opt-in off.
         self._apply_global_reset_mode()
+        self._apply_trigger_ready_output()
 
     def _restore_previous_mode(self, previous: Optional[TriggerMode], setup_error: BaseException) -> None:
         """Put the camera back in `previous` after a hardware trigger setup failed part way.
