@@ -74,10 +74,15 @@ CHANNEL_OVERRIDES_ONLY_SERVER = "channel_overrides is applied only by run_acquis
 _CHANNEL_OVERRIDE_LIMITS = {"exposure_time_ms": (0.1, 10000.0), "illumination_intensity": (0.0, 100.0)}
 
 
+def is_rgb_channel(name: str) -> bool:
+    """The worker builds an RGB image from the profile's R, G and B channels: an override would change no image."""
+    return "RGB" in name
+
+
 def _parse_channel_overrides(raw, channel_names: List[str]) -> Dict[str, Dict[str, float]]:
     """The optional top-level `channel_overrides` of an acquisition file: {channel name: {exposure_time_ms,
     illumination_intensity}}. Refused, with nothing applied, for a channel that the acquisition does not use, an
-    unknown key, or a value outside the limits."""
+    RGB channel, an unknown key, or a value outside the limits."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -86,6 +91,9 @@ def _parse_channel_overrides(raw, channel_names: List[str]) -> Dict[str, Dict[st
     for name, settings in raw.items():
         if name not in channel_names:
             raise ValueError(f"channel_overrides names a channel that the acquisition does not use: '{name}'")
+        # Refused here, before the server loads the file in the window (which can move the stage).
+        if is_rgb_channel(name):
+            raise ValueError(f"channel_overrides is not supported for an RGB channel: '{name}'")
         if not isinstance(settings, dict) or not settings:
             raise ValueError(f"channel_overrides['{name}'] must give exposure_time_ms, illumination_intensity or both")
         entry: Dict[str, float] = {}

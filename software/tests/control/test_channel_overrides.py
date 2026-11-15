@@ -220,6 +220,34 @@ def test_the_saved_acquisition_file_of_a_run_with_no_overrides_has_no_key(run, t
     assert "channel_overrides" not in (tmp_path / "acquisition.yaml").read_text()
 
 
+RGB = "BF LED matrix full_RGB"
+
+
+def write_rgb_override(tmp_path):
+    path = tmp_path / "acquisition.yaml"
+    path.write_text(
+        SAMPLE_WELLPLATE_YAML.replace("- name: BF LED matrix full\n", f"- name: {RGB}\n")
+        + f'\nchannel_overrides:\n  "{RGB}": {{exposure_time_ms: 20.0}}\n'
+    )
+    return str(path)
+
+
+def test_an_rgb_override_in_a_file_is_refused_when_the_file_is_read(tmp_path):
+    with pytest.raises(ValueError, match="RGB"):
+        parse_acquisition_yaml(write_rgb_override(tmp_path))
+
+
+def test_the_server_refuses_an_rgb_override_before_it_changes_anything(tmp_path):
+    # the window's load moves the stage and the controller set-up changes state: the refusal must come first
+    path = write_rgb_override(tmp_path)
+    server = create_mock_server(channels=[RGB, CHANNEL])
+    server._update_gui_from_yaml = MagicMock()
+    with pytest.raises(ValueError, match="RGB"):
+        server._cmd_run_acquisition_from_yaml(yaml_path=path, experiment_id="exp1", base_path=str(tmp_path))
+    server._update_gui_from_yaml.assert_not_called()
+    server.multipoint_controller.start_new_experiment.assert_not_called()
+
+
 @pytest.mark.parametrize("widget_class_name", ["WellplateMultiPointWidget", "FlexibleMultiPointWidget"])
 def test_the_slot_that_the_server_calls_loads_the_file_as_the_server(widget_class_name):
     # the server calls this slot with a blocking queued connection: a dialog there would stop the server thread

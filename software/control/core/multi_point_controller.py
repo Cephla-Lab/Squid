@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from control import utils, utils_acquisition
+from control.acquisition_yaml_loader import is_rgb_channel
 import control._def
 from control.core.auto_focus_controller import AutoFocusController
 from control.core.multi_point_utils import (
@@ -66,8 +67,7 @@ def configurations_with_overrides(configurations: list, channel_overrides: Optio
     unknown = sorted(set(channel_overrides) - {config.name for config in configurations})
     if unknown:
         raise ValueError(f"channel_overrides names channels that are not selected: {unknown}")
-    # The worker builds an RGB image from the profile's R, G and B channels: an override would change no image.
-    rgb = sorted(name for name in channel_overrides if "RGB" in name)
+    rgb = sorted(name for name in channel_overrides if is_rgb_channel(name))
     if rgb:
         raise ValueError(f"channel_overrides is not supported for an RGB channel: {rgb}")
     return [channel_with_overrides(config, channel_overrides.get(config.name)) for config in configurations]
