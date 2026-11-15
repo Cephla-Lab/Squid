@@ -1023,11 +1023,17 @@ class ToupcamCamera(AbstractCamera):
         try:
             self._configure_trigger_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
         except Exception as setup_error:
-            self._global_reset_verified = False
             try:
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, self._TRIGGER_OPTION[previous_mode])
                 # Turns global reset back off if this switch turned it on: it is only on in hardware trigger mode.
                 self._set_global_reset(previous_mode)
+                # Whichever step above had verified global reset before a later one failed, the sensor is now
+                # as it was for previous_mode: unverified, unless that mode is hardware trigger again (the
+                # confocal re-arm), where it stayed in global reset and is verified again before the strobe
+                # below is derived from it.
+                self._global_reset_verified = False
+                if previous_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                    self._apply_global_reset_mode()
                 self.set_exposure_time(self.get_exposure_time())
             except Exception as rollback_error:
                 self._log.error(
@@ -1264,8 +1270,6 @@ class ToupcamCamera(AbstractCamera):
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
         if acquisition_mode not in self._TRIGGER_OPTION:
             raise ValueError(f"Do not know how to handle {acquisition_mode=}")
-        # Unconfirmed from here on, whatever this switch does: only a global reset read-back sets it again.
-        self._global_reset_verified = False
         # The opt-in setup can fail after the trigger option has changed, and then puts this mode back. It is
         # read only when that setup runs, so with both opt-ins off the switch talks to the camera as before.
         opt_in_setup = acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER and (
@@ -1273,6 +1277,9 @@ class ToupcamCamera(AbstractCamera):
         )
         previous_mode = self.get_acquisition_mode() if opt_in_setup else None
         self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, self._TRIGGER_OPTION[acquisition_mode])
+        # The sensor has left the mode it was verified in (a write the camera refused above leaves it, and the
+        # record, as they were); only a global reset read-back sets the record again.
+        self._global_reset_verified = False
         if opt_in_setup:
             self._configure_hardware_trigger_or_restore(previous_mode)
         else:
@@ -1287,12 +1294,18 @@ class ToupcamCamera(AbstractCamera):
 
         if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
             if HARDWARE_TRIGGER_MODE == HardwareTriggerMode.LEVEL:
+                # With HARDWARE_TRIGGER_GLOBAL_RESET on, a trigger setup the camera refused must not end up
+                # verified as a working global-reset mode (the read-back below checks the option only): the
+                # error is raised, and the switch rolls back. Without the opt-in it is logged, as it always was.
+                fail_loud = control._def.use_level_trigger_global_reset()
                 try:
                     self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, 2)
                 except toupcam.HRESULTException as ex:
                     error_type = hresult_checker(ex)
                     # TODO(imo): Propagate error in some way and handle
                     self._log.error("Unable to set option_trigger to 2: " + error_type)
+                    if fail_loud:
+                        raise
 
                 try:
                     # set IO controltype to PWM mode
@@ -1303,6 +1316,8 @@ class ToupcamCamera(AbstractCamera):
                     error_type = hresult_checker(ex)
                     # TODO(imo): Propagate error in some way and handle
                     self._log.error("Unable to select trigger source: " + error_type)
+                    if fail_loud:
+                        raise
             else:
                 # select trigger source to GPIO0
                 try:

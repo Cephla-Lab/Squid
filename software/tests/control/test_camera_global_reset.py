@@ -387,6 +387,68 @@ def test_toupcam_global_reset_write_error_at_the_switch_puts_the_previous_trigge
     assert cam._global_reset_active() is False
 
 
+def test_toupcam_refused_trigger_option_write_keeps_the_verified_global_reset(monkeypatch):
+    """A write the camera refused leaves the sensor as it was: in verified global reset, so the record stays
+    too, and the strobe derived from it stays the global-reset one."""
+    _enable_global_reset(monkeypatch)
+    sdk = FakeToupcamSdk()
+    cam = _make_toupcam(sdk)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert cam._global_reset_active() is True
+    sdk._put_option_error[toupcam.TOUPCAM_OPTION_TRIGGER] = toupcam.HRESULTException(toupcam.E_BUSY)
+    with pytest.raises(toupcam.HRESULTException):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+    assert sdk.get_Option(toupcam.TOUPCAM_OPTION_TRIGGER) == 2 and sdk.get_Option(_GLOBAL_RESET_OPTION) == 1
+    assert cam._global_reset_active() is True
+    assert cam.get_strobe_time() == pytest.approx(0.12)
+
+
+def test_toupcam_failed_re_arm_keeps_global_reset_verified(monkeypatch):
+    """Hardware trigger set again (the confocal re-arm) can fail in the ready-output setup; the rollback keeps
+    the sensor in global reset, so the mode is verified again and the strobe refreshed from it is the
+    global-reset one, not the rolling one."""
+    _enable_global_reset(monkeypatch)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", True)
+    sdk = FakeToupcamSdk()
+    cam = _make_toupcam(sdk)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert cam._global_reset_active() is True
+    sdk._io_readback[(_GPIO1, _GET_INVERTER)] = 0
+    with pytest.raises(CameraError, match="inverter"):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert sdk.get_Option(toupcam.TOUPCAM_OPTION_TRIGGER) == 2 and sdk.get_Option(_GLOBAL_RESET_OPTION) == 1
+    assert cam._global_reset_active() is True
+    assert cam.get_strobe_time() == pytest.approx(0.12)
+    assert cam.exposure_resets  # the strobe was refreshed after the rollback
+
+
+def test_toupcam_level_trigger_source_failure_rolls_back_with_the_opt_in_on(monkeypatch):
+    """In LEVEL mode the trigger-source IO setup used to be logged and carried on from; with the opt-in on a
+    refused setup must not be verified as a working global-reset mode, so it raises and the switch rolls back."""
+    _enable_global_reset(monkeypatch)
+    sdk = FakeToupcamSdk(
+        io_error={(0, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE): toupcam.HRESULTException(toupcam.E_BUSY)}
+    )
+    sdk._options[toupcam.TOUPCAM_OPTION_TRIGGER] = 1
+    cam = _make_toupcam(sdk)
+    with pytest.raises(toupcam.HRESULTException):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert sdk.get_Option(toupcam.TOUPCAM_OPTION_TRIGGER) == 1
+    assert cam._global_reset_active() is False
+    assert sdk.get_Option(_GLOBAL_RESET_OPTION) == 0
+
+
+def test_toupcam_level_trigger_source_failure_is_only_logged_with_the_opt_in_off(monkeypatch):
+    """Default off: the LEVEL trigger setup keeps today's behaviour, a logged error and no exception."""
+    _enable_global_reset(monkeypatch, enabled=False)
+    sdk = FakeToupcamSdk(
+        io_error={(0, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE): toupcam.HRESULTException(toupcam.E_BUSY)}
+    )
+    cam = _make_toupcam(sdk)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert sdk.get_Option(toupcam.TOUPCAM_OPTION_TRIGGER) == 2
+
+
 def test_toupcam_strobe_time_global_reset_ignored_outside_hardware_trigger(monkeypatch):
     _enable_global_reset(monkeypatch)
     sdk = FakeToupcamSdk()
@@ -913,6 +975,24 @@ def test_hamamatsu_failed_setup_from_hardware_trigger_refreshes_the_strobe_for_t
     assert dcam._props[_TRIGGERACTIVE] == int(DCAMPROP.TRIGGERACTIVE.EDGE)
     assert cam._global_reset_active() is False
     assert cam.strobe_delays_pushed == [pytest.approx((4.4e-6 * 2304 + 0.0) * 1000.0)]
+
+
+def test_hamamatsu_refused_trigger_source_write_keeps_the_verified_global_reset(monkeypatch):
+    """A TRIGGERSOURCE write the camera refused leaves the sensor as it was: in verified global reset, so the
+    record stays too, and the strobe pushed on the next exposure refresh is still the global-reset one."""
+    _enable_hamamatsu_global_reset(monkeypatch)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", False)
+    dcam = FakeDcam()
+    cam = _make_hamamatsu(dcam)
+    cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    assert cam._global_reset_active() is True
+    dcam._set_fails.add(_SOURCE)
+    assert cam._set_acquisition_mode_imp(CameraAcquisitionMode.SOFTWARE_TRIGGER) is False
+    assert int(dcam._props[_SOURCE]) == _EXTERNAL
+    assert cam._global_reset_active() is True
+    cam.strobe_delays_pushed.clear()
+    cam.set_exposure_time(cam._exposure_time_ms)
+    assert cam.strobe_delays_pushed == [pytest.approx(0.0)]  # TRIGGERDELAY only: the global-reset model
 
 
 # --- Hamamatsu: leaving hardware trigger puts the camera's own trigger timing back -------------
