@@ -65,6 +65,9 @@ struct SeqCameraConfig {
     uint8_t readout_overlap_safe;  // 0 = no motion during this camera's readout
 };
 
+// SEQ_RUN channel selector: run every channel of the program (the default), or one of them.
+constexpr uint8_t kAllChannels = 0xFF;
+
 enum class SeqError : uint8_t {
     None = 0,
     BadLayerCount,

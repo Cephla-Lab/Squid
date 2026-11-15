@@ -17,7 +17,7 @@
 namespace seq {
 namespace wire {
 
-constexpr uint8_t kWireVersion = 2;  // v2: SeqChannel grew illum_lead_us + reserved (20 -> 24 bytes)
+constexpr uint8_t kWireVersion = 3;  // v3: SEQ_RUN carries a channel selector (byte 6); layout unchanged since v2 (SeqChannel 24 bytes)
 
 // v1 opcodes. 44-50 belong to PR #645 — do not use.
 constexpr uint8_t kOpSeqWrite = 60;   // [2] word index, [3..6] 4 data bytes

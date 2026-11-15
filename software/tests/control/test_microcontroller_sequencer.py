@@ -299,6 +299,16 @@ class TestSeqRunAndCancel:
         run = serial.commands_of_type(CMD_SET.SEQ_RUN)[0]
         assert struct.unpack(">i", run[2:6])[0] == stack_start
 
+    def test_run_selects_every_channel_by_default_and_one_channel_when_asked(self, mcu_and_serial):
+        mcu, serial = mcu_and_serial
+        mcu.seq_run(0)
+        mcu.seq_run(0, channel=0)
+        mcu.seq_run(0, channel=3)
+
+        runs = serial.commands_of_type(CMD_SET.SEQ_RUN)
+        # byte 6: 0 = every channel of the program, n = channel n-1 alone (sequence_commands.cpp)
+        assert [run[6] for run in runs] == [0, 1, 4]
+
     @pytest.mark.parametrize("stack_start", [-(2**31) - 1, 2**31])
     def test_run_refuses_a_stack_start_outside_int32(self, mcu_and_serial, stack_start):
         """The payload is an int32; a value outside it would wrap into a different, valid-looking position."""

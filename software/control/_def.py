@@ -211,7 +211,7 @@ class CMD_SET:
     # firmware/controller/src/sequencer/seq_wire.h.
     SEQ_WRITE = 60  # [2]=word index, [3..6]=4 bytes of the staged program (absolute, idempotent)
     SEQ_COMMIT = 61  # [2..3]=byte length BE, [4..5]=CRC-16/CCITT-FALSE BE; parse + validate
-    SEQ_RUN = 62  # [2..5]=int32 stack start BE; stays IN_PROGRESS until the sequence is terminal
+    SEQ_RUN = 62  # [2..5]=int32 stack start BE; [6]=channel selector (0 = every channel, n = channel n-1 alone); stays IN_PROGRESS until the sequence is terminal
     SEQ_CANCEL = 63  # finish the current exposure, then wind down
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253

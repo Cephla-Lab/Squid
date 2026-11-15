@@ -61,7 +61,11 @@ void callback_seq_run() {
     }
     const int32_t stack_start = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 |
                                         uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
-    if (!seq_start(stack_start)) {
+    // Byte 6 selects a channel: 0 = every channel of the program, n = channel n-1 alone (a Z FIRST
+    // stack is one run per channel). 0 is the whole program so a zero-filled command runs as before.
+    const uint8_t selector = buffer_rx[6];
+    const uint8_t channel = selector == 0 ? seq::kAllChannels : (uint8_t)(selector - 1);
+    if (!seq_start(stack_start, channel)) {
         refuse(seq::SeqError::Busy, 0);
         return;
     }

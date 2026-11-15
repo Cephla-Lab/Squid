@@ -127,11 +127,11 @@ def test_a_frame_read_before_the_restart_is_not_paired_with_the_retried_burst():
     w.microcontroller.seq_run.side_effect = run
     with _worker_reading_from(cam, w, ahead_of_the_worker=[slow_display_callback]):
         try:
-            frames, reason = w._run_sequenced_burst(_captures(3), 1000)
+            frames, reason = w._run_sequenced_burst(_captures(3), 1000, None)
             assert frames is None and "2 of 3" in reason
             assert cam.stream_generation() == 2 and cam._frame_id_base == 4  # restarted; ids continue at 4
 
-            frames, reason = w._run_sequenced_burst(_captures(3), 1000)
+            frames, reason = w._run_sequenced_burst(_captures(3), 1000, None)
             assert reason is None
             assert _retry_frames(frames) == [(4, 0, 0), (5, 1, 1), (6, 2, 2)]  # the retry's own three, in order
             assert any("Ignoring frame 3" in str(call) for call in w._log.warning.call_args_list)
@@ -182,13 +182,13 @@ def _burst_given_up_under_a_running_callback(pause_before_pairing: bool):
     w.microcontroller.seq_run.side_effect = run
     with _worker_reading_from(cam, w):
         try:
-            frames, reason = w._run_sequenced_burst(_captures(3), 1000)
+            frames, reason = w._run_sequenced_burst(_captures(3), 1000, None)
             assert frames is None and "2 of 3" in reason
             assert not w._image_callback_idle.is_set(), "the callback is still running after the drain timeout"
             assert any("callback" in str(call) for call in w._log.warning.call_args_list)
             assert cam.stream_generation() == 2
 
-            frames, reason = w._run_sequenced_burst(_captures(3), 1000)
+            frames, reason = w._run_sequenced_burst(_captures(3), 1000, None)
             assert reason is None
             assert _retry_frames(frames) == [(4, 0, 0), (5, 1, 1), (6, 2, 2)]
             w._dispatch_frame.assert_not_called()  # nothing of the failed burst reached a save job
