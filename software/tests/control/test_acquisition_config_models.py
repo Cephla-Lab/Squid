@@ -708,20 +708,20 @@ class TestLaserAFConfig:
         assert config.pixel_to_um == 1.0
         assert config.has_reference is False
         assert config.laser_af_range == float(_def.LASER_AF_RANGE)
+        assert config.search_for_spot == _def.LASER_AF_SEARCH_FOR_SPOT
         assert config.spot_detection_mode == SpotDetectionMode(_def.LASER_AF_SPOT_DETECTION_MODE)
         assert config.laser_af_averaging_n == _def.LASER_AF_AVERAGING_N
         assert config.correlation_threshold == _def.CORRELATION_THRESHOLD
-        assert config.min_peak_prominence == _def.LASER_AF_MIN_PEAK_PROMINENCE
         assert config.focus_camera_exposure_time_ms == float(_def.FOCUS_CAMERA_EXPOSURE_TIME_MS)
         assert config.focus_camera_analog_gain == float(_def.FOCUS_CAMERA_ANALOG_GAIN)
-        assert config.displacement_success_window_um == _def.DISPLACEMENT_SUCCESS_WINDOW_UM
+        assert config.displacement_success_window_pixels == float(_def.DISPLACEMENT_SUCCESS_WINDOW_PIXELS)
         assert config.spot_crop_size == _def.SPOT_CROP_SIZE
         assert config.pixel_to_um_calibration_distance == _def.PIXEL_TO_UM_CALIBRATION_DISTANCE
-        assert config.y_window == _def.LASER_AF_Y_WINDOW
-        assert config.x_window == _def.LASER_AF_X_WINDOW
-        assert config.min_peak_width == float(_def.LASER_AF_MIN_PEAK_WIDTH)
-        assert config.min_peak_distance == float(_def.LASER_AF_MIN_PEAK_DISTANCE)
-        assert config.spot_spacing == float(_def.LASER_AF_SPOT_SPACING)
+        assert config.cc_threshold == float(_def.LASER_AF_CC_THRESHOLD)
+        assert config.cc_min_area == _def.LASER_AF_CC_MIN_AREA
+        assert config.cc_max_area == _def.LASER_AF_CC_MAX_AREA
+        assert config.cc_row_tolerance == float(_def.LASER_AF_CC_ROW_TOLERANCE)
+        assert config.cc_max_aspect_ratio == float(_def.LASER_AF_CC_MAX_ASPECT_RATIO)
         assert config.filter_sigma == _def.LASER_AF_FILTER_SIGMA
         assert config.initialize_crop_width == _def.LASER_AF_INITIALIZE_CROP_WIDTH
         assert config.initialize_crop_height == _def.LASER_AF_INITIALIZE_CROP_HEIGHT
@@ -761,9 +761,42 @@ class TestLaserAFConfig:
         """Test spot detection mode getter."""
         from control._def import SpotDetectionMode
 
-        config = LaserAFConfig(spot_detection_mode="dual_left")
+        config = LaserAFConfig(spot_detection_mode="multi_left")
         mode = config.get_spot_detection_mode()
-        assert mode == SpotDetectionMode.DUAL_LEFT
+        assert mode == SpotDetectionMode.MULTI_LEFT
+
+    @pytest.mark.parametrize("former_name, name", [("dual_left", "multi_left"), ("dual_right", "multi_right")])
+    def test_laser_af_config_reads_the_former_name_of_a_mode_and_saves_the_new_one(self, former_name, name):
+        config = LaserAFConfig(spot_detection_mode=former_name)
+
+        assert config.spot_detection_mode == SpotDetectionMode(name)
+        assert config.model_dump(mode="json")["spot_detection_mode"] == name
+
+    def test_laser_af_config_rejects_unknown_mode(self):
+        with pytest.raises(ValidationError):
+            LaserAFConfig(spot_detection_mode="dual_centre")
+
+    @pytest.mark.parametrize(
+        "line_profile_setting",
+        [
+            "displacement_success_window_um",
+            "y_window",
+            "x_window",
+            "min_peak_width",
+            "min_peak_distance",
+            "min_peak_prominence",
+            "spot_spacing",
+        ],
+    )
+    def test_laser_af_config_rejects_line_profile_settings(self, line_profile_setting):
+        """A profile saved with them is not converted: laser AF is initialized again."""
+        with pytest.raises(ValidationError, match=line_profile_setting):
+            LaserAFConfig(**{line_profile_setting: 1})
+
+    def test_laser_af_config_rejects_unknown_setting(self):
+        """A misspelled setting must stay an error: it would otherwise be ignored and its default used."""
+        with pytest.raises(ValidationError, match="cc_treshold"):
+            LaserAFConfig(cc_treshold=5)
 
 
 class TestMergeChannelConfigs:
