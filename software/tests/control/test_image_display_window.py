@@ -671,3 +671,96 @@ def test_axis_line_off_the_image_reads_nan_there(profiling_window):
     (profile,) = _profiles(win).values()
     assert np.isnan(profile[:20]).all()
     assert profile[20:] == pytest.approx(10.0)
+
+
+# ─── Sensor region outline (laser AF full-sensor view) ───────────────────────
+
+
+@pytest.mark.parametrize("show_lut", [False, True])
+def test_region_outline_marks_the_given_sensor_region(qtbot, show_lut):
+    win = ImageDisplayWindow(show_LUT=show_lut)
+    qtbot.addWidget(win)
+    win.display_image(np.zeros((1080, 1920), dtype=np.uint8))
+
+    win.show_region_outline(800, 900, 1536, 256)
+
+    item = win.region_outline_item
+    assert item in win._active_view().addedItems
+    assert item.isVisible()
+    assert item.rect() == QRectF(800, 900, 1536, 256)
+
+
+def test_hide_region_outline_keeps_the_frame_outline(image_display_window):
+    win = image_display_window
+    win.show_region_outline(800, 900, 1536, 256)
+
+    win.hide_region_outline()
+
+    assert not win.region_outline_item.isVisible()
+    assert win.frame_item.isVisible()
+
+
+def test_region_outline_survives_new_frames(image_display_window):
+    """The outline marks sensor coordinates; a new live frame must not move or clear it."""
+    win = image_display_window
+    win.show_region_outline(800, 900, 1536, 256)
+
+    win.display_image(np.zeros((1080, 1920), dtype=np.uint8))
+
+    assert win.region_outline_item.isVisible()
+    assert win.region_outline_item.rect() == QRectF(800, 900, 1536, 256)
+
+
+@pytest.fixture
+def shown_window(qtbot):
+    """A window with a real viewport, so the view box has a size to fit frames into."""
+    win = ImageDisplayWindow()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+    return win
+
+
+def test_a_new_frame_size_refits_the_view(shown_window):
+    """Zoomed into the laser AF strip, switching to the full sensor must show the whole sensor."""
+    win = shown_window
+    win.display_image(np.zeros((256, 1536), dtype=np.uint8))
+    view = win._active_view()
+    view.setRange(xRange=(100, 200), yRange=(100, 150), padding=0)
+
+    win.display_image(np.zeros((1080, 1920), dtype=np.uint8))
+
+    (x0, x1), (y0, y1) = view.viewRange()
+    assert x0 <= 0 and x1 >= 1920
+    assert y0 <= 0 and y1 >= 1080
+
+
+def test_same_size_frames_keep_the_zoom(shown_window):
+    win = shown_window
+    win.display_image(np.zeros((256, 1536), dtype=np.uint8))
+    view = win._active_view()
+    view.setRange(xRange=(100, 200), yRange=(100, 150), padding=0)
+
+    win.display_image(np.ones((256, 1536), dtype=np.uint8))
+
+    (x0, x1), (y0, y1) = view.viewRange()
+    assert (x0, x1) == pytest.approx((100, 200), abs=1)
+
+
+# ─── Laser AF spot marks ─────────────────────────────────────────────────────
+
+GREEN_BGR = (0, 255, 0)
+GREY_BGR = (128, 128, 128)
+
+
+def test_mark_spot_draws_the_chosen_spot_green_and_the_other_reflections_grey(image_display_window):
+    win = image_display_window
+    frame = np.zeros((40, 120), dtype=np.uint8)
+
+    win.mark_spot(frame, 50, 20, other_x=[10, 90])
+
+    shown = win._current_image
+    assert tuple(shown[20, 50]) == GREEN_BGR
+    assert tuple(shown[20, 10]) == GREY_BGR
+    assert tuple(shown[20, 90]) == GREY_BGR
+    assert tuple(shown[5, 5]) == (0, 0, 0)
