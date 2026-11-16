@@ -271,7 +271,8 @@ class FluidicsProtocolWidget(QFrame):
             f"est. {_hms(resolved.total_estimate_s)} (imaging priced at a rough 1 s/FOV)",
             f"run folder: {os.path.join(save_to, run_name)}_<start time>",
         ]
-        if PreflightDialog([], summary, self).exec_() != QDialog.Accepted:
+        preflight = PreflightDialog([], summary, self, tec_option=True)
+        if preflight.exec_() != QDialog.Accepted:
             return
         try:
             run_dir = manifest_io.create_run_dir(save_to, run_name)
@@ -287,6 +288,7 @@ class FluidicsProtocolWidget(QFrame):
                 fluidics=self.fluidics_port,
                 run_name=run_name,
                 listener=self._bridge.listener,
+                disable_tec_at_end=preflight.disable_tec_at_end(),
             ),
             resolved,
         )

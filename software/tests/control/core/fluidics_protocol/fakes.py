@@ -88,6 +88,7 @@ class FakeFluidicsPort:
         self.validated: List[List[dict]] = []
         self.make_safe_calls = 0
         self.restored: List[TecState] = []
+        self.tec_disabled = False
         self._tec = tec
 
     def validate(self, rows):
@@ -135,6 +136,9 @@ class FakeFluidicsPort:
 
     def restore_tec(self, state):
         self.restored.append(state)
+
+    def disable_tec(self):
+        self.tec_disabled = True
 
 
 class FakeHandle:
