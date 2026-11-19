@@ -19,8 +19,9 @@ exclude-newer makes uv ignore releases after that date, so the packages these
 two pull in do not change from run to run; move it forward with the pins.
 
 Exits non-zero if either library fails to open a sample or reads it differently
-from expected.json: fields, axes, channels, shape, known pixel values, and the
-pixel size and z step with their units.
+from expected.json: fields, axes, channels, shape, known pixel values, the pixel
+size and z step with their units, and, for the aborted plate, the field list
+(exactly the written fields) and each array's acquisition_complete flag.
 """
 
 import json
@@ -42,6 +43,13 @@ def check_ngff_zarr(expected: dict) -> None:
         check_ngff_zarr_image(os.path.join(expected["plate"], field), expected)
     for image in expected["images"]:
         check_ngff_zarr_image(image, expected)
+    aborted = expected["aborted_plate"]
+    plate = from_hcs_zarr(aborted["path"], validate=True)
+    fields = []
+    for well in plate.metadata.wells:
+        row, column = well.path.split("/")
+        fields += [f"{well.path}/{image.path}" for image in plate.get_well(row, column).images]
+    assert sorted(fields) == sorted(aborted["fields"]), fields
 
 
 def check_ngff_zarr_image(path: str, expected: dict) -> None:
@@ -77,6 +85,20 @@ def check_iohub(expected: dict) -> None:
         with open_ome_zarr(image, mode="r", layout="fov") as position:
             assert position.channel_names == expected["channels"], position.channel_names
             check_iohub_position(position, expected)
+    aborted = expected["aborted_plate"]
+    with open_ome_zarr(aborted["path"], mode="r", layout="hcs") as plate:
+        fields = [name for name, _ in plate.positions()]
+        assert sorted(fields) == sorted(aborted["fields"]), fields
+
+
+def check_squid_flags(expected: dict) -> None:
+    """Each field of the aborted plate says whether every planned plane was written (plain JSON, no library)."""
+    aborted = expected["aborted_plate"]
+    for field, complete in aborted["complete"].items():
+        with open(os.path.join(aborted["path"], field, "zarr.json")) as f:
+            squid = json.load(f)["attributes"]["_squid"]
+        assert squid["acquisition_complete"] is complete, (field, squid)
+        assert (squid["planes_written"] == squid["planes_expected"]) is complete, (field, squid)
 
 
 def check_iohub_position(position, expected: dict) -> None:
@@ -94,7 +116,7 @@ def main(out_dir: str) -> int:
     with open(os.path.join(out_dir, "expected.json")) as f:
         expected = json.load(f)
     failures = 0
-    for name, check in [("ngff-zarr", check_ngff_zarr), ("iohub", check_iohub)]:
+    for name, check in [("ngff-zarr", check_ngff_zarr), ("iohub", check_iohub), ("squid-flags", check_squid_flags)]:
         try:
             check(expected)
             print(f"PASS {name}")
