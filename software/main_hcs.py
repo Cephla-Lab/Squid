@@ -8,7 +8,7 @@ import sys
 from squid.qt_binding import SUPPORTED_QT_APIS, select_qt_api
 
 # Before the first qtpy import, which fixes the binding: --qt-api, then SQUID_QT_API, then [GENERAL] qt_api in the
-# configuration ini, then PyQt5.
+# configuration ini, then PyQt6.
 QT_API, QT_API_SOURCE = select_qt_api(sys.argv)
 
 # qt libraries
@@ -65,7 +65,7 @@ if __name__ == "__main__":
         "--qt-api",
         choices=SUPPORTED_QT_APIS,
         help="Qt binding to run on (default: the SQUID_QT_API environment variable, else [GENERAL] qt_api in the "
-        "configuration ini, else pyqt5)",
+        "configuration ini, else pyqt6)",
     )
     args = parser.parse_args()
 

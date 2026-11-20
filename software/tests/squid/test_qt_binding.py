@@ -5,8 +5,8 @@ import pytest
 from squid.qt_binding import DEFAULT_QT_API, qt_api_from, qt_api_from_ini, resolve_qt_api, select_qt_api
 
 
-def test_default_is_pyqt5():
-    assert qt_api_from(["main_hcs.py"], {}) == DEFAULT_QT_API == "pyqt5"
+def test_default_is_pyqt6():
+    assert qt_api_from(["main_hcs.py"], {}) == DEFAULT_QT_API == "pyqt6"
 
 
 @pytest.mark.parametrize("argv", [["main_hcs.py", "--qt-api", "pyqt6"], ["main_hcs.py", "--qt-api=pyqt6"]])
@@ -28,7 +28,7 @@ def test_order_of_precedence_option_then_environment_then_ini():
         "--qt-api",
     )
     assert resolve_qt_api(["main_hcs.py"], {"SQUID_QT_API": "pyqt5"}, "pyqt6") == ("pyqt5", "SQUID_QT_API")
-    assert resolve_qt_api(["main_hcs.py"], {}, None) == ("pyqt5", "default")
+    assert resolve_qt_api(["main_hcs.py"], {}, None) == ("pyqt6", "default")
 
 
 def test_option_survives_the_restart_arguments():

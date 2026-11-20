@@ -398,7 +398,7 @@ def run_gui(out_dir, theme, font_spec, machine_ini):
     if machine_ini:
         _install_machine_ini(machine_ini)
     _load_config()
-    os.environ.setdefault("QT_API", "pyqt5")
+    os.environ.setdefault("QT_API", "pyqt6")
     sys.argv = ["main_hcs.py", "--simulation"]
 
     from qtpy import QtCore
