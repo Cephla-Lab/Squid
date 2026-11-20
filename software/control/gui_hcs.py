@@ -1621,7 +1621,9 @@ class HighContentScreeningGui(QMainWindow):
             self.statusBar().addWidget(self.warningErrorWidget)  # Left-aligned
 
         # A transient message (e.g. "Stage homed") shows the status bar for as long as it is displayed
-        self.statusBar().messageChanged.connect(lambda _message: self._update_status_bar_visibility())
+        # A bound method, not a lambda: under PyQt6 a garbage collection can free a lambda slot while the window's
+        # C++ side still lives (a closed window awaiting deletion), and its status-bar timer then calls freed memory.
+        self.statusBar().messageChanged.connect(self._on_status_bar_message_changed)
 
     def _getMainWindowMinimumSize(self):
         """
@@ -3294,6 +3296,9 @@ class HighContentScreeningGui(QMainWindow):
             self.ramMonitorWidget.setVisible(False)
             self.log.debug("RAM monitor: disabled, hiding widget")
 
+        self._update_status_bar_visibility()
+
+    def _on_status_bar_message_changed(self, _message: str) -> None:
         self._update_status_bar_visibility()
 
     def _update_status_bar_visibility(self):
