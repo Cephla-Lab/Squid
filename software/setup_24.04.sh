@@ -40,6 +40,7 @@ readonly SQUID_REPO_PATH_PARENT="$(dirname "${SQUID_REPO_PATH}")"
 readonly DAHENG_CAMERA_DRIVER_ROOT="$SQUID_SOFTWARE_ROOT/drivers and libraries/daheng camera/Galaxy_Linux-x86_Gige-U3_32bits-64bits_1.2.1911.9122"
 readonly DAHENG_CAMERA_DRIVER_API_ROOT="$SQUID_SOFTWARE_ROOT/drivers and libraries/daheng camera/Galaxy_Linux_Python_1.0.1905.9081/api"
 readonly TOUPCAM_UDEV_RULE_PATH="$SQUID_SOFTWARE_ROOT/drivers and libraries/toupcam/linux/udev/99-toupcam.rules"
+readonly THORLABS_PM_UDEV_RULE_PATH="$SQUID_SOFTWARE_ROOT/drivers and libraries/thorlabs/linux/udev/99-thorlabs-pm16.rules"
 readonly PI_UDEV_RULE_DIR="$SQUID_SOFTWARE_ROOT/drivers and libraries/pi/udev"
 # update
 sudo apt update
@@ -94,7 +95,8 @@ pip3 install opencv-python-headless opencv-contrib-python-headless
 # PyQt6-Qt6 6.11.0 and 6.11.1, napari/napari#9052): bump them together.
 # tensorstore is required by control/ndviewer_light and by tests/control/core/test_zarr_writer.py,
 # which begins with pytest.importorskip("tensorstore") -- without it ~79 zarr tests silently skip.
-pip3 install "napari[pyqt6]==0.7.1" "PyQt6==6.11.0" "PyQt6-Qt6==6.11.2" "PyQt6-sip==13.12.0" scikit-image dask_image ome_zarr tensorstore pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv
+# mcp<2: mcp 2.0 dropped the decorator API that the MCP bridge (mcp_microscope_server.py) is written against
+pip3 install "napari[pyqt6]==0.7.1" "PyQt6==6.11.0" "PyQt6-Qt6==6.11.2" "PyQt6-sip==13.12.0" scikit-image dask_image ome_zarr tensorstore pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa pyvisa-py pyusb hidapi filelock lxml_html_clean psutil "mcp<2" ndv
 
 # Optional: PI V-308 / C-414 focus stage (USE_PI_FOCUS_STAGE). Safe to skip if unused;
 # squid.stage.pi imports it lazily and only needs it to connect to real hardware, so
@@ -115,6 +117,8 @@ python3 setup.py build
 sudo python3 setup.py install
 cd "$SQUID_SOFTWARE_ROOT"
 sudo cp "$TOUPCAM_UDEV_RULE_PATH" /etc/udev/rules.d
+# Thorlabs power meter for Utils > Illumination Power Calibration (pyvisa-py opens it without root)
+sudo cp "$THORLABS_PM_UDEV_RULE_PATH" /etc/udev/rules.d
 
 # PI C-414 focus stage (USE_PI_FOCUS_STAGE): bind the custom-VID FTDI to ftdi_sio so
 # /dev/ttyUSB* appears, and lower the latency timer. Reload + trigger so it applies now.
