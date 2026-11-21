@@ -686,29 +686,38 @@ def test_a_verdict_status_never_completes_aborts_resends_or_counts_as_idle(new_f
     assert sim.command_log == sent  # nothing resent
 
 
-def test_a_verdict_is_taken_only_from_a_packet_whose_crc_matches(new_firmware_micro):
-    """The read loop also accepts a packet whose last byte is 0 (firmware that sent no CRC), but firmware that answers
-    the query always sends one: a verdict status in such a packet (a misaligned read window, say) is not a verdict."""
+@pytest.mark.parametrize(
+    "framing, forged_is_parsed",
+    [(Microcontroller._FRAMING_VERIFIED, False), (Microcontroller._FRAMING_LEGACY, True)],
+)
+def test_a_verdict_is_taken_only_from_a_packet_whose_crc_matches(new_firmware_micro, framing, forged_is_parsed):
+    """Firmware that answers the query always sends a checksum, so a verdict status in a window that ends in 0 instead
+    (a misaligned read window, say) is not a verdict. Normally such a window is not even a packet: the connect
+    handshake found that this firmware sends checksums, and the reader verifies them ("verified"). If the handshake
+    could not tell ("legacy": the old rule, a matching checksum or a zero in its place), the window is parsed, and
+    still gives no verdict."""
     micro, sim = new_firmware_micro
+    assert micro._framing == Microcontroller._FRAMING_VERIFIED
+    micro._framing = framing
     status = STARTUP_VERDICT_STATUS_BASE + StartupVerdict.WARM
     packet = sim._build_response(micro._cmd_id, status)
     while packet[-1] == 0:  # a real CRC of 0 would make the forged packet a genuine one
         sim.x += 1
         packet = sim._build_response(micro._cmd_id, status)
 
-    def parse(raw):
-        parsed = threading.Event()
-        micro.set_callback(lambda m: parsed.set())
+    def parsed(raw, timeout):
+        seen = threading.Event()
+        micro.set_callback(lambda m: seen.set())
         with sim._update_lock:
             sim.response_buffer.extend(raw)
             sim._update_internal_state()
-        assert parsed.wait(2)
+        return seen.wait(timeout)
 
     with micro._received_packet_cv:
         micro._startup_verdict_packet = None
-    parse(packet[:-1] + b"\x00")
+    assert parsed(packet[:-1] + b"\x00", timeout=2 if forged_is_parsed else 0.3) == forged_is_parsed
     assert micro._startup_verdict_packet is None
-    parse(packet)  # the same packet with its CRC is one
+    assert parsed(packet, timeout=2)  # the same packet with its CRC is one
     assert micro._startup_verdict_packet == (micro._cmd_id, StartupVerdict.WARM, None)
 
 

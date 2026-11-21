@@ -1,5 +1,6 @@
 import abc
 import enum
+import random
 import struct
 import threading
 import time
@@ -677,6 +678,25 @@ class Microcontroller:
     # The micro has an update time it tries to keep to.  This must be > that time.  As of 2025-04-28, it's 10ms
     # on the micro.  So 0.1 is 10x that.
     STALE_READ_TIMEOUT = 0.1
+    # How long _detect_firmware_version waits for the connect handshake to be answered before it gives up.
+    HANDSHAKE_TIMEOUT_S = 5
+    # How long _detect_firmware_version waits for the connect handshake to settle before it sends its command again
+    # (_take_handshake_answer). The controller answers within a status period or two (10 ms each). The wait doubles
+    # with each resend, up to the maximum: a controller that does not answer is not sent dozens of commands.
+    HANDSHAKE_RESEND_INTERVAL_S = 0.1
+    HANDSHAKE_RESEND_INTERVAL_MAX_S = 1.0
+    # The ids _detect_firmware_version picks from when it sends its command again: not the next id, which a counting
+    # byte in the stream could follow, and not 0, 1 or 255, which fill a status packet's other fields.
+    HANDSHAKE_RESEND_CMD_IDS = range(2, 255)
+    # The most bytes _next_status_packet reads before it returns to the reader loop without a packet, so that the
+    # loop can stop, or discard a backlog, even if bytes arrive as fast as they are read.
+    STATUS_STREAM_MAX_BYTES_PER_READ = 256
+    # After this many bytes without a status packet (20 packets' worth), the reader says the stream is lost.
+    STATUS_STREAM_LOST_AFTER_BYTES = 20 * MicrocontrollerDef.MSG_LENGTH
+    # The most bytes two consecutive status packets may differ in, besides the first (command id) and last (checksum),
+    # for the handshake to take them as two answers to different commands: the status, the low bytes of the
+    # positions of a stage still moving, the switches. Bytes that are not from one stream differ in most places.
+    HANDSHAKE_MAX_BYTES_CHANGED = 8
 
     def __init__(self, serial_device: AbstractCephlaMicroSerial, reset_and_initialize=True):
         self.log = squid.logging.get_logger(self.__class__.__name__)
@@ -746,13 +766,44 @@ class Microcontroller:
         self.last_command_aborted_error = None
 
         self.crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+        self.crc_calculator_rx = CrcCalculator(Crc8.CCITT, table_based=True)  # the reader thread's own
         self.retry = 0
 
         self.new_packet_callback_external = None
         self.terminate_reading_received_packet_thread = False
         self._received_packet_cv = threading.Condition()
-        # The command id the last parsed packet echoed (under _received_packet_cv), for _detect_firmware_version.
-        self._cmd_id_at_last_packet = None
+        # The status stream (see _next_status_packet). The controller sends a status packet every 10 ms with nothing
+        # marking where one starts, so the reader thread keeps the bytes it has read but not used yet, and its place
+        # in them, here. Reader thread only, except where noted.
+        self._rx = bytearray()
+        # The connect handshake (_take_handshake_answer): until a packet answers a command sent on this connection,
+        # no packet is used. The ids of the commands sent so far while it is pending (added under _cmd_lock):
+        self._handshake_cmd_ids = set()
+        # Where _rx starts in the stream: the bytes dropped from its front since the reader started, or last
+        # discarded its input.
+        self._handshake_position = 0
+        # The windows that have a verified checksum, or could be an answer, and end at or after the next window to
+        # look at: {stream position just past the window: (the window, checksum matched, checksum verified, could be
+        # an answer)}.
+        self._handshake_ends = {}
+        # For the handshake's timeout message: the bytes read, how many windows could have been an answer, and the
+        # (command id, status) of the last window with a verified checksum that was none.
+        self._handshake_bytes_read = 0
+        self._handshake_echoes_seen = 0
+        self._handshake_last_skipped = None
+        # When the reader last read a byte while the handshake was pending: the mcu is talking, though nothing is
+        # parsed yet (for _warn_if_reads_stale).
+        self._last_byte_read_time = time.time()
+        # Set, under _received_packet_cv, once the handshake's answer has been parsed; _detect_firmware_version waits
+        # for it.
+        self._handshake_answered = False
+        # How packets are told from other bytes after the handshake. None until the handshake ends, then
+        # _FRAMING_VERIFIED (the firmware sends checksums: a packet has a matching checksum and this connection's
+        # firmware-version byte, _rx_version_byte) or _FRAMING_LEGACY (firmware from before checksums, or a handshake
+        # answer that could not prove otherwise: a matching checksum or a zero in its place).
+        self._framing = None
+        self._rx_version_byte = None
+        self._rx_dropped = 0  # bytes dropped since the last packet while looking for the next one
         # For reported_idle_since_last_command(), all under _received_packet_cv: a count of the valid packets
         # received, with the status and command id the newest one carried, and the count when the host last sent a
         # command.
@@ -845,7 +896,9 @@ class Microcontroller:
     def _warn_if_reads_stale(self):
         if self._is_simulated:
             return
-        if time.time() - self._last_successful_read_time > Microcontroller.STALE_READ_TIMEOUT:
+        # Until the connect handshake is answered no packet is parsed; bytes arriving show the mcu is talking.
+        last_heard = self._last_byte_read_time if self._framing is None else self._last_successful_read_time
+        if time.time() - last_heard > Microcontroller.STALE_READ_TIMEOUT:
             self.log.warning(f"Read thread is stale. {self._mcu_state()}")
 
     def close(self):
@@ -1760,6 +1813,8 @@ class Microcontroller:
     def send_command(self, command):
         with self._cmd_lock:
             self._cmd_id = (self._cmd_id + 1) % 256
+            if self._framing is None:  # the connect handshake is pending: a packet echoing this id answers it
+                self._handshake_cmd_ids.add(self._cmd_id)
             command[0] = self._cmd_id
             command[-1] = self.crc_calculator.calculate_checksum(command[:-1])
             cmd_type = command[1]
@@ -1822,8 +1877,201 @@ class Microcontroller:
                 self.log.warning("resend requested with no last_command, something is wrong!")
                 self.abort_current_command("Resend last requested with no last command")
 
+    _FRAMING_VERIFIED = "verified"
+    _FRAMING_LEGACY = "legacy"
+
+    def _status_checksum_matches(self, window) -> bool:
+        return self.crc_calculator_rx.calculate_checksum(window[:-1]) == window[-1]
+
+    def _reset_status_stream(self):
+        """Forget the bytes read so far (the serial input buffer was just discarded)."""
+        self._rx.clear()
+        self._handshake_position = 0
+        self._handshake_ends = {}
+
+    def _next_status_packet(self):
+        """The next status packet in the stream, as (packet, crc_matched); (None, False) when it needs more bytes.
+
+        The controller sends 24-byte status packets back to back, with nothing marking where one starts, and the
+        stream the host reads can start or resume anywhere: bytes waiting from before the port opened, text a
+        firmware build printed on the same port, bytes lost on the way. Each packet ends in a CRC-8, but one that
+        starts from zero, and most bytes of an idle controller's packet are zero: a window that starts in the
+        middle of one packet and ends in the middle of the next then has a "matching" checksum too (both are zero).
+        Firmware from before April 2025 sends a zero instead of a checksum, so for its sake any window that ends in
+        zero used to count as a packet. Either way the host could read a firmware-version or CRC byte as the buttons
+        byte and acknowledge a joystick press nobody made, or take every field from the wrong place for good.
+
+        Two things replace that:
+
+        - The connect handshake (_take_handshake_answer). Until a packet answers a command sent on this connection
+          (it echoes that command's id; _detect_firmware_version sends them), nothing read is used. The answer is
+          looked for at every byte offset, and taken where the first byte changes to the host's command id from
+          one packet to the next. That fixes where packets start, and shows whether this firmware sends checksums.
+        - Framing after it (_take_framed_packet). On firmware that sends checksums a window is a packet only if its
+          checksum matches and its firmware-version byte is this connection's; the host drops a byte at a time
+          until that holds again. The version byte is what a shifted window does not have: it is constant, not
+          zero from firmware 1.0 on, and in one place. Firmware without checksums keeps the old rule.
+        """
+        bytes_read = 0
+        while True:
+            if self._framing is None:
+                packet = self._take_handshake_answer()
+            else:
+                packet = self._take_framed_packet()
+            if packet is not None:
+                return packet
+            if bytes_read >= Microcontroller.STATUS_STREAM_MAX_BYTES_PER_READ or self._serial.bytes_available() <= 0:
+                return None, False
+            self._rx.append(ord(self._serial.read()))
+            bytes_read += 1
+            if self._framing is None:
+                self._handshake_bytes_read += 1
+                self._last_byte_read_time = time.time()
+
+    def _take_handshake_answer(self):
+        """The handshake's answer from the bytes read so far, as (packet, crc_matched), or None if it is not there yet.
+
+        Each 24-byte window is looked at once, in stream order. A window can be an answer if it is packet-shaped (its
+        checksum matches, or it ends in the zero that firmware from before checksums sends instead) and echoes a
+        command sent on this connection. That alone is not enough: a window that starts in the middle of a packet
+        is often packet-shaped (see _next_status_packet), and its first byte is a piece of some field - a stage
+        position byte of 0x01 is common, and equals the first command's id. What such a window cannot do is change
+        its first byte from one packet to the next, to follow the host's commands. So the answer is taken where the
+        window that ends at its start had a different first byte, and the two together are evidence:
+
+        - that window has a verified checksum, and the answer's checksum matches. Verified means it matches and is
+          not zero; a matching zero proves nothing, because an idle controller's packets shifted by a few bytes have
+          one too. This is the normal start: the controller's last packet before it took the command, then its
+          first one after;
+        - or that window could be an answer too, to a different command of this connection, and the two are alike
+          as two consecutive packets are (at most HANDSHAKE_MAX_BYTES_CHANGED bytes differ besides the first and
+          last). This is what firmware from before checksums can show, and what settles a stream when nothing
+          verifiable comes right before the answer: _detect_firmware_version sends its command again, first after
+          HANDSHAKE_RESEND_INTERVAL_S, until the handshake is answered. It sends it with an id picked at random,
+          so that a byte that merely counts up (the low byte of a moving stage's position) cannot follow it.
+
+        One answer is taken with nothing before it: the first 24 bytes read, if their checksum is verified (a
+        controller that had sent nothing yet, and the simulators).
+
+        Everything before the answer - a previous session's last packets, bytes from the middle of a packet, text -
+        is skipped, not parsed: none of it is acted on.
+        """
+        length = self.rx_buffer_length
+        rx = self._rx
+        while len(rx) >= length:
+            position = self._handshake_position
+            window = rx[:length]
+            crc_matched = self._status_checksum_matches(window)
+            verified = crc_matched and window[-1] != 0
+            packet_shaped = crc_matched or window[-1] == 0  # the old framing's rule
+            answers = packet_shaped and window[0] in self._handshake_cmd_ids
+            previous = self._handshake_ends.pop(position, None)
+
+            if answers:
+                self._handshake_echoes_seen += 1
+                if verified and position == 0:
+                    return self._end_handshake(crc_matched, checksums=True)
+                if previous is not None and previous[0][0] != window[0]:
+                    previous_window, previous_crc_matched, previous_verified, previous_answers = previous
+                    if previous_verified and crc_matched:
+                        return self._end_handshake(crc_matched, checksums=True)
+                    bytes_changed = sum(a != b for a, b in zip(previous_window[1:-1], window[1:-1]))
+                    if previous_answers and bytes_changed <= Microcontroller.HANDSHAKE_MAX_BYTES_CHANGED:
+                        # Checksums count only if both matched and this one is not a zero.
+                        return self._end_handshake(crc_matched, checksums=verified and previous_crc_matched)
+            elif verified:
+                self._handshake_last_skipped = (window[0], window[1])
+            if verified or answers:
+                self._handshake_ends[position + length] = (bytes(window), crc_matched, verified, answers)
+            del rx[:1]
+            self._handshake_position += 1
+        return None
+
+    def _end_handshake(self, crc_matched: bool, checksums: bool):
+        """Take the window at the front of _rx as the handshake's answer; framing continues right after it.
+
+        checksums: the firmware sends them, so packets are verified from here on (_FRAMING_VERIFIED).
+        """
+        length = self.rx_buffer_length
+        window = self._rx[:length]
+        del self._rx[:length]
+        self._handshake_ends = {}
+        version_byte = window[RESPONSE_BYTE_FIRMWARE_VERSION]
+        if checksums:
+            self._framing = Microcontroller._FRAMING_VERIFIED
+            self._rx_version_byte = version_byte
+        else:
+            self._framing = Microcontroller._FRAMING_LEGACY
+        self.log.info(
+            f"[MCU] status stream in step after {self._handshake_bytes_read} byte(s): firmware"
+            f" {version_byte >> 4}.{version_byte & 0x0F}, "
+            + ("checksums verified" if checksums else "no checksum to verify (older firmware's framing)")
+        )
+        return list(window), crc_matched
+
+    def _follow_firmware_change(self, version_byte: int, following) -> bool:
+        """Whether the 24 bytes after a window that verifies with another firmware-version byte do so too. Then the
+        controller was reflashed while connected, and that byte is this connection's from here on; one such window
+        alone can be chance (1 stray window in 256)."""
+        if not (
+            self._status_checksum_matches(following)
+            and following[-1] != 0
+            and following[RESPONSE_BYTE_FIRMWARE_VERSION] == version_byte
+        ):
+            return False
+        self.log.warning(
+            f"[MCU] the controller's firmware changed from"
+            f" {self._rx_version_byte >> 4}.{self._rx_version_byte & 0x0F} to"
+            f" {version_byte >> 4}.{version_byte & 0x0F} while connected. Restart Squid: its start-up"
+            " checks and the controller's settings were for the old firmware."
+        )
+        self._rx_version_byte = version_byte
+        return True
+
+    def _take_framed_packet(self):
+        """The next packet from the bytes read so far, as (packet, crc_matched), or None if there is none yet.
+
+        After the handshake. While the window at the front is not a packet, drops its first byte and looks again.
+        """
+        length = self.rx_buffer_length
+        rx = self._rx
+        while len(rx) >= length:
+            window = rx[:length]
+            crc_matched = self._status_checksum_matches(window)
+            if self._framing == Microcontroller._FRAMING_VERIFIED:
+                version_byte = window[RESPONSE_BYTE_FIRMWARE_VERSION]
+                is_packet = crc_matched and version_byte == self._rx_version_byte
+                if not is_packet and crc_matched and window[-1] != 0:
+                    # It verifies, with another firmware's version byte. The next 24 bytes tell whether that is a
+                    # reflashed controller: wait for them.
+                    if len(rx) < 2 * length:
+                        return None
+                    is_packet = self._follow_firmware_change(version_byte, rx[length : 2 * length])
+            else:
+                # NOTE(imo): Before April 2025, we didn't send the crc from the micro.  This is
+                # here to support firmware that still sends 0 as the checksum.
+                is_packet = crc_matched or window[-1] == 0
+            if is_packet:
+                if self._rx_dropped:
+                    self.log.warning(f"[MCU] status stream back in step after dropping {self._rx_dropped} byte(s)")
+                    self._rx_dropped = 0
+                del rx[:length]
+                return list(window), crc_matched
+            if not self._rx_dropped:
+                self.log.warning(
+                    f"[MCU] status stream out of step: {bytes(window).hex(' ')} is not a status packet"
+                    f" (checksum {'matches' if crc_matched else 'does not match'}); dropping bytes until one is"
+                )
+            self._rx_dropped += 1
+            del rx[:1]
+            if self._rx_dropped == Microcontroller.STATUS_STREAM_LOST_AFTER_BYTES:
+                self.log.error(
+                    f"[MCU] status stream lost: no status packet in the last {self._rx_dropped} bytes from the mcu."
+                    " Its firmware changed while connected, or the link is corrupting data. Restart Squid."
+                )
+        return None
+
     def read_received_packet(self):
-        crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
         last_watchdog_fail_report = time.time()
         watchdog_fail_report_period = 5.0
 
@@ -1834,11 +2082,13 @@ class Microcontroller:
                 # periodically without prompting, and so we'll always get more updates on the current micro state.
                 if self._serial.bytes_available() >= BUFFER_SIZE_LIMIT:
                     self._serial.reset_input_buffer()
+                    self._reset_status_stream()
                     continue
 
-                # If we don't at least have enough bytes for a full packet (rx_buffer_length), there's no reason to
-                # waste our time looking for a valid message.  So wait here until we have at least that many bytes.
-                if self._serial.bytes_available() < self.rx_buffer_length:
+                msg, crc_matched = self._next_status_packet()
+
+                # No whole packet yet: there's no reason to waste our time, so wait here until more bytes arrive.
+                if msg is None:
                     if time.time() - last_watchdog_fail_report > watchdog_fail_report_period:
                         last_watchdog_fail_report = time.time()
                         self._warn_if_reads_stale()
@@ -1850,37 +2100,6 @@ class Microcontroller:
                             self.log.error(
                                 "In read loop, serial device failed to reconnect.  Microcontroller is defunct!"
                             )
-                    continue
-
-                # This helper reads bytes in the order received by serial, and checks that packet-sized chunks
-                # have valid checksums.  IF the first packet size chunk does not have a valid checksum, it tosses
-                # the first byte and keeps going until it either finds a valid checksum packet or runs out of bytes.
-                # Returns (packet, crc_matched), or (None, False): crc_matched is False for a packet accepted on the
-                # legacy zero "checksum" below.
-                def get_msg_with_good_checksum():
-                    maybe_msg = []
-                    while self._serial.bytes_available() > 0:
-                        maybe_msg.append(ord(self._serial.read()))
-                        if len(maybe_msg) < self.rx_buffer_length:
-                            continue
-
-                        checksum = crc_calculator.calculate_checksum(maybe_msg[:-1])
-                        # NOTE(imo): Before April 2025, we didn't send the crc from the micro.  This is
-                        # here to support firmware that still sends 0 as the checksum.  This means for
-                        # the firmware that does support checksums, we can get fooled by zeros!
-                        if checksum == maybe_msg[-1]:
-                            return maybe_msg, True
-                        elif maybe_msg[-1] == 0:
-                            return maybe_msg, False
-                        else:
-                            self.log.warning(f"Bad checksum {checksum} for packet '{maybe_msg}, tossing first byte'")
-                            maybe_msg.pop(0)
-                    return None, False
-
-                msg, crc_matched = get_msg_with_good_checksum()
-
-                if msg is None:
-                    self.log.warning("Back checksums found, skipping.")
                     continue
 
                 # parse the message
@@ -2036,7 +2255,7 @@ class Microcontroller:
                 self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
 
                 with self._received_packet_cv:
-                    self._cmd_id_at_last_packet = msg[0]
+                    self._handshake_answered = True
                     self._received_packet_cv.notify_all()
 
                 if self.new_packet_callback_external is not None:
@@ -2047,25 +2266,72 @@ class Microcontroller:
     def get_pos(self):
         return self.x_pos, self.y_pos, self.z_pos, self.theta_pos
 
-    def _detect_firmware_version(self, timeout_s: float = 5):
-        """Detect firmware version by sending a harmless command.
+    def _detect_firmware_version(self):
+        """Detect firmware version by sending a harmless command: the connect handshake.
 
-        Sends TURN_OFF_ALL_PORTS (a safe no-op if ports are already off) and takes the version from the first
-        status packet that echoes the command's id, not from the command's completion: every packet carries the
-        version, and a controller still busy with a move from a previous session answers IN_PROGRESS (with the
-        newest command id) until RESET. A packet queued before the write echoes an older command's id and is never
-        used; one echoing the same id (a previous session's, after the ids wrapped) comes from the same firmware, so
-        its version is right too. This ensures supports_multi_port() returns accurate results immediately after
-        Microcontroller initialization.
+        Sends TURN_OFF_ALL_PORTS (a safe no-op if ports are already off) and waits for the first status packet that
+        answers it, which the reader finds wherever in the stream it starts (_next_status_packet); the version is in
+        that packet. Normally that is the controller's next packet. When the reader has nothing verifiable right
+        before it to go by (stray bytes ran up to it, or the firmware is from before checksums), the command is
+        sent again, first after HANDSHAKE_RESEND_INTERVAL_S and each time with an id picked at random, until the
+        echoed id following these commands shows where packets start.
+
+        An answer echoes one of these commands' ids, or the id of a command sent after them. It does not have to
+        report the command complete: every packet carries the version, and a controller still busy with a move
+        from a previous session answers IN_PROGRESS (with the newest command id) until RESET. Nothing read before
+        the answer is used or acted on, so a packet queued before the write, which echoes an older command's id, is
+        never taken; one echoing the same id (a previous session's, after the ids wrapped) comes from the same
+        firmware, so its version is right too. This ensures supports_multi_port() returns accurate results
+        immediately after Microcontroller initialization.
         """
-        self.turn_off_all_ports()
-        cmd_id = self._cmd_id
-        with self._received_packet_cv:
-            if not self._received_packet_cv.wait_for(lambda: self._cmd_id_at_last_packet == cmd_id, timeout=timeout_s):
+        timeout_s = Microcontroller.HANDSHAKE_TIMEOUT_S
+        deadline = time.time() + timeout_s
+        resend_interval_s = Microcontroller.HANDSHAKE_RESEND_INTERVAL_S
+        sent = 0
+        while True:
+            if sent:
+                with self._cmd_lock:  # send_command takes the next id
+                    self._cmd_id = self._handshake_resend_cmd_id() - 1
+            self.turn_off_all_ports()
+            sent += 1
+            wait_s = min(resend_interval_s, max(deadline - time.time(), 0))
+            resend_interval_s = min(2 * resend_interval_s, Microcontroller.HANDSHAKE_RESEND_INTERVAL_MAX_S)
+            with self._received_packet_cv:
+                if self._received_packet_cv.wait_for(lambda: self._handshake_answered, timeout=wait_s):
+                    break
+            if time.time() >= deadline:
                 raise TimeoutError(
-                    f"No status packet within {timeout_s} [s] of asking for the firmware version. {self._mcu_state()}"
+                    f"No status packet within {timeout_s} [s] of asking for the firmware version ({sent} time(s))."
+                    f" {self._mcu_state()}"
                 )
         self.log.debug(f"Detected firmware version: {self.firmware_version}")
+
+    def _handshake_resend_cmd_id(self) -> int:
+        """The id for the handshake's next command: one this connection has not used, picked at random."""
+        unused = [i for i in Microcontroller.HANDSHAKE_RESEND_CMD_IDS if i not in self._handshake_cmd_ids]
+        return random.choice(unused)
+
+    def _handshake_state(self) -> str:
+        """_mcu_state while no packet has answered the connect handshake: what the reader has seen instead."""
+        state = (
+            f"Sent cmd {self._cmd_id} ({self._last_command_name()});"
+            f" read {self._handshake_bytes_read} byte(s) from the mcu, none of them a status packet answering it."
+        )
+        if self._handshake_bytes_read == 0:
+            return state + " The mcu is silent - check the serial connection."
+        if self._handshake_echoes_seen:
+            return state + (
+                f" {self._handshake_echoes_seen} time(s) something in them echoed a command of this connection, but"
+                " never in a way that shows where its status packets start."
+            )
+        if self._handshake_last_skipped is None:
+            return state + " Nothing in them was a status packet with a valid checksum."
+        cmd_id, status = self._handshake_last_skipped
+        status_name = _CMD_EXECUTION_STATUS_NAMES.get(status, status)
+        return state + (
+            f" The last status packet with a valid checksum echoed cmd {cmd_id} status={status_name}: the mcu is"
+            " talking but did not take the command."
+        )
 
     def supports_multi_port(self) -> bool:
         """Check if firmware supports multi-port illumination commands.
@@ -2280,6 +2546,8 @@ class Microcontroller:
 
     def _mcu_state(self) -> str:
         """Describe the last thing the mcu told us, for wait-timeout and stale-read messages."""
+        if self._framing is None:
+            return self._handshake_state()
         status_name = _CMD_EXECUTION_STATUS_NAMES.get(self._cmd_execution_status, self._cmd_execution_status)
         since_read_s = time.time() - self._last_successful_read_time
         state = (
@@ -2287,6 +2555,11 @@ class Microcontroller:
             f" status={status_name}; {since_read_s:.1f} [s] since a valid packet."
         )
         if since_read_s > Microcontroller.STALE_READ_TIMEOUT:
+            if self._rx_dropped:
+                return state + (
+                    f" The mcu is sending bytes, but none of the last {self._rx_dropped} is a status packet: the"
+                    " status stream is out of step."
+                )
             return state + " The mcu has gone quiet - check the serial connection."
         if self._cmd_id_mcu == self._cmd_id and self._cmd_execution_status == CMD_EXECUTION_STATUS.IN_PROGRESS:
             # Matches none of the read loop's recovery branches (ids match, so no ack-timeout resend; no
