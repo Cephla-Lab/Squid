@@ -194,9 +194,10 @@ if ($DefaultPy -and ((Resolve-Path $DefaultPy).Path -eq (Resolve-Path $Python).P
 } elseif ($DefaultPy) {
     Write-Warning "py runs $DefaultPy, not Python $PythonVersion (a newer Python, or PY_PYTHON / py.ini). Start Squid with: py -$PythonVersion main_hcs.py"
 } else {
-    # PowerShell runs a quoted path only after the call operator &.
-    Write-Warning "The py launcher is not available; start Squid with: & `"$Python`" main_hcs.py"
-    $RunCommand = "& `"$Python`""
+    # PowerShell runs a quoted path only after the call operator &. Single quotes (with ' doubled) keep a $ in the
+    # path literal when the user runs the printed command.
+    $RunCommand = "& '" + ($Python -replace "'", "''") + "'"
+    Write-Warning "The py launcher is not available; start Squid with: $RunCommand main_hcs.py""
 }
 
 Write-Host ""
