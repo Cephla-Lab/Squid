@@ -7,8 +7,7 @@
     scripts (tests/test_setup_scripts.py checks it).
 
     Packages are installed into Python 3.12 itself, not a virtual environment, so `py -3.12 main_hcs.py` runs
-    Squid. Python 3.12 is used whatever else is installed: older Squid installs put PyQt5 into Python 3.10, and
-    PyQt5 and PyQt6 in the same Python break napari's rendering. Any other Python is left untouched.
+    Squid. It is meant for a fresh computer; any other Python already installed is left untouched.
 
     Run it from PowerShell (no administrator rights needed; installing Git or Python with winget may ask):
         powershell -ExecutionPolicy Bypass -File .\setup_windows.ps1
@@ -145,9 +144,6 @@ if (-not (Test-Path $IlluminationConfig)) {
 # --- Python packages (keep in sync with setup_22.04.sh) -------------------------------------------------------
 # Flags are quoted so PowerShell passes them on to pip instead of reading them as Invoke-Pip's own parameters.
 Invoke-Pip install "--upgrade" pip
-
-# Exactly ONE Qt binding may be installed: PyQt5 and PyQt6 side by side break napari/vispy OpenGL rendering.
-Invoke-Quiet $Python @("-m", "pip", "uninstall", "-y", "PyQt5", "PyQt5-Qt5", "PyQt5-sip") | Out-Host
 
 # See setup_22.04.sh for why each pin is there (napari/PyQt6 tested combination, mcp<2, no numpy<2).
 Invoke-Pip install pyqtgraph qtpy pyserial pandas imageio crc==1.3.0 lxml numpy tifffile scipy pyreadline3

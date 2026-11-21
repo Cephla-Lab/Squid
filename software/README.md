@@ -33,7 +33,7 @@ The script:
 - creates `machine_configs\illumination_channel_config.yaml` from its example if it is missing;
 - puts a **Squid** shortcut on the Desktop.
 
-Squid always uses Python 3.12, whatever other Pythons are installed. Older Squid installs put PyQt5 into Python 3.10, and PyQt5 and PyQt6 in the same Python break napari's rendering, so the script leaves other Pythons alone. If 3.12 is the newest Python on the machine, `py` runs it; otherwise use `py -3.12`. The script says which at the end.
+The script is meant for a fresh computer. Squid uses Python 3.12; if another Python is already installed, it is left alone. If 3.12 is the newest Python on the machine, `py` runs it; otherwise use `py -3.12`. The script says which at the end.
 
 For a Toupcam camera, run the script from an administrator PowerShell to also install the Toupcam USB driver, or run the `pnputil` command it prints. Install other cameras' drivers as described below, then restart the computer.
 
