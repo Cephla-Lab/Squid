@@ -67,6 +67,16 @@ fi
 cd "$SQUID_SOFTWARE_ROOT"
 mkdir -p "$SQUID_SOFTWARE_ROOT/cache"
 
+# Squid needs machine_configs/illumination_channel_config.yaml, which is gitignored (each machine
+# edits its own). Start from the example if it's missing; never overwrite an existing one.
+ILLUMINATION_CONFIG="$SQUID_SOFTWARE_ROOT/machine_configs/illumination_channel_config.yaml"
+if [[ ! -e "$ILLUMINATION_CONFIG" ]]; then
+  cp "$ILLUMINATION_CONFIG.example" "$ILLUMINATION_CONFIG"
+  echo "Created $ILLUMINATION_CONFIG from the example; check it matches this machine's hardware."
+else
+  echo "Keeping the existing $ILLUMINATION_CONFIG"
+fi
+
 # PEP 668: without this every pip call below fails with "externally-managed-environment".
 # pip reads it as --break-system-packages; one export covers the installs, the PyQt5 uninstall
 # and the editable fluidics install. Packages land in ~/.local, as on 22.04.
@@ -143,11 +153,11 @@ fi
 
 # create desktop shortcut
 mkdir -p "$HOME/Desktop"
-DESKTOP_FILE="$HOME/Desktop/Squid_hcs.desktop"
+DESKTOP_FILE="$HOME/Desktop/Squid.desktop"
 ICON_PATH="$SQUID_SOFTWARE_ROOT/icon/cephla_logo.svg"
 cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
-Name=Squid_hcs
+Name=Squid
 Icon=$ICON_PATH
 Exec=gnome-terminal --working-directory="$SQUID_SOFTWARE_ROOT" -e "/usr/bin/env python3 $SQUID_SOFTWARE_ROOT/main_hcs.py"
 Type=Application
