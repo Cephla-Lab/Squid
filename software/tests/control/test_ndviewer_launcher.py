@@ -22,9 +22,17 @@ def _resolve(preference="", *, which=lambda name: None, package=False, submodule
         preference,
         which=which,
         package_importable=lambda: package,
-        submodule_main=submodule,
+        submodule_dir=submodule,
         python=python,
     )
+
+
+def _submodule_layout(root):
+    """The ndviewer_light repository's layout: the package, with its __main__.py, one level below the checkout."""
+    pkg = root / "ndviewer_light"
+    pkg.mkdir(parents=True)
+    (pkg / "__main__.py").write_text("")
+    return root
 
 
 def test_preference_executable_wins(tmp_path):
@@ -53,23 +61,45 @@ def test_preference_command_line_is_split(tmp_path):
 
 
 def test_path_command_then_package_then_submodule_then_none(tmp_path):
-    main = tmp_path / "__main__.py"
-    main.write_text("")
+    checkout = str(_submodule_layout(tmp_path / "ndviewer_light"))
 
     res = _resolve(which=lambda name: "/bin/ndviewer-light" if name == "ndviewer-light" else None, package=True)
     assert (res.source, res.command) == ("path", ["/bin/ndviewer-light"])
 
-    res = _resolve(package=True, submodule=str(main))
+    res = _resolve(package=True, submodule=checkout)
     assert (res.source, res.command) == ("package", [PY, "-m", "ndviewer_light"])
 
-    res = _resolve(submodule=str(main))
-    assert (res.source, res.command) == ("submodule", [PY, "-m", "control.ndviewer_light"])
-    software = os.path.dirname(os.path.dirname(os.path.abspath(control._def.__file__)))
-    assert res.cwd == software
+    res = _resolve(submodule=checkout)
+    assert (res.source, res.command) == ("submodule", [PY, "-m", "ndviewer_light"])
+    assert res.env["PYTHONPATH"].split(os.pathsep)[0] == checkout
 
-    res = _resolve(submodule=str(tmp_path / "missing.py"))
+    res = _resolve(submodule=str(tmp_path / "missing"))
     assert res.source == "none" and res.command is None
     assert "not installed" in res.reason
+
+
+def test_a_checkout_without_the_package_main_is_not_the_submodule(tmp_path):
+    # The old check looked for __main__.py at the checkout's top level, which ndviewer_light has never had.
+    (tmp_path / "__main__.py").write_text("")
+    assert _resolve(submodule=str(tmp_path)).source == "none"
+
+
+def test_default_submodule_location_is_squids_checkout():
+    from control import ndviewer_launcher
+
+    software = os.path.dirname(os.path.dirname(os.path.abspath(control._def.__file__)))
+    assert ndviewer_launcher._DEFAULT_SUBMODULE_DIR == os.path.join(software, "control", "ndviewer_light")
+
+
+@pytest.mark.skipif(
+    not os.path.isfile(
+        os.path.join(os.path.dirname(control._def.__file__), "ndviewer_light", "ndviewer_light", "__main__.py")
+    ),
+    reason="the ndviewer_light submodule is not checked out",
+)
+def test_the_checked_out_submodule_is_found():
+    res = resolve_ndviewer_light("", which=lambda name: None, package_importable=lambda: False, python=PY)
+    assert (res.source, res.command) == ("submodule", [PY, "-m", "ndviewer_light"])
 
 
 def test_missing_preference_falls_through_and_is_mentioned(tmp_path):
