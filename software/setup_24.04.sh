@@ -105,8 +105,10 @@ pip3 install opencv-python-headless opencv-contrib-python-headless
 # PyQt6-Qt6 6.11.0 and 6.11.1, napari/napari#9052): bump them together.
 # tensorstore is required by control/ndviewer_light and by tests/control/core/test_zarr_writer.py,
 # which begins with pytest.importorskip("tensorstore") -- without it ~79 zarr tests silently skip.
+# xarray: control/ndviewer_light holds every dataset as an xr.DataArray; nothing else here pulls it in
+# (master got it through aicsimageio, which this stack no longer installs).
 # mcp<2: mcp 2.0 dropped the decorator API that the MCP bridge (mcp_microscope_server.py) is written against
-pip3 install "napari[pyqt6]==0.7.1" "PyQt6==6.11.0" "PyQt6-Qt6==6.11.2" "PyQt6-sip==13.12.0" scikit-image dask_image ome_zarr tensorstore pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa pyvisa-py pyusb hidapi filelock lxml_html_clean psutil "mcp<2" ndv
+pip3 install "napari[pyqt6]==0.7.1" "PyQt6==6.11.0" "PyQt6-Qt6==6.11.2" "PyQt6-sip==13.12.0" scikit-image dask_image ome_zarr tensorstore pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa pyvisa-py pyusb hidapi filelock lxml_html_clean psutil "mcp<2" ndv xarray
 
 # Optional: PI V-308 / C-414 focus stage (USE_PI_FOCUS_STAGE). Safe to skip if unused;
 # squid.stage.pi imports it lazily and only needs it to connect to real hardware, so
