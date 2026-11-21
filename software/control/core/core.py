@@ -4,7 +4,7 @@ import sys
 import tempfile
 
 # qt libraries
-os.environ["QT_API"] = "pyqt5"
+os.environ["QT_API"] = "pyqt6"
 import qtpy
 import pyqtgraph as pg
 from qtpy.QtCore import *
@@ -860,6 +860,25 @@ def _dtype_range(dtype):
     return np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else np.finfo(dtype)
 
 
+def _unnamed_image_view() -> "pg.ImageView":
+    """A pg.ImageView whose two ViewBoxes are not registered by name.
+
+    pg.ImageView names its ViewBoxes ("ImageView" and "ImageView_ROI"), and ViewBox.register() then
+    connects a lambda to each one's destroyed signal. Under PyQt6, once the window's Python wrappers are
+    gone, a garbage collection can free that lambda while the C++ ViewBox is still alive, and Qt calls the
+    freed lambda when it deletes the ViewBox: a segfault when a closed window's deferred delete runs.
+    Names only feed pyqtgraph's link-views-by-name menu, which Squid does not use (it hides ImageView's
+    menu button), so the views are registered unnamed while the ImageView is built. Disconnecting
+    destroyed afterwards is not an option: that also drops the hooks PyQt's slot proxies rely on.
+    """
+    register = pg.ViewBox.register
+    pg.ViewBox.register = lambda view_box, name: register(view_box, None)
+    try:
+        return pg.ImageView()
+    finally:
+        pg.ViewBox.register = register
+
+
 class ImageDisplayWindow(QMainWindow):
     image_click_coordinates = Signal(int, int, int, int)
     signal_z_um_delta = Signal(float)
@@ -1043,7 +1062,7 @@ class ImageDisplayWindow(QMainWindow):
 
         ## Create image item
         if self.show_LUT:
-            self.graphics_widget.view = pg.ImageView()
+            self.graphics_widget.view = _unnamed_image_view()
             self.graphics_widget.img = self.graphics_widget.view.getImageItem()
             self.graphics_widget.view.ui.roiBtn.hide()
             self.graphics_widget.view.ui.menuBtn.hide()

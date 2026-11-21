@@ -113,7 +113,7 @@ def launch_gui(simulation: bool = False, verbose: bool = False) -> subprocess.Po
         cmd.append("--verbose")
 
     env = os.environ.copy()
-    env["QT_API"] = "pyqt5"
+    env["QT_API"] = "pyqt6"
 
     if verbose:
         print(f"Launching GUI: {' '.join(cmd)}")

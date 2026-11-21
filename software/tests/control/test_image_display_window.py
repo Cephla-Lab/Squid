@@ -671,3 +671,19 @@ def test_axis_line_off_the_image_reads_nan_there(profiling_window):
     (profile,) = _profiles(win).values()
     assert np.isnan(profile[:20]).all()
     assert profile[20:] == pytest.approx(10.0)
+
+
+def test_lut_image_view_registers_its_view_boxes_unnamed(qtbot):
+    """pg.ImageView names its two ViewBoxes ("ImageView", "ImageView_ROI"), and pyqtgraph hooks a lambda
+    to each named ViewBox's destroyed signal. Under PyQt6 a garbage collection can free that lambda before
+    Qt deletes the ViewBox, and Qt then calls freed memory (a segfault when a closed GUI's deferred delete
+    runs). The window builds its ImageView with unnamed ViewBoxes, and leaves ViewBox.register as it was."""
+    register = pg.ViewBox.register
+    win = ImageDisplayWindow(show_LUT=True)
+    qtbot.addWidget(win)
+    image_view = win.graphics_widget.view
+
+    assert image_view.view.name is None
+    assert image_view.ui.roiPlot.getPlotItem().getViewBox().name is None
+    assert not {"ImageView", "ImageView_ROI"} & set(pg.ViewBox.NamedViews)
+    assert pg.ViewBox.register is register
