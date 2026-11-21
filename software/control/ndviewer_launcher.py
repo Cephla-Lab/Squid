@@ -17,7 +17,8 @@ import squid.logging
 from squid.acquisition_history import history_dir
 
 _SOFTWARE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DEFAULT_SUBMODULE_MAIN = os.path.join(_SOFTWARE_DIR, "control", "ndviewer_light", "__main__.py")
+# The submodule is a checkout of the ndviewer_light repository; the package (with its __main__.py) is one level down.
+_DEFAULT_SUBMODULE_DIR = os.path.join(_SOFTWARE_DIR, "control", "ndviewer_light")
 
 NOT_INSTALLED_REASON = "ndviewer_light is not installed: pip install it, or set its location in Preferences > Views"
 LOG_FILE_NAME = "ndviewer_light.log"
@@ -121,17 +122,24 @@ def _split_preference(preference: str) -> List[str]:
     return shlex.split(preference)
 
 
+def _run_package_from(directory: str, python: str, source: str, reason: str) -> Optional[LauncherResolution]:
+    """``python -m ndviewer_light`` with directory first on PYTHONPATH, when directory holds the package (a checkout
+    of the ndviewer_light repository); None otherwise."""
+    if not (os.path.isdir(directory) and os.path.isfile(os.path.join(directory, "ndviewer_light", "__main__.py"))):
+        return None
+    existing = os.environ.get("PYTHONPATH")
+    pythonpath = directory + os.pathsep + existing if existing else directory
+    return LauncherResolution([python, "-m", "ndviewer_light"], source, reason, env={"PYTHONPATH": pythonpath})
+
+
 def _resolve_preference(preference: str, python: str) -> Optional[LauncherResolution]:
     reason = "the location set in Preferences"
     path = preference.strip().strip("\"'")
     if os.path.isfile(path):
         return LauncherResolution([path], "preference", reason)
-    if os.path.isdir(path) and os.path.isfile(os.path.join(path, "ndviewer_light", "__main__.py")):
-        existing = os.environ.get("PYTHONPATH")
-        pythonpath = path + os.pathsep + existing if existing else path
-        return LauncherResolution(
-            [python, "-m", "ndviewer_light"], "preference", reason, env={"PYTHONPATH": pythonpath}
-        )
+    found = _run_package_from(path, python, "preference", reason)
+    if found is not None:
+        return found
     try:
         tokens = _split_preference(preference)
     except ValueError as e:
@@ -148,7 +156,7 @@ def resolve_ndviewer_light(
     *,
     which: Callable[[str], Optional[str]] = shutil.which,
     package_importable: Callable[[], bool] = _package_importable,
-    submodule_main: str = _DEFAULT_SUBMODULE_MAIN,
+    submodule_dir: str = _DEFAULT_SUBMODULE_DIR,
     python: str = sys.executable,
 ) -> LauncherResolution:
     preference = (preference or "").strip()
@@ -164,13 +172,9 @@ def resolve_ndviewer_light(
         return LauncherResolution(
             [python, "-m", "ndviewer_light"], "package", "ndviewer_light package in Squid's Python"
         )
-    if os.path.isfile(submodule_main):
-        return LauncherResolution(
-            [python, "-m", "control.ndviewer_light"],
-            "submodule",
-            "Squid's ndviewer_light submodule",
-            cwd=_SOFTWARE_DIR,
-        )
+    found = _run_package_from(submodule_dir, python, "submodule", "Squid's ndviewer_light submodule")
+    if found is not None:
+        return found
     reason = NOT_INSTALLED_REASON
     if preference:
         reason += f" (the location set in Preferences was not found: {preference})"
