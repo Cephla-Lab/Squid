@@ -38,6 +38,9 @@ sudo apt update
 
 # install packages
 sudo apt install python3-pip -y
+# PyQt6's Qt needs libEGL to load and libxcb-cursor to open a window on X11. The pip wheels do not
+# bundle them, and a stock Ubuntu desktop does not always have libxcb-cursor0.
+sudo apt install libegl1 libxcb-cursor0 -y
 # Do not apt-install python3-pyqtgraph: it pulls in python3-pyqt5 (see the Qt-binding note
 # below). pyqtgraph comes from pip.
 
