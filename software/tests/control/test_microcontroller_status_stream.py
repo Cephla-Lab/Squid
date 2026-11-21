@@ -23,6 +23,13 @@ PACKET_LENGTH = 24
 BYTE_BUTTONS = 18
 
 
+@pytest.fixture(autouse=True)
+def fixed_resend_command_ids(monkeypatch):
+    """The handshake sends its command again with an id picked at random; these tests get the same ids every run."""
+    ids = iter([0xA5, 0x5A, 0xC3, 0x3C, 0x96, 0x69, 0xD2, 0x2D])
+    monkeypatch.setattr(Microcontroller, "_handshake_resend_cmd_id", lambda self: next(ids))
+
+
 def _sim(version=FIRMWARE):
     return FirmwareSimSerial(strict=True, firmware_version=version)
 
@@ -223,6 +230,7 @@ def test_the_handshake_accepts_the_echo_of_a_command_sent_after_its_first():
         mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
 
     assert answers[:2] == [1, 2]
+    assert len(probes) == 1  # the answer to command 2 ended the handshake: its command was not sent again
     assert mcu.firmware_version == FIRMWARE
     mcu.close()
 
@@ -335,6 +343,45 @@ def test_stray_bytes_and_a_position_byte_do_not_pass_for_two_answers_without_che
     assert mcu.firmware_version == (0, 0)
     _command_round_trip(mcu)
     assert mcu.get_pos() == (-23305, 192184, 131071, 0)
+    mcu.close()
+
+
+def test_a_position_byte_that_counts_up_does_not_pass_for_two_answers_without_checksums():
+    # The stage is moving at connect (X goes from 1 to 2), and the waiting bytes start at the low byte of X. The
+    # shifted windows then start with 1, then 2, both end in zero and are otherwise alike: just what the answers to
+    # commands 1 and 2 would look like, and complete before the real second answer. The second command's id is not
+    # 2, though: it is picked at random, so a byte that counts cannot follow it.
+    sim = _sim((0, 0))
+    build = sim._build_response
+    sim._build_response = lambda cmd_id, status: build(cmd_id, status)[:-1] + b"\x00"
+    sim.x = 1
+    packet = sim._build_response(37, CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS)
+    assert packet[5] == 1
+    _queue(sim, packet[5:])
+    sim.x = 2
+
+    mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
+
+    assert mcu.firmware_version == (0, 0)
+    assert mcu.get_pos() == (2, 0, 0, 0)
+    _command_round_trip(mcu)
+    assert mcu.get_pos() == (2, 0, 0, 0)
+    mcu.close()
+
+
+def test_a_lost_status_stream_is_reported(caplog):
+    # More than STATUS_STREAM_LOST_AFTER_BYTES bytes arrive with no status packet among them. The reader says once
+    # that the stream is lost, instead of only dropping bytes; here it then finds the stream again.
+    sim = _sim()
+    mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
+    stray = bytes(range(1, 25)) * 21
+    assert len(stray) > Microcontroller.STATUS_STREAM_LOST_AFTER_BYTES
+
+    with caplog.at_level(logging.ERROR):
+        _queue(sim, stray)
+        _command_round_trip(mcu)
+
+    assert len([r for r in caplog.records if "status stream lost" in r.getMessage()]) == 1
     mcu.close()
 
 

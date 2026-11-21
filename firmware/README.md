@@ -373,10 +373,11 @@ PLATFORMIO_BUILD_FLAGS="-DTMC_PROBE_REPORT" pio run -e teensy41 -t upload
 >
 > Later host software finds the packets again (`Microcontroller._next_status_packet`
 > in `software/control/microcontroller.py`): it uses nothing before the answer
-> to its first command, and then takes a window as a packet only if its CRC and
-> firmware-version byte are right. It still loses the packets the text overlaps
-> and logs a warning each time, and a controller in the field may be driven by
-> older host software.
+> to its first command, and then, once that answer has shown that the firmware
+> sends checksums (every build that has this flag does), takes a window as a
+> packet only if its CRC and firmware-version byte are right. It still loses the
+> packets the text overlaps and logs a warning each time, and a controller in
+> the field may be driven by older host software.
 >
 > Build it only to capture the probe words for the bench gate above; the warm
 > filter-wheel path is only reachable at runtime.
