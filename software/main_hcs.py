@@ -5,11 +5,8 @@ import os
 import signal
 import sys
 
-from squid.qt_binding import SUPPORTED_QT_APIS, select_qt_api
-
-# Before the first qtpy import, which fixes the binding: --qt-api, then SQUID_QT_API, then [GENERAL] qt_api in the
-# configuration ini, then PyQt6.
-QT_API, QT_API_SOURCE = select_qt_api(sys.argv)
+# Squid runs on PyQt6 only. Set before the first qtpy import, which fixes the binding.
+os.environ["QT_API"] = "pyqt6"
 
 # qt libraries
 from qtpy.QtCore import Qt
@@ -60,12 +57,6 @@ if __name__ == "__main__":
         "--skip-init",
         help="Skip hardware initialization and homing (for restart after settings change)",
         action="store_true",
-    )
-    parser.add_argument(
-        "--qt-api",
-        choices=SUPPORTED_QT_APIS,
-        help="Qt binding to run on (default: the SQUID_QT_API environment variable, else [GENERAL] qt_api in the "
-        "configuration ini, else pyqt6)",
     )
     args = parser.parse_args()
 
@@ -131,7 +122,7 @@ if __name__ == "__main__":
     log.info(f"Squid Repository State: {control.utils.get_squid_repo_state_description()}")
     import qtpy
 
-    log.info(f"Qt binding: {qtpy.API_NAME}, Qt {qtpy.QT_VERSION} (from {QT_API_SOURCE})")
+    log.info(f"Qt binding: {qtpy.API_NAME}, Qt {qtpy.QT_VERSION}")
 
     # Auto-migrate legacy acquisition configurations if present
     run_auto_migration()
