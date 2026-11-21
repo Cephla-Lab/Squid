@@ -11,7 +11,8 @@ SQUID_REPO_PATH="$HOME/Desktop/Squid"
 for i in "$@"; do
   case $i in
     -r=*|--repo_path=*)
-      SQUID_REPO_PATH="$(cd "${i#*=}" && pwd)"
+      # Absolute path without entering it: the folder may not exist yet (the clone below creates it).
+      SQUID_REPO_PATH="$(realpath -m "${i#*=}")"
       shift
       ;;
     -*|--*)

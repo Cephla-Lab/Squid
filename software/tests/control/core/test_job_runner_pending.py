@@ -301,3 +301,18 @@ class TestDispatchRollback:
             assert runner._pending_count.value == 2
         finally:
             runner.shutdown(timeout_s=0.1)
+
+
+def test_shutdown_survives_a_closed_input_queue():
+    """If the stop sentinel cannot be sent (the input queue is already closed), shutdown() still joins
+    the worker and drops both queues. A loop variable named ``queue`` used to shadow the ``queue``
+    module for the whole function, so the ``except (queue.Full, ...)`` clause raised UnboundLocalError."""
+    runner = JobRunner()
+    runner.daemon = True
+    runner.start()
+    runner._input_queue.close()  # put_nowait now raises ValueError
+
+    runner.shutdown(timeout_s=1.0)
+
+    assert not runner.is_alive()
+    assert runner._input_queue is None and runner._output_queue is None

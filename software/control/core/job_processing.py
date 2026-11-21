@@ -941,10 +941,11 @@ class JobRunner(multiprocessing.Process):
         # read, so join_thread() would wait forever (deterministic on Windows, where the
         # write blocks once the pipe buffer fills). Both queues are being dropped, so
         # discarding those bytes is fine.
-        for queue in (self._input_queue, self._output_queue):
-            queue.cancel_join_thread()
-            queue.close()
-            queue.join_thread()
+        # (Not named `queue`: that would shadow the queue module, which the except clause above needs.)
+        for mp_queue in (self._input_queue, self._output_queue):
+            mp_queue.cancel_join_thread()
+            mp_queue.close()
+            mp_queue.join_thread()
         # Clear references to allow garbage collection of Event and Value semaphores
         self._input_queue = None
         self._output_queue = None
