@@ -751,8 +751,11 @@ class Microcontroller:
         self.new_packet_callback_external = None
         self.terminate_reading_received_packet_thread = False
         self._received_packet_cv = threading.Condition()
-        # The command id the last parsed packet echoed (under _received_packet_cv), for _detect_firmware_version.
+        # The command id the last parsed packet echoed, and the newest command id the host had sent when that packet
+        # was read (before handling it could send one, e.g. a joystick ack); under _received_packet_cv, for
+        # _detect_firmware_version.
         self._cmd_id_at_last_packet = None
+        self._cmd_id_sent_before_last_packet = None
         # For reported_idle_since_last_command(), all under _received_packet_cv: a count of the valid packets
         # received, with the status and command id the newest one carried, and the count when the host last sent a
         # command.
@@ -1899,6 +1902,8 @@ class Microcontroller:
                 - byte 23: CRC (1 byte)
                 """
                 self._last_successful_read_time = time.time()
+                # The newest command this packet can be answering: anything handling it sends comes later.
+                cmd_id_sent_before_packet = self._cmd_id
                 self._cmd_id_mcu = msg[0]
                 self._cmd_execution_status = msg[1]
                 # Recorded before the branches below clear the host's in-progress flag, so a caller whose wait
@@ -2039,6 +2044,7 @@ class Microcontroller:
 
                 with self._received_packet_cv:
                     self._cmd_id_at_last_packet = msg[0]
+                    self._cmd_id_sent_before_last_packet = cmd_id_sent_before_packet
                     self._received_packet_cv.notify_all()
 
                 if self.new_packet_callback_external is not None:
@@ -2066,9 +2072,14 @@ class Microcontroller:
         probe_id = self.turn_off_all_ports()
 
         def answered_probe_or_later():
-            echoed = self._cmd_id_at_last_packet
-            # Ids sent since the probe, in order, are probe_id .. self._cmd_id (mod 256).
-            return echoed is not None and (echoed - probe_id) % 256 <= (self._cmd_id - probe_id) % 256
+            echoed, sent_before = self._cmd_id_at_last_packet, self._cmd_id_sent_before_last_packet
+            if echoed is None or sent_before is None:
+                return False
+            # The ids sent from the probe up to when this packet was read, in order: probe_id .. sent_before (mod
+            # 256). Not the live _cmd_id: reading this packet may have sent a command (a joystick ack) whose id a
+            # packet queued before the probe could happen to echo.
+            since_probe = (sent_before - probe_id) % 256
+            return since_probe < 128 and (echoed - probe_id) % 256 <= since_probe
 
         with self._received_packet_cv:
             if not self._received_packet_cv.wait_for(answered_probe_or_later, timeout=timeout_s):

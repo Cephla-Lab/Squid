@@ -347,3 +347,56 @@ def test_detection_accepts_a_joystick_ack_sent_right_after_its_probe(monkeypatch
     assert [cmd[1] for cmd in sent[:2]] == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED]
     assert mcu.firmware_version == LIMIT_SWITCH_CONFIG_MIN_FIRMWARE
     mcu.close()
+
+
+def test_a_stale_packet_whose_press_is_acked_during_detection_is_not_used(monkeypatch):
+    # A previous session's packet (older firmware, button pressed) is queued before detection's probe (id 1) and
+    # happens to echo id 2. Reading it, the reader acknowledges the press - as command 2 - before it records the
+    # packet's echoed id. That ack must not make the stale packet count as an answer to the probe: only commands sent
+    # before a packet was read can be the ones it answers. The probe's own answer is held back until detection
+    # returns (or 1 s).
+    _z_both_active_high(monkeypatch)
+    sim = _sim(LIMIT_SWITCH_CONFIG_MIN_FIRMWARE)
+    old = _sim("old")
+    old.joystick_button = True
+    stale = old._build_response(2, CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS)
+    sim.response_buffer.extend(stale)
+    sim._update_internal_state()
+
+    written = threading.Event()
+    detection_returned = threading.Event()
+    bytes_read = []
+    bytes_available, write, read = sim.bytes_available, sim.write, sim.read
+
+    def bytes_available_after_the_write():
+        return bytes_available() if written.is_set() else 0
+
+    def write_and_signal(data, reconnect_tries=0):
+        n = write(data, reconnect_tries)
+        written.set()
+        return n
+
+    def read_holding_the_answer(count=1, reconnect_tries=0):
+        bytes_read.append(count)
+        if len(bytes_read) == len(stale) + 1:  # the probe's answer waits for detection
+            detection_returned.wait(1)
+        return read(count, reconnect_tries)
+
+    sim.bytes_available = bytes_available_after_the_write
+    sim.write = write_and_signal
+    sim.read = read_holding_the_answer
+
+    detect = Microcontroller._detect_firmware_version
+    detected = []
+
+    def detect_and_signal(self):
+        detect(self, timeout_s=3)
+        detected.append(self.firmware_version)
+        detection_returned.set()
+
+    monkeypatch.setattr(Microcontroller, "_detect_firmware_version", detect_and_signal)
+
+    mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
+
+    assert detected == [LIMIT_SWITCH_CONFIG_MIN_FIRMWARE]
+    mcu.close()
