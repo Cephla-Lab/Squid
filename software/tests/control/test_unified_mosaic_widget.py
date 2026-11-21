@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 import control._def
+from qtpy.QtGui import QShowEvent
 from control.core.multi_point_utils import MosaicTileUpdate
 from control.widgets_mosaic import DisplayMode, UnifiedMosaicWidget, blit_tiles_to_canvas
 
@@ -221,3 +222,22 @@ def test_write_save_snapshot_emits_view_saved(mosaic_widget, qtbot, tmp_path):
     with qtbot.waitSignal(widget.signal_view_saved, timeout=10000) as blocker:
         widget._dispatch_save(target)
     assert blocker.args == [target]
+
+
+def test_a_deferred_tile_refresh_keeps_the_view(mosaic_widget, monkeypatch):
+    """While the tab is hidden, a tile redraw is deferred to showEvent. Showing the tab again must only
+    redraw: the user's pan/zoom is kept, as it is when the tab is visible. Only a deferred canvas
+    (re)allocation resets the view."""
+    widget, _ = mosaic_widget
+    resets = []
+    monkeypatch.setattr(widget, "resetView", lambda: resets.append("reset"))
+    monkeypatch.setattr(widget, "_fit_view_to_plate", lambda: resets.append("fit"))
+    assert not widget.isVisible()
+
+    widget._refresh_or_defer(lambda: None)  # an ordinary tile refresh
+    widget.showEvent(QShowEvent())
+    assert resets == []
+
+    widget._reset_view_or_defer(widget.resetView)  # the canvas grew
+    widget.showEvent(QShowEvent())
+    assert resets == ["reset"]

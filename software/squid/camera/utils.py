@@ -330,7 +330,9 @@ class SimulatedCamera(AbstractCamera):
     @debug_log
     def stop_streaming(self):
         self._continue_streaming = False
-        if self._streaming_thread:
+        # A frame callback runs on the streaming thread; if it stops streaming (e.g. via close()), the thread
+        # ends on its own once the callback returns, and joining the current thread would raise.
+        if self._streaming_thread and self._streaming_thread is not threading.current_thread():
             self._streaming_thread.join()
 
     @debug_log

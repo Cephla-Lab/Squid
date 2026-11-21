@@ -113,6 +113,8 @@ function Invoke-Pip {
 }
 
 # --- The repository ----------------------------------------------------------------------------------------------
+# Make -RepoPath absolute (relative to the current folder) before anything changes the location; it may not exist yet.
+$RepoPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RepoPath)
 # Run from inside a checkout (software\setup_windows.ps1), use that checkout; otherwise clone to -RepoPath.
 if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "main_hcs.py"))) {
     $RepoPath = Split-Path -Parent $PSScriptRoot
@@ -192,8 +194,9 @@ if ($DefaultPy -and ((Resolve-Path $DefaultPy).Path -eq (Resolve-Path $Python).P
 } elseif ($DefaultPy) {
     Write-Warning "py runs $DefaultPy, not Python $PythonVersion (a newer Python, or PY_PYTHON / py.ini). Start Squid with: py -$PythonVersion main_hcs.py"
 } else {
-    Write-Warning "The py launcher is not available; start Squid with: `"$Python`" main_hcs.py"
-    $RunCommand = "`"$Python`""
+    # PowerShell runs a quoted path only after the call operator &.
+    Write-Warning "The py launcher is not available; start Squid with: & `"$Python`" main_hcs.py"
+    $RunCommand = "& `"$Python`""
 }
 
 Write-Host ""

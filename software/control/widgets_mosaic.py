@@ -145,6 +145,7 @@ class UnifiedMosaicWidget(QWidget):
         self.mode = _load_last_view_mode()
         self.layers_initialized = False
         self._pending_refresh = False  # a redraw was skipped while hidden; see _refresh_or_defer
+        self._pending_view_reset = False  # a canvas (re)allocation's view reset was skipped while hidden
         self.mosaic_dtype = None
         self.viewer_pixel_size_mm = None
 
@@ -292,7 +293,7 @@ class UnifiedMosaicWidget(QWidget):
         if PLATE_BOUNDARIES_LAYER in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[PLATE_BOUNDARIES_LAYER])
         if canvas_changed and self.mode == DisplayMode.PLATE:
-            self._refresh_or_defer(self._fit_view_to_plate)
+            self._reset_view_or_defer(self._fit_view_to_plate)
 
     def _image_layers(self):
         """Iterate napari image layers, skipping shape/boundary overlays."""
@@ -312,6 +313,18 @@ class UnifiedMosaicWidget(QWidget):
         else:
             self._pending_refresh = True
 
+    def _reset_view_or_defer(self, reset_call):
+        """Reset the camera now, or once the tab is next shown.
+
+        Only a canvas (re)allocation resets the view; ordinary tile redraws keep the user's pan/zoom, so
+        showEvent resets the view only when one of these was deferred, not after every deferred redraw.
+        """
+        if self.isVisible():
+            reset_call()
+        else:
+            self._pending_refresh = True
+            self._pending_view_reset = True
+
     def showEvent(self, event):
         super().showEvent(event)
         if self._pending_refresh:
@@ -320,6 +333,9 @@ class UnifiedMosaicWidget(QWidget):
                 lyr.refresh()
             if self.mode == DisplayMode.PLATE:
                 self._draw_plate_boundaries()
+        if self._pending_view_reset:
+            self._pending_view_reset = False
+            if self.mode == DisplayMode.PLATE:
                 self._fit_view_to_plate()  # not resetView(): bypasses the plate zoom clamp
             else:
                 self.resetView()
@@ -611,7 +627,7 @@ class UnifiedMosaicWidget(QWidget):
                 lyr.data = new_data
             # Keep ROI vertices anchored to their stage-coordinate positions after the shift.
             self._update_shape_layer_position()
-            self._refresh_or_defer(self.resetView)
+            self._reset_view_or_defer(self.resetView)
 
         y_pos = int(math.floor((tl_y_mm - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
         x_pos = int(math.floor((tl_x_mm - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm))
@@ -657,7 +673,7 @@ class UnifiedMosaicWidget(QWidget):
         # immediately sees the full plate; subsequent tiles preserve any
         # pan/zoom they've made since.
         if self.mode == DisplayMode.PLATE and self.num_rows > 0 and self.num_cols > 0:
-            self._refresh_or_defer(self._fit_view_to_plate)
+            self._reset_view_or_defer(self._fit_view_to_plate)
 
     def _convert_image_dtype(self, image, target_dtype):
         """Convert image to target dtype with range scaling."""
