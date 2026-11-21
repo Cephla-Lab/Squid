@@ -1068,8 +1068,8 @@ class Microcontroller:
         cmd[5] = on_mask & 0xFF
         self.send_command(cmd)
 
-    def turn_off_all_ports(self):
-        """Turn off all illumination ports.
+    def turn_off_all_ports(self) -> int:
+        """Turn off all illumination ports. Returns the command id it was sent with.
 
         Note: Non-blocking. Call wait_till_operation_is_completed() before
         sending another command if ordering matters.
@@ -1077,7 +1077,7 @@ class Microcontroller:
         self.log.debug("[MCU] turn_off_all_ports")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_OFF_ALL_PORTS
-        self.send_command(cmd)
+        return self.send_command(cmd)
 
     def set_watchdog_timeout(self, timeout_s: float) -> None:
         """Set firmware serial watchdog timeout and enable the watchdog.
@@ -1757,7 +1757,8 @@ class Microcontroller:
     def turn_off_AF_laser(self):
         self.set_pin_level(MCU_PINS.AF_LASER, 0)
 
-    def send_command(self, command):
+    def send_command(self, command) -> int:
+        """Send a command; returns the command id it was sent with."""
         with self._cmd_lock:
             self._cmd_id = (self._cmd_id + 1) % 256
             command[0] = self._cmd_id
@@ -1781,6 +1782,7 @@ class Microcontroller:
             self.last_command_aborted_error = None
 
             self._warn_if_reads_stale()
+            return command[0]
 
     def abort_current_command(self, reason, recoverable: bool = False):
         """Mark the current MCU command as aborted.
@@ -2051,17 +2053,25 @@ class Microcontroller:
         """Detect firmware version by sending a harmless command.
 
         Sends TURN_OFF_ALL_PORTS (a safe no-op if ports are already off) and takes the version from the first
-        status packet that echoes the command's id, not from the command's completion: every packet carries the
-        version, and a controller still busy with a move from a previous session answers IN_PROGRESS (with the
-        newest command id) until RESET. A packet queued before the write echoes an older command's id and is never
-        used; one echoing the same id (a previous session's, after the ids wrapped) comes from the same firmware, so
-        its version is right too. This ensures supports_multi_port() returns accurate results immediately after
-        Microcontroller initialization.
+        status packet that echoes the command's id, or the id of a command sent after it, not from the command's
+        completion: every packet carries the version, and a controller still busy with a move from a previous
+        session answers IN_PROGRESS (with the newest command id) until RESET. A command can follow the probe before
+        the controller answers it: the reader acknowledges a joystick press the controller is still holding
+        (ACK_JOYSTICK_BUTTON_PRESSED), and when the controller handles both in one status cycle no packet echoes the
+        probe's id. A packet queued before the write echoes an older command's id and is never used; one echoing the
+        same id (a previous session's, after the ids wrapped) comes from the same firmware, so its version is right
+        too. This ensures supports_multi_port() returns accurate results immediately after Microcontroller
+        initialization.
         """
-        self.turn_off_all_ports()
-        cmd_id = self._cmd_id
+        probe_id = self.turn_off_all_ports()
+
+        def answered_probe_or_later():
+            echoed = self._cmd_id_at_last_packet
+            # Ids sent since the probe, in order, are probe_id .. self._cmd_id (mod 256).
+            return echoed is not None and (echoed - probe_id) % 256 <= (self._cmd_id - probe_id) % 256
+
         with self._received_packet_cv:
-            if not self._received_packet_cv.wait_for(lambda: self._cmd_id_at_last_packet == cmd_id, timeout=timeout_s):
+            if not self._received_packet_cv.wait_for(answered_probe_or_later, timeout=timeout_s):
                 raise TimeoutError(
                     f"No status packet within {timeout_s} [s] of asking for the firmware version. {self._mcu_state()}"
                 )

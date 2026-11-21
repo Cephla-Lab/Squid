@@ -317,3 +317,33 @@ def test_decode_z_limits():
     assert decode_z_limits(0x08) == (False, True)
     assert decode_z_limits(0x0C) == (True, True)
     assert decode_z_limits(0xF3) == (False, False)  # other bits ignored
+
+
+def test_detection_accepts_a_joystick_ack_sent_right_after_its_probe(monkeypatch):
+    # The controller holds a joystick press for up to 1 s until the host acknowledges it. Started in that window,
+    # the reader sees the press in the first packet after the probe (sent before the controller got to the probe,
+    # so it still echoes the previous command id) and sends ACK_JOYSTICK_BUTTON_PRESSED. The controller handles
+    # both commands in one status cycle, so no packet ever echoes the probe's id; every later one echoes the ack's.
+    # Detection must accept that: the ack went out after the probe, so its packets come from the same firmware.
+    _z_both_active_high(monkeypatch)
+    sim = _sim(LIMIT_SWITCH_CONFIG_MIN_FIRMWARE)
+    sim.joystick_button = True
+    sent = _record_commands(sim)
+    build = sim._build_response
+    first = {"pending": True}
+
+    def build_previous_id_first(cmd_id, status):
+        if first["pending"]:  # the packet that left before the controller processed the probe
+            first["pending"] = False
+            return build((cmd_id - 1) % 256, status)
+        return build(cmd_id, status)
+
+    sim._build_response = build_previous_id_first
+    detect = Microcontroller._detect_firmware_version
+    monkeypatch.setattr(Microcontroller, "_detect_firmware_version", lambda self: detect(self, timeout_s=1))
+
+    mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
+
+    assert [cmd[1] for cmd in sent[:2]] == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED]
+    assert mcu.firmware_version == LIMIT_SWITCH_CONFIG_MIN_FIRMWARE
+    mcu.close()
