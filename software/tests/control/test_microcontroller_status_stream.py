@@ -12,14 +12,20 @@ import threading
 
 import pytest
 
-from control._def import CMD_EXECUTION_STATUS, CMD_SET, LIMIT_SWITCH_CONFIG_MIN_FIRMWARE
+from control._def import (
+    BIT_POS_JOYSTICK_BUTTON,
+    CMD_EXECUTION_STATUS,
+    CMD_SET,
+    LIMIT_SWITCH_CONFIG_MIN_FIRMWARE,
+    MicrocontrollerDef,
+)
 from control.firmware_sim_serial import FirmwareSimSerial
 from control.microcontroller import Microcontroller
 
 FIRMWARE = LIMIT_SWITCH_CONFIG_MIN_FIRMWARE
 # The version just before, as in test_microcontroller_limit_switches.py: it has no limit-switch commands.
 OLDER_FIRMWARE = (FIRMWARE[0], FIRMWARE[1] - 1)
-PACKET_LENGTH = 24
+PACKET_LENGTH = MicrocontrollerDef.MSG_LENGTH
 BYTE_BUTTONS = 18
 
 
@@ -34,17 +40,12 @@ def _sim(version=FIRMWARE):
     return FirmwareSimSerial(strict=True, firmware_version=version)
 
 
-def _record_commands(sim):
-    """The opcode of every command that reaches the sim, recorded before the sim handles it."""
-    sent = []
-    write = sim.write
-
-    def recording_write(data, reconnect_tries=0):
-        sent.append(data[1])
-        return write(data, reconnect_tries)
-
-    sim.write = recording_write
-    return sent
+def _sim_without_checksums():
+    """Firmware from before April 2025: every packet ends in a zero instead of a checksum, and reports no version."""
+    sim = _sim((0, 0))
+    build = sim._build_response
+    sim._build_response = lambda cmd_id, status: build(cmd_id, status)[:-1] + b"\x00"
+    return sim
 
 
 def _queue(sim, data):
@@ -74,12 +75,11 @@ def test_connects_when_the_waiting_bytes_start_mid_packet(offset):
     sim = _sim()
     packet = _idle_packet(sim)
     _queue(sim, packet[offset:] + packet * 2)
-    sent = _record_commands(sim)
 
     mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
 
     assert mcu.firmware_version == FIRMWARE
-    assert CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED not in sent
+    assert CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED not in sim.command_log
     assert not mcu.joystick_button_pressed
     _command_round_trip(mcu)
     assert mcu.get_pos() == (0, 0, 0, 0)
@@ -96,13 +96,12 @@ def test_a_shifted_window_that_starts_with_the_command_id_is_not_the_answer():
     packet = _idle_packet(sim)
     assert packet[7] == 1
     _queue(sim, packet[7:])
-    sent = _record_commands(sim)
 
     mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
 
     assert mcu.firmware_version == FIRMWARE
-    assert sent[:2] == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.TURN_OFF_ALL_PORTS]
-    assert CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED not in sent
+    assert sim.command_log[:2] == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.TURN_OFF_ALL_PORTS]
+    assert CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED not in sim.command_log
     _command_round_trip(mcu)
     assert mcu.get_pos() == (0, 70000, 0, 0)
     mcu.close()
@@ -112,12 +111,11 @@ def test_a_clean_start_needs_one_command():
     # Packets of a previous session wait in the port, each where the last one ended: the answer is taken at once.
     sim = _sim(OLDER_FIRMWARE)
     _queue(sim, _idle_packet(sim, cmd_id=37) * 3)
-    sent = _record_commands(sim)
 
     mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
 
     assert mcu.firmware_version == OLDER_FIRMWARE
-    assert sent == [CMD_SET.TURN_OFF_ALL_PORTS]
+    assert sim.command_log == [CMD_SET.TURN_OFF_ALL_PORTS]
     mcu.close()
 
 
@@ -126,12 +124,11 @@ def test_connects_after_text_on_the_status_port():
     # after it.
     sim = _sim()
     _queue(sim, b"[TMC] X: TMC2660 probe_raw=0x40000000\r\n" + _idle_packet(sim) * 2)
-    sent = _record_commands(sim)
 
     mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
 
     assert mcu.firmware_version == FIRMWARE
-    assert CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED not in sent
+    assert CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED not in sim.command_log
     _command_round_trip(mcu)
     mcu.close()
 
@@ -141,13 +138,12 @@ def test_a_joystick_press_held_at_connect_is_acknowledged_once_after_the_handsha
     # the handshake, because nothing is acted on before the handshake's answer.
     sim = _sim()
     sim.joystick_button = True
-    sent = _record_commands(sim)
 
     mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
 
     assert mcu.firmware_version == FIRMWARE
-    assert sent[:2] == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED]
-    assert sent.count(CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED) == 1
+    assert sim.command_log[:2] == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED]
+    assert sim.command_log.count(CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED) == 1
     assert mcu.joystick_button_pressed
     mcu.close()
 
@@ -156,13 +152,12 @@ def test_a_packet_queued_before_the_handshake_is_neither_acted_on_nor_used():
     # A previous session's packet (older firmware, joystick pressed) is queued before the host's first command
     # (id 1) and happens to echo id 2. It is not the answer, so its press is not acknowledged - an acknowledgement
     # would be command 2, which would make this very packet look like an answer - and its firmware version is not
-    # taken. The real answer is held back until detection returns (or 1 s).
+    # taken. The real answer is held back until detection returns (or 0.3 s).
     sim = _sim()
     stale_sim = _sim(OLDER_FIRMWARE)
     stale_sim.joystick_button = True
-    stale = stale_sim._build_response(2, CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS)
+    stale = _idle_packet(stale_sim, cmd_id=2)
     _queue(sim, stale)
-    sent = _record_commands(sim)
 
     written = threading.Event()
     detection_returned = threading.Event()
@@ -180,7 +175,7 @@ def test_a_packet_queued_before_the_handshake_is_neither_acted_on_nor_used():
     def read_holding_the_answer(count=1, reconnect_tries=0):
         reads.append(count)
         if len(reads) == len(stale) + 1:
-            detection_returned.wait(1)
+            detection_returned.wait(0.3)
         return read(count, reconnect_tries)
 
     sim.bytes_available = bytes_available_after_the_write
@@ -200,7 +195,7 @@ def test_a_packet_queued_before_the_handshake_is_neither_acted_on_nor_used():
         mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
 
     assert detected == [FIRMWARE]
-    assert CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED not in sent
+    assert CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED not in sim.command_log
     mcu.close()
 
 
@@ -239,15 +234,14 @@ def test_a_window_that_only_ends_in_zero_is_not_a_packet_on_firmware_that_sends_
     # 24 stray bytes that end in zero, with the joystick bit set where the buttons byte would be. Firmware from
     # before checksums ended every packet in zero, so such a window used to count as a packet on any firmware.
     sim = _sim()
-    sent = _record_commands(sim)
     mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
     stray = bytearray(PACKET_LENGTH)
-    stray[BYTE_BUTTONS] = 1
+    stray[BYTE_BUTTONS] = 1 << BIT_POS_JOYSTICK_BUTTON
 
     _queue(sim, stray)
     _command_round_trip(mcu)
 
-    assert CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED not in sent
+    assert CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED not in sim.command_log
     assert not mcu.joystick_button_pressed
     mcu.close()
 
@@ -287,18 +281,13 @@ def test_a_firmware_change_on_the_same_connection_is_followed_and_reported(caplo
 
 
 def test_firmware_without_checksums_still_connects():
-    # Firmware from before April 2025 ends every packet in a zero instead of a checksum, and reports no version.
-    sim = _sim((0, 0))
-    build = sim._build_response
-    sim._build_response = lambda cmd_id, status: build(cmd_id, status)[:-1] + b"\x00"
-
-    sent = _record_commands(sim)
+    sim = _sim_without_checksums()
 
     mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
 
     assert mcu.firmware_version == (0, 0)
     # Nothing verifies such a packet, so the handshake takes two commands: the echoed id has to follow them.
-    assert sent == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.TURN_OFF_ALL_PORTS]
+    assert sim.command_log == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.TURN_OFF_ALL_PORTS]
     mcu.move_x_usteps(1234)
     mcu.wait_till_operation_is_completed(timeout_limit_s=2)
     assert mcu.get_pos()[0] == 1234
@@ -307,11 +296,9 @@ def test_firmware_without_checksums_still_connects():
 
 def test_firmware_without_checksums_connects_when_the_waiting_bytes_start_mid_packet():
     # Without checksums only the echoed id following the host's commands can show where packets start.
-    sim = _sim((0, 0))
-    build = sim._build_response
-    sim._build_response = lambda cmd_id, status: build(cmd_id, status)[:-1] + b"\x00"
+    sim = _sim_without_checksums()
     sim.x = 96000  # 0x00017700: a 0x01 byte to mistake for the first command's id
-    packet = sim._build_response(37, CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS)
+    packet = _idle_packet(sim, cmd_id=37)
     _queue(sim, packet[3:] + packet * 2)
 
     mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
@@ -327,11 +314,9 @@ def test_stray_bytes_and_a_position_byte_do_not_pass_for_two_answers_without_che
     # 24 bytes before a 0x02 of the Y position, both in windows that end in zero: first bytes 1 then 2, like answers
     # to the first two commands, and ahead of the real second answer. They are not alike as two packets of one
     # stream are, so they are not taken.
-    sim = _sim((0, 0))
-    build = sim._build_response
-    sim._build_response = lambda cmd_id, status: build(cmd_id, status)[:-1] + b"\x00"
+    sim = _sim_without_checksums()
     sim.x, sim.y, sim.z = -23305, 192184, 131071
-    assert sim._build_response(1, CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS)[7] == 2
+    assert _idle_packet(sim, cmd_id=1)[7] == 2
     stray = bytes.fromhex(
         "29153c9a39573b29eb531f14843bf91cc1e34f86dbbc882854c53b9a46fc0ebaf88dd4f1d9563667bbbcf401942eee95c8917e9714c190570a9b5213"
     )
@@ -351,11 +336,9 @@ def test_a_position_byte_that_counts_up_does_not_pass_for_two_answers_without_ch
     # shifted windows then start with 1, then 2, both end in zero and are otherwise alike: just what the answers to
     # commands 1 and 2 would look like, and complete before the real second answer. The second command's id is not
     # 2, though: it is picked at random, so a byte that counts cannot follow it.
-    sim = _sim((0, 0))
-    build = sim._build_response
-    sim._build_response = lambda cmd_id, status: build(cmd_id, status)[:-1] + b"\x00"
+    sim = _sim_without_checksums()
     sim.x = 1
-    packet = sim._build_response(37, CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS)
+    packet = _idle_packet(sim, cmd_id=37)
     assert packet[5] == 1
     _queue(sim, packet[5:])
     sim.x = 2
@@ -390,10 +373,9 @@ def test_a_controller_that_never_answers_is_reported_with_what_was_read():
     sim = _sim()
     _queue(sim, _idle_packet(sim) * 3)
     sim._process_command = lambda cmd: None
-    detect = Microcontroller._detect_firmware_version
 
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr(Microcontroller, "_detect_firmware_version", lambda self: detect(self, timeout_s=0.3))
+        monkeypatch.setattr(Microcontroller, "HANDSHAKE_TIMEOUT_S", 0.3)
         with pytest.raises(TimeoutError) as error:
             Microcontroller(serial_device=sim, reset_and_initialize=False)
 

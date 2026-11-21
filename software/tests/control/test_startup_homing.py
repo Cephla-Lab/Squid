@@ -686,7 +686,10 @@ def test_a_verdict_status_never_completes_aborts_resends_or_counts_as_idle(new_f
     assert sim.command_log == sent  # nothing resent
 
 
-@pytest.mark.parametrize("framing, forged_is_parsed", [("verified", False), ("legacy", True)])
+@pytest.mark.parametrize(
+    "framing, forged_is_parsed",
+    [(Microcontroller._FRAMING_VERIFIED, False), (Microcontroller._FRAMING_LEGACY, True)],
+)
 def test_a_verdict_is_taken_only_from_a_packet_whose_crc_matches(new_firmware_micro, framing, forged_is_parsed):
     """Firmware that answers the query always sends a checksum, so a verdict status in a window that ends in 0 instead
     (a misaligned read window, say) is not a verdict. Normally such a window is not even a packet: the connect
@@ -694,7 +697,7 @@ def test_a_verdict_is_taken_only_from_a_packet_whose_crc_matches(new_firmware_mi
     could not tell ("legacy": the old rule, a matching checksum or a zero in its place), the window is parsed, and
     still gives no verdict."""
     micro, sim = new_firmware_micro
-    assert micro._framing == "verified"
+    assert micro._framing == Microcontroller._FRAMING_VERIFIED
     micro._framing = framing
     status = STARTUP_VERDICT_STATUS_BASE + StartupVerdict.WARM
     packet = sim._build_response(micro._cmd_id, status)

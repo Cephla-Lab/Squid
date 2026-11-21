@@ -678,6 +678,8 @@ class Microcontroller:
     # The micro has an update time it tries to keep to.  This must be > that time.  As of 2025-04-28, it's 10ms
     # on the micro.  So 0.1 is 10x that.
     STALE_READ_TIMEOUT = 0.1
+    # How long _detect_firmware_version waits for the connect handshake to be answered before it gives up.
+    HANDSHAKE_TIMEOUT_S = 5
     # How long _detect_firmware_version waits for the connect handshake to settle before it sends its command again
     # (_take_handshake_answer). The controller answers within a status period or two (10 ms each). The wait doubles
     # with each resend, up to the maximum: a controller that does not answer is not sent dozens of commands.
@@ -690,7 +692,7 @@ class Microcontroller:
     # loop can stop, or discard a backlog, even if bytes arrive as fast as they are read.
     STATUS_STREAM_MAX_BYTES_PER_READ = 256
     # After this many bytes without a status packet (20 packets' worth), the reader says the stream is lost.
-    STATUS_STREAM_LOST_AFTER_BYTES = 480
+    STATUS_STREAM_LOST_AFTER_BYTES = 20 * MicrocontrollerDef.MSG_LENGTH
     # The most bytes two consecutive status packets may differ in, besides the first (command id) and last (checksum),
     # for the handshake to take them as two answers to different commands: the status, the low bytes of the
     # positions of a stage still moving, the switches. Bytes that are not from one stream differ in most places.
@@ -777,17 +779,21 @@ class Microcontroller:
         # The connect handshake (_take_handshake_answer): until a packet answers a command sent on this connection,
         # no packet is used. The ids of the commands sent so far while it is pending (added under _cmd_lock):
         self._handshake_cmd_ids = set()
-        self._handshake_scan = 0  # offset in _rx of the next window to look at
-        self._handshake_dropped = 0  # bytes already dropped from the front of _rx
+        # Where _rx starts in the stream: the bytes dropped from its front since the reader started, or last
+        # discarded its input.
+        self._handshake_position = 0
         # The windows that have a verified checksum, or could be an answer, and end at or after the next window to
-        # look at: {offset in _rx just past the window: (the window, checksum matched, checksum verified, could be an
-        # answer)}.
+        # look at: {stream position just past the window: (the window, checksum matched, checksum verified, could be
+        # an answer)}.
         self._handshake_ends = {}
         # For the handshake's timeout message: the bytes read, how many windows could have been an answer, and the
         # (command id, status) of the last window with a verified checksum that was none.
         self._handshake_bytes_read = 0
         self._handshake_echoes_seen = 0
         self._handshake_last_skipped = None
+        # When the reader last read a byte while the handshake was pending: the mcu is talking, though nothing is
+        # parsed yet (for _warn_if_reads_stale).
+        self._last_byte_read_time = time.time()
         # Set, under _received_packet_cv, once the handshake's answer has been parsed; _detect_firmware_version waits
         # for it.
         self._handshake_answered = False
@@ -890,7 +896,9 @@ class Microcontroller:
     def _warn_if_reads_stale(self):
         if self._is_simulated:
             return
-        if time.time() - self._last_successful_read_time > Microcontroller.STALE_READ_TIMEOUT:
+        # Until the connect handshake is answered no packet is parsed; bytes arriving show the mcu is talking.
+        last_heard = self._last_byte_read_time if self._framing is None else self._last_successful_read_time
+        if time.time() - last_heard > Microcontroller.STALE_READ_TIMEOUT:
             self.log.warning(f"Read thread is stale. {self._mcu_state()}")
 
     def close(self):
@@ -1875,15 +1883,10 @@ class Microcontroller:
     def _status_checksum_matches(self, window) -> bool:
         return self.crc_calculator_rx.calculate_checksum(window[:-1]) == window[-1]
 
-    def _answers_handshake(self, echoed_cmd_id: int) -> bool:
-        """True if a packet echoing this command id answers a command sent on this connection."""
-        return echoed_cmd_id in self._handshake_cmd_ids
-
     def _reset_status_stream(self):
         """Forget the bytes read so far (the serial input buffer was just discarded)."""
         self._rx.clear()
-        self._handshake_scan = 0
-        self._handshake_dropped = 0
+        self._handshake_position = 0
         self._handshake_ends = {}
 
     def _next_status_packet(self):
@@ -1923,8 +1926,7 @@ class Microcontroller:
             bytes_read += 1
             if self._framing is None:
                 self._handshake_bytes_read += 1
-                # The mcu is talking, though nothing is parsed yet (for _warn_if_reads_stale).
-                self._last_successful_read_time = time.time()
+                self._last_byte_read_time = time.time()
 
     def _take_handshake_answer(self):
         """The handshake's answer from the bytes read so far, as (packet, crc_matched), or None if it is not there yet.
@@ -1956,51 +1958,43 @@ class Microcontroller:
         """
         length = self.rx_buffer_length
         rx = self._rx
-        while len(rx) - self._handshake_scan >= length:
-            start = self._handshake_scan
-            self._handshake_scan += 1
-            window = rx[start : start + length]
+        while len(rx) >= length:
+            position = self._handshake_position
+            window = rx[:length]
             crc_matched = self._status_checksum_matches(window)
             verified = crc_matched and window[-1] != 0
             packet_shaped = crc_matched or window[-1] == 0  # the old framing's rule
-            answers = packet_shaped and self._answers_handshake(window[0])
-            previous = self._handshake_ends.pop(start, None)
+            answers = packet_shaped and window[0] in self._handshake_cmd_ids
+            previous = self._handshake_ends.pop(position, None)
 
             if answers:
                 self._handshake_echoes_seen += 1
-                if verified and self._handshake_dropped + start == 0:
-                    return self._end_handshake(start, crc_matched, checksums=True)
+                if verified and position == 0:
+                    return self._end_handshake(crc_matched, checksums=True)
                 if previous is not None and previous[0][0] != window[0]:
                     previous_window, previous_crc_matched, previous_verified, previous_answers = previous
                     if previous_verified and crc_matched:
-                        return self._end_handshake(start, crc_matched, checksums=True)
+                        return self._end_handshake(crc_matched, checksums=True)
                     bytes_changed = sum(a != b for a, b in zip(previous_window[1:-1], window[1:-1]))
                     if previous_answers and bytes_changed <= Microcontroller.HANDSHAKE_MAX_BYTES_CHANGED:
                         # Checksums count only if both matched and this one is not a zero.
-                        return self._end_handshake(start, crc_matched, checksums=verified and previous_crc_matched)
+                        return self._end_handshake(crc_matched, checksums=verified and previous_crc_matched)
             elif verified:
                 self._handshake_last_skipped = (window[0], window[1])
             if verified or answers:
-                self._handshake_ends[start + length] = (bytes(window), crc_matched, verified, answers)
-
-        # Nothing before the next window to look at is needed again.
-        done = self._handshake_scan
-        if done:
-            del rx[:done]
-            self._handshake_dropped += done
-            self._handshake_scan = 0
-            self._handshake_ends = {end - done: seen for end, seen in self._handshake_ends.items()}
+                self._handshake_ends[position + length] = (bytes(window), crc_matched, verified, answers)
+            del rx[:1]
+            self._handshake_position += 1
         return None
 
-    def _end_handshake(self, start: int, crc_matched: bool, checksums: bool):
-        """Take the window at this offset of _rx as the handshake's answer; framing continues right after it.
+    def _end_handshake(self, crc_matched: bool, checksums: bool):
+        """Take the window at the front of _rx as the handshake's answer; framing continues right after it.
 
         checksums: the firmware sends them, so packets are verified from here on (_FRAMING_VERIFIED).
         """
         length = self.rx_buffer_length
-        window = self._rx[start : start + length]
-        del self._rx[: start + length]
-        self._handshake_scan = 0
+        window = self._rx[:length]
+        del self._rx[:length]
         self._handshake_ends = {}
         version_byte = window[RESPONSE_BYTE_FIRMWARE_VERSION]
         if checksums:
@@ -2014,6 +2008,25 @@ class Microcontroller:
             + ("checksums verified" if checksums else "no checksum to verify (older firmware's framing)")
         )
         return list(window), crc_matched
+
+    def _follow_firmware_change(self, version_byte: int, following) -> bool:
+        """Whether the 24 bytes after a window that verifies with another firmware-version byte do so too. Then the
+        controller was reflashed while connected, and that byte is this connection's from here on; one such window
+        alone can be chance (1 stray window in 256)."""
+        if not (
+            self._status_checksum_matches(following)
+            and following[-1] != 0
+            and following[RESPONSE_BYTE_FIRMWARE_VERSION] == version_byte
+        ):
+            return False
+        self.log.warning(
+            f"[MCU] the controller's firmware changed from"
+            f" {self._rx_version_byte >> 4}.{self._rx_version_byte & 0x0F} to"
+            f" {version_byte >> 4}.{version_byte & 0x0F} while connected. Restart Squid: its start-up"
+            " checks and the controller's settings were for the old firmware."
+        )
+        self._rx_version_byte = version_byte
+        return True
 
     def _take_framed_packet(self):
         """The next packet from the bytes read so far, as (packet, crc_matched), or None if there is none yet.
@@ -2029,24 +2042,11 @@ class Microcontroller:
                 version_byte = window[RESPONSE_BYTE_FIRMWARE_VERSION]
                 is_packet = crc_matched and version_byte == self._rx_version_byte
                 if not is_packet and crc_matched and window[-1] != 0:
-                    # A real packet from other firmware (the controller was reflashed while connected), or chance
-                    # (1 stray window in 256). The next 24 bytes tell: wait for them.
+                    # It verifies, with another firmware's version byte. The next 24 bytes tell whether that is a
+                    # reflashed controller: wait for them.
                     if len(rx) < 2 * length:
                         return None
-                    following = rx[length : 2 * length]
-                    if (
-                        self._status_checksum_matches(following)
-                        and following[-1] != 0
-                        and following[RESPONSE_BYTE_FIRMWARE_VERSION] == version_byte
-                    ):
-                        self.log.warning(
-                            f"[MCU] the controller's firmware changed from"
-                            f" {self._rx_version_byte >> 4}.{self._rx_version_byte & 0x0F} to"
-                            f" {version_byte >> 4}.{version_byte & 0x0F} while connected. Restart Squid: its start-up"
-                            " checks and the controller's settings were for the old firmware."
-                        )
-                        self._rx_version_byte = version_byte
-                        is_packet = True
+                    is_packet = self._follow_firmware_change(version_byte, rx[length : 2 * length])
             else:
                 # NOTE(imo): Before April 2025, we didn't send the crc from the micro.  This is
                 # here to support firmware that still sends 0 as the checksum.
@@ -2266,7 +2266,7 @@ class Microcontroller:
     def get_pos(self):
         return self.x_pos, self.y_pos, self.z_pos, self.theta_pos
 
-    def _detect_firmware_version(self, timeout_s: float = 5):
+    def _detect_firmware_version(self):
         """Detect firmware version by sending a harmless command: the connect handshake.
 
         Sends TURN_OFF_ALL_PORTS (a safe no-op if ports are already off) and waits for the first status packet that
@@ -2284,13 +2284,14 @@ class Microcontroller:
         firmware, so its version is right too. This ensures supports_multi_port() returns accurate results
         immediately after Microcontroller initialization.
         """
+        timeout_s = Microcontroller.HANDSHAKE_TIMEOUT_S
         deadline = time.time() + timeout_s
         resend_interval_s = Microcontroller.HANDSHAKE_RESEND_INTERVAL_S
         sent = 0
         while True:
             if sent:
                 with self._cmd_lock:  # send_command takes the next id
-                    self._cmd_id = (self._handshake_resend_cmd_id() - 1) % 256
+                    self._cmd_id = self._handshake_resend_cmd_id() - 1
             self.turn_off_all_ports()
             sent += 1
             wait_s = min(resend_interval_s, max(deadline - time.time(), 0))
@@ -2301,7 +2302,7 @@ class Microcontroller:
             if time.time() >= deadline:
                 raise TimeoutError(
                     f"No status packet within {timeout_s} [s] of asking for the firmware version ({sent} time(s))."
-                    f" {self._handshake_state()}"
+                    f" {self._mcu_state()}"
                 )
         self.log.debug(f"Detected firmware version: {self.firmware_version}")
 
@@ -2311,7 +2312,7 @@ class Microcontroller:
         return random.choice(unused)
 
     def _handshake_state(self) -> str:
-        """Describe what the reader saw while no packet had answered the connect handshake, for its timeout."""
+        """_mcu_state while no packet has answered the connect handshake: what the reader has seen instead."""
         state = (
             f"Sent cmd {self._cmd_id} ({self._last_command_name()});"
             f" read {self._handshake_bytes_read} byte(s) from the mcu, none of them a status packet answering it."
@@ -2545,6 +2546,8 @@ class Microcontroller:
 
     def _mcu_state(self) -> str:
         """Describe the last thing the mcu told us, for wait-timeout and stale-read messages."""
+        if self._framing is None:
+            return self._handshake_state()
         status_name = _CMD_EXECUTION_STATUS_NAMES.get(self._cmd_execution_status, self._cmd_execution_status)
         since_read_s = time.time() - self._last_successful_read_time
         state = (
@@ -2552,6 +2555,11 @@ class Microcontroller:
             f" status={status_name}; {since_read_s:.1f} [s] since a valid packet."
         )
         if since_read_s > Microcontroller.STALE_READ_TIMEOUT:
+            if self._rx_dropped:
+                return state + (
+                    f" The mcu is sending bytes, but none of the last {self._rx_dropped} is a status packet: the"
+                    " status stream is out of step."
+                )
             return state + " The mcu has gone quiet - check the serial connection."
         if self._cmd_id_mcu == self._cmd_id and self._cmd_execution_status == CMD_EXECUTION_STATUS.IN_PROGRESS:
             # Matches none of the read loop's recovery branches (ids match, so no ack-timeout resend; no
