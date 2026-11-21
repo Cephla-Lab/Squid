@@ -92,6 +92,9 @@ python3 -m pip install --upgrade pip
 # PyQt5 and PyQt6 side by side break napari/vispy OpenGL rendering (blank canvases, "Cannot
 # SIZE object N because it does not exist"), so remove any pre-existing PyQt5 first.
 sudo apt remove -y python3-pyqt5 python3-pyqt5.qtsvg 2>/dev/null || true
+# autoremove before any pip install, not after: pip counts Python packages apt installed (e.g. python3-colorama,
+# which pyqtgraph needs) as present and skips them, and a later autoremove can then delete them under it.
+sudo apt autoremove -y
 pip3 uninstall -y PyQt5 PyQt5-Qt5 PyQt5-sip 2>/dev/null || true
 
 # install libraries. No "numpy<2" pin: napari 0.7 only needs numpy>=1.24, and the rest of
@@ -144,8 +147,6 @@ sudo udevadm control --reload-rules && sudo udevadm trigger --action=add --subsy
 
 # enable access to serial ports without sudo
 sudo usermod -aG dialout $USER
-
-sudo apt autoremove -y
 
 echo "Holding kernel packages to prevent automatic updates..."
 if sudo apt-mark hold \
