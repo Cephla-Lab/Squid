@@ -18,6 +18,25 @@ The two scripts install the same packages; the 24.04 one only adds what Python 3
 
 Reboot the computer to finish the installation.
 
+The scripts also check out the `ndviewer_light` and `fluidics_v2` submodules, create `machine_configs/illumination_channel_config.yaml` from its example if it is missing, and put a **Squid** shortcut on the Desktop.
+
+### Windows
+Windows 10 and 11. In PowerShell (no administrator rights needed):
+```
+Invoke-WebRequest https://raw.githubusercontent.com/Cephla-Lab/Squid/master/software/setup_windows.ps1 -OutFile setup_windows.ps1
+powershell -ExecutionPolicy Bypass -File .\setup_windows.ps1
+```
+The script:
+- installs Git and Python 3.12 with `winget` if they are missing;
+- clones the repo to `Desktop\Squid` (or uses the checkout it is run from) and checks out its submodules;
+- installs the same Python packages as the Ubuntu scripts, into Python 3.12;
+- creates `machine_configs\illumination_channel_config.yaml` from its example if it is missing;
+- puts a **Squid** shortcut on the Desktop.
+
+Squid always uses Python 3.12, whatever other Pythons are installed. Older Squid installs put PyQt5 into Python 3.10, and PyQt5 and PyQt6 in the same Python break napari's rendering, so the script leaves other Pythons alone. If 3.12 is the newest Python on the machine, `py` runs it; otherwise use `py -3.12`. The script says which at the end.
+
+For a Toupcam camera, run the script from an administrator PowerShell to also install the Toupcam USB driver, or run the `pnputil` command it prints. Install other cameras' drivers as described below, then restart the computer.
+
 ## Optional or Hardware-specific dependencies
 
 <details>
@@ -167,6 +186,7 @@ Then set `RUN_FLUIDICS = True` and `FLUIDICS_CONFIG_PATH` in your `configuration
 Copy the .ini file associated with the microscope configuration to the software folder. Make modifications as needed (e.g. `camera_type`, `support_laser_autofocus`,`focus_camera_exposure_time_ms`)
 
 ## Using the software
+Start Squid from the **Squid** shortcut on the Desktop, or from the `software` folder:
 ```
 python3 main_hcs.py
 ```
@@ -174,6 +194,7 @@ To start the program when no hardware is connected, use
 ```
 python3 main_hcs.py --simulation
 ```
+On Windows, use `py -3.12` (or `py`, if the setup script said it runs Python 3.12) in place of `python3`.
 
 ### Appearance
 **Settings > Appearance** offers two looks: **Classic** (the default) and **Dark**. Switching between them takes effect after a restart. The choice is saved in the machine `.ini` as `ui_theme` under `[GENERAL]` (`classic` or `dark`). Developers adding GUI code should read [docs/ui-theme.md](docs/ui-theme.md) for the colour rules every theme relies on.
