@@ -197,7 +197,7 @@ if ($DefaultPy -and ((Resolve-Path $DefaultPy).Path -eq (Resolve-Path $Python).P
     # PowerShell runs a quoted path only after the call operator &. Single quotes (with ' doubled) keep a $ in the
     # path literal when the user runs the printed command.
     $RunCommand = "& '" + ($Python -replace "'", "''") + "'"
-    Write-Warning "The py launcher is not available; start Squid with: $RunCommand main_hcs.py""
+    Write-Warning "The py launcher is not available; start Squid with: $RunCommand main_hcs.py"
 }
 
 Write-Host ""
