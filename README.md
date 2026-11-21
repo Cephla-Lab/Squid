@@ -47,21 +47,22 @@ New version coming soon!
 Usually firmware should be already uploaded to the controller. If you do need to re-upload firmware, see the [firmware README](firmware/README.md) for instructions.
 
 ### Git Submodules
-This repository uses git submodules for external dependencies. After cloning, initialize submodules:
+Two optional features live in git submodules: the NDViewer tab and fluidics. Squid runs without them, and the setup scripts do not check them out. To get them:
 
 ```bash
-# Clone with submodules (recommended)
+# Clone with submodules
 git clone --recursive https://github.com/Cephla-Lab/Squid.git
 
 # Or initialize after clone
 git submodule update --init --recursive
 ```
+Then turn the NDViewer tab on with **Settings > Settings...** > "Enable NDViewer" (applies after a restart), or with `enable_ndviewer = true` under `[VIEWS]` in the machine `.ini`. Fluidics also needs its library installed and `RUN_FLUIDICS` set; see the fluidics section of the [software README](software/README.md).
 
 **Submodules:**
 | Path | Repository | Description |
 |------|------------|-------------|
 | `software/control/ndviewer_light` | [ndviewer_light](https://github.com/Cephla-Lab/ndviewer_light) | Lightweight NDV-based image viewer |
-| `software/fluidics_v2` | [fluidics_v2](https://github.com/Alpaca233/fluidics_v2) | Fluidics control |
+| `software/fluidics_v2` | [Squid-Fluidics](https://github.com/Cephla-Lab/Squid-Fluidics) | Fluidics control |
 
 **Updating submodules:**
 ```bash

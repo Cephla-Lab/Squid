@@ -35,35 +35,10 @@ The script:
 
 The script is meant for a fresh computer. Squid uses Python 3.12; if another Python is already installed, it is left alone. If 3.12 is the newest Python on the machine, `py` runs it; otherwise use `py -3.12`. The script says which at the end.
 
-For a Toupcam camera, run the script from an administrator PowerShell to also install the Toupcam USB driver, or run the `pnputil` command it prints. Install other cameras' drivers as described below, then restart the computer.
+For a Toupcam camera, run the script from an administrator PowerShell to also install the Toupcam USB driver, or run the `pnputil` command it prints. For other cameras, install the driver from the camera maker (the steps in the next section are for Linux only), then restart the computer.
 
 ## Optional or Hardware-specific dependencies
-
-<details>
-<summary>image stitching dependencies (optional)</summary>
-For optional image stitching using ImageJ, additionally run the following:
-
-```
-sudo apt-get update
-sudo apt-get install openjdk-11-jdk
-sudo apt-get install maven
-pip3 install pyimagej
-pip3 instlal scyjava
-pip3 install tifffile
-pip3 install imagecodecs
-```
-
-Then, add the following line to the top of `/etc/environment` (needs to be edited with `sudo [your text editor]`):
-```
-JAVA_HOME=/usr/lib/jvm/default-java
-```
-Then, add the following lines to the top of `~/.bashrc` (or whichever file your terminal sources upon startup):
-```
-source /etc/environment
-export JAVA_HOME = $JAVA_HOME
-export PATH=$JAVA_HOME/bin:$PATH
-```
-</details>
+The camera driver and udev steps below are for Linux only. The fluidics module works on Windows too.
 
 <details>
 <summary>Installing drivers and libraries for FLIR camera support</summary>
@@ -173,17 +148,17 @@ Follow the instructions during the installation.
 
 Link to the fluidics software repo: https://github.com/Cephla-Lab/Squid-Fluidics (vendored as the `software/fluidics_v2` submodule).
 
-In the Squid repo, run
+The setup scripts leave it out. In the Squid repo, run
 ```
 git submodule update --init software/fluidics_v2
 cd software && pip3 install --no-deps -e fluidics_v2/software
 ```
-Then set `RUN_FLUIDICS = True` and `FLUIDICS_CONFIG_PATH` in your `configuration*.ini` (see `machine_configs/fluidics_config.yaml.example`).
+(on Windows, `py -3.12 -m pip` in place of `pip3`). Then set `RUN_FLUIDICS = True` and `FLUIDICS_CONFIG_PATH` (the default is `machine_configs/fluidics_config.yaml`) under `[GENERAL]` in your `configuration*.ini`. Start the config from one of the samples in `fluidics_v2/software/sample_config/` (`flow_cell_config.yaml`, `open_chamber_config.yaml`).
 
 </details>
 
 ## Configuring the software
-Copy the .ini file associated with the microscope configuration to the software folder. Make modifications as needed (e.g. `camera_type`, `support_laser_autofocus`,`focus_camera_exposure_time_ms`)
+Copy the `.ini` file for your microscope from `software/configurations/` into the `software` folder itself; Squid reads the `configuration*.ini` it finds there. Make modifications as needed (e.g. `camera_type`, `support_laser_autofocus`,`focus_camera_exposure_time_ms`)
 
 ## Using the software
 Start Squid from the **Squid** shortcut on the Desktop, or from the `software` folder:
