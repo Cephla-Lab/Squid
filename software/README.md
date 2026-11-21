@@ -18,7 +18,7 @@ The two scripts install the same packages; the 24.04 one only adds what Python 3
 
 Reboot the computer to finish the installation.
 
-The scripts also check out the `ndviewer_light` and `fluidics_v2` submodules, create `machine_configs/illumination_channel_config.yaml` from its example if it is missing, and put a **Squid** shortcut on the Desktop.
+The scripts also create `machine_configs/illumination_channel_config.yaml` from its example if it is missing, and put a **Squid** shortcut on the Desktop.
 
 ### Windows
 Windows 10 and 11. In PowerShell (no administrator rights needed):
@@ -28,7 +28,7 @@ powershell -ExecutionPolicy Bypass -File .\setup_windows.ps1
 ```
 The script:
 - installs Git and Python 3.12 with `winget` if they are missing;
-- clones the repo to `Desktop\Squid` (or uses the checkout it is run from) and checks out its submodules;
+- clones the repo to `Desktop\Squid` (or uses the checkout it is run from);
 - installs the same Python packages as the Ubuntu scripts, into Python 3.12;
 - creates `machine_configs\illumination_channel_config.yaml` from its example if it is missing;
 - puts a **Squid** shortcut on the Desktop.

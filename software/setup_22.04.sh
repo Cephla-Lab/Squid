@@ -50,9 +50,6 @@ if [[ ! -d "${SQUID_REPO_PATH}" ]]; then
 else
   echo "Using existing repo at '${SQUID_REPO_PATH}' at HEAD=$(cd "${SQUID_REPO_PATH}" && git rev-parse HEAD)"
 fi
-# The NDViewer tab (control/ndviewer_light) and fluidics (fluidics_v2) are submodules; a plain clone leaves them
-# empty. A failure only leaves those features off.
-git -C "${SQUID_REPO_PATH}" submodule update --init --recursive || echo "WARNING: could not check out the submodules (ndviewer_light, fluidics_v2); continuing." >&2
 
 
 cd "$SQUID_SOFTWARE_ROOT"

@@ -123,10 +123,6 @@ if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "main_hcs.py"))) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $RepoPath) | Out-Null
     Invoke-Native $Git @("clone", $SquidRepoUrl, $RepoPath)
 }
-# The NDViewer tab and fluidics are submodules; a failure only leaves those features off.
-& $Git -C $RepoPath submodule update --init --recursive
-if ($LASTEXITCODE -ne 0) { Write-Warning "Could not check out the submodules (ndviewer_light, fluidics_v2); continuing." }
-
 $Software = Join-Path $RepoPath "software"
 Set-Location $Software
 New-Item -ItemType Directory -Force -Path (Join-Path $Software "cache") | Out-Null
