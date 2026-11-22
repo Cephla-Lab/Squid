@@ -472,3 +472,105 @@ def test_move_a_whole_round_up_and_down(tab):
     assert tab.tree.topLevelItem(1).text(0) == "R02"
     tab._move_row(+1)
     assert round_order() == ["setup", "R01", "R02"]
+
+
+# ---------- a plate-sipper rig ----------
+
+
+@pytest.fixture
+def sipper_tab(qtbot, quiet_dialogs, sipper_config_path):
+    from tests.control.fluidics_test_config import SIPPER_ROWS
+
+    service = SimpleNamespace(initialized=False, default_config_path=sipper_config_path)
+    widget = ProtocolTab(service)
+    qtbot.addWidget(widget)
+    widget.set_protocol(ProtocolFile(name="sipper", sequences=[dict(row) for row in SIPPER_ROWS]))
+    return widget
+
+
+def _row_item(tab, index):
+    for gi in range(tab.tree.topLevelItemCount()):
+        group = tab.tree.topLevelItem(gi)
+        for ci in range(group.childCount()):
+            if group.child(ci).data(0, Qt.UserRole) == index:
+                return group.child(ci)
+    raise AssertionError(f"row {index} is not in the tree")
+
+
+def test_sipper_rows_are_valid_on_a_sipper_rig(sipper_tab):
+    assert sipper_tab._problems == {}
+    assert "✓ valid" in sipper_tab.validation_label.text()
+
+
+def test_sipper_rows_are_refused_on_a_rig_without_one(tab):
+    from tests.control.fluidics_test_config import SIPPER_ROWS
+
+    tab.set_protocol(ProtocolFile(name="sipper", sequences=[dict(row) for row in SIPPER_ROWS[2:3]]))  # the push
+    assert "no sipper" in tab._problems[0]
+
+
+def test_a_well_the_rig_lacks_is_flagged_in_the_librarys_words(sipper_tab):
+    sipper_tab.protocol.sequences[1]["well"] = "nowhere/A1"
+    sipper_tab.protocol.sequences[3]["well"] = None  # the sipper's port with no well
+    sipper_tab._mark_changed()
+    assert "nowhere" in sipper_tab._problems[1]
+    assert "name a well" in sipper_tab._problems[3]
+
+
+def test_the_tree_shows_each_rows_well_and_the_push_volume(sipper_tab):
+    hyb, push, ssct = (_row_item(sipper_tab, i) for i in (1, 2, 3))
+    assert hyb.text(2) == "1 · A1"  # the sipper's port, and the well it draws from
+    assert push.text(2) == "ssct/A1" and push.text(3) == "710"  # a push has a well, and the config's volume
+    assert ssct.text(2) == "1 · ssct/A1"
+
+
+def test_the_well_field_is_text_and_clearing_it_unsets_the_well(sipper_tab, qtbot):
+    from qtpy.QtWidgets import QLineEdit
+
+    sipper_tab._select_row(1)  # hyb
+    sipper_tab._rebuild_field_editor()
+    well = sipper_tab.field_form.itemAt(_form_row(sipper_tab, "well"), sipper_tab.field_form.FieldRole).widget()
+    assert isinstance(well, QLineEdit) and well.text() == "A1"
+    assert well.completer() is not None and "ssct/H12" in well.completer().model().stringList()
+
+    well.setText("B2")
+    sipper_tab._field_edited(1, "well", well)
+    assert sipper_tab.protocol.sequences[1]["well"] == "B2"
+    well.setText("")
+    sipper_tab._field_edited(1, "well", well)
+    assert "well" not in sipper_tab.protocol.sequences[1]  # unset, so the file carries no `well: null`
+    qtbot.wait(20)  # let the queued re-render run
+
+
+def test_no_sipper_fields_are_offered_without_a_sipper(tab):
+    tab._select_row(1)  # a flow_reagent row on the plain rig
+    tab._rebuild_field_editor()
+    assert _form_row(tab, "well") is None and _form_row(tab, "dip_cycles") is None
+
+
+def test_add_step_offers_push_on_a_sipper_rig(sipper_tab, monkeypatch):
+    from qtpy.QtWidgets import QDialog
+
+    from fluidics.qt.sequence_editor import AddSequenceDialog
+
+    offered = []
+
+    def accept_with(self):
+        offered.extend(self.typeCombo.itemData(i) for i in range(self.typeCombo.count()))
+        self.result_dict = {"type": "push", "well": "ssct/A2", "flow_rate": 2000}
+        return QDialog.Accepted
+
+    monkeypatch.setattr(AddSequenceDialog, "exec_", accept_with)
+    sipper_tab.tree.clearSelection()
+    sipper_tab._add_step()
+    assert "push" in offered
+    assert sipper_tab.protocol.sequences[-1]["well"] == "ssct/A2"
+    assert len(sipper_tab.protocol.sequences) - 1 not in sipper_tab._problems
+
+
+def _form_row(tab, label):
+    for row in range(tab.field_form.rowCount()):
+        item = tab.field_form.itemAt(row, tab.field_form.LabelRole)
+        if item is not None and item.widget() is not None and item.widget().text() == label:
+            return row
+    return None

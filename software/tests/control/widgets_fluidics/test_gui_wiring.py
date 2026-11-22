@@ -56,7 +56,9 @@ def test_signals_are_connected_and_the_imaging_port_feeds_napari():
     import control.widgets_fluidics as widgets_fluidics
 
     wire_src = inspect.getsource(widgets_fluidics.wire_fluidics)
-    assert "signal_reagent_rows.connect(display_tab.reagents_table.set_rows)" in wire_src
+    assert "signal_run_held.connect(display_tab.set_run_held)" in wire_src  # a held run frees the sipper
+    # any job on the fluidics session (a sipper move, a reservoir reset) blocks a protocol start
+    assert "fluidicsDisplayTab.manual_job_active()" in _source("_setup_fluidics_widgets")
     assert "system_ready.connect" in wire_src  # startup recovery waits for Initialize
     assert "refresh_validation" in wire_src  # Initialize re-judges the open protocol
     assert "run_line_provider = protocol_widget.run_line" in wire_src

@@ -89,12 +89,20 @@ class FakeFluidicsPort:
         self.make_safe_calls = 0
         self.restored: List[TecState] = []
         self._tec = tec
+        self.reservoir_checks: List[tuple] = []  # each check_reservoirs() plan
+        self.reservoir_refusal: Optional[str] = None  # set: check_reservoirs() raises it
 
     def validate(self, rows):
         self.validated.append(rows)
 
     def plan(self, rows):
         return tuple(FakePlanEntry(i) for i in range(len(rows)))
+
+    def check_reservoirs(self, plan):
+        self.reservoir_checks.append(plan)
+        if self.reservoir_refusal is not None:
+            raise ValueError(self.reservoir_refusal)
+        return []
 
     def start(self, rows, plan=None):
         entry = self.script.pop(0) if self.script else ("finished",)
