@@ -3,6 +3,7 @@ Unit tests for ConfigRepository.
 """
 
 import pytest
+import yaml
 from pathlib import Path
 import tempfile
 import shutil
@@ -99,6 +100,43 @@ channels:
     repo = ConfigRepository(base_path=temp_dir)
     repo.set_profile("default")
     return repo
+
+
+# As written by the release before connected components spot detection, which had the line-profile settings
+# (displacement_success_window_um, y_window, x_window, min_peak_*, spot_spacing) and the dual_* modes.
+LASER_AF_PROFILE_SAVED_WITH_LINE_PROFILE_DETECTION = """
+version: 1
+x_offset: 1032.0
+y_offset: 904.0
+width: 1536
+height: 256
+pixel_to_um: 0.2143
+x_reference: 1801.7
+has_reference: true
+calibration_timestamp: '2026-09-01 10:22:03'
+pixel_to_um_calibration_distance: 6.0
+laser_af_range: 100.0
+laser_af_averaging_n: 3
+spot_detection_mode: dual_left
+displacement_success_window_um: 1.0
+spot_crop_size: 100
+correlation_threshold: 0.7
+y_window: 96
+x_window: 20
+min_peak_width: 10.0
+min_peak_distance: 10.0
+min_peak_prominence: 0.2
+spot_spacing: 100.0
+focus_camera_exposure_time_ms: 0.8
+focus_camera_analog_gain: 0.0
+initialize_crop_width: 1200
+initialize_crop_height: 800
+reference_image: AAAAAIwuuj2MLjo+6aKLPowuuj4vuug+6aILP7roIj+MLjo/XXRRPy+6aD8AAIA/
+reference_image_shape:
+- 3
+- 4
+reference_image_dtype: float32
+"""
 
 
 class TestConfigRepositoryProfileManagement:
@@ -302,6 +340,15 @@ class TestConfigRepositoryProfileConfigs:
         objectives = repo_with_profile.get_available_objectives()
 
         assert "20x" in objectives
+
+    def test_laser_af_config_saved_with_line_profile_detection_is_not_loaded(self, repo_with_profile, temp_dir):
+        """Laser AF has to be initialized again after the upgrade."""
+        path = temp_dir / "user_profiles" / "default" / "laser_af_configs" / "20x.yaml"
+        path.write_text(LASER_AF_PROFILE_SAVED_WITH_LINE_PROFILE_DETECTION)
+
+        assert repo_with_profile.get_laser_af_config("20x") is None
+        # it is left as it was, for the release that saved it
+        assert path.read_text() == LASER_AF_PROFILE_SAVED_WITH_LINE_PROFILE_DETECTION
 
 
 class TestConfigRepositoryCacheManagement:

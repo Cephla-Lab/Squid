@@ -2,6 +2,7 @@ import time
 from typing import Optional, Tuple
 
 import cv2
+from scipy.ndimage import gaussian_filter
 from datetime import datetime
 import math
 import numpy as np
@@ -85,6 +86,11 @@ class LaserAutofocusController(QObject):
 
         if self.laser_af_properties.has_reference:
             self.reference_crop = self.laser_af_properties.reference_image_cropped
+
+            # Invalidate reference if crop image is missing
+            if self.reference_crop is None:
+                self._log.warning("Loaded laser AF profile is missing reference image. Please re-set reference.")
+                self.laser_af_properties = self.laser_af_properties.model_copy(update={"has_reference": False})
 
         self.camera.set_region_of_interest(
             self.laser_af_properties.x_offset,
@@ -175,6 +181,7 @@ class LaserAutofocusController(QObject):
                 self.laser_af_properties.initialize_crop_width,
                 self.laser_af_properties.initialize_crop_height,
             ),
+            ignore_row_tolerance=True,  # Spot can be anywhere on full frame during init
         )
         if result is None:
             self._log.error("Failed to find laser spot during initialization")
@@ -229,9 +236,7 @@ class LaserAutofocusController(QObject):
             return False
 
         # Move to first position and measure
-        self._move_z(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
-        if self.piezo is not None:
-            time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
+        self._move_z_and_settle(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
 
         result = self._get_laser_spot_centroid()
         if result is None:
@@ -246,8 +251,7 @@ class LaserAutofocusController(QObject):
         x0, y0 = result
 
         # Move to second position and measure
-        self._move_z(self.laser_af_properties.pixel_to_um_calibration_distance)
-        time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
+        self._move_z_and_settle(self.laser_af_properties.pixel_to_um_calibration_distance)
 
         result = self._get_laser_spot_centroid()
         if result is None:
@@ -270,9 +274,7 @@ class LaserAutofocusController(QObject):
             )
 
         # move back to initial position
-        self._move_z(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
-        if self.piezo is not None:
-            time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
+        self._move_z_and_settle(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
 
         # Calculate conversion factor
         if x1 - x0 == 0:
@@ -310,8 +312,38 @@ class LaserAutofocusController(QObject):
             )
         self._log.info("Updated threshold properties")
 
-    def measure_displacement(self) -> float:
+    def _turn_on_laser(self) -> None:
+        """Turn on AF laser. Raises TimeoutError on failure."""
+        self.microcontroller.turn_on_AF_laser()
+        self.microcontroller.wait_till_operation_is_completed()
+
+    def _turn_off_laser(self) -> None:
+        """Turn off AF laser. Raises TimeoutError on failure."""
+        self.microcontroller.turn_off_AF_laser()
+        self.microcontroller.wait_till_operation_is_completed()
+
+    def _turn_off_laser_after_measurement(self) -> None:
+        """Turn off AF laser. A timeout is only logged, because the measurement is already taken."""
+        try:
+            self._turn_off_laser()
+        except TimeoutError:
+            self._log.exception("Turning off AF laser timed out! Laser may still be on.")
+
+    def _get_displacement_from_centroid(self, centroid: tuple) -> float:
+        """Calculate displacement in um from centroid coordinates."""
+        if self.laser_af_properties.x_reference is None:
+            self._log.warning("Cannot calculate displacement - reference position not set")
+            return float("nan")
+        x, y = centroid
+        return (x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
+
+    def measure_displacement(self, search_for_spot: bool = False) -> float:
         """Measure the displacement of the laser spot from the reference position.
+
+        Args:
+            search_for_spot: If True and the spot is not found at the current position, search for it in z.
+                This moves z: it stays where the spot was found, and the displacement returned is the one
+                measured there. If False, z does not move.
 
         Returns:
             float: Displacement in micrometers, or float('nan') if measurement fails
@@ -322,37 +354,104 @@ class LaserAutofocusController(QObject):
             return um
 
         try:
-            # turn on the laser
-            self.microcontroller.turn_on_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            self._turn_on_laser()
         except TimeoutError:
             self._log.exception("Turning on AF laser timed out, failed to measure displacement.")
             return finish_with(float("nan"))
 
-        # get laser spot location
-        result = self._get_laser_spot_centroid()
-
-        # turn off the laser
         try:
-            self.microcontroller.turn_off_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
-        except TimeoutError:
-            self._log.exception("Turning off AF laser timed out!  We got a displacement but laser may still be on.")
-            # Continue with the measurement, but we're essentially in an unknown / weird state here.  It's not clear
-            # what we should do.
-
-        if result is None:
-            self._log.error("Failed to detect laser spot during displacement measurement")
-            return finish_with(float("nan"))  # Signal invalid measurement
-
-        if self.laser_af_properties.x_reference is None:
-            self._log.warning("Cannot calculate displacement - reference position not set")
-            return finish_with(float("nan"))
-
-        x, y = result
-        # calculate displacement
-        displacement_um = (x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
+            displacement_um = self._measure_displacement_with_laser_on(search_for_spot)
+        finally:
+            # Also when the measurement raises, e.g. on a failed move of the search: the laser must not stay on
+            self._turn_off_laser_after_measurement()
         return finish_with(displacement_um)
+
+    def _measure_displacement_with_laser_on(self, search_for_spot: bool) -> float:
+        result = self._get_laser_spot_centroid()
+        if result is not None:
+            # Spot found on first try
+            return self._get_displacement_from_centroid(result)
+
+        self._log.error("Failed to detect laser spot during displacement measurement")
+        return self._search_for_spot_in_z() if search_for_spot else float("nan")
+
+    def _search_for_spot_in_z(self) -> float:
+        """Search for the spot by scanning z through the laser AF range. The AF laser must already be on.
+
+        Returns:
+            float: Displacement in micrometers where the spot was found (z stays at that position), or
+                float('nan') if it was not found (z is restored to where the search started)
+        """
+        search_step_um = 10  # Step size in micrometers
+
+        current_z_um = self._get_z_um()
+        lower_bound_um = current_z_um - self.laser_af_properties.laser_af_range
+        upper_bound_um = current_z_um + self.laser_af_properties.laser_af_range
+        if self.piezo is not None:
+            # For piezo, clamp bounds to valid piezo range (0 to range_um)
+            lower_bound_um = max(0, lower_bound_um)
+            upper_bound_um = min(self.piezo.range_um, upper_bound_um)
+
+        # Generate positions going downward (from current to lower_bound)
+        downward_positions = []
+        pos = current_z_um - search_step_um
+        while pos >= lower_bound_um:
+            downward_positions.append(pos)
+            pos -= search_step_um
+
+        # Generate positions going upward (from current to upper_bound)
+        upward_positions = []
+        pos = current_z_um + search_step_um
+        while pos <= upper_bound_um:
+            upward_positions.append(pos)
+            pos += search_step_um
+
+        # Order positions based on search direction preference
+        if control._def.LASER_AF_SEARCH_DOWN_FIRST:
+            # Search downward first, then upward
+            search_positions_um = downward_positions + [current_z_um] + upward_positions
+        else:
+            # Search upward first, then downward
+            search_positions_um = upward_positions + [current_z_um] + downward_positions
+
+        self._log.info(
+            f"Starting spot search ({'downward' if control._def.LASER_AF_SEARCH_DOWN_FIRST else 'upward'} first): "
+            f"positions {search_positions_um} um"
+        )
+
+        current_pos_um = current_z_um  # Track where we are
+
+        for target_pos_um in search_positions_um:
+            # Move to target position
+            move_um = target_pos_um - current_pos_um
+            if move_um != 0:
+                self._log.info(f"Z search: moving to {target_pos_um:.1f} um (delta: {move_um:+.1f} um)")
+                self._move_z_and_settle(move_um)
+                current_pos_um = target_pos_um
+            else:
+                self._log.info(f"Z search: checking current position {target_pos_um:.1f} um")
+
+            # Attempt spot detection
+            result = self._get_laser_spot_centroid()
+
+            if result is None:
+                self._log.info(f"Z search: no valid spot at {target_pos_um:.1f} um")
+                continue
+
+            displacement_um = self._get_displacement_from_centroid(result)
+            if abs(displacement_um) > search_step_um + 4:
+                self._log.info(
+                    f"Z search: spot at {target_pos_um:.1f} um has displacement {displacement_um:.1f} um (out of range)"
+                )
+                continue
+
+            self._log.info(f"Z search: spot found at {target_pos_um:.1f} um, displacement {displacement_um:.1f} um")
+            return displacement_um
+
+        # Spot not found - move back to original position
+        self._restore_to_position(current_z_um)
+        self._log.warning("Spot not found during z search")
+        return float("nan")
 
     def move_to_target(self, target_um: float) -> bool:
         """Move the stage to reach a target displacement from reference position.
@@ -367,33 +466,50 @@ class LaserAutofocusController(QObject):
             self._log.warning("Cannot move to target - reference not set")
             return False
 
-        current_displacement_um = self.measure_displacement()
+        # Record original z position so we can restore it on failure
+        original_z_um = self._get_z_um()
+
+        current_displacement_um = self.measure_displacement(search_for_spot=self.laser_af_properties.search_for_spot)
         self._log.info(f"Current laser AF displacement: {current_displacement_um:.1f} μm")
 
         if math.isnan(current_displacement_um):
             self._log.error("Cannot move to target: failed to measure current displacement")
+            # measure_displacement already restores position on search failure
             return False
 
         if abs(current_displacement_um) > self.laser_af_properties.laser_af_range:
-            self._log.warning(
-                f"Measured displacement ({current_displacement_um:.1f} μm) is unreasonably large, using previous z position"
-            )
+            self._log.warning(f"Measured displacement ({current_displacement_um:.1f} μm) is unreasonably large")
+            self._restore_to_position(original_z_um)
             return False
 
         um_to_move = target_um - current_displacement_um
-        self._move_z(um_to_move)
+        self._move_z_and_settle(um_to_move)
 
         # Verify using cross-correlation that spot is in same location as reference
         cc_result, correlation = self._verify_spot_alignment()
         self.signal_cross_correlation.emit(correlation)
         if not cc_result:
             self._log.warning("Cross correlation check failed - spots not well aligned")
-            # move back to the current position
-            self._move_z(-um_to_move)
+            # Restore to original position (not just undo last move)
+            self._restore_to_position(original_z_um)
             return False
         else:
             self._log.info("Cross correlation check passed - spots are well aligned")
             return True
+
+    def _restore_to_position(self, target_z_um: float) -> None:
+        """Restore z position to a specific absolute position."""
+        move_um = target_z_um - self._get_z_um()
+        if abs(move_um) > 0.01:  # Only move if difference is significant
+            self._log.info(f"Restoring z position: moving {move_um:.1f} μm")
+            # The acquisition goes on from the restored position when autofocus fails
+            self._move_z_and_settle(move_um)
+
+    def _get_z_um(self) -> float:
+        """Current z position in um, of the piezo if there is one, else of the stage."""
+        if self.piezo is not None:
+            return self.piezo.position
+        return self.stage.get_pos().z_mm * 1000
 
     def _move_z(self, um_to_move: float) -> None:
         if self.piezo is not None:
@@ -402,6 +518,12 @@ class LaserAutofocusController(QObject):
             self.signal_piezo_position_update.emit()
         else:
             self.stage.move_z(um_to_move / 1000)
+
+    def _move_z_and_settle(self, um_to_move: float) -> None:
+        """Move z, then wait for the piezo to settle before the next frame."""
+        self._move_z(um_to_move)
+        if self.piezo is not None:
+            time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
     def apply_relative_offset_um(self, offset_um: float) -> None:
         """Open-loop relative Z move of ``offset_um`` (displacement µm, 1:1 with Z), with NO
@@ -428,6 +550,9 @@ class LaserAutofocusController(QObject):
         if not self.is_initialized:
             self._log.error("Laser autofocus is not initialized, cannot set reference")
             return False
+
+        # Reset image so we only use image from successful detection
+        self.image = None
 
         # turn on the laser
         try:
@@ -456,29 +581,23 @@ class LaserAutofocusController(QObject):
         x, y = result
 
         # Store cropped and normalized reference image
-        center_y = int(reference_image.shape[0] / 2)
-        x_start = max(0, int(x) - self.laser_af_properties.spot_crop_size // 2)
-        x_end = min(reference_image.shape[1], int(x) + self.laser_af_properties.spot_crop_size // 2)
-        y_start = max(0, center_y - self.laser_af_properties.spot_crop_size // 2)
-        y_end = min(reference_image.shape[0], center_y + self.laser_af_properties.spot_crop_size // 2)
-
-        reference_crop = reference_image[y_start:y_end, x_start:x_end].astype(np.float32)
-        self.reference_crop = (reference_crop - np.mean(reference_crop)) / np.max(reference_crop)
+        self.reference_crop = self._normalized_spot_crop(reference_image, int(x))
+        self._log.info(f"Reference crop updated: shape={self.reference_crop.shape}")
 
         self.signal_displacement_um.emit(0)
         self._log.info(f"Set reference position to ({x:.1f}, {y:.1f})")
 
-        self.laser_af_properties = self.laser_af_properties.model_copy(
-            update={"x_reference": x, "has_reference": True}
-        )  # We don't keep reference_crop here to avoid serializing it
+        self.laser_af_properties = self.laser_af_properties.model_copy(update={"x_reference": x, "has_reference": True})
+        # Update the reference image in laser_af_properties
+        # so that self.laser_af_properties.reference_image_cropped stays in sync with self.reference_crop
+        self.laser_af_properties.set_reference_image(self.reference_crop)
 
-        # Update cached file. reference_crop needs to be saved.
+        # Update cached file
         if self._current_profile and self.objectiveStore:
-            # Create config for saving with reference image encoded
+            # The saved x_reference is relative to the full sensor; the reference image is already encoded
             save_config = self.laser_af_properties.model_copy(
-                update={"x_reference": x + self.laser_af_properties.x_offset, "has_reference": True}
+                update={"x_reference": x + self.laser_af_properties.x_offset}
             )
-            save_config.set_reference_image(self.reference_crop)
             self._config_repo.save_laser_af_config(
                 self._current_profile, self.objectiveStore.current_objective, save_config
             )
@@ -508,6 +627,8 @@ class LaserAutofocusController(QObject):
             bool: True if spots are well aligned (correlation > CORRELATION_THRESHOLD), False otherwise
         """
         failure_return_value = False, float("nan")
+        # Reset image so CC verification uses its own frame, not the earlier measurement image
+        self.image = None
 
         # Get current spot image
         try:
@@ -522,7 +643,7 @@ class LaserAutofocusController(QObject):
         self.camera.send_trigger()
         current_image = self.camera.read_frame()
         """
-        self._get_laser_spot_centroid()
+        centroid_result = self._get_laser_spot_centroid()
         current_image = self.image
 
         try:
@@ -540,33 +661,54 @@ class LaserAutofocusController(QObject):
             self._log.error("Failed to get images for cross-correlation check")
             return failure_return_value
 
-        if self.laser_af_properties.x_reference is None:
-            self._log.error("Cannot verify spot alignment - reference position not set")
+        if centroid_result is None:
+            self._log.error("Failed to detect spot centroid for cross-correlation check")
             return failure_return_value
 
-        # Crop and normalize current image
-        center_x = int(self.laser_af_properties.x_reference)
-        center_y = int(current_image.shape[0] / 2)
+        # Crop current image around the reference position to detect off-position spots
+        # If the spot moved to the wrong location (e.g., debris), it will appear off-center
+        # in this crop, resulting in low correlation and failing the CC check
+        current_peak_x = centroid_result[0]
 
-        x_start = max(0, center_x - self.laser_af_properties.spot_crop_size // 2)
-        x_end = min(current_image.shape[1], center_x + self.laser_af_properties.spot_crop_size // 2)
-        y_start = max(0, center_y - self.laser_af_properties.spot_crop_size // 2)
-        y_end = min(current_image.shape[0], center_y + self.laser_af_properties.spot_crop_size // 2)
+        # Log if detected spot is far from reference (potential debris/contamination)
+        spot_offset = abs(current_peak_x - self.laser_af_properties.x_reference)
+        if spot_offset > 20:  # pixels
+            self._log.warning(
+                f"Detected spot at x={current_peak_x:.1f} is {spot_offset:.1f} pixels from reference "
+                f"x={self.laser_af_properties.x_reference:.1f} - possible debris/contamination"
+            )
 
-        current_crop = current_image[y_start:y_end, x_start:x_end].astype(np.float32)
-        current_norm = (current_crop - np.mean(current_crop)) / np.max(current_crop)
-
-        # Calculate normalized cross correlation
-        correlation = np.corrcoef(current_norm.ravel(), self.reference_crop.ravel())[0, 1]
+        # Calculate normalized cross correlation. It is nan for a blank crop, which divides by zero.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            current_norm = self._normalized_spot_crop(current_image, int(self.laser_af_properties.x_reference))
+            correlation = np.corrcoef(current_norm.ravel(), self.reference_crop.ravel())[0, 1]
 
         self._log.info(f"Cross correlation with reference: {correlation:.3f}")
 
-        # Check if correlation exceeds threshold
-        if correlation < self.laser_af_properties.correlation_threshold:
+        # Check if correlation exceeds threshold; no correlation is no alignment either
+        if not np.isfinite(correlation) or correlation < self.laser_af_properties.correlation_threshold:
             self._log.warning("Cross correlation check failed - spots not well aligned")
             return False, correlation
 
         return True, correlation
+
+    def _normalized_spot_crop(self, image: np.ndarray, center_x: int) -> np.ndarray:
+        """Crop spot_crop_size around center_x on the centre row, then filter and normalize it.
+
+        The reference crop and the crop compared with it both come from here, so their cross correlation
+        compares like with like.
+        """
+        half_size = self.laser_af_properties.spot_crop_size // 2
+        center_y = int(image.shape[0] / 2)
+        x_start = max(0, center_x - half_size)
+        x_end = min(image.shape[1], center_x + half_size)
+        y_start = max(0, center_y - half_size)
+        y_end = min(image.shape[0], center_y + half_size)
+
+        crop = image[y_start:y_end, x_start:x_end].astype(np.float32)
+        if self.laser_af_properties.filter_sigma is not None and self.laser_af_properties.filter_sigma > 0:
+            crop = gaussian_filter(crop, sigma=self.laser_af_properties.filter_sigma)
+        return (crop - np.mean(crop)) / np.max(crop)
 
     def get_new_frame(self):
         # IMPORTANT: This assumes that the autofocus laser is already on!
@@ -574,12 +716,20 @@ class LaserAutofocusController(QObject):
         return self.camera.read_frame()
 
     def _get_laser_spot_centroid(
-        self, remove_background: bool = False, use_center_crop: Optional[Tuple[int, int]] = None
+        self,
+        remove_background: bool = False,
+        use_center_crop: Optional[Tuple[int, int]] = None,
+        ignore_row_tolerance: bool = False,
     ) -> Optional[Tuple[float, float]]:
         """Get the centroid location of the laser spot.
 
         Averages multiple measurements to improve accuracy. The number of measurements
         is controlled by LASER_AF_AVERAGING_N.
+
+        Args:
+            remove_background: Apply background removal using top-hat filter
+            use_center_crop: (width, height) to crop around center before detection
+            ignore_row_tolerance: If True, disable row tolerance filtering (for initialization)
 
         Returns:
             Optional[Tuple[float, float]]: (x,y) coordinates of spot centroid, or None if detection fails
@@ -599,7 +749,7 @@ class LaserAutofocusController(QObject):
                     self._log.warning(f"Failed to read frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}")
                     continue
 
-                self.image = image  # store for debugging # TODO: add to return instead of storing
+                self.image = image.copy()  # Always store latest frame for error debugging
                 full_height, full_width = image.shape[:2]
 
                 if use_center_crop is not None:
@@ -610,15 +760,12 @@ class LaserAutofocusController(QObject):
                     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (50, 50))  # TODO: tmp hard coded value
                     image = cv2.morphologyEx(image, cv2.MORPH_TOPHAT, kernel)
 
-                # calculate centroid
-                spot_detection_params = {
-                    "y_window": self.laser_af_properties.y_window,
-                    "x_window": self.laser_af_properties.x_window,
-                    "min_peak_width": self.laser_af_properties.min_peak_width,
-                    "min_peak_distance": self.laser_af_properties.min_peak_distance,
-                    "min_peak_prominence": self.laser_af_properties.min_peak_prominence,
-                    "spot_spacing": self.laser_af_properties.spot_spacing,
-                }
+                # calculate centroid using connected components parameters
+                spot_detection_params = self.laser_af_properties.spot_detection_params()
+                if ignore_row_tolerance:
+                    # Use large row_tolerance during initialization when spot location is unknown
+                    spot_detection_params["row_tolerance"] = image.shape[0]
+
                 result = utils.find_spot_location(
                     image,
                     mode=self.laser_af_properties.get_spot_detection_mode(),
@@ -639,14 +786,17 @@ class LaserAutofocusController(QObject):
                 else:
                     x, y = result
 
+                # Check if displacement from reference exceeds the success window (in pixels)
                 if (
                     self.laser_af_properties.has_reference
                     and self.laser_af_properties.x_reference is not None
-                    and abs(x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
-                    > self.laser_af_properties.laser_af_range
+                    and abs(x - self.laser_af_properties.x_reference)
+                    > self.laser_af_properties.displacement_success_window_pixels
                 ):
                     self._log.warning(
-                        f"Spot detected at ({x:.1f}, {y:.1f}) is out of range ({self.laser_af_properties.laser_af_range:.1f} μm), skipping it."
+                        f"Spot detected at ({x:.1f}, {y:.1f}) is outside displacement window "
+                        f"({abs(x - self.laser_af_properties.x_reference):.1f} > "
+                        f"{self.laser_af_properties.displacement_success_window_pixels:.0f} pixels), skipping it."
                     )
                     continue
 
@@ -660,8 +810,8 @@ class LaserAutofocusController(QObject):
                 )
                 continue
 
-        # optionally display the image
-        if control._def.LASER_AF_DISPLAY_SPOT_IMAGE:
+        # optionally display the image; there is none when the last frame could not be read
+        if control._def.LASER_AF_DISPLAY_SPOT_IMAGE and image is not None:
             self.image_to_display.emit(image)
 
         # Check if we got enough successful detections

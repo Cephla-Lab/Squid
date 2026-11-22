@@ -170,7 +170,7 @@ class TestMigrationHelpers:
             assert config.pixel_to_um == 0.75
             assert config.has_reference is True
             assert config.laser_af_averaging_n == 5
-            assert config.spot_detection_mode == SpotDetectionMode.DUAL_LEFT
+            assert config.spot_detection_mode == SpotDetectionMode.MULTI_LEFT
             assert config.reference_image == "base64data"
             assert config.reference_image_shape == [256, 1024]
             assert config.reference_image_dtype == "float32"
