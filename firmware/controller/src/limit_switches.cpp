@@ -4,6 +4,7 @@
 
 #include "globals.h"
 #include "utils/limit_switch_config.h"
+#include "y_axis_test_build.h"
 
 // Indexed by internal axis (x, y, z are 1, 0, 2); entries for other axes are never used. Stock settings until
 // limit_switches_load() reads the stored record.
@@ -12,6 +13,19 @@ static uint8_t limit_switch_config[TOTAL_AXES] = {LSC_DEFAULT, LSC_DEFAULT, LSC_
 static bool is_limit_switch_axis(uint8_t internal_axis)
 {
     return internal_axis == x || internal_axis == y || internal_axis == z;
+}
+
+// The config an axis runs with: what is programmed into the TMC4361A and what masks its switch reads.
+// limit_switch_config[] itself stays what EEPROM and the host say, and is what is saved.
+static uint8_t effective_config(uint8_t internal_axis)
+{
+#ifdef Y_AXIS_TEST_BUILD
+    // TEST IMAGE (y_axis_test_build.h): both Y inputs disabled, whatever is stored or requested. This
+    // is the firmware's existing setting for an axis without switches, forced for Y.
+    if (internal_axis == y)
+        return 0x00;
+#endif
+    return limit_switch_config[internal_axis];
 }
 
 void limit_switches_load()
@@ -31,7 +45,7 @@ void limit_switches_program(uint8_t internal_axis, bool flipped)
 {
     if (!is_limit_switch_axis(internal_axis))
         return;
-    uint8_t config = limit_switch_config[internal_axis];
+    uint8_t config = effective_config(internal_axis);
     TMC4361ATypeDef *tdef = &tmc4361[internal_axis];
 
     // Both inputs are programmed for every axis (Z homing needs the left call too).
@@ -45,22 +59,22 @@ void limit_switches_program(uint8_t internal_axis, bool flipped)
 
 uint8_t limit_switches_homing_read(uint8_t internal_axis, uint8_t toward)
 {
-    return tmc4361A_readLimitSwitches(&tmc4361[internal_axis]) & lsc_homing_mask(limit_switch_config[internal_axis], toward);
+    return tmc4361A_readLimitSwitches(&tmc4361[internal_axis]) & lsc_homing_mask(effective_config(internal_axis), toward);
 }
 
 uint8_t limit_switches_homing_event(uint8_t internal_axis, uint8_t toward)
 {
-    return tmc4361A_readSwitchEvent(&tmc4361[internal_axis]) & lsc_homing_mask(limit_switch_config[internal_axis], toward);
+    return tmc4361A_readSwitchEvent(&tmc4361[internal_axis]) & lsc_homing_mask(effective_config(internal_axis), toward);
 }
 
 uint8_t limit_switches_read_event(uint8_t internal_axis)
 {
-    return tmc4361A_readSwitchEvent(&tmc4361[internal_axis]) & lsc_enabled_mask(limit_switch_config[internal_axis]);
+    return tmc4361A_readSwitchEvent(&tmc4361[internal_axis]) & lsc_enabled_mask(effective_config(internal_axis));
 }
 
 uint8_t limit_switch_homing_polarity(uint8_t internal_axis)
 {
-    return lsc_polarity(limit_switch_config[internal_axis], TMC4361_homing_sw[internal_axis]);
+    return lsc_polarity(effective_config(internal_axis), TMC4361_homing_sw[internal_axis]);
 }
 
 bool limit_switches_set(uint8_t protocol_axis, uint8_t config)

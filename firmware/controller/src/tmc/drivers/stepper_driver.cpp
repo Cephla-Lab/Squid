@@ -44,6 +44,10 @@ void tmc_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361) {
    the *_MOTOR_RMS_CURRENT_mA globals when it is true. INITIALIZE then re-applies
    those globals on every run. */
 bool tmc_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio) {
+  /* Y-axis test image only (y_axis_test_build.h); no stock axis has a cap. A request above the cap is
+     applied at the cap and reported as applied, so the host's configuration goes through unchanged. */
+  if (tmc4361A->max_current_rms_ma > 0.0f && current_rms_ma > tmc4361A->max_current_rms_ma)
+    current_rms_ma = tmc4361A->max_current_rms_ma;
   if (tmc4361A->driver_type == DRIVER_TMC2240) return tmc2240_driver_set_current(tmc4361A, current_rms_ma, hold_ratio);
   if (tmc4361A->driver_type == DRIVER_TMC2660) return tmc2660_driver_set_current(tmc4361A, current_rms_ma, hold_ratio);
   return false;  // no identified driver: nothing was written, so nothing was applied

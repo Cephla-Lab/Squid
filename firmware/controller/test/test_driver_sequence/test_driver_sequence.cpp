@@ -1304,6 +1304,45 @@ void test_set_current_returns_false_and_writes_nothing_on_unknown_driver(void)
 }
 
 /*
+  Y-axis test image (src/y_axis_test_build.h): an axis can carry a cap on its run
+  current. The dispatcher applies it, because every current setting goes through
+  the dispatcher (boot, CONFIGURE_STEPPER_DRIVER, INITIALIZE), and reports the
+  capped current as applied so the host's configuration is accepted unchanged.
+  Stock firmware sets no cap (0).
+*/
+void test_set_current_applies_the_axis_cap_and_reports_it_applied(void)
+{
+    /* TMC2660 with the X/Y sense resistor: 1000 mA asked for, 100 mA applied.
+       CS 2 is 3/32 of full scale against the stock CS 29's 30/32: a tenth. */
+    g_axis.driver_type        = DRIVER_TMC2660;
+    g_axis.r_sense            = 0.22f;
+    g_axis.max_current_rms_ma = 100.0f;
+    TEST_ASSERT_TRUE(tmc_driver_set_current(&g_axis, 1000.0f, 0.25f));
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(2, g_axis.cscaleParam[CSCALE_IDX], "1000 mA under a 100 mA cap is CS 2");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(63, g_axis.cscaleParam[HOLDSCALE_IDX], "the hold ratio is left alone");
+
+    /* A request below the cap is applied as asked */
+    TEST_ASSERT_TRUE(tmc_driver_set_current(&g_axis, 50.0f, 0.25f));
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(1, g_axis.cscaleParam[CSCALE_IDX], "50 mA under a 100 mA cap is still 50 mA, CS 1");
+
+    /* No cap: the stock value */
+    g_axis.max_current_rms_ma = 0.0f;
+    TEST_ASSERT_TRUE(tmc_driver_set_current(&g_axis, 1000.0f, 0.25f));
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(29, g_axis.cscaleParam[CSCALE_IDX], "no cap: 1000 mA is the stock CS 29");
+
+    /* TMC2240 at the X/Y current range: IRUN 1 against the stock IRUN 21 */
+    memset(&g_axis, 0, sizeof g_axis);
+    g_axis.driver_type        = DRIVER_TMC2240;
+    g_axis.current_range      = 1;
+    g_axis.current_range_floor = 1;
+    g_axis.max_current_rms_ma = 100.0f;
+    reset_trace();
+    TEST_ASSERT_TRUE(tmc_driver_set_current(&g_axis, 1000.0f, 0.5f));
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00070101u, cover_write_value(0x10),
+        "1000 mA under a 100 mA cap at CURRENT_RANGE 1 is IRUN 1, IHOLD 1");
+}
+
+/*
   The same state through the other value-returning dispatcher, asserted next to
   it so the two contracts cannot drift apart again unnoticed.
 */
@@ -1403,6 +1442,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_probe_records_raw_word_on_every_exit_path);
     RUN_TEST(test_driver_ready_rejects_unknown_and_never_probed_axes);
     RUN_TEST(test_set_current_returns_false_and_writes_nothing_on_unknown_driver);
+    RUN_TEST(test_set_current_applies_the_axis_cap_and_reports_it_applied);
     RUN_TEST(test_config_stallguard_returns_zero_and_writes_nothing_on_unknown_driver);
     RUN_TEST(test_config_intact_reads_spiout_conf_once_and_matches_its_drivers_word);
     RUN_TEST(test_config_intact_is_false_and_reads_nothing_on_unknown_driver);

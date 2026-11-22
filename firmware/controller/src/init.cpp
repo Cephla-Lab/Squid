@@ -5,6 +5,7 @@
 #include "tmc/drivers/driver_probe.h"
 #include "tmc/drivers/stepper_driver.h"
 #include "trigger_pins.h"
+#include "y_axis_test_build.h"
 
 /*
   Boot-time driver report (design M7: host visibility of the driver type is a
@@ -244,6 +245,12 @@ void init_stages()
   tmc4361[x].r_sense = R_sense_xy;  tmc4361[x].current_range = tmc4361[x].current_range_floor = CURRENT_RANGE_XY;
   tmc4361[y].r_sense = R_sense_xy;  tmc4361[y].current_range = tmc4361[y].current_range_floor = CURRENT_RANGE_XY;
   tmc4361[z].r_sense = R_sense_z;   tmc4361[z].current_range = tmc4361[z].current_range_floor = CURRENT_RANGE_Z;
+
+#ifdef Y_AXIS_TEST_BUILD
+  // TEST IMAGE (y_axis_test_build.h): cap Y's run current. Here for the same reason as the lines
+  // above: tmc4361A_init() has just cleared the field and the first tmc_driver_set_current() follows.
+  tmc4361[y].max_current_rms_ma = Y_AXIS_TEST_MAX_RMS_CURRENT_MA;
+#endif
 
   // SPI
   SPI.begin();

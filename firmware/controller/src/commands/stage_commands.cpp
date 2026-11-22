@@ -2,6 +2,7 @@
 
 #include "../limit_switches.h"
 #include "../tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
+#include "../y_axis_test_build.h"
 
 // Surface a failed move whose callback had already claimed
 // mcu_cmd_execution_in_progress = true. Unwinds the in_progress flag
@@ -560,6 +561,13 @@ void callback_set_lead_screw_pitch()
 
 void callback_home_or_zero()
 {
+#ifdef Y_AXIS_TEST_BUILD
+    // TEST IMAGE (y_axis_test_build.h): a home of Y makes Y's present position 0 and is finished; Y
+    // does not move and its switch is not consulted. An XY home goes on from here as a home of X.
+    if (y_axis_test_take_home_command())
+        return;
+#endif
+
     // zeroing
     if (buffer_rx[3] == HOME_OR_ZERO_ZERO)
     {
