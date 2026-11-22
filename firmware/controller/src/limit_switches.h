@@ -26,6 +26,9 @@ uint8_t limit_switches_homing_event(uint8_t internal_axis, uint8_t toward);
 // check_limits: events of enabled inputs only (a disabled input does not stop the motor, so it ends no move).
 uint8_t limit_switches_read_event(uint8_t internal_axis);
 
+// The config stored for X, Y or Z: what EEPROM held at power-up, or the host's last SET_LIMIT_SWITCH_CONFIG.
+uint8_t limit_switches_stored_config(uint8_t internal_axis);
+
 // SET_LIMIT_SWITCH_CONFIG: protocol axis X/Y/Z only and config <= 0x0F, otherwise false and nothing changes.
 // Stores the config, reprograms the axis, re-arms homing and saves the record to EEPROM.
 bool limit_switches_set(uint8_t protocol_axis, uint8_t config);

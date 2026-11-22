@@ -3,6 +3,7 @@
 #ifdef Y_AXIS_TEST_BUILD
 
 #include "globals.h"
+#include "limit_switches.h"
 
 #pragma message("TEMPORARY Y-AXIS TEST IMAGE: Y limit switches ignored, Y home does not move, Y current capped (y_axis_test_build.h)")
 
@@ -25,6 +26,13 @@ bool y_axis_test_take_home_command()
     // bytes read as a home of X. Nothing reads buffer_rx again after the callback returns.
     buffer_rx[2] = AXIS_X;
     return false;
+}
+
+void y_axis_test_status_fields(uint8_t out[2])
+{
+    // STATUS reports every input, enabled or not, and reading it clears nothing.
+    y_axis_test_pack_status(tmc4361A_readLimitSwitches(&tmc4361[y]), tmc4361A_readLimitSwitches(&tmc4361[x]),
+                            limit_switches_stored_config(y), limit_switches_stored_config(x), out);
 }
 
 #endif /* Y_AXIS_TEST_BUILD */

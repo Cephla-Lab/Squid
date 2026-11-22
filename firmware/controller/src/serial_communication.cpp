@@ -1,6 +1,7 @@
 #include "serial_communication.h"
 #include "utils/limit_switch_config.h"
 #include "utils/focus_wheel.h"
+#include "y_axis_test_build.h"
 
 void process_serial_message()
 {
@@ -156,6 +157,13 @@ void send_position_update()
       buffer_tx[20] = 0;
       buffer_tx[21] = 0;
     }
+
+#ifdef Y_AXIS_TEST_BUILD
+    // TEST IMAGE (y_axis_test_build.h): bytes 20-21 report the X and Y limit inputs and stored settings.
+    // Not while encoder reporting owns the two bytes; a startup verdict packet overwrites them just below.
+    if (encoder_report_axis == 0xFF)
+      y_axis_test_status_fields(&buffer_tx[20]);
+#endif
 
     // Firmware 1.9: a startup verdict packet (hv_packet_status sent the verdict) carries the startup reply there
     if (!checksum_error && startup_verdict_pending)

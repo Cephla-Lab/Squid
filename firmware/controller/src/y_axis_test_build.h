@@ -18,9 +18,14 @@
        asks for: init.cpp sets the cap on the axis and tmc_driver_set_current() applies it, which is
        the one function every current setting goes through (boot, CONFIGURE_STEPPER_DRIVER,
        INITIALIZE).
+    4. Status bytes 20-21, which stock firmware sends as 0, report the X and Y limit inputs as they
+       read now and the limit-switch settings stored in the controller (y_axis_test_pack_status below;
+       firmware/tools/y_switch_monitor.py prints them). Not while encoder reporting is on, and not in
+       a startup verdict packet: those own the two bytes.
 
-  X, Z and the filter wheels are unchanged. The host cannot tell this image from stock: it reports
-  the stock firmware version and accepts every command as before.
+  X, Z and the filter wheels are unchanged. Squid cannot tell this image from stock: it reports the
+  stock firmware version, accepts every command as before, and no Squid version reads bytes 20-21 of
+  an ordinary packet.
 
   With Y's switches ignored, the low current is the only thing that limits what Y does at the end of
   its travel, and Y's position is counted from wherever the stage stood at the last "home".
@@ -35,6 +40,24 @@
 #ifndef Y_AXIS_TEST_MAX_RMS_CURRENT_MA
 #define Y_AXIS_TEST_MAX_RMS_CURRENT_MA 100
 #endif
+
+#include <stdint.h>
+
+// Status bytes 20-21. Inputs are in tmc4361A_readLimitSwitches format (bit 0 left, bit 1 right) and
+// configs are the stored nibbles (utils/limit_switch_config.h).
+//   byte 20: bit 7 = 1 (this image), bits 5-4 = X inputs active now, bits 1-0 = Y inputs active now
+//   byte 21: high nibble = X's stored config, low nibble = Y's stored config
+// X is read under its stored config, as stock firmware reads it. Y is read under this image's forced
+// config, both inputs active-low: "active" means the input is low, whatever polarity is stored for Y.
+static inline void y_axis_test_pack_status(uint8_t y_inputs, uint8_t x_inputs, uint8_t y_stored, uint8_t x_stored,
+                                           uint8_t out[2])
+{
+    out[0] = (uint8_t)(0x80 | ((x_inputs & 0x03) << 4) | (y_inputs & 0x03));
+    out[1] = (uint8_t)(((x_stored & 0x0F) << 4) | (y_stored & 0x0F));
+}
+
+// send_position_update: fill status bytes 20-21 (out = &buffer_tx[20]).
+void y_axis_test_status_fields(uint8_t out[2]);
 
 // HOME_OR_ZERO, called before the command is looked at. True: it was a home of Y, and it is
 // finished. False: carry on with the command; an XY home has by then become a home of X.

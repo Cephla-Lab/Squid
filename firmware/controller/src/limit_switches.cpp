@@ -77,6 +77,11 @@ uint8_t limit_switch_homing_polarity(uint8_t internal_axis)
     return lsc_polarity(effective_config(internal_axis), TMC4361_homing_sw[internal_axis]);
 }
 
+uint8_t limit_switches_stored_config(uint8_t internal_axis)
+{
+    return limit_switch_config[internal_axis];
+}
+
 bool limit_switches_set(uint8_t protocol_axis, uint8_t config)
 {
     if (protocol_axis != AXIS_X && protocol_axis != AXIS_Y && protocol_axis != AXIS_Z)
