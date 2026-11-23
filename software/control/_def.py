@@ -1098,6 +1098,12 @@ LASER_AF_INITIALIZE_CROP_HEIGHT = 800
 LASER_AF_SPOT_SEARCH = False
 LASER_AF_SPOT_SEARCH_OFFSETS_UM = [5, -5, 10, -10, 15, -15, 20, -20]
 LASER_AF_STOP_ON_SPOT_LOSS = False
+# Acquisitions with laser AF write one row per laser AF call to laser_af.csv in the experiment folder, and a summary
+# per time point (counts, |displacement|, the focus surface) to laser_af_summary.json and the log.
+LASER_AF_SAVE_RECORD = True
+# Also save the focus-camera frame of each laser AF call (laser_af_frames/<time point>/ in the experiment folder):
+# one 8-bit BMP per call, about 0.4 MB for a 1536 x 256 crop.
+LASER_AF_SAVE_FRAMES = False
 
 MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT = False
 MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT = False

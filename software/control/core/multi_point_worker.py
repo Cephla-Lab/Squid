@@ -54,6 +54,7 @@ from control.core.mosaic_utils import (
     parse_well_id,
 )
 from control.core.backpressure import BackpressureController, BackpressureValues
+from control.core.laser_af_record import LaserAFRecord
 from squid.config import CameraPixelFormat
 
 # Module-level logger for static methods
@@ -100,6 +101,7 @@ class MultiPointWorker:
     # What a failed per-FOV laser AF does; __init__ reads them from control._def. Off: the FOV is imaged where it is.
     _laser_af_search_offsets_um: Tuple[float, ...] = ()
     _laser_af_stop_on_spot_loss: bool = False
+    _laser_af_record: Optional[LaserAFRecord] = None  # laser_af.csv; None: not recorded
 
     def __init__(
         self,
@@ -177,6 +179,10 @@ class MultiPointWorker:
         self.experiment_ID = acquisition_parameters.experiment_ID
         self.base_path = acquisition_parameters.base_path
         self.experiment_path = os.path.join(self.base_path or "", self.experiment_ID or "")
+        if self.do_reflection_af and control._def.LASER_AF_SAVE_RECORD and self.experiment_ID:
+            self._laser_af_record = LaserAFRecord(
+                self.experiment_path, save_frames=bool(control._def.LASER_AF_SAVE_FRAMES)
+            )
         self.selected_configurations = acquisition_parameters.selected_configurations
 
         # Pre-compute acquisition metadata that remains constant throughout the run.
@@ -603,6 +609,12 @@ class MultiPointWorker:
                 self.camera.remove_frame_callback(this_image_callback_id)
 
             self._finish_jobs()
+
+            if self._laser_af_record is not None:
+                try:
+                    self._laser_af_record.close()  # laser_af_summary.json, and its lines in the log
+                except Exception:
+                    self._log.exception("Could not summarize the laser AF record")
 
             # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
             reason = self.end_reason = self._compute_end_reason()
@@ -1364,9 +1376,13 @@ class MultiPointWorker:
                     self.autofocusController.wait_till_autofocus_has_completed()
         else:
             self._log.info("laser reflection af")
+            record = self._laser_af_record_start()
             af_succeeded = self._laser_af_anchor(region_id, fov, restore_on_failure=False)
-            if not af_succeeded and self._laser_af_search_offsets_um:
+            displacement_um = getattr(self.laser_auto_focus_controller, "last_displacement_um", math.nan)
+            searched = not af_succeeded and bool(self._laser_af_search_offsets_um)
+            if searched:
                 af_succeeded = self._search_for_laser_af_spot(region_id, fov)
+            self._laser_af_record_add(record, region_id, fov, af_succeeded, displacement_um, searched)
             if not af_succeeded:
                 self._laser_af_failures += 1
                 if self._laser_af_stop_on_spot_loss and not self.abort_requested_fn():  # not over a user abort
@@ -1374,6 +1390,50 @@ class MultiPointWorker:
                 return False
             self._laser_af_successes += 1
         return True
+
+    def _laser_af_z_um(self) -> float:
+        """The focus height for the laser AF record: stage z, plus the piezo when laser AF moves the piezo (um)."""
+        piezo = getattr(self.laser_auto_focus_controller, "piezo", None)
+        return self.stage.get_pos().z_mm * 1000 + (piezo.position if piezo is not None else 0.0)
+
+    def _laser_af_record_start(self) -> Optional[Tuple[float, float]]:
+        """(start time, z before) of a laser AF call to record, or None when there is no record."""
+        if self._laser_af_record is None:
+            return None
+        try:
+            return time.time(), self._laser_af_z_um()
+        except Exception:
+            self._log.exception("laser AF record: could not read z before the AF")
+            return time.time(), math.nan
+
+    def _laser_af_record_add(self, record, region_id, fov, ok, displacement_um, searched, channel_name=None) -> None:
+        """One row of laser_af.csv for the laser AF call that _laser_af_record_start() began. Never raises."""
+        if record is None:
+            return
+        start_time, z_before_um = record
+        try:
+            laser_af = self.laser_auto_focus_controller
+            pos = self.stage.get_pos()
+            row = {
+                "time": round(start_time, 3),
+                "time_point": self.time_point,
+                "region": region_id,
+                "fov": fov,
+                "channel": channel_name or "",
+                "x_mm": round(pos.x_mm, 4),
+                "y_mm": round(pos.y_mm, 4),
+                "z_before_um": round(z_before_um, 3),
+                "z_after_um": round(self._laser_af_z_um(), 3),
+                "displacement_um": round(float(displacement_um), 3),
+                "correlation": round(float(getattr(laser_af, "last_correlation", math.nan)), 4),
+                "ok": bool(ok),
+                "target_um": self.region_laser_af_offsets.get(region_id, 0.0),
+                "af_time_s": round(time.time() - start_time, 3),
+                "searched": bool(searched),
+            }
+            self._laser_af_record.add(row, getattr(laser_af, "image", None))
+        except Exception:
+            self._log.exception(f"laser AF record: could not record region '{region_id}' FOV {fov}")
 
     def _search_for_laser_af_spot(self, region_id, fov) -> bool:
         """After a failed per-FOV laser AF: step the piezo to each search offset from where the AF left it and
@@ -1504,7 +1564,11 @@ class MultiPointWorker:
         even if the FOV's per-FOV AF had failed), else the FOV's current value (the previous anchor stands and
         the channel offset is still applied from it).
         """
-        if self._laser_af_anchor(region_id, fov, restore_on_failure=True, channel_name=config.name):
+        record = self._laser_af_record_start()
+        anchored = self._laser_af_anchor(region_id, fov, restore_on_failure=True, channel_name=config.name)
+        displacement_um = getattr(self.laser_auto_focus_controller, "last_displacement_um", math.nan)
+        self._laser_af_record_add(record, region_id, fov, anchored, displacement_um, False, config.name)
+        if anchored:
             # The AF consumed the previous channel's offset: Z is at the anchored plane again.
             self._current_z_offset_um = 0.0
             self._laser_af_per_stack_successes += 1

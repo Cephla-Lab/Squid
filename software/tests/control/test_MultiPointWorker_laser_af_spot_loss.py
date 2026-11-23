@@ -34,15 +34,19 @@ class _SurfaceLaserAF:
         self.image = None
         self.characterization_mode = False
 
+    def _displacement(self):
+        d = self.piezo.position - self.surface_um
+        self.last_displacement_um = d if abs(d) <= self.capture_um else math.nan
+        return self.last_displacement_um
+
     def measure_displacement(self):
         self.measured_at.append(self.piezo.position)
-        d = self.piezo.position - self.surface_um
-        return d if abs(d) <= self.capture_um else math.nan
+        return self._displacement()
 
     def move_to_target(self, target_um):
         self.move_to_target_calls += 1
-        d = self.piezo.position - self.surface_um
-        if abs(d) > self.capture_um:
+        d = self._displacement()
+        if math.isnan(d):
             return False
         self.piezo.move_to(self.piezo.position + target_um - d)
         return True
