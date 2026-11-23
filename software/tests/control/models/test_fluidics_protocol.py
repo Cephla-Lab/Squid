@@ -4,6 +4,7 @@ import yaml
 from control.models.fluidics_protocol import (
     CoordinatesBlock,
     ProtocolFile,
+    ReleaseAndSettle,
     SettingsBlock,
     expand_rounds,
     folder_problems,
@@ -282,3 +283,43 @@ def test_resolve_carries_laser_af_per_stack_into_the_settings_block():
         {"z_stack": {"nz": 3, "order": "Z FIRST"}, "autofocus": {"laser_af": True, "laser_af_per_stack": True}}
     )
     assert settings_block_from_acquisition(data, "acquisition.yaml").autofocus.laser_af_per_stack is True
+
+
+def test_release_and_settle_is_off_unless_the_header_names_it(tmp_path):
+    path = tmp_path / "p.yaml"
+    save_protocol(_protocol(), str(path))
+    assert "release_and_settle" not in yaml.safe_load(path.read_text())["imaging"]
+    assert load_protocol(str(path)).imaging.release_and_settle is None
+
+
+def test_release_and_settle_round_trips_with_its_defaults(tmp_path):
+    p = _protocol()
+    p.imaging.release_and_settle = ReleaseAndSettle(release_port=30, alternate_port=15)
+    path = tmp_path / "p.yaml"
+    save_protocol(p, str(path))
+    header = yaml.safe_load(path.read_text())["imaging"]["release_and_settle"]
+    assert header == {
+        "release_port": 30,
+        "alternate_port": 15,
+        "tolerance_um": 0.2,
+        "window_s": 5.0,
+        "timeout_s": 90.0,
+        "on_timeout": "hold",
+        "fixed_wait_s": 15.0,
+    }
+    assert load_protocol(str(path)).imaging.release_and_settle == p.imaging.release_and_settle
+
+
+@pytest.mark.parametrize(
+    "fields, match",
+    [
+        ({"release_port": 30, "alternate_port": 30}, "alternate_port must differ"),
+        ({"release_port": 30, "window_s": 10, "timeout_s": 15}, "at least two windows"),
+        ({"release_port": 30, "on_timeout": "ignore"}, "on_timeout"),
+        ({"release_port": 30, "tolerance": 1}, "tolerance"),
+        ({}, "release_port"),
+    ],
+)
+def test_release_and_settle_rejects_settings_that_cannot_work(fields, match):
+    with pytest.raises(ValueError, match=match):
+        ProtocolFile(imaging={"release_and_settle": fields})

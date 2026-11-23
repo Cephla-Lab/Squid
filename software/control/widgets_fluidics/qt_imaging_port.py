@@ -15,7 +15,6 @@ import squid.logging
 from control.core.acquisition_settings import acquisition_data_from_blocks, apply_acquisition_settings
 from control.core.fluidics_protocol.ports import ImagingRequest, ImagingResult, ImagingStartError
 
-
 _NO_RESTORE = object()  # distinguishes "nothing to restore" from a legitimate None base path
 
 
@@ -72,6 +71,21 @@ class QtImagingPort(QObject):
         if error is not None:
             raise error
         return self._current
+
+    def measure_focus_um(self) -> Optional[float]:
+        """One laser AF displacement reading at the current position, z untouched (the runner's release-and-settle
+        wait; runner thread, like the acquisition worker's AF). None: no laser AF controller, not initialized,
+        no reference, or an acquisition is running; nan: no spot this time."""
+        laf = getattr(self._controller, "laserAutoFocusController", None)
+        if laf is None or not laf.is_initialized or not laf.laser_af_properties.has_reference:
+            return None
+        if self._controller.acquisition_in_progress():
+            return None
+        try:
+            return float(laf.measure_displacement())
+        except Exception as e:
+            self._log.warning(f"Laser AF displacement reading failed: {e}")
+            return float("nan")
 
     @Slot(object)
     def _do_start(self, request: ImagingRequest) -> None:

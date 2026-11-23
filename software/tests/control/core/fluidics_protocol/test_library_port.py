@@ -130,3 +130,37 @@ def test_library_run_log_lines_reach_squid_handlers(service):
     finally:
         squid.logging.get_logger().removeHandler(capture)
     assert any(name.startswith("fluidics") for name in capture.names)
+
+
+def test_release_valve_moves_through_the_manual_verb_and_reports_the_port(service):
+    port = LibraryFluidicsPort(service.system)
+    ports = port.valve_ports()
+    assert ports[0] == 1 and 28 in ports
+    port.open_port(28)
+    assert port.current_port() == 28 and service.system.busy is False
+    with pytest.raises(RuntimeError, match="selector valve to port 99 failed"):
+        port.open_port(99)
+    assert port.current_port() == 28
+
+
+def test_release_valve_move_is_refused_while_a_run_holds_the_rig(service):
+    port = LibraryFluidicsPort(service.system)
+    ticket = port.start(SLOW_ROWS)
+    assert wait_until(lambda: service.system.busy, timeout=2)
+    try:
+        with pytest.raises(RuntimeError, match="busy"):
+            port.open_port(28)
+    finally:
+        ticket.abort()
+        assert _wait_outcome(ticket) is not None
+
+
+def test_subscribe_flow_reads_the_first_flow_sensor_until_unsubscribed(service):
+    port = LibraryFluidicsPort(service.system)
+    readings = []
+    unsubscribe = port.subscribe_flow(lambda flow, ts: readings.append((flow, ts)))
+    assert unsubscribe is not None
+    assert wait_until(lambda: len(readings) >= 2, timeout=2)
+    unsubscribe()
+    count = len(readings)
+    assert wait_until(lambda: False, timeout=0.2) is False and len(readings) <= count + 1

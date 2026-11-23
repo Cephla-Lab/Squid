@@ -33,6 +33,7 @@ from control.core.fluidics_protocol.ports import (
     ImagingRequest,
     ImagingResult,
 )
+from control.core.fluidics_protocol.release_settle import ReleaseFailed, SettleOutcome, release_and_settle, summary
 from control.core.fluidics_protocol.resolve import ResolvedProtocol
 from control.models.fluidics_protocol import (
     FluidicsStep,
@@ -415,6 +416,12 @@ class ProtocolRunner:
             "step_index": step.index,
             "attempt": attempt,
         }
+        settle = None
+        if self._resolved.protocol.imaging.release_and_settle is not None:
+            settle, failed = self._release_and_settle(step, attempt)
+            if failed is not None:
+                return failed
+            info["release_and_settle"] = settle.record.model_dump(mode="json", exclude_none=True)
         request = ImagingRequest(
             folder=folder,
             run_dir=str(self.run_dir),
@@ -435,7 +442,10 @@ class ProtocolRunner:
             return _StepResult(ok=False, outcome="failed_to_start", message=str(e))
         session_dir = self.run_dir / folder
         if session_dir.is_dir():
-            self._safe(lambda: manifest_io.write_step_info(session_dir, info), "writing protocol_step.json")
+            step_info = info
+            if settle is not None:  # the reading series goes to protocol_step.json only, not acquisition.yaml
+                step_info = {**info, "release_and_settle": {**info["release_and_settle"], "series": settle.series}}
+            self._safe(lambda: manifest_io.write_step_info(session_dir, step_info), "writing protocol_step.json")
         self._active = handle
         result = self._drive_imaging(handle)
         self._active = None
@@ -450,6 +460,50 @@ class ProtocolRunner:
             marker = {"reason": result.end_reason, "attempt": attempt, "ended_at": time.time(), **info}
             self._safe(lambda: manifest_io.write_aborted_marker(session_dir, marker), "writing aborted.json")
         return _StepResult(ok=False, outcome=result.end_reason, message=f"Acquisition ended with {result.end_reason}")
+
+    def _release_and_settle(
+        self, step: ImagingStep, attempt: int
+    ) -> Tuple[Optional[SettleOutcome], Optional[_StepResult]]:
+        """imaging.release_and_settle: valve to the release port, wait for the coverslip to settle. Returns the
+        outcome, and a failed _StepResult when the step must not go on to the acquisition."""
+        settings = self._resolved.protocol.imaging.release_and_settle
+        self._log.info(f"Imaging step {step.label}: release and settle (valve to port {settings.release_port})")
+        try:
+            outcome = release_and_settle(
+                settings,
+                self._fluidics,
+                self._imaging,
+                should_stop=lambda: self._abort_step_requested.is_set() or self._abort_run_requested.is_set(),
+                tick=self._heartbeat,
+            )
+        except ReleaseFailed as e:
+            message = f"Release before imaging failed: {e}"
+            self._log.error(f"Imaging step {step.label}: {message}")
+            self._end_attempt(step, attempt, "release_failed", message)
+            return None, _StepResult(ok=False, outcome="release_failed", message=message)
+        record = outcome.record
+        with self._lock:
+            self._manifest.steps[step.index].attempts[-1].release_and_settle = record
+            self._save()
+        line = f"Imaging step {step.label}: release and settle: {summary(record)}"
+        if outcome.stopped:
+            self._abort_step_requested.clear()
+            self._log.info(line)
+            message = "Aborted during release-and-settle"
+            self._end_attempt(step, attempt, "user_abort", message)
+            return outcome, _StepResult(ok=False, outcome="user_abort", message=message)
+        if record.settled is False:
+            self._log.warning(f"{line} - {record.message}")
+            if settings.on_timeout == "hold":
+                message = (
+                    f"The coverslip did not settle after the valve moved to port {record.release_port}: "
+                    f"{record.message}. Restart re-checks it; Skip leaves this imaging step out."
+                )
+                self._end_attempt(step, attempt, "not_settled", message)
+                return outcome, _StepResult(ok=False, outcome="not_settled", message=message)
+        else:
+            self._log.info(line)
+        return outcome, None
 
     def _drive_imaging(self, handle) -> ImagingResult:
         aborted = False

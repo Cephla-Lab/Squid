@@ -105,9 +105,34 @@ class CoordinatesBlock(BaseModel):
         return sum(len(r.fovs) for r in self.regions)
 
 
+class ReleaseAndSettle(BaseModel):
+    """`imaging.release_and_settle` - before every imaging row, turn the selector valve to a free port and wait
+    for the coverslip to stop moving (laser AF displacement steady), so a line still holding suction after
+    the last draw lets go before the first FOV, not during the scan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    release_port: int = Field(ge=1)
+    alternate_port: Optional[int] = Field(None, ge=1)  # when the valve already sits on release_port
+    tolerance_um: float = Field(0.2, gt=0)  # settled: medians of the last two windows differ less than this
+    window_s: float = Field(5.0, gt=0)
+    timeout_s: float = Field(90.0, gt=0)  # after the valve move
+    on_timeout: Literal["hold", "warn"] = "hold"
+    fixed_wait_s: float = Field(15.0, ge=0)  # without a laser AF reading: wait this long after the move
+
+    @model_validator(mode="after")
+    def _consistent(self):
+        if self.alternate_port is not None and self.alternate_port == self.release_port:
+            raise ValueError("release_and_settle: alternate_port must differ from release_port")
+        if self.timeout_s < 2 * self.window_s:
+            raise ValueError("release_and_settle: timeout_s must be at least two windows (2 x window_s)")
+        return self
+
+
 class ImagingHeader(BaseModel):
     settings: Dict[str, SettingsBlock] = Field(default_factory=dict)
     coordinates: Dict[str, CoordinatesBlock] = Field(default_factory=dict)
+    release_and_settle: Optional[ReleaseAndSettle] = None
 
 
 class ImagingRow(BaseModel):

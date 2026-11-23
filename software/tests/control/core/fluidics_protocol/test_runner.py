@@ -6,9 +6,9 @@ import pytest
 
 from control.core.fluidics_protocol import manifest as manifest_io
 from control.core.fluidics_protocol.events import HoldAction, RunnerState
-from control.core.fluidics_protocol.resolve import resolve_protocol
+from control.core.fluidics_protocol.resolve import ProtocolProblems, resolve_protocol
 from control.core.fluidics_protocol.runner import ProtocolRunner
-from control.models.fluidics_protocol import ProtocolFile, expand_rounds
+from control.models.fluidics_protocol import ProtocolFile, ReleaseAndSettle, expand_rounds
 from control.models.fluidics_run import TecState
 from tests.control.core.fluidics_protocol.fakes import FakeFluidicsPort, FakeImagingPort, wait_until
 
@@ -407,3 +407,161 @@ def test_recovery_refuses_a_missing_or_different_protocol_copy(tmp_path):
     (run_dir / "protocol.yaml").unlink()
     with pytest.raises(ValueError, match="missing"):
         ProtocolRunner(same, run_dir, FakeImagingPort(), FakeFluidicsPort(), run_name="liver", manifest=crashed)
+
+
+# ---- release-and-settle before an imaging row (imaging.release_and_settle) ----
+
+FAST_RELEASE = {"release_port": 30, "alternate_port": 15, "window_s": 0.05, "timeout_s": 0.4, "fixed_wait_s": 0.05}
+
+
+@pytest.fixture
+def fast_sampling(monkeypatch):
+    from control.core.fluidics_protocol import release_settle
+
+    monkeypatch.setattr(release_settle, "SAMPLE_INTERVAL_S", 0.005)
+
+
+def _release_runner(tmp_path, release, focus=None, fluidics=None, imaging_script=None):
+    fluidics = fluidics or FakeFluidicsPort()
+    imaging = FakeImagingPort(imaging_script, focus=focus)
+    protocol = _protocol()
+    protocol.imaging.release_and_settle = ReleaseAndSettle.model_validate(release)
+    resolved = resolve_protocol(protocol, tmp_path, fluidics=fluidics)
+    run_dir = manifest_io.create_run_dir(tmp_path, "liver")
+    runner = ProtocolRunner(resolved, run_dir, imaging, fluidics, run_name="liver", poll_s=0.01)
+    return runner, fluidics, imaging, run_dir
+
+
+def _springing_back(fluidics, depth=-12.0, seconds=0.06):
+    """Pulled in `depth` um until the valve moves, back to 0 over `seconds`, then still."""
+
+    def focus():
+        since = fluidics.since_open()
+        return depth if since is None else depth * max(0.0, 1.0 - since / seconds)
+
+    return focus
+
+
+def test_without_release_and_settle_the_valve_is_not_touched_before_imaging(tmp_path):
+    runner, fluidics, imaging, run_dir = _runner(tmp_path)
+    runner.start()
+    assert runner.wait(10) and runner.outcome == "finished"
+    assert fluidics.opened == [] and imaging.focus_reads == 0
+    attempt = manifest_io.read_manifest(run_dir).steps[2].attempts[0]
+    assert attempt.release_and_settle is None
+    assert "release_and_settle" not in json.loads((run_dir / "R01_image" / "protocol_step.json").read_text())
+
+
+def test_release_and_settle_moves_the_valve_waits_for_the_coverslip_and_records_it(tmp_path, fast_sampling):
+    fluidics = FakeFluidicsPort()
+    fluidics.port = 25
+    fluidics.flow_ul_min = lambda since: 0.0 if since is None else 600.0  # 600 uL/min = 10 uL/s after the move
+    runner, fluidics, imaging, run_dir = _release_runner(
+        tmp_path, FAST_RELEASE, focus=_springing_back(fluidics), fluidics=fluidics
+    )
+    runner.start()
+    assert runner.wait(10) and runner.outcome == "finished"
+
+    assert fluidics.opened == [30] and len(imaging.requests) == 1
+    record = manifest_io.read_manifest(run_dir).steps[2].attempts[0].release_and_settle
+    assert record.mode == "laser_af" and record.settled is True and record.port_before == 25
+    assert record.rise_um == pytest.approx(12.0, abs=0.01) and record.baseline_um == pytest.approx(-12.0)
+    assert 0.1 <= record.settle_s < 0.4 and record.inflow_ul > 0
+    step_info = json.loads((run_dir / "R01_image" / "protocol_step.json").read_text())
+    assert step_info["release_and_settle"]["settled"] is True and len(step_info["release_and_settle"]["series"]) > 10
+    # acquisition.yaml's protocol: section carries the summary, not the reading series
+    assert imaging.requests[0].protocol["release_and_settle"]["rise_um"] == pytest.approx(12.0, abs=0.01)
+    assert "series" not in imaging.requests[0].protocol["release_and_settle"]
+    log = (run_dir / "run.log").read_text()
+    assert "release and settle: valve 25 -> 30, rise +12.00 um" in log and "settled in" in log
+
+
+def test_a_coverslip_that_does_not_settle_holds_the_step_and_restart_checks_again(tmp_path, fast_sampling):
+    fluidics = FakeFluidicsPort()
+    drifting = {"on": True}
+    focus = lambda: (fluidics.since_open() or 0.0) * 50.0 if drifting["on"] else 0.0  # 50 um/s while drifting
+    runner, fluidics, imaging, run_dir = _release_runner(tmp_path, FAST_RELEASE, focus=focus, fluidics=fluidics)
+    runner.start()
+    assert _held(runner)
+
+    hold = runner.hold
+    assert hold.kind == "imaging" and hold.reason == "not_settled" and not hold.can_resume and not hold.can_accept
+    assert "did not settle after the valve moved to port 30" in hold.message
+    assert imaging.requests == [] and fluidics.make_safe_calls >= 1
+    attempt = manifest_io.read_manifest(run_dir).steps[2].attempts[0]
+    assert attempt.outcome == "not_settled" and attempt.release_and_settle.settled is False
+    assert "NOT settled" in (run_dir / "run.log").read_text()
+
+    drifting["on"] = False
+    runner.hold_action(HoldAction.RESTART)
+    assert runner.wait(10) and runner.outcome == "finished"
+    # the valve sat on the release port after attempt 1, so attempt 2 moves it to the alternate port
+    assert fluidics.opened == [30, 15] and [r.folder for r in imaging.requests] == ["R01_image_attempt2"]
+    assert manifest_io.read_manifest(run_dir).steps[2].attempts[1].release_and_settle.settled is True
+
+
+def test_on_timeout_warn_logs_and_images_anyway(tmp_path, fast_sampling):
+    fluidics = FakeFluidicsPort()
+    focus = lambda: (fluidics.since_open() or 0.0) * 50.0
+    runner, fluidics, imaging, run_dir = _release_runner(
+        tmp_path, {**FAST_RELEASE, "on_timeout": "warn"}, focus=focus, fluidics=fluidics
+    )
+    runner.start()
+    assert runner.wait(10) and runner.outcome == "finished"
+    assert len(imaging.requests) == 1
+    attempt = manifest_io.read_manifest(run_dir).steps[2].attempts[0]
+    assert attempt.outcome == "completed" and attempt.release_and_settle.settled is False
+    assert "WARNING" in next(l for l in (run_dir / "run.log").read_text().splitlines() if "NOT settled" in l)
+
+
+def test_without_laser_af_the_step_waits_a_fixed_time_after_the_valve_move(tmp_path, fast_sampling):
+    runner, fluidics, imaging, run_dir = _release_runner(tmp_path, FAST_RELEASE, focus=None)
+    runner.start()
+    assert runner.wait(10) and runner.outcome == "finished"
+    record = manifest_io.read_manifest(run_dir).steps[2].attempts[0].release_and_settle
+    assert fluidics.opened == [30] and record.mode == "fixed_wait" and record.settled is None
+    assert record.waited_s >= 0.05 and record.message == "laser AF not available"
+    assert len(imaging.requests) == 1
+
+
+def test_a_failed_release_valve_move_holds_the_step(tmp_path, fast_sampling):
+    fluidics = FakeFluidicsPort()
+    fluidics.open_error = "the rig is busy: a manual is in progress"
+    runner, fluidics, imaging, run_dir = _release_runner(tmp_path, FAST_RELEASE, focus=lambda: 0.0, fluidics=fluidics)
+    runner.start()
+    assert _held(runner)
+    assert runner.hold.reason == "release_failed" and "the rig is busy" in runner.hold.message
+    assert imaging.requests == []
+    runner.hold_action(HoldAction.END)
+    assert runner.wait(10) and runner.outcome == "stopped"
+
+
+def test_abort_step_during_the_settle_wait_holds_as_user_abort(tmp_path, fast_sampling):
+    fluidics = FakeFluidicsPort()
+    slow = {**FAST_RELEASE, "timeout_s": 30.0}
+    runner, fluidics, imaging, run_dir = _release_runner(
+        tmp_path, slow, focus=lambda: (fluidics.since_open() or 0.0) * 50.0, fluidics=fluidics
+    )
+    runner.start()
+    assert wait_until(lambda: fluidics.opened == [30])
+    runner.abort_step()
+    assert _held(runner)
+    assert runner.hold.reason == "user_abort" and "release-and-settle" in runner.hold.message
+    assert imaging.requests == []
+    runner.hold_action(HoldAction.SKIP)
+    assert runner.wait(10) and runner.outcome == "finished"
+
+
+def test_the_resolver_refuses_release_ports_the_rig_does_not_offer(tmp_path):
+    fluidics = FakeFluidicsPort()
+    fluidics.ports = tuple(range(1, 29))
+    protocol = _protocol()
+    protocol.imaging.release_and_settle = ReleaseAndSettle(release_port=30, alternate_port=15)
+    with pytest.raises(ProtocolProblems) as e:
+        resolve_protocol(protocol, tmp_path, fluidics=fluidics)
+    assert e.value.problems == [
+        "imaging.release_and_settle: release_port 30 is not a port of this fluidics system (it offers 1..28)"
+    ]
+    fluidics.ports = (1, 2, 3, 30)
+    with pytest.raises(ProtocolProblems, match="alternate_port 15 is not a port"):
+        resolve_protocol(protocol, tmp_path, fluidics=fluidics)

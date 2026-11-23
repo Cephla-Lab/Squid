@@ -1,7 +1,7 @@
 """FluidicsPort over the Squid-Fluidics library's FluidicsSystem (one per initialized service)."""
 
 import threading
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from fluidics.events import RunEnded, RunStarted, SequenceStarted
 from fluidics.sequences import SequenceListAdapter, validate_sequences
@@ -129,3 +129,39 @@ class LibraryFluidicsPort:
         for channel, (target, on) in enumerate(zip(state.targets, state.output_enabled), start=1):
             tc.set_target_temperature(channel, target)
             tc.set_output_enabled(channel, on)
+
+    # ---- release-and-settle before an imaging row ----
+
+    def valve_ports(self) -> tuple:
+        return tuple(self._system.devices.selector_valves.get_ports())
+
+    def current_port(self) -> Optional[int]:
+        try:
+            return int(self._system.manual.current_port())
+        except Exception as e:
+            _log.warning(f"Could not read the selector valve port: {e}")
+            return None
+
+    def open_port(self, port: int, timeout: float = 60.0) -> None:
+        """The manual verb on the library's job thread (so it excludes a run and abort() stops it); blocks."""
+        errors: List[str] = []
+        stopped: List[bool] = []
+        manual = self._system.manual
+        self._system.run_manual(
+            lambda: manual.open_port(port),
+            callbacks={"on_error": errors.append, "on_stopped": lambda: stopped.append(True)},
+        )
+        if not self._system.wait(timeout):
+            raise RuntimeError(f"the selector valve did not reach port {port} within {timeout:g} s")
+        if errors:
+            raise RuntimeError(f"selector valve to port {port} failed: {'; '.join(errors)}")
+        if stopped:
+            raise RuntimeError(f"selector valve to port {port} was stopped")
+
+    def subscribe_flow(self, callback) -> Optional[Callable[[], None]]:
+        sensors = list(self._system.devices.flow_sensors or [])
+        if not sensors:
+            return None
+        sensor = sensors[0]
+        sensor.subscribe(callback)
+        return lambda: sensor.unsubscribe(callback)

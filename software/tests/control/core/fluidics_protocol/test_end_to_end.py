@@ -114,3 +114,37 @@ def test_three_round_protocol_runs_on_the_simulated_fluidics_system(tmp_path, fl
         assert (run_dir / "run.log").stat().st_size > 0
     finally:
         assert service.close() == []
+
+
+def test_release_and_settle_runs_on_the_simulated_fluidics_system(tmp_path, fluidics_config_path, monkeypatch):
+    from control.core.fluidics_protocol import release_settle
+    from control.models.fluidics_protocol import ReleaseAndSettle
+
+    monkeypatch.setattr(release_settle, "SAMPLE_INTERVAL_S", 0.005)
+    service = FluidicsService(default_config_path=fluidics_config_path, simulated=True)
+    service.initialize(report_dir=str(tmp_path / "reports"), instant=True)
+    try:
+        port = LibraryFluidicsPort(service.system)
+        protocol = _protocol()
+        protocol.imaging.release_and_settle = ReleaseAndSettle(
+            release_port=25, alternate_port=26, window_s=0.05, timeout_s=0.5
+        )
+        resolved = resolve_protocol(protocol, tmp_path, fluidics=port)
+        run_dir = manifest_io.create_run_dir(tmp_path, "liver")
+        imaging = FakeImagingPort(focus=lambda: 0.0)
+        runner = ProtocolRunner(resolved, run_dir, imaging, port, run_name="liver", poll_s=0.01)
+
+        runner.start()
+        assert runner.wait(60), runner.snapshot()
+
+        assert runner.outcome == "finished"
+        man = manifest_io.read_manifest(run_dir)
+        records = [s.attempts[0].release_and_settle for s in man.steps if s.kind == "imaging"]
+        assert all(r.settled and r.mode == "laser_af" for r in records)
+        # every imaging row follows a buffer draw on port 27, so the valve goes 27 -> 25 each round
+        assert [(r.port_before, r.release_port) for r in records] == [(27, 25)] * 3
+        # the simulated sensor reads a constant flow: nothing comes in net of the reading before the move
+        assert all(r.inflow_ul == pytest.approx(0.0, abs=1e-6) for r in records)
+        assert load_protocol(str(run_dir / "protocol.yaml")).imaging.release_and_settle.release_port == 25
+    finally:
+        assert service.close() == []

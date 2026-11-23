@@ -1,7 +1,7 @@
 """The two engines as the runner sees them. typing.Protocols so tests script fakes and phase 2 adds Qt adapters."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, Sequence
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence
 
 from control.models.fluidics_protocol import CoordinatesBlock, SettingsBlock
 from control.models.fluidics_run import TecState
@@ -45,6 +45,17 @@ class FluidicsPort(Protocol):
 
     def restore_tec(self, state: TecState) -> None: ...
 
+    # Release-and-settle before an imaging row (only called when the protocol asks for it).
+
+    def valve_ports(self) -> Sequence[int]: ...  # the selector-valve ports this rig offers
+
+    def current_port(self) -> Optional[int]: ...
+
+    def open_port(self, port: int, timeout: float = 60.0) -> None: ...  # blocks until the valve is there; raises
+
+    def subscribe_flow(self, callback: Callable[[Optional[float], float], None]) -> Optional[Callable[[], None]]:
+        """callback(flow_ul_min, timestamp) from the first flow sensor; returns the unsubscribe, None: no sensor."""
+
 
 @dataclass
 class ImagingRequest:
@@ -76,6 +87,10 @@ class ImagingHandle(Protocol):
 
 class ImagingPort(Protocol):
     def start(self, request: ImagingRequest) -> ImagingHandle: ...  # raises ImagingStartError
+
+    def measure_focus_um(self) -> Optional[float]:
+        """One laser AF displacement reading where the stage is, without moving z: None when laser AF cannot be
+        used at all, nan when this reading found no spot."""
 
 
 def plan_seconds(plan: Sequence[Any]) -> float:

@@ -14,6 +14,23 @@ class TecState(BaseModel):
     output_enabled: List[bool] = Field(default_factory=list)
 
 
+class ReleaseSettleRecord(BaseModel):
+    """What the release-and-settle wait before an imaging attempt saw (imaging.release_and_settle)."""
+
+    port_before: Optional[int] = None
+    release_port: int
+    mode: Literal["laser_af", "fixed_wait"]
+    settled: Optional[bool] = None  # None for a fixed wait
+    settle_s: Optional[float] = None  # after the valve move, when settled
+    waited_s: float = 0.0  # after the valve move, in all
+    baseline_um: Optional[float] = None  # laser AF displacement before the move (median of one window)
+    final_um: Optional[float] = None  # ... and over the last window
+    rise_um: Optional[float] = None  # final - baseline: how far the coverslip came back
+    last_change_um: Optional[float] = None  # median change between the last two windows
+    inflow_ul: Optional[float] = None  # flow-sensor volume after the move, in the draw direction; None: no sensor
+    message: Optional[str] = None
+
+
 class AttemptRecord(BaseModel):
     attempt: int
     # fluidics: finished|stopped|failed; imaging: completed|completed_with_errors|user_abort|error|failed_to_start
@@ -27,6 +44,7 @@ class AttemptRecord(BaseModel):
     folder: Optional[str] = None  # imaging: session folder name inside the run folder
     images: Optional[int] = None
     reagent_used_ul: Dict[str, float] = Field(default_factory=dict)  # port -> uL
+    release_and_settle: Optional[ReleaseSettleRecord] = None  # imaging: the wait before the acquisition
 
 
 class StepRecord(BaseModel):

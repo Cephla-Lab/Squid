@@ -105,3 +105,42 @@ def test_start_refusals_raise_imaging_start_error(qtbot, qt_controller, tmp_path
     with pytest.raises(ImagingStartError, match="Invalid channels"):
         port.start(bad)
     assert not (tmp_path / "R05_image").exists()
+
+
+class _FakeLaserAF:
+    def __init__(self, initialized=True, has_reference=True, reading=1.25):
+        from types import SimpleNamespace
+
+        self.is_initialized = initialized
+        self.laser_af_properties = SimpleNamespace(has_reference=has_reference)
+        self.reading = reading
+        self.reads = 0
+
+    def measure_displacement(self):
+        self.reads += 1
+        if isinstance(self.reading, Exception):
+            raise self.reading
+        return self.reading
+
+
+def test_measure_focus_reads_the_laser_af_displacement_only_when_it_can(qtbot, qt_controller, monkeypatch):
+    scope, controller = qt_controller
+    port = QtImagingPort(controller, controller.scanCoordinates, scope)
+
+    monkeypatch.setattr(controller, "laserAutoFocusController", None)
+    assert port.measure_focus_um() is None
+    for unusable in (_FakeLaserAF(initialized=False), _FakeLaserAF(has_reference=False)):
+        monkeypatch.setattr(controller, "laserAutoFocusController", unusable)
+        assert port.measure_focus_um() is None and unusable.reads == 0
+
+    laf = _FakeLaserAF()
+    monkeypatch.setattr(controller, "laserAutoFocusController", laf)
+    assert port.measure_focus_um() == 1.25
+    monkeypatch.setattr(controller, "acquisition_in_progress", lambda: True)
+    assert port.measure_focus_um() is None and laf.reads == 1
+    monkeypatch.setattr(controller, "acquisition_in_progress", lambda: False)
+    laf.reading = float("nan")
+    assert port.measure_focus_um() != port.measure_focus_um()  # nan: no spot this time
+    laf.reading = TimeoutError("AF laser")
+    value = port.measure_focus_um()
+    assert value != value
