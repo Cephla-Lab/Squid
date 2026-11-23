@@ -45,6 +45,8 @@ static inline void analogWriteFrequency(int, float) {}
 static inline void delay(unsigned long) {}
 static inline unsigned long micros() { return 0; }
 static inline unsigned long millis() { return 0; }
+static inline void noInterrupts() {}
+static inline void interrupts() {}
 
 /* Assignable and readable like the Teensy type; the test sets it to say whether
    check_joystick()'s tick is due. */

@@ -129,4 +129,4 @@ class TestFirmwareVersionForWatchdog:
         """SimSerial should report the simulated firmware version after a command."""
         mcu.turn_off_all_ports()
         mcu.wait_till_operation_is_completed()
-        assert mcu.firmware_version == (1, 3)
+        assert mcu.firmware_version == (SimSerial.FIRMWARE_VERSION_MAJOR, SimSerial.FIRMWARE_VERSION_MINOR)

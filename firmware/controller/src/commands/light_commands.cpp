@@ -1,5 +1,7 @@
 #include "light_commands.h"
 
+#include "sequence_commands.h"  // seq_transport_host_shutdown
+
 void callback_turn_on_illumination()
 {
     // mcu_cmd_execution_in_progress = true;
@@ -95,6 +97,8 @@ void callback_set_multi_port_mask()
 void callback_turn_off_all_ports()
 {
     turn_off_all_ports();
+    // A running sequence must fail visibly, not carry on with dark frames.
+    seq_transport_host_shutdown();
 }
 
 // Command byte layout: [cmd_id, 40, timeout_b3, timeout_b2, timeout_b1, timeout_b0, 0, crc]
