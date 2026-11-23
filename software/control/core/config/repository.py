@@ -15,6 +15,7 @@ Organization:
 - Cache Management: cache control
 """
 
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 
@@ -132,6 +133,7 @@ class ConfigRepository:
         self._current_profile: Optional[str] = None
         self._machine_cache: Dict[str, Any] = {}
         self._profile_cache: Dict[str, Any] = {}
+        self._channel_update_lock = threading.Lock()  # see update_channel_setting()
 
     # ═══════════════════════════════════════════════════════════════════════════
     # GENERIC I/O
@@ -916,7 +918,26 @@ class ConfigRepository:
 
         Returns:
             True if update was successful, False otherwise
+
+        Raises:
+            ValueError: the value is out of the limits of the model (e.g. an exposure of 0). Nothing is saved.
+
+        Thread-safe: the callers (the live controls on the GUI thread, each control server client on its own
+        thread) change one value each on a copy of the file and save the whole copy. One at a time, so a caller
+        does not save over a value that another caller saved meanwhile.
         """
+        with self._channel_update_lock:
+            return self._update_channel_setting(objective, channel_name, setting, value, profile, confocal_mode)
+
+    def _update_channel_setting(
+        self,
+        objective: str,
+        channel_name: str,
+        setting: str,
+        value: Any,
+        profile: Optional[str],
+        confocal_mode: bool,
+    ) -> bool:
         profile = profile or self._current_profile
         if not profile:
             logger.warning("Cannot update: no profile set")
@@ -1013,6 +1034,11 @@ class ConfigRepository:
                 setattr(acq_channel.camera_settings, field, value)
             elif location == "illumination":
                 acq_channel.illumination_settings.intensity = value
+
+        # The setattr calls above do not check the limits of the model. Check them here, as the loader does: a value
+        # that the loader refuses must not reach the file (the loader then drops the whole file of the objective).
+        # Raises a ValueError (pydantic's ValidationError) before anything is saved or cached.
+        obj_config = ObjectiveChannelConfig.model_validate(obj_config.model_dump())
 
         # Save
         self.save_objective_config(profile, objective, obj_config)
