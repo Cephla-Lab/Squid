@@ -58,6 +58,7 @@ class RunnerSnapshot:
     outcome: Optional[str]
     elapsed_s: float
     progress_fraction: Optional[float]  # 0..1 how-far-through, or None when there's no estimate to go on
+    held_since: Optional[float] = None  # time.time() the run entered the current hold, None when not held
 
 
 @dataclass
@@ -112,6 +113,7 @@ class ProtocolRunner:
         self._lock = threading.RLock()
         self._state = RunnerState.IDLE
         self._hold: Optional[Hold] = None
+        self._held_since: Optional[float] = None
         self._outcome: Optional[str] = None
         self._pause_requested = threading.Event()
         self._resume_requested = threading.Event()
@@ -159,6 +161,7 @@ class ProtocolRunner:
                 outcome=self._outcome,
                 elapsed_s=elapsed,
                 progress_fraction=self._progress_fraction(elapsed),
+                held_since=self._held_since,
             )
 
     def _progress_fraction(self, elapsed_s: float) -> Optional[float]:
@@ -484,6 +487,7 @@ class ProtocolRunner:
         self._hold_event.clear()
         with self._lock:
             self._hold = hold
+            self._held_since = time.time()
             self._manifest.hold_reason = hold.reason
             self._manifest.hold_message = hold.message
         self._set_state(RunnerState.HELD, status="held")
@@ -501,6 +505,7 @@ class ProtocolRunner:
             decision = self._hold_decision or (HoldAction.END, False)
         with self._lock:
             self._hold = None
+            self._held_since = None
             self._manifest.hold_reason = None
             self._manifest.hold_message = None
         self._pause_requested.clear()

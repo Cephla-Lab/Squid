@@ -905,6 +905,163 @@ class MicroscopeControlServer:
             self.multipoint_controller.request_abort_aquisition()
         return {"aborted": True}
 
+    # ---- fluidics protocol runs (the GUI's Fluidics Protocol tab) ----
+    # The runner's public methods are safe from any thread: they only set events that the runner thread waits on,
+    # and its listener puts every state change on the GUI thread, so the tab follows what these commands do.
+
+    def _fluidics_protocol_runner(self):
+        """The runner of the current or last protocol run, or None when no run was started since the GUI opened."""
+        widget = getattr(self.gui, "fluidicsProtocolWidget", None) if self.gui is not None else None
+        if widget is None:
+            raise RuntimeError("Fluidics protocol runs are not available: this GUI has no Fluidics Protocol tab")
+        return widget.runner
+
+    def _require_fluidics_protocol_runner(self):
+        runner = self._fluidics_protocol_runner()
+        if runner is None:
+            raise RuntimeError("No fluidics protocol run since the GUI started")
+        return runner
+
+    @staticmethod
+    def _allowed_hold_actions(hold) -> List[str]:
+        """The actions the held panel offers for this hold (the runner would turn a resume it can't do into a
+        restart, and an accept into a skip that isn't marked skipped)."""
+        from control.core.fluidics_protocol.events import HoldAction
+
+        actions = []
+        if hold.can_resume and hold.resume_position is not None:
+            actions.append(HoldAction.RESUME.value)
+        actions += [HoldAction.RESTART.value, HoldAction.SKIP.value]
+        if hold.can_accept:
+            actions.append(HoldAction.ACCEPT.value)
+        actions.append(HoldAction.END.value)
+        return actions
+
+    @schema_method
+    def _cmd_get_fluidics_protocol_status(self) -> Dict[str, Any]:
+        """Get the state of the fluidics protocol run: step, attempt, hold and its allowed actions, last heartbeat."""
+        from control.core.fluidics_protocol.events import RunnerState
+
+        runner = self._fluidics_protocol_runner()
+        if runner is None:
+            return {"has_run": False, "state": None}
+        snap = runner.snapshot()  # state, step, attempt and hold read together under the runner's lock
+        manifest = runner.manifest
+        now = time.time()
+        step = manifest.steps[snap.step_index] if snap.step_index is not None else None
+        result = {
+            "has_run": True,
+            "state": snap.state.value,
+            "outcome": snap.outcome,
+            "run_name": manifest.run_name,
+            "protocol_name": manifest.protocol_name,
+            "run_dir": str(runner.run_dir),
+            "step_index": snap.step_index,
+            "total_steps": snap.total_steps,
+            "round": step.round if step is not None else None,
+            "step_kind": step.kind if step is not None else None,
+            "step_name": step.label if step is not None else None,
+            "attempt": snap.attempt,
+            "sequence_index": manifest.cursor.sequence,
+            "elapsed_s": snap.elapsed_s,
+            "progress_fraction": snap.progress_fraction,
+            "last_heartbeat": manifest.heartbeat_at,
+            "heartbeat_age_s": now - manifest.heartbeat_at,
+            "hold": None,
+        }
+        hold = snap.hold
+        if snap.state is RunnerState.HELD and hold is not None:
+            result["hold"] = {
+                "step_index": hold.step_index,
+                "attempt": hold.attempt,
+                "kind": hold.kind,
+                "reason": hold.reason,
+                "message": hold.message,
+                "can_resume": hold.can_resume,
+                "can_accept": hold.can_accept,
+                "resume_position": hold.resume_position,
+                "tec_output_was_on": bool(hold.tec_before is not None and any(hold.tec_before.output_enabled)),
+                "allowed_actions": self._allowed_hold_actions(hold),
+                "held_since": snap.held_since,
+                "held_for_s": now - snap.held_since if snap.held_since is not None else None,
+            }
+        return result
+
+    @schema_method
+    def _cmd_fluidics_protocol_hold_action(
+        self,
+        action: str = Field(..., description="What to do with the held step: resume, restart, skip, accept or end"),
+        restore_tec: bool = Field(
+            False, description="Turn the TEC output back on to its targets from before the step, before continuing"
+        ),
+    ) -> Dict[str, Any]:
+        """Act on a held fluidics protocol run, like the buttons of its HELD panel."""
+        from control.core.fluidics_protocol.events import HoldAction, RunnerState
+
+        names = [a.value for a in HoldAction]
+        try:
+            hold_action = HoldAction(str(action).strip().lower())
+        except ValueError:
+            raise ValueError(f"Unknown hold action '{action}': use one of {', '.join(names)}") from None
+        runner = self._require_fluidics_protocol_runner()
+        snap = runner.snapshot()
+        if snap.state is not RunnerState.HELD:
+            raise RuntimeError(f"The fluidics protocol run is not held (state {snap.state.value})")
+        hold = snap.hold
+        if hold is None:
+            raise RuntimeError("The hold is already being acted on")
+        allowed = self._allowed_hold_actions(hold)
+        if hold_action.value not in allowed:
+            raise RuntimeError(
+                f"'{hold_action.value}' is not offered for this hold (step {hold.step_index + 1}, {hold.kind}, "
+                f"{hold.reason}): use one of {', '.join(allowed)}"
+            )
+        runner.hold_action(hold_action, restore_tec=restore_tec)
+        self._log.info(
+            f"Fluidics protocol hold at step {hold.step_index + 1} (attempt {hold.attempt}): '{hold_action.value}' "
+            f"from the control server (restore_tec={restore_tec})"
+        )
+        return {"action": hold_action.value, "step_index": hold.step_index, "attempt": hold.attempt}
+
+    @schema_method
+    def _cmd_pause_fluidics_protocol(self) -> Dict[str, Any]:
+        """Pause the running fluidics protocol (an imaging step finishes first, the run parks after it)."""
+        from control.core.fluidics_protocol.events import RunnerState
+
+        runner = self._require_fluidics_protocol_runner()
+        state = runner.state
+        if state is not RunnerState.RUNNING:
+            raise RuntimeError(f"The fluidics protocol run is not running (state {state.value})")
+        runner.pause()
+        return {"pause_requested": True}
+
+    @schema_method
+    def _cmd_resume_fluidics_protocol(self) -> Dict[str, Any]:
+        """Resume a paused fluidics protocol run (a held run takes fluidics_protocol_hold_action instead)."""
+        from control.core.fluidics_protocol.events import RunnerState
+
+        runner = self._require_fluidics_protocol_runner()
+        state = runner.state
+        if state is RunnerState.HELD:
+            raise RuntimeError("The fluidics protocol run is held: use fluidics_protocol_hold_action")
+        if state not in (RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED):
+            raise RuntimeError(f"The fluidics protocol run is not paused (state {state.value})")
+        runner.resume()
+        return {"resumed": True}
+
+    @schema_method
+    def _cmd_abort_fluidics_protocol(self) -> Dict[str, Any]:
+        """Abort the whole fluidics protocol run: it stops the step in progress and ends with outcome 'stopped'."""
+        from control.core.fluidics_protocol.events import RunnerState
+
+        runner = self._require_fluidics_protocol_runner()
+        state = runner.state
+        if state in (RunnerState.IDLE, RunnerState.ENDED):
+            raise RuntimeError(f"No fluidics protocol run in progress (state {state.value})")
+        runner.abort_run()
+        self._log.info("Fluidics protocol run aborted from the control server")
+        return {"abort_requested": True}
+
     def _get_widget_for_type(self, widget_type: str):
         """Get the acquisition widget for a given widget type.
 

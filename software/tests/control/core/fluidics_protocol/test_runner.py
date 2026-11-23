@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -187,6 +188,21 @@ def test_end_run_from_hold_stops_the_run(tmp_path):
     assert runner.wait(10)
     assert runner.outcome == "stopped" and manifest_io.read_manifest(run_dir).status == "stopped"
     assert imaging.requests == []
+
+
+def test_snapshot_says_since_when_the_run_is_held(tmp_path):
+    fluidics = FakeFluidicsPort(script=[("failed", 0, "boom"), ("finished",)])
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, fluidics=fluidics)
+    assert runner.snapshot().held_since is None
+    before = time.time()
+    runner.start()
+    assert _held(runner)
+    snap = runner.snapshot()
+    assert snap.hold is not None and before <= snap.held_since <= time.time()
+
+    runner.hold_action(HoldAction.SKIP)
+    assert runner.wait(10)
+    assert runner.snapshot().held_since is None
 
 
 def test_imaging_abort_writes_the_marker_and_restart_uses_attempt2(tmp_path):

@@ -160,6 +160,37 @@ stage until the stage reports it stopped.
 
 > For scripted automation, see [Automation](automation.md).
 
+### Fluidics Protocol Runs
+
+These act on the run of the GUI's **Fluidics Protocol** tab (configurations with fluidics only). The tab shows what
+they do, as if its own buttons were pressed.
+
+| Command | Parameters | Description |
+|---------|------------|-------------|
+| `get_fluidics_protocol_status` | - | State, run folder, step, round, attempt, last heartbeat, and the hold when held |
+| `fluidics_protocol_hold_action` | `action`, `restore_tec` | Act on a held run: `resume`, `restart`, `skip`, `accept` or `end` |
+| `pause_fluidics_protocol` | - | Pause the run (an imaging step finishes first) |
+| `resume_fluidics_protocol` | - | Resume a paused run |
+| `abort_fluidics_protocol` | - | End the run (outcome `stopped`) |
+
+`get_fluidics_protocol_status` returns `has_run: false` until a run is started. `step_index` counts from 0 (the GUI
+shows step `step_index + 1`). When `state` is `HELD`, `hold` has `kind`, `reason`, `message`, `can_resume`,
+`can_accept`, `held_since` (Unix time), `held_for_s`, `tec_output_was_on` and `allowed_actions`: the actions the
+HELD panel offers for this hold. `heartbeat_age_s` is the time since the runner last wrote its manifest (every few
+seconds while it is alive).
+
+`fluidics_protocol_hold_action` is refused when the run is not held, or when the hold does not offer the action
+(`resume` needs a fluidics step that stopped in a known sequence; `accept` needs an imaging step that completed with
+errors). `restore_tec: true` turns the TEC output back on to its targets from before the step; it is off by default,
+unlike the panel's checkbox, so a client must ask for it. A held run is continued with this command, not with
+`resume_fluidics_protocol`.
+
+```
+# Check a run, then restart the held step
+microscope_get_fluidics_protocol_status()
+microscope_fluidics_protocol_hold_action(action="restart", restore_tec=True)
+```
+
 ### Performance
 
 | Command | Parameters | Description |
