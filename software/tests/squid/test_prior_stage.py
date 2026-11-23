@@ -502,6 +502,44 @@ def test_a_run_of_unreadable_position_replies_is_logged_once(fake, monkeypatch, 
     assert "after 5 unreadable" in caplog.text
 
 
+def _unreadable_position_replies_to_the_mover(ser, bad_reply, count):
+    """Like _unreadable_position_replies, but only for "P" sent by the test's own thread (the one moving the stage),
+    so the polling thread can't take the bad replies instead."""
+    normal = ser._reply
+    remaining = iter(range(count))
+
+    def reply(cmd):
+        if cmd == "P" and threading.current_thread() is threading.main_thread():
+            if next(remaining, None) is not None:
+                return bad_reply
+        return normal(cmd)
+
+    ser._reply = reply
+
+
+@pytest.mark.parametrize("bad_reply", [b"", b"R\r"], ids=["no reply", "stray line"])
+def test_an_unreadable_position_reply_after_a_move_is_asked_again(fake, bad_reply):
+    # Seen on a rig: one garbled reply to the "P" that wait_for_stop() sends once the stage stops raised a
+    # ValueError ("not enough values to unpack") and ended a 900-FOV acquisition partway.
+    stage, ser = make_stage(fake)
+    ser.timeout = 0.01
+    _unreadable_position_replies_to_the_mover(ser, bad_reply, 2)
+    stage.move_x_to(1.0)
+    assert stage.x_pos == ser.x != 0
+    assert not stage.get_state().busy
+
+
+def test_a_move_raises_when_the_position_stays_unreadable(fake, monkeypatch):
+    monkeypatch.setattr(squid.stage.prior.PriorStage, "STATUS_REPLY_TIMEOUT_S", 0.1)
+    stage, ser = make_stage(fake)
+    ser.timeout = 0.01
+    _unreadable_position_replies_to_the_mover(ser, b"R\r", 10**6)
+    t0 = time.perf_counter()
+    with pytest.raises(squid.exceptions.SquidTimeout, match="'P'"):
+        stage.move_x_to(1.0)
+    assert time.perf_counter() - t0 < 1.0
+
+
 def test_missing_stage_model_fails_startup_clearly(fake, monkeypatch):
     normal = FakeProScan._reply
     monkeypatch.setattr(FakeProScan, "_reply", lambda self, cmd: b"" if cmd == "STAGE" else normal(self, cmd))
