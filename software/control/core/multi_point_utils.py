@@ -81,6 +81,22 @@ class AcquisitionParameters:
     # in which case each FOV in a region targets that region's offset instead of 0.
     region_laser_af_offsets: Dict[str, float] = field(default_factory=dict)
 
+    # Exposure and intensity of this run only: {channel name: {exposure_time_ms, illumination_intensity}}.
+    # selected_configurations already has them; the worker also applies them to the autofocus channel.
+    channel_overrides: Dict[str, Dict[str, float]] = field(default_factory=dict)
+
+
+def channel_with_overrides(config: AcquisitionChannel, settings: Optional[Dict[str, float]]) -> AcquisitionChannel:
+    """A copy of the channel with the exposure and intensity of one run, or the channel itself with no settings."""
+    if not settings:
+        return config
+    config = config.model_copy(deep=True)
+    if "exposure_time_ms" in settings:
+        config.exposure_time = settings["exposure_time_ms"]
+    if "illumination_intensity" in settings:
+        config.illumination_intensity = settings["illumination_intensity"]
+    return config
+
 
 def piezo_z_range_problem(
     piezo_z_range_um: Tuple[float, float], nz: int, delta_z_um: float, z_stacking_config: str, travel_um: float
