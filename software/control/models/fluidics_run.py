@@ -26,6 +26,10 @@ class AttemptRecord(BaseModel):
     fluidics_run_id: Optional[str] = None
     folder: Optional[str] = None  # imaging: session folder name inside the run folder
     images: Optional[int] = None
+    # imaging: the attempt imaged the FOVs [start_fov, end_fov) in scan order (across regions). start_fov > 0 for a
+    # resumed attempt; end_fov None when not known (the attempt's FOVs then count as not done).
+    start_fov: Optional[int] = None
+    end_fov: Optional[int] = None
     reagent_used_ul: Dict[str, float] = Field(default_factory=dict)  # port -> uL
 
 

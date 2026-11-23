@@ -36,7 +36,8 @@ class QtImagingHandle:
         if self._controller.acquisition_in_progress():
             return None  # the worker thread is still unwinding; keep polling
         reason = self._controller.last_end_reason or "error"
-        return ImagingResult(reason, int(self._controller.last_image_count or 0), self.folder)
+        end_fov = getattr(self._controller, "last_end_fov", None)
+        return ImagingResult(reason, int(self._controller.last_image_count or 0), self.folder, end_fov)
 
     def abort(self) -> None:
         try:
@@ -89,6 +90,7 @@ class QtImagingPort(QObject):
             controller.set_base_path(request.run_dir)
             controller.start_new_experiment(request.folder, add_timestamp=False)
             controller.protocol_info = dict(request.protocol)
+            controller.set_start_fov(request.start_fov)
             self._current = QtImagingHandle(controller, request.folder)
             self._restore_base_path = previous_base_path
             self.signal_acquisition_channels.emit(list(applied.channels))

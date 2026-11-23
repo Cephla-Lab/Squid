@@ -17,7 +17,7 @@ class RunnerState(str, Enum):
 
 
 class HoldAction(str, Enum):
-    RESUME = "resume"  # fluidics: resume from the interrupted sequence (plan tail); imaging: same as RESTART
+    RESUME = "resume"  # fluidics: from the interrupted sequence (plan tail); imaging: from the first FOV not done
     RESTART = "restart"  # the step again from its beginning, as a new attempt
     SKIP = "skip"  # leave the step as it is and go on
     ACCEPT = "accept"  # completed_with_errors only: take the data and go on
@@ -31,7 +31,8 @@ class Hold:
     kind: str  # "fluidics" | "imaging"
     reason: str  # fluidics: stopped|failed; imaging: user_abort|error|failed_to_start|completed_with_errors; recovered
     message: Optional[str]
-    resume_position: Optional[int]  # fluidics: absolute plan index to resume from
+    # fluidics: absolute plan index to resume from; imaging: scan-order index of the first FOV not done
+    resume_position: Optional[int]
     tec_before: Optional[TecState]  # TEC targets/output before the step (offer "restore" on resume)
     can_resume: bool
     can_accept: bool

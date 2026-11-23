@@ -3,11 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 from qtpy.QtCore import QTimer
-from qtpy.QtWidgets import QDialog
+from qtpy.QtWidgets import QDialog, QPushButton
 
 import control.widgets_fluidics.protocol_widget as protocol_widget_module
 from control.core.fluidics_protocol import manifest as manifest_io
-from control.core.fluidics_protocol.events import RunnerState
+from control.core.fluidics_protocol.events import Hold, RunnerState
 from control.core.fluidics_protocol.ports import ImagingResult
 from control.models.fluidics_protocol import ProtocolFile
 from control.widgets_fluidics.protocol_tab import ProtocolTab
@@ -380,3 +380,21 @@ def test_run_lifecycle_signals(qtbot, widget):
     assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)
     qtbot.waitUntil(lambda: finished == [(run_dir, "stopped")], timeout=5000)
     assert started == [(run_dir, "liver")]
+
+
+@pytest.mark.parametrize("kind, label", [("imaging", "Resume from FOV 441"), ("fluidics", "Resume from seq 441")])
+def test_the_held_panel_names_where_a_resume_starts(qtbot, widget, kind, label):
+    w, _fluidics, _imaging, _save_to = widget
+    hold = Hold(
+        step_index=1,
+        attempt=1,
+        kind=kind,
+        reason="error" if kind == "imaging" else "failed",
+        message=None,
+        resume_position=440,
+        tec_before=None,
+        can_resume=True,
+        can_accept=False,
+    )
+    w._show_hold(hold)
+    assert label in [b.text() for b in w.held_box.findChildren(QPushButton)]

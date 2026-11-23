@@ -133,6 +133,12 @@ class MultiPointWorker:
         self._run_state = run_state_writer or squid.acquisition_state.NullRunStateWriter()
         self._abort_cause = None  # set to "error" by auto-abort paths (timeout / failed jobs)
         self.end_reason: Optional[str] = None  # set in run()'s finally; read by the controller
+        # Resuming: the scan-order index (across regions) of the first FOV to image, and of the first one this run
+        # did not finish (set in run()'s finally, None when not known; read by the controller).
+        self.start_fov: int = int(acquisition_parameters.start_fov or 0)
+        self._next_fov: int = self.start_fov
+        self._images_lost = False  # a frame or a save job given up on at the end: FOVs counted done may lack images
+        self.end_fov: Optional[int] = None
         self.NZ = acquisition_parameters.NZ
         self.deltaZ = acquisition_parameters.deltaZ
 
@@ -480,6 +486,14 @@ class MultiPointWorker:
             return "completed_with_errors"
         return "completed"
 
+    def _compute_end_fov(self) -> Optional[int]:
+        """Where a resumed run can start: the scan-order index of the first FOV this run did not finish, when every
+        FOV before it was imaged and saved. None when that isn't known: more than one time point, an image that failed
+        to save, or a frame or save job given up on at the end."""
+        if self.Nt != 1 or self._acquisition_error_count > 0 or self._images_lost:
+            return None
+        return self._next_fov
+
     def run(self):
         this_image_callback_id = None
         self._run_state_fatal = False
@@ -578,6 +592,7 @@ class MultiPointWorker:
 
             # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
             reason = self.end_reason = self._compute_end_reason()
+            self.end_fov = self._compute_end_fov()
             total_duration = time.time() - self.timestamp_acquisition_started
             self._run_state.end(
                 reason,
@@ -667,9 +682,11 @@ class MultiPointWorker:
         self._log.info("Waiting for any outstanding frames.")
         if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
             self._log.warning("Timed out waiting for the last outstanding frames at end of acquisition!")
+            self._images_lost = True
 
         if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
             self._log.warning("Timed out waiting for the last image to process!")
+            self._images_lost = True
 
         # No matter what, set the flags so things can continue
         self._ready_for_next_trigger.set()
@@ -708,6 +725,7 @@ class MultiPointWorker:
             # Timed out - kill any runners that still have pending jobs
             for job_class, job_runner in active_runners:
                 if job_runner.has_pending():
+                    self._images_lost = True
                     self._log.error(
                         f"Timed out after {timeout_s} [s] waiting for jobs to finish. Pending jobs for {job_class.__name__} abandoned!!!"
                     )
@@ -1096,6 +1114,9 @@ class MultiPointWorker:
         self._backpressure.reset()
 
         n_regions = len(self.scan_region_coords_mm)
+        if self.start_fov:
+            self._log.info(f"Starting at FOV {self.start_fov + 1} in scan order; an earlier run imaged the ones before")
+        scan_index = -1  # of the FOV across all regions, in scan order
 
         for region_index, (region_id, coordinates) in enumerate(self.scan_region_fov_coords_mm.items()):
             self.callbacks.signal_overall_progress(
@@ -1110,6 +1131,9 @@ class MultiPointWorker:
             self.total_scans = self.num_fovs * self.NZ * len(self.selected_configurations)
 
             for fov, coordinate_mm in enumerate(coordinates):
+                scan_index += 1
+                if scan_index < self.start_fov:
+                    continue
                 # Just so the job result queues don't get too big, check and print a summary of intermediate results here
                 with self._timing.get_timer("job result summaries"):
                     result = self._summarize_runner_outputs()
@@ -1126,6 +1150,7 @@ class MultiPointWorker:
                 if self.abort_requested_fn():
                     self.handle_acquisition_abort(current_path)
                     return
+                self._next_fov = scan_index + 1
 
     def acquire_at_position(self, region_id, current_path, fov):
         self._applied_config = None

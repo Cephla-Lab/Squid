@@ -55,6 +55,7 @@ class ImagingRequest:
     step_index: int
     attempt: int
     protocol: Dict[str, Any]  # written to acquisition.yaml's protocol: section
+    start_fov: int = 0  # scan-order index (across regions) of the first FOV to image; > 0 when resuming
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,9 @@ class ImagingResult:
     end_reason: str  # completed | completed_with_errors | user_abort | error | failed_to_start
     image_count: int
     folder: str
+    # Scan-order index of the first FOV the acquisition did not finish, when every FOV before it was imaged and
+    # saved (where a resume can start); None when that isn't known.
+    end_fov: Optional[int] = None
 
 
 class ImagingStartError(RuntimeError):

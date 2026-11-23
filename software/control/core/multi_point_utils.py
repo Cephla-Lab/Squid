@@ -81,6 +81,10 @@ class AcquisitionParameters:
     # in which case each FOV in a region targets that region's offset instead of 0.
     region_laser_af_offsets: Dict[str, float] = field(default_factory=dict)
 
+    # Scan-order index (across all regions) of the first FOV to image; the ones before it are skipped. A resumed
+    # fluidics protocol imaging step starts where the attempt before it stopped. Single time point runs only.
+    start_fov: int = 0
+
 
 def piezo_z_range_problem(
     piezo_z_range_um: Tuple[float, float], nz: int, delta_z_um: float, z_stacking_config: str, travel_um: float

@@ -460,7 +460,8 @@ class FluidicsProtocolWidget(QFrame):
 
         buttons = QHBoxLayout()
         if hold.can_resume and hold.resume_position is not None:
-            resume = QPushButton(f"Resume from seq {hold.resume_position + 1}")
+            unit = "FOV" if hold.kind == "imaging" else "seq"
+            resume = QPushButton(f"Resume from {unit} {hold.resume_position + 1}")
             resume.clicked.connect(lambda: act(HoldAction.RESUME))
             buttons.addWidget(resume)
         restart = QPushButton("Restart step")

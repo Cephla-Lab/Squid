@@ -57,6 +57,23 @@ def test_start_runs_a_named_acquisition_to_completion(qtbot, qt_controller, tmp_
     assert data["protocol"]["round"] == "R01"
 
 
+def test_a_resumed_request_images_from_its_start_fov_and_reports_the_end_fov(qtbot, qt_controller, tmp_path):
+    scope, controller = qt_controller
+    port = QtImagingPort(controller, controller.scanCoordinates, scope)
+    request = _request(scope, controller, tmp_path, folder="R01_image_attempt2")
+    x, y, z = request.coordinates.regions[0].fovs[0]
+    request.coordinates.regions[0].fovs = [[x + 0.5 * i, y, z] for i in range(3)]
+    request.start_fov = 2
+
+    handle = port.start(request)
+    result = _wait_result(qtbot, handle)
+
+    assert result.end_reason == "completed"
+    assert result.end_fov == 3
+    assert result.image_count == 1  # one channel, one plane, the last FOV only
+    assert controller.start_fov == 0
+
+
 def test_start_from_a_worker_thread_like_the_runner(qtbot, qt_controller, tmp_path):
     scope, controller = qt_controller
     port = QtImagingPort(controller, controller.scanCoordinates, scope)
