@@ -96,14 +96,16 @@ resume from the failed sequence / restart the step / skip / accept (imaging `com
 end run, with an optional TEC-restore checkbox. A run in progress locks the protocol structure, keeps the
 display on the Fluidics tab, and asks before exit; after Initialize (and when the Save to folder changes) unfinished
 run folders offer crash recovery — reopening the run HELD at the interrupted step. Run notifications go to
-Slack when the notifier is configured.
+Slack when the notifier is configured; the Start run… summary warns (without blocking) when it is not. The
+acquisition watchdog (`acquisition_watchdog/README.md`), when it is running, alerts on a run HELD for more than
+10 min (one reminder an hour later) and on a run that stops responding.
 
 ## Run folder
 
 ```
 {run_name}_{YYYY-MM-DD_HH-MM-SS}/
 ├── protocol.yaml         exactly what ran (file-based blocks inlined)
-├── run_manifest.json     status, cursor, per-step attempts, TEC state, pid + heartbeat
+├── run_manifest.json     status, cursor, per-step attempts, TEC state, pid + heartbeat, when a hold began
 ├── run.log               protocol + fluidics log for the whole run
 ├── R01_image/            a standard Squid experiment folder (+ protocol_step.json)
 ├── R02_image/            attempt 1 — aborted, kept, never renamed (aborted.json inside)

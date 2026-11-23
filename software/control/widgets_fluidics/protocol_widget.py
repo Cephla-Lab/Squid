@@ -70,6 +70,7 @@ class FluidicsProtocolWidget(QFrame):
         protocol_tab,
         imaging_port: object,
         busy_check: Callable[[], Optional[str]] = lambda: None,
+        notify_check: Callable[[], Optional[str]] = lambda: None,
         parent=None,
     ):
         super().__init__(parent)
@@ -78,6 +79,7 @@ class FluidicsProtocolWidget(QFrame):
         self.protocol_tab = protocol_tab
         self.imaging_port = imaging_port
         self.busy_check = busy_check
+        self.notify_check = notify_check  # a warning when nobody would hear of a held run, or None
         self._recovery_checked_dir: Optional[str] = None
         self.fluidics_port = None
         self.runner: Optional[ProtocolRunner] = None
@@ -271,6 +273,13 @@ class FluidicsProtocolWidget(QFrame):
             f"est. {_hms(resolved.total_estimate_s)} (imaging priced at a rough 1 s/FOV)",
             f"run folder: {os.path.join(save_to, run_name)}_<start time>",
         ]
+        try:
+            notify_warning = self.notify_check()
+        except Exception as e:
+            notify_warning = None
+            self._log.warning(f"Could not check the run notifications: {e}")
+        if notify_warning:
+            summary.append(f"⚠ {notify_warning}")  # a warning, not a problem: Start stays enabled
         if PreflightDialog([], summary, self).exec_() != QDialog.Accepted:
             return
         try:

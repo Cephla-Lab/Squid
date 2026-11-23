@@ -2292,6 +2292,15 @@ class HighContentScreeningGui(QMainWindow):
                 return "a manual fluidics operation is running"
             return None
 
+        def fluidics_notify_check():
+            notifier = getattr(self, "slackNotifier", None)
+            if notifier is not None and notifier.enabled:
+                return None
+            return (
+                "Slack notifications are off: if this run goes HELD, nobody is told "
+                "(Settings → Slack Notifications; the acquisition watchdog uses the same settings)"
+            )
+
         self.fluidicsDisplayTab = FluidicsDisplayTab(self.fluidics, current_source=current_imaging_source)
         if isinstance(self.imageDisplayTabs, QTabWidget):  # absent in live-only mode
             self.imageDisplayTabs.addTab(self.fluidicsDisplayTab, self.FLUIDICS_TAB_NAME)
@@ -2300,6 +2309,7 @@ class HighContentScreeningGui(QMainWindow):
             self.fluidicsDisplayTab.protocol_tab,
             imaging_port=self.qtImagingPort,
             busy_check=fluidics_busy_check,
+            notify_check=fluidics_notify_check,
         )
         # Acquisition history: a protocol run is one Gallery entry, its imaging rounds nested under it.
         self.fluidicsProtocolWidget.signal_run_started.connect(self._on_protocol_run_started)

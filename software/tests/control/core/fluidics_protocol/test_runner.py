@@ -407,3 +407,34 @@ def test_recovery_refuses_a_missing_or_different_protocol_copy(tmp_path):
     (run_dir / "protocol.yaml").unlink()
     with pytest.raises(ValueError, match="missing"):
         ProtocolRunner(same, run_dir, FakeImagingPort(), FakeFluidicsPort(), run_name="liver", manifest=crashed)
+
+
+def test_a_run_points_the_watchdog_at_its_manifest_and_records_when_it_went_held(tmp_path):
+    import time
+
+    import squid.acquisition_state
+    from acquisition_watchdog.monitor import Monitor
+
+    fluidics = FakeFluidicsPort(script=[("failed", 0, "Flow fault on syringe_draw")])
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, fluidics=fluidics)
+    before = time.time()
+    runner.start()
+    assert _held(runner)
+
+    pointer = squid.acquisition_state.read_protocol_run()  # the test's SQUID_WATCHDOG_STATE_DIR
+    assert pointer["run_dir"] == str(run_dir) and pointer["pid"] == os.getpid()
+    assert pointer["manifest_path"] == str(run_dir / manifest_io.MANIFEST_NAME)
+    held = manifest_io.read_manifest(run_dir)
+    assert held.status == "held" and held.held_at is not None and held.held_at >= before
+
+    # what the watchdog makes of the manifest the runner wrote (no hold delay here)
+    monitor = Monitor(state_dir=tmp_path / "watchdog-alerted", protocol_held_alert_s=0.0)
+    with open(pointer["manifest_path"]) as f:
+        assert monitor.classify_protocol(json.load(f), time.time())[0] == "protocol_held"
+
+    runner.hold_action(HoldAction.END)
+    assert runner.wait(10)
+    ended = manifest_io.read_manifest(run_dir)
+    assert ended.status == "stopped" and ended.held_at is None
+    with open(pointer["manifest_path"]) as f:
+        assert monitor.classify_protocol(json.load(f), time.time()) is None

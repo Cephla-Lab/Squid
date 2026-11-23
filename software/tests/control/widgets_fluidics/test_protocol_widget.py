@@ -146,6 +146,38 @@ def test_guard_refuses_without_a_port_or_names(qtbot, widget, quiet_dialogs):
     assert quiet_dialogs and "run a name" in quiet_dialogs[-1][1]
 
 
+def test_preflight_warns_when_nobody_would_be_told_of_a_hold_but_still_starts(qtbot, widget, monkeypatch):
+    w, _fluidics, _imaging, _save_to = widget
+    summaries = []
+
+    class RecordingPreflight(protocol_widget_module.PreflightDialog):
+        def __init__(self, problems, summary_lines, parent=None):
+            summaries.append(list(summary_lines))
+            super().__init__(problems, summary_lines, parent)
+
+    monkeypatch.setattr(protocol_widget_module, "PreflightDialog", RecordingPreflight)
+    w.notify_check = lambda: "Slack notifications are off: if this run goes HELD, nobody is told"
+
+    w.start_run()
+    assert any(line.startswith("⚠ Slack notifications are off") for line in summaries[-1])
+    assert w.runner is not None  # a warning, not a blocking problem
+    assert wait_until(lambda: w.runner.outcome is not None, timeout=15)
+
+
+def test_preflight_has_no_notification_warning_when_a_notifier_is_configured(qtbot, widget, monkeypatch):
+    w, _fluidics, _imaging, _save_to = widget
+    summaries = []
+    monkeypatch.setattr(
+        protocol_widget_module,
+        "PreflightDialog",
+        lambda problems, summary_lines, parent=None: summaries.append(summary_lines)
+        or SimpleNamespace(exec_=lambda: QDialog.Rejected),
+    )
+    w.notify_check = lambda: None
+    w.start_run()
+    assert summaries and not any(line.startswith("⚠") for line in summaries[-1])
+
+
 def test_recovery_reopens_a_crashed_run_held(qtbot, widget):
     w, fluidics, imaging, save_to = widget
     w.start_run()

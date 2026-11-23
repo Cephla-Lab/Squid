@@ -22,6 +22,7 @@ _log = squid.logging.get_logger(__name__)
 SCHEMA_VERSION = 1
 HEARTBEAT_INTERVAL_S = 5.0
 RUN_FILE_NAME = "run.json"
+PROTOCOL_RUN_FILE_NAME = "fluidics_protocol_run.json"
 
 
 def default_state_dir() -> Path:
@@ -59,6 +60,45 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 def read_run(state_dir: Optional[Path] = None) -> Optional[dict]:
     try:
         with open(run_file_path(state_dir)) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def protocol_run_file_path(state_dir: Optional[Path] = None) -> Path:
+    return Path(state_dir or default_state_dir()) / PROTOCOL_RUN_FILE_NAME
+
+
+def write_protocol_run(
+    *,
+    run_dir: str,
+    manifest_path: str,
+    run_name: str,
+    pid: int,
+    machine: Optional[str] = None,
+    state_dir: Optional[Path] = None,
+) -> None:
+    """Point the watchdog at the fluidics protocol run this process is driving. The run's own
+    manifest (status, hold, heartbeat; rewritten by the runner) is the state: this only says where it is.
+    Never raises on a write failure, so a breadcrumb problem cannot break a run."""
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "run_dir": run_dir,
+        "manifest_path": manifest_path,
+        "run_name": run_name,
+        "machine": machine or socket.gethostname(),
+        "pid": pid,
+        "written_at": time.time(),
+    }
+    try:
+        _atomic_write_json(protocol_run_file_path(state_dir), record)
+    except OSError as e:
+        _log.warning(f"Failed to write the fluidics protocol run breadcrumb: {e}")
+
+
+def read_protocol_run(state_dir: Optional[Path] = None) -> Optional[dict]:
+    try:
+        with open(protocol_run_file_path(state_dir)) as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return None

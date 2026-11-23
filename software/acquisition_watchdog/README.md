@@ -4,7 +4,9 @@ An independent process that watches Squid acquisitions and posts a **single Slac
 when one ends prematurely — a process **crash / hang / kill**, a **fatal error**, or a
 **user abort**. Clean completions stay silent ("no news is good news"). It covers
 acquisitions started from the **GUI** and from the **MCP control server**, on **Ubuntu and
-Windows**.
+Windows**. It also watches **fluidics protocol runs**: an alert when a run has sat **HELD** (waiting
+for someone to choose resume / restart / skip / end) for 10 minutes, one reminder an hour later, and
+an alert when a run stops responding.
 
 Because it runs as a *separate* process, it can report failures the in-app Slack notifier
 can't — a segfault in a camera SDK, an OOM-kill, a frozen UI, or the whole process dying.
@@ -15,6 +17,11 @@ The Squid GUI writes a small `run.json` breadcrumb into a shared state dir: `sta
 at acquisition start, a throttled heartbeat (+ progress) during the run, and `status=ended`
 with a reason at the end. This watchdog polls that file and alerts when a run's process has
 died / gone silent, or ended with a non-clean reason. One alert per run (de-duplicated).
+
+A fluidics protocol run writes `fluidics_protocol_run.json` into the same state dir when it
+starts (or is reopened after a crash). It only points at the run folder: the run's own
+`run_manifest.json` (status, hold reason/message, when the hold began, a heartbeat every 5 s,
+held or not) is what the watchdog reads.
 
 ## Prerequisites
 
@@ -43,6 +50,8 @@ Slack alert. A clean finish produces nothing.
 |---|---|---|
 | `--heartbeat-timeout` | `120` | Seconds of heartbeat silence (with a live process) before declaring a hang. Raise it if you have very long single exposures / fluidics steps. |
 | `--poll-interval` | `5` | Seconds between checks. |
+| `--protocol-held-alert-minutes` | `10` | Alert when a fluidics protocol run has been HELD this long. |
+| `--protocol-held-reminder-minutes` | `60` | Remind once, this long after the held alert, if the same hold is still waiting. `0` = no reminder. |
 | `--once` | — | Run a single check and exit (handy for testing or a cron probe). |
 | `--slack-settings <path>` | `cache/slack_settings.yaml` | Only needed if you don't run from `software/`. |
 | `--state-dir <path>` | platformdirs user-state dir | Must match the GUI's; override here or via `$SQUID_WATCHDOG_STATE_DIR`. |
@@ -91,6 +100,9 @@ otherwise within `--heartbeat-timeout` seconds.
 | Finished, but some save/job errors occurred | 🟠 completed-with-errors |
 | Aborted by the user, the MCP server, or by closing the GUI mid-run | 🟡 aborted |
 | Finished cleanly | *(silent)* |
+| Fluidics protocol run HELD longer than `--protocol-held-alert-minutes` | 🟠 protocol held (reason, message, step, how long) |
+| …the same hold still waiting `--protocol-held-reminder-minutes` later | 🔴 protocol still held (once) |
+| Fluidics protocol run not ended, but its process is gone or its heartbeat older than `--heartbeat-timeout` | 🔴 protocol stopped responding |
 
 Each alert includes the machine name, experiment, reason, and progress (e.g. "stopped at
 timepoint 3/10").
@@ -104,7 +116,8 @@ timepoint 3/10").
   mid-run it monitors from there; if it starts *after* a crash already happened, it reads the
   stale `running` breadcrumb, sees the PID is dead, and alerts once.
 - **One alert per run.** Alerted run IDs persist in `<state_dir>/alerted.json`, so it never
-  double-alerts and never re-alerts after a restart.
+  double-alerts and never re-alerts after a restart. For a protocol run that is one alert (and
+  one reminder) per hold, and one per stall.
 - **Turn alerts off** on a machine (without disabling the GUI notifier): uncheck *"Enable
   watchdog alerts"*, or set `watchdog_enabled: false` in `cache/slack_settings.yaml`. Takes
   effect on the next check — no watchdog restart needed.
