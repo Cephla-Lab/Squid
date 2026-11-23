@@ -1,0 +1,591 @@
+#!/usr/bin/env python3
+"""Port hold check: does a port's line leave the flow cell under suction after a small pull?
+
+For each port, with the GUI open (control server + python exec enabled):
+  1. flow_displacement_experiment.py: empty the syringe, turn the valve to the port (recorded),
+     30 s baseline, pull --volume at --rate, record --post s after the pump finishes
+  2. valve_sequence.py: turn the valve to --release-port (a port known to pass liquid freely)
+     and hold --hold s, recording the coverslip
+
+A port whose line passes liquid freely lets the coverslip come back to where it started within
+seconds. A port that stops passing liquid at small pressure differences leaves it deflected
+("held"), and the move to the release port then lets liquid in and the coverslip rises.
+
+    python3 tools/coverslip_flow/port_hold_check.py --ports 1 2 3 4 --release-port 5 \
+        --order shuffle --seed 1 --out-dir ~/flowtest/port_hold
+
+    python3 tools/coverslip_flow/port_hold_check.py --analyze-only --out-dir ~/flowtest/port_hold
+
+Files per port (NN = run number): NN_pull<V>_port<P>.* and NN_release_port<P>_to<R>_*.
+Writes <out-dir>/port_hold_summary.csv. Positions are the bright laser AF reflection
+(re-detected in the saved frames), in um from the laser AF reference; lower = pulled in.
+A port is flagged HOLDS PRESSURE when the coverslip is still more than 5 um from where it was
+before the pull at the end of the post-pull recording; a free line comes back within 2 um.
+
+--sensor-only: the same pull and release, judged from the flow sensor alone (no laser AF,
+no frames, ~1.5 min per port). A held line leaves the flow cell short of liquid; when the
+valve moves to the release port that liquid flows back in and the sensor sees it. Verdict
+from the sensor volume in the 15 s after the move: >= 1.0 uL holds, 0.6-1.0 borderline
+(calibrated against the coverslip check, where a holding line takes in roughly 1-4 uL and a
+free line under 1 uL). Always release to the same free port: moving into a higher bottle
+also lets liquid in. Writes NN_sensor_port<P>_to<R>_flow.csv / _meta.json and
+<out-dir>/port_hold_sensor_summary.csv.
+
+    python3 tools/coverslip_flow/port_hold_check.py --sensor-only --ports 1 2 3 --release-port 5 \
+        --out-dir ~/flowtest/sensor_hold
+
+Both talk to the GUI's control server and need its python_exec enabled.
+"""
+
+import argparse
+import csv
+import glob
+import json
+import os
+import random
+import re
+import subprocess
+import sys
+
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SOFTWARE_DIR = os.path.dirname(os.path.dirname(HERE))  # this file is software/tools/coverslip_flow/
+PY = sys.executable or "python3"
+HOLD_FLAG_UM = 5.0
+SENSOR_HOLD_UL = 1.0  # inflow in the 15 s after the release move
+SENSOR_BORDERLINE_UL = 0.6
+GLITCH_UL_MIN = 1000  # any reading above this in the window: air or a bad reading
+SETTLE_UL_MIN = 20  # still above rest by this at 12-15 s after the move: not a refill pulse
+
+
+def coverslip_verdict(held_um):
+    """HOLDS PRESSURE when the coverslip is still more than HOLD_FLAG_UM from where it was before the pull."""
+    return "HOLDS PRESSURE" if abs(held_um) > HOLD_FLAG_UM else "ok"
+
+
+def sensor_verdict(ft, fv, rv, rest):
+    """(inflow_ul, peak_ul_min, verdict) for the 15 s after the release move at rv.
+    ft, fv unfiltered sensor readings; rest the sensor's reading just before the move."""
+    w = (ft > rv - 0.5) & (ft < rv + 15)
+    if w.sum() < 5:
+        return np.nan, np.nan, "no sensor data"
+    raw = fv[w]
+    ok = np.isfinite(raw) & (np.abs(raw) < 5000)
+    inflow = _volume(ft[w][ok], raw[ok], rv - 0.5, rv + 15, rest)
+    peak = float(np.max(raw[ok]) - rest) if ok.any() else np.nan
+    late = fv[(ft > rv + 12) & (ft < rv + 15)]
+    late = late[np.isfinite(late) & (np.abs(late) < 5000)]
+    if np.any(np.abs(raw[np.isfinite(raw)]) > GLITCH_UL_MIN) or (len(late) and np.median(late) - rest > SETTLE_UL_MIN):
+        return inflow, peak, "SENSOR GLITCH - repeat"
+    if inflow >= SENSOR_HOLD_UL:
+        return inflow, peak, "HOLDS"
+    if inflow >= SENSOR_BORDERLINE_UL:
+        return inflow, peak, "borderline"
+    return inflow, peak, "ok"
+
+
+# ---------------------------------------------------------------- reading
+def _f(v):
+    return float(v) if v not in ("", None, "nan") else np.nan
+
+
+def _events(meta_path):
+    ev = {}
+    for t, name, _v in json.load(open(meta_path))["events_s"]:
+        ev.setdefault(name.split(" ")[0], t)
+    return ev
+
+
+def _flow_main(csv_path):
+    """Flow readings from the experiment CSV (column flow_<name>_ul_min, first one found)."""
+    rows = list(csv.DictReader(open(csv_path)))
+    col = next((k for k in rows[0] if k.startswith("flow_") and k.endswith("_ul_min")), None)
+    if col is None:
+        return np.array([]), np.array([])
+    t = np.array([float(r["t_s"]) for r in rows if r[col] not in ("", "nan")])
+    v = np.array([float(r[col]) for r in rows if r[col] not in ("", "nan")])
+    ok = np.abs(v) < 5000  # drop invalid (32767) and wild spikes
+    return t[ok], v[ok]
+
+
+def _series(csv_path, tcol, vcol):
+    rows = list(csv.DictReader(open(csv_path)))
+    t = np.array([float(r[tcol]) for r in rows])
+    v = np.array([_f(r[vcol]) for r in rows])
+    return t, v
+
+
+def _med(t, z, a, b):
+    w = (t >= a) & (t < b) & np.isfinite(z)
+    return float(np.median(z[w])) if w.any() else np.nan
+
+
+def _volume(ft, fv, a, b, rest):
+    """Sensor volume (uL) between a and b, relative to the sensor's at-rest reading."""
+    w = (ft > a) & (ft < b)
+    if w.sum() < 2:
+        return np.nan
+    return float(np.sum((fv[w] - rest) * np.gradient(ft[w])) / 60)
+
+
+# ---------------------------------------------------------------- analysis
+def analyze_pair(pull_base, release_base):
+    ev = _events(pull_base + "_meta.json")
+    t, z = _series(pull_base + "_bright.csv", "t_s", "bright_spot_um")
+    ft, fv = _flow_main(pull_base + ".csv")
+    vs = ev.get("valve_start", ev.get("prep_start", 5.0))
+    ps = ev["pull_start"]
+    pe = ev.get("pump_idle", ev.get("pull_end"))
+    # the sensor's own zero: its median reading at rest before anything moves
+    pre = fv[ft < vs - 0.5]
+    rest_flow = float(np.median(pre)) if len(pre) else 0.0
+    start = _med(t, z, 0, 4.5)
+    before_pull = _med(t, z, ps - 10, ps)
+    dip = float(np.nanmin(z[(t >= ps) & (t <= pe + 5)])) - before_pull
+    held = _med(t, z, t[-1] - 10, t[-1] + 1) - before_pull
+    out = {
+        "valve_move_um": before_pull - start,
+        "valve_move_inflow_ul": _volume(ft, fv, vs - 0.5, vs + 15, rest_flow),
+        "dip_um": dip,
+        "sensor_volume_ul": _volume(ft, fv, ps, pe + 30, rest_flow),
+        "tail_ul": _volume(ft, fv, pe + 3, pe + 30, rest_flow),
+        "held_um": held,
+        "sensor_rest_ul_min": rest_flow,
+        "abs_before_pull_um": before_pull,
+    }
+    if release_base and os.path.exists(release_base + "_samples.csv"):
+        rt, rz = _series(release_base + "_samples.csv", "t_s", "bright_spot_um")
+        rft_raw, rfv_raw = _series(release_base + "_flow.csv", "t_s", "flow_ul_min")
+        ok = np.isfinite(rfv_raw) & (np.abs(rfv_raw) < 5000)
+        rft, rfv = rft_raw[ok], rfv_raw[ok]
+        rv = [tt for tt, e, _v in json.load(open(release_base + "_meta.json"))["events_s"] if e == "valve_start"][0]
+        rpre = rfv[rft < rv - 0.5]
+        rrest = float(np.median(rpre)) if len(rpre) else rest_flow
+        r0 = _med(rt, rz, rv - 3, rv)
+        r1 = _med(rt, rz, rt[-1] - 8, rt[-1] + 1)
+        _inf, peak, sv = sensor_verdict(rft_raw, rfv_raw, rv, rrest)
+        out.update(
+            {
+                "release_rise_um": r1 - r0,
+                "release_inflow_ul": _volume(rft, rfv, rv - 0.5, rv + 15, rrest),
+                "abs_after_release_um": r1,
+                "release_peak_ul_min": peak,
+                "sensor_verdict": sv,
+            }
+        )
+    else:
+        out.update(
+            {
+                "release_rise_um": np.nan,
+                "release_inflow_ul": np.nan,
+                "abs_after_release_um": np.nan,
+                "release_peak_ul_min": np.nan,
+                "sensor_verdict": "",
+            }
+        )
+    return out
+
+
+def find_runs(out_dir):
+    """[(nn, port, pull_base, release_base_or_None)] from NN_pull<V>_port<P>.csv files."""
+    runs = []
+    for f in sorted(glob.glob(os.path.join(out_dir, "*_pull*_port*.csv"))):
+        m = re.match(r"^(\d+)_pull[\d.]+_port(\d+)\.csv$", os.path.basename(f))
+        if not m:
+            continue
+        nn, port = m.group(1), int(m.group(2))
+        base = f[:-4]
+        if not os.path.exists(base + "_bright.csv"):
+            print("skip %s: no _bright.csv (laser AF frames not saved?)" % os.path.basename(base))
+            continue
+        rel = glob.glob(os.path.join(out_dir, "%s_release_port%d_to*_samples.csv" % (nn, port)))
+        runs.append((nn, port, base, rel[0][: -len("_samples.csv")] if rel else None))
+    return runs
+
+
+def analyze_dir(out_dir):
+    rows = []
+    for nn, port, base, rel in find_runs(out_dir):
+        try:
+            r = analyze_pair(base, rel)
+        except Exception as e:  # keep going: one bad run should not hide the rest
+            print("failed %s: %s" % (os.path.basename(base), e))
+            continue
+        r = {"run": nn, "port": port, **r}
+        r["verdict"] = coverslip_verdict(r["held_um"])
+        rows.append(r)
+    if not rows:
+        sys.exit("no analysable runs in %s" % out_dir)
+    keys = [
+        "run",
+        "port",
+        "held_um",
+        "release_rise_um",
+        "release_inflow_ul",
+        "dip_um",
+        "sensor_volume_ul",
+        "tail_ul",
+        "valve_move_um",
+        "valve_move_inflow_ul",
+        "sensor_rest_ul_min",
+        "abs_before_pull_um",
+        "abs_after_release_um",
+        "verdict",
+        "release_peak_ul_min",
+        "sensor_verdict",
+    ]
+    path = os.path.join(out_dir, "port_hold_summary.csv")
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(keys)
+        for r in rows:
+            w.writerow([("%.2f" % r[k]) if isinstance(r[k], float) else r[k] for k in keys])
+    fmt = lambda v, s="%+.1f": "  —" if v is None or (isinstance(v, float) and np.isnan(v)) else s % v
+    print("\nport  held      release rise  inflow   dip    sensor vol  valve move   verdict          sensor verdict")
+    print("      (um)      (um)          (uL)     (um)   (uL)        (um)")
+    for r in sorted(rows, key=lambda r: r["run"]):
+        print(
+            "%4d  %7s   %8s      %6s  %7s   %6s     %7s     %-15s  %s"
+            % (
+                r["port"],
+                fmt(r["held_um"]),
+                fmt(r["release_rise_um"]),
+                fmt(r["release_inflow_ul"]),
+                fmt(r["dip_um"]),
+                fmt(r["sensor_volume_ul"], "%.1f"),
+                fmt(r["valve_move_um"]),
+                r["verdict"],
+                r["sensor_verdict"],
+            )
+        )
+    print("\nSaved %s" % path)
+    print(
+        "A port passing liquid freely holds < 2 um and rises < 5 um on release. 'held' is the "
+        "coverslip at the end of the post-pull recording relative to just before it (negative = still pulled in)."
+    )
+    return rows
+
+
+# ---------------------------------------------------------------- sensor-only
+# Runs inside the GUI (python_exec). Callbacks can't see the exec's locals: bind via defaults.
+SENSOR_REMOTE = r"""
+import time
+P = __PARAMS__
+svc = getattr(gui, "fluidics", None)
+system = getattr(svc, "system", None) if svc is not None else None
+if system is None or not svc.initialized:
+    raise RuntimeError("fluidics is not initialized (Fluidics tab -> Initialize)")
+if system.busy:
+    raise RuntimeError("the fluidics system is busy with another job")
+sensors = list(system.devices.flow_sensors)
+if not sensors:
+    raise RuntimeError("no flow sensor is running (add flow_sensors: to the fluidics config)")
+manual = system.manual
+xp = svc.config.syringe_pump.extract_port
+setattr(gui, "_flow_displacement_abort", False)
+events = []; flow = []; errors = []
+def _err(m, _e=errors): _e.append(m)
+def h(f, ts, _b=flow): _b.append([ts, f])
+sensor = sensors[0]
+sensor.subscribe(h)
+def wait(seconds, _t=time.time, _sl=time.sleep, _g=gui):
+    t_end = _t() + seconds
+    while _t() < t_end:
+        if getattr(_g, "_flow_displacement_abort", False): raise RuntimeError("aborted")
+        _sl(0.05)
+def job(fn, label, _s=system, _ev=events, _t=time.time, _sl=time.sleep, _e=errors, _cb=_err, _g=gui):
+    _ev.append([_t(), label + "_start", None])
+    _s.run_manual(fn, callbacks={"on_error": _cb})
+    _sl(0.2)
+    while _s.busy:
+        if getattr(_g, "_flow_displacement_abort", False): raise RuntimeError("aborted")
+        _sl(0.05)
+    _ev.append([_t(), label + "_end", None])
+    if _e: raise RuntimeError("; ".join(_e))
+def prep(_m=manual, _P=P, _ev=events, _t=time.time):
+    _m.empty_to_waste()
+    _ev.append([_t(), "valve_start", _P["port"]])
+    _m.open_port(_P["port"])
+def pump(_m=manual, _P=P, _ev=events, _t=time.time, _xp=xp):
+    _m.extract(_xp, _P["volume"], _P["rate"], on_started=lambda est, _ev=_ev, _t=_t: _ev.append([_t(), "pull_start", est]))
+def release(_m=manual, _P=P, _ev=events, _t=time.time):
+    _ev.append([_t(), "release_valve_start", _P["release_port"]])
+    _m.open_port(_P["release_port"])
+t0 = time.time(); end_reason = "completed"
+try:
+    wait(P["pre"])
+    job(prep, "prep")
+    wait(P["baseline"])
+    job(pump, "pump")
+    events.append([time.time(), "pump_idle", None])
+    wait(P["post"])
+    job(release, "release")
+    wait(P["hold"])
+except Exception as e:
+    end_reason = "error: " + str(e)
+    if system.busy:
+        system.abort(); system.wait(30)
+finally:
+    sensor.unsubscribe(h)
+events.append([time.time(), "end", end_reason])
+result = {"t0": t0, "events": events, "flow": flow, "end_reason": end_reason, "sensor": sensor.name,
+          "held_after_ul": manual.held_volume_ul(refresh=True)}
+"""
+
+
+def run_sensor_port(a, port, base):
+    import flow_displacement_experiment as fde
+
+    fde.PORT = a.server_port
+    params = {
+        "port": port,
+        "release_port": a.release_port,
+        "volume": a.volume,
+        "rate": a.rate,
+        "pre": 3.0,
+        "baseline": 15.0,
+        "post": a.post,
+        "hold": 20.0,
+    }
+    code = SENSOR_REMOTE.replace("__PARAMS__", repr(params))
+    try:
+        sock = fde._send("python_exec", {"code": code}, timeout=a.post + 600)
+    except ConnectionRefusedError:
+        sys.exit(
+            "Cannot reach the GUI's control server on port %d (Settings -> Enable MCP Control Server)." % a.server_port
+        )
+    reply = fde._receive(sock)
+    if not reply.get("success"):
+        sys.exit("The GUI refused the run on port %d: %s" % (port, reply.get("error")))
+    res = (reply.get("result") or {}).get("result")
+    t0 = res["t0"]
+    with open(base + "_flow.csv", "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["t_s", "flow_ul_min"])
+        for t, v in res["flow"]:
+            w.writerow(["%.4f" % (t - t0), "" if v is None else v])
+    json.dump(
+        {
+            "events_s": [[e[0] - t0, e[1], e[2]] for e in res["events"]],
+            "end_reason": res["end_reason"],
+            "sensor": res["sensor"],
+            "port": port,
+            "release_port": a.release_port,
+            "volume_ul": a.volume,
+            "rate_ul_min": a.rate,
+        },
+        open(base + "_meta.json", "w"),
+        indent=1,
+    )
+    return res["end_reason"]
+
+
+def analyze_sensor_run(base):
+    meta = json.load(open(base + "_meta.json"))
+    ev = {}
+    for t, name, _v in meta["events_s"]:
+        ev.setdefault(name, t)
+    ft, fv = _series(base + "_flow.csv", "t_s", "flow_ul_min")
+    ok = np.isfinite(fv) & (np.abs(fv) < 5000)
+    ps, pe, rv = ev["pull_start"], ev["pump_idle"], ev["release_valve_start"]
+    rest = float(np.median(fv[ok & (ft > ps - 8) & (ft < ps - 0.5)]))
+    rrest = float(np.median(fv[ok & (ft > rv - 8) & (ft < rv - 0.5)]))
+    inflow, peak, verdict = sensor_verdict(ft, fv, rv, rrest)
+    return {
+        "pull_volume_ul": _volume(ft[ok], fv[ok], ps, pe + 30, rest),
+        "tail_ul": _volume(ft[ok], fv[ok], pe + 3, pe + 30, rest),
+        "valve_move_inflow_ul": _volume(ft[ok], fv[ok], ev["valve_start"] - 0.5, ev["valve_start"] + 12, rest),
+        "release_inflow_ul": inflow,
+        "release_peak_ul_min": peak,
+        "sensor_rest_ul_min": rest,
+        "end_reason": meta["end_reason"],
+        "verdict": verdict,
+    }
+
+
+def analyze_sensor_dir(out_dir):
+    rows = []
+    for f in sorted(glob.glob(os.path.join(out_dir, "*_sensor_port*_to*_meta.json"))):
+        m = re.match(r"^(\d+)_sensor_port(\d+)_to(\d+)_meta\.json$", os.path.basename(f))
+        if not m:
+            continue
+        try:
+            r = analyze_sensor_run(f[: -len("_meta.json")])
+        except Exception as e:
+            print("failed %s: %s" % (os.path.basename(f), e))
+            continue
+        rows.append({"run": m.group(1), "port": int(m.group(2)), "release_port": int(m.group(3)), **r})
+    if not rows:
+        sys.exit("no sensor-only runs in %s" % out_dir)
+    keys = [
+        "run",
+        "port",
+        "release_port",
+        "release_inflow_ul",
+        "release_peak_ul_min",
+        "pull_volume_ul",
+        "tail_ul",
+        "valve_move_inflow_ul",
+        "sensor_rest_ul_min",
+        "end_reason",
+        "verdict",
+    ]
+    path = os.path.join(out_dir, "port_hold_sensor_summary.csv")
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(keys)
+        for r in rows:
+            w.writerow([("%.2f" % r[k]) if isinstance(r[k], float) else r[k] for k in keys])
+    print("\nport  release inflow  release peak  pull volume  tail    verdict")
+    print("      (uL, 15 s)      (uL/min)      (uL)         (uL)")
+    for r in rows:
+        print(
+            "%4d  %+8.2f        %+8.0f      %7.1f      %+5.1f   %s"
+            % (
+                r["port"],
+                r["release_inflow_ul"],
+                r["release_peak_ul_min"],
+                r["pull_volume_ul"],
+                r["tail_ul"],
+                r["verdict"] + ("" if r["end_reason"] == "completed" else " (" + r["end_reason"] + ")"),
+            )
+        )
+    print("\nSaved %s" % path)
+    print(
+        "HOLDS: >= %.1f uL flowed in when the valve moved to the release port (the line had left the flow cell "
+        "under suction). borderline: %.1f-%.1f uL." % (SENSOR_HOLD_UL, SENSOR_BORDERLINE_UL, SENSOR_HOLD_UL)
+    )
+    return rows
+
+
+# ---------------------------------------------------------------- running
+def run_sensor_suite(a, out_dir, ports):
+    existing = [int(m.group(1)) for f in os.listdir(out_dir) for m in [re.match(r"^(\d+)_", f)] if m]
+    n = max(existing) if existing else 0
+    print(
+        "Sensor-only. Ports in order: %s; release port %d; %g uL at %g uL/min each"
+        % (ports, a.release_port, a.volume, a.rate)
+    )
+    for p in ports:
+        n += 1
+        base = os.path.join(out_dir, "%02d_sensor_port%d_to%d" % (n, p, a.release_port))
+        print("===== %02d port %d =====" % (n, p), flush=True)
+        end = run_sensor_port(a, p, base)
+        print("  End: " + end, flush=True)
+        if end != "completed":
+            analyze_sensor_dir(out_dir)
+            sys.exit("port %d: %s; stopping." % (p, end))
+    analyze_sensor_dir(out_dir)
+
+
+def run_suite(a):
+    out_dir = os.path.abspath(os.path.expanduser(a.out_dir))
+    os.makedirs(out_dir, exist_ok=True)
+    ports = list(a.ports)
+    if a.order == "shuffle":
+        random.Random(a.seed).shuffle(ports)
+    existing = [int(m.group(1)) for f in os.listdir(out_dir) for m in [re.match(r"^(\d+)_", f)] if m]
+    n = max(existing) if existing else 0
+    if a.release_port in ports:
+        sys.exit(
+            "port %d is also the release port; test it in a separate run with another --release-port" % a.release_port
+        )
+    if a.sensor_only:
+        return run_sensor_suite(a, out_dir, ports)
+    vol_tag = "%g" % a.volume
+    print("Ports in order: %s; release port %d; %g uL at %g uL/min each" % (ports, a.release_port, a.volume, a.rate))
+    for p in ports:
+        n += 1
+        nn = "%02d" % n
+        pull = os.path.join(out_dir, "%s_pull%s_port%d" % (nn, vol_tag, p))
+        print("===== %s port %d: pull =====" % (nn, p), flush=True)
+        r = subprocess.run(
+            [
+                PY,
+                os.path.join(HERE, "flow_displacement_experiment.py"),
+                "--empty-first",
+                "--port",
+                str(p),
+                "--volume",
+                str(a.volume),
+                "--rate",
+                str(a.rate),
+                "--pre",
+                "5",
+                "--baseline",
+                "30",
+                "--post",
+                str(a.post),
+                "--no-plot",
+                "--server-port",
+                str(a.server_port),
+                "--out",
+                pull,
+            ],
+            cwd=SOFTWARE_DIR,
+            capture_output=True,
+            text=True,
+        )
+        tail = [l for l in (r.stdout + r.stderr).splitlines() if re.search(r"End:|refused|rror|Cannot", l)]
+        print("  " + ("\n  ".join(tail) if tail else "(no status line)"))
+        if r.returncode != 0:
+            sys.exit("pull on port %d failed; stopping. Output:\n%s" % (p, (r.stdout + r.stderr)[-2000:]))
+        rel = os.path.join(out_dir, "%s_release_port%d_to%d" % (nn, p, a.release_port))
+        print("===== %s port %d: release to port %d =====" % (nn, p, a.release_port), flush=True)
+        r = subprocess.run(
+            [
+                PY,
+                os.path.join(HERE, "valve_sequence.py"),
+                "--pre",
+                "5",
+                "--steps",
+                "%d:%g" % (a.release_port, a.hold),
+                "--server-port",
+                str(a.server_port),
+                "--out",
+                rel,
+            ],
+            cwd=SOFTWARE_DIR,
+            capture_output=True,
+            text=True,
+        )
+        tail = [l for l in (r.stdout + r.stderr).splitlines() if re.search(r"End:|refused|rror|Cannot", l)]
+        print("  " + ("\n  ".join(tail) if tail else "(no status line)"))
+        if r.returncode != 0:
+            sys.exit("release move after port %d failed; stopping. Output:\n%s" % (p, (r.stdout + r.stderr)[-2000:]))
+    analyze_dir(out_dir)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--out-dir", required=True)
+    p.add_argument("--ports", type=int, nargs="+", help="ports to test")
+    p.add_argument(
+        "--release-port",
+        type=int,
+        help="a port whose line passes liquid freely (check it first: it should hold < 2 um)",
+    )
+    p.add_argument("--volume", type=float, default=50)
+    p.add_argument("--rate", type=float, default=500)
+    p.add_argument("--post", type=float, default=45, help="s recorded after the pump finishes")
+    p.add_argument("--hold", type=float, default=30, help="s held at the release port")
+    p.add_argument("--order", choices=("given", "shuffle"), default="given")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--server-port", type=int, default=5050)
+    p.add_argument("--analyze-only", action="store_true")
+    p.add_argument(
+        "--sensor-only", action="store_true", help="judge holding from the flow sensor alone (no laser AF needed)"
+    )
+    a = p.parse_args()
+    if a.analyze_only:
+        d = os.path.abspath(os.path.expanduser(a.out_dir))
+        (analyze_sensor_dir if a.sensor_only else analyze_dir)(d)
+        return
+    if not a.ports or a.release_port is None:
+        p.error("--ports and --release-port are required unless --analyze-only")
+    run_suite(a)
+
+
+if __name__ == "__main__":
+    main()
