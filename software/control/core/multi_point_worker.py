@@ -32,6 +32,7 @@ from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.acquisition_state
 import squid.stage.utils
+from squid.exceptions import SquidTimeout
 from control.rcm_scan_trigger import ConfocalScanFailedError
 import squid.logging
 import control.core.job_processing
@@ -852,7 +853,31 @@ class MultiPointWorker:
 
         self.coordinates_pd = pd.concat([self.coordinates_pd, new_row], ignore_index=True)
 
+    # A failed reply from the stage controller: the Prior driver raises SquidTimeout when its status or position
+    # reply stays unreadable, and ValueError from a reply it could not parse. The moves are to absolute targets, so
+    # making them again is safe. Not retried: a plain TimeoutError (the microcontroller's move may still be running),
+    # CommandAborted, StageMotionRefused, an error the controller reported (a limit), and anything else.
+    _RETRIABLE_FOV_MOVE_ERRORS = (SquidTimeout, ValueError)
+
     def move_to_coordinate(self, coordinate_mm, region_id, fov):
+        """Move to a FOV, making the move again after a failed stage reply (MULTIPOINT_FOV_MOVE_RETRIES times)."""
+        retries = max(0, int(control._def.MULTIPOINT_FOV_MOVE_RETRIES))
+        attempt = 0
+        while True:
+            try:
+                self._move_to_coordinate_once(coordinate_mm, region_id, fov)
+                return
+            except self._RETRIABLE_FOV_MOVE_ERRORS as e:
+                if attempt >= retries or self.abort_requested_fn():
+                    raise
+                attempt += 1
+                self._log.warning(
+                    f"Move to region {region_id} fov {fov} failed ({type(e).__name__}: {e}); "
+                    f"moving again (retry {attempt} of {retries})"
+                )
+                self._sleep(control._def.MULTIPOINT_FOV_MOVE_RETRY_DELAY_S)
+
+    def _move_to_coordinate_once(self, coordinate_mm, region_id, fov):
         x_mm = coordinate_mm[0]
         y_mm = coordinate_mm[1]
 

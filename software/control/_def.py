@@ -868,6 +868,10 @@ ENCODER_RESOLUTION_UM_Z = 0.1
 SCAN_STABILIZATION_TIME_MS_X = 160
 SCAN_STABILIZATION_TIME_MS_Y = 160
 SCAN_STABILIZATION_TIME_MS_Z = 20
+# A move to the next FOV that fails because the stage's reply could not be read (SquidTimeout, ValueError) is made
+# again this many times, MULTIPOINT_FOV_MOVE_RETRY_DELAY_S apart, before the error ends the acquisition. 0: no retry.
+MULTIPOINT_FOV_MOVE_RETRIES = 2
+MULTIPOINT_FOV_MOVE_RETRY_DELAY_S = 1.0
 HOMING_ENABLED_X = True
 HOMING_ENABLED_Y = True
 HOMING_ENABLED_Z = False
