@@ -236,6 +236,11 @@ if __name__ == "__main__":
             control_server_action.toggled.connect(on_control_server_toggled)
             settings_menu.addAction(control_server_action)
 
+            # Utils > Agent Notebook, only with a command in the settings (agent_notebook_command)
+            from control.agent_notebook_action import add_agent_notebook_to_utils_menu
+
+            add_agent_notebook_to_utils_menu(win, menu_bar, app, start_control_server_if_needed, control_server_action)
+
             # Python exec toggle
             python_exec_action = QAction("Enable MCP Python Exec", win)
             python_exec_action.setCheckable(True)
