@@ -40,6 +40,11 @@ class AutofocusWorker:
 
         self.crop_width = self.autofocusController.crop_width
         self.crop_height = self.autofocusController.crop_height
+        self.focus_measure_operator = (
+            self.autofocusController.focus_measure_operator or control._def.FOCUS_MEASURE_OPERATOR
+        )
+        self.keep_plane_images = self.autofocusController.keep_plane_images
+        self.report_planes = self.autofocusController.report_planes
 
     def run(self):
         try:
@@ -49,6 +54,9 @@ class AutofocusWorker:
                     self.run_autofocus()
                 else:
                     self._log.error("autofocus skipped: the illumination did not become ready")
+        except Exception as error:
+            self.autofocusController.last_error = error  # for a caller that waits for the result of this run
+            raise
         finally:
             self._finished_fn()
 
@@ -75,6 +83,8 @@ class AutofocusWorker:
                 break
             self.stage.move_z(self.deltaZ)
             steps_moved = steps_moved + 1
+            # the stage rounds each move to its motor steps: a caller that wants the planes gets the position read
+            plane_z_mm = self.stage.get_pos().z_mm if self.report_planes else None
             # trigger acquisition (including turning on the illumination) and read frame
             if self.liveController.trigger_mode == control._def.TriggerMode.SOFTWARE:
                 self.liveController.turn_on_illumination()
@@ -106,7 +116,11 @@ class AutofocusWorker:
             self._image_to_display_fn(image)
 
             timestamp_0 = time.time()
-            focus_measure = utils.calculate_focus_measure(image, control._def.FOCUS_MEASURE_OPERATOR)
+            focus_measure = utils.calculate_focus_measure(image, self.focus_measure_operator)
+            if self.report_planes:
+                self.autofocusController.last_planes.append(
+                    (plane_z_mm, focus_measure, image if self.keep_plane_images else None)
+                )
             timestamp_1 = time.time()
             self._log.info("             calculating focus measure took " + str(timestamp_1 - timestamp_0) + " second")
             focus_measure_vs_z[i] = focus_measure
