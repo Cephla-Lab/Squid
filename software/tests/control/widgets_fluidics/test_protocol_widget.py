@@ -380,3 +380,104 @@ def test_run_lifecycle_signals(qtbot, widget):
     assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)
     qtbot.waitUntil(lambda: finished == [(run_dir, "stopped")], timeout=5000)
     assert started == [(run_dir, "liver")]
+
+
+def test_held_for_text_counts_hours_and_minutes():
+    assert protocol_widget_module.held_for_text(20) == "Held for less than a minute"
+    assert protocol_widget_module.held_for_text(59 * 60 + 59) == "Held for 59 min"
+    assert protocol_widget_module.held_for_text(7 * 3600 + 32 * 60 + 10) == "Held for 7 h 32 min"
+
+
+@pytest.fixture
+def record_tabs(qtbot, widget):
+    """The widget as the GUI holds it: one page of a record QTabWidget whose height is fitted to its
+    current page whenever the current tab changes (gui_hcs.resizeCurrentTab), next to another tab."""
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QLabel, QSplitter, QTabWidget
+
+    w = widget[0]
+    tabs = QTabWidget()
+
+    def fit_current_tab():
+        height = tabs.currentWidget().sizeHint().height() + tabs.tabBar().height()
+        tabs.resize(tabs.width(), height)
+        tabs.setMaximumHeight(height)
+
+    tabs.addTab(QLabel("acquisition settings"), "Wellplate Multipoint")
+    tabs.addTab(w, "Fluidics Protocol")
+    tabs.currentChanged.connect(fit_current_tab)
+    splitter = QSplitter(Qt.Vertical)
+    splitter.addWidget(tabs)
+    splitter.addWidget(QLabel("navigation"))
+    qtbot.addWidget(splitter)
+    splitter.resize(500, 1200)
+    splitter.show()
+    yield tabs, fit_current_tab
+    tabs.currentChanged.disconnect(fit_current_tab)
+    w.setParent(None)  # the widget fixture owns and closes it
+
+
+def _hold_on_a_flow_fault(qtbot, w):
+    w.set_fluidics_port(
+        FakeFluidicsPort(script=[("failed", 0, "Flow fault on syringe_draw"), ("finished",), ("finished",)])
+    )
+    w.start_run()
+    qtbot.waitUntil(lambda: not w.held_box.isHidden() or w.runner.outcome is not None, timeout=15000)
+    assert w.runner.state == RunnerState.HELD
+
+
+def test_a_hold_brings_the_record_tab_to_the_front_and_alerts_the_window(qtbot, widget, record_tabs, monkeypatch):
+    w = widget[0]
+    tabs, _fit = record_tabs
+    tabs.setCurrentIndex(0)
+    tabs.setTabEnabled(1, False)
+    alerts = []
+    monkeypatch.setattr(protocol_widget_module.QApplication, "alert", staticmethod(lambda *a: alerts.append(a)))
+
+    _hold_on_a_flow_fault(qtbot, w)
+    assert tabs.currentWidget() is w and tabs.isTabEnabled(1)
+    assert alerts and alerts[0][0] is w.window()
+    w.runner.hold_action(protocol_widget_module.HoldAction.END)
+    assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)
+
+
+def test_the_record_tab_refits_so_the_held_panel_is_not_squeezed(qtbot, widget, record_tabs):
+    # the tab's height was fitted to the idle panel when the tab was chosen; the HELD panel came later
+    # and got 26 px of the ~200 it needs, its message and buttons cut off
+    w = widget[0]
+    tabs, fit_current_tab = record_tabs
+    tabs.setCurrentWidget(w)
+    fit_current_tab()
+    w.signal_size_changed.connect(fit_current_tab)  # as gui_hcs connects it to resizeCurrentTab
+
+    _hold_on_a_flow_fault(qtbot, w)
+    qtbot.wait(50)
+    from qtpy.QtWidgets import QPushButton
+
+    parts = w.held_box.findChildren(QPushButton) + [w.held_for_label]
+    assert len(parts) >= 4  # restart, skip, end + the held-for line
+    for part in parts:
+        # resizeCurrentTab's fit leaves out the tab pane's frame, a couple of px the layout takes from the panel
+        assert part.height() >= part.sizeHint().height() - 4, part.text()
+        assert part.visibleRegion().boundingRect().height() == part.height(), part.text()
+    w.runner.hold_action(protocol_widget_module.HoldAction.END)
+    assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)
+
+
+def test_the_held_panel_shows_how_long_the_run_has_been_held_and_why(qtbot, widget):
+    from qtpy.QtWidgets import QLabel
+
+    w = widget[0]
+    _hold_on_a_flow_fault(qtbot, w)
+    labels = [label.text() for label in w.held_box.findChildren(QLabel)]
+    assert any("Flow fault on syringe_draw" in text for text in labels)
+    assert w.held_for_label.text().startswith("Held for less than a minute (since ")
+
+    w._held_since -= 7 * 3600 + 32 * 60  # as if it went HELD at 01:55 and nobody came until 09:27
+    w._refresh()
+    assert w.held_for_label.text().startswith("Held for 7 h 32 min (since ")
+
+    w.runner.hold_action(protocol_widget_module.HoldAction.RESTART)
+    qtbot.waitUntil(lambda: w.held_box.isHidden(), timeout=5000)
+    assert w._held_since is None
+    assert wait_until(lambda: w.runner.outcome is not None, timeout=15)
