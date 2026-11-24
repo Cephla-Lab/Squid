@@ -1685,6 +1685,8 @@ class HighContentScreeningGui(QMainWindow):
                 lambda: self.imageDisplayTabs.setCurrentWidget(self.fluidicsDisplayTab)
             )
             self.fluidicsProtocolWidget.signal_run_notification.connect(self._handle_fluidics_notification)
+            # the record tab's height is fitted to its page; refit it when the run card or HELD panel appears
+            self.fluidicsProtocolWidget.signal_size_changed.connect(lambda: self.resizeCurrentTab(self.recordTabWidget))
 
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
 

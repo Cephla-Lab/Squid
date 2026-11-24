@@ -1,4 +1,5 @@
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -380,3 +381,128 @@ def test_run_lifecycle_signals(qtbot, widget):
     assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)
     qtbot.waitUntil(lambda: finished == [(run_dir, "stopped")], timeout=5000)
     assert started == [(run_dir, "liver")]
+
+
+def test_held_for_text_counts_hours_and_minutes():
+    assert protocol_widget_module.held_for_text(20) == "Held for less than a minute"
+    assert protocol_widget_module.held_for_text(59 * 60 + 59) == "Held for 59 min"
+    assert protocol_widget_module.held_for_text(7 * 3600 + 32 * 60 + 10) == "Held for 7 h 32 min"
+
+
+@pytest.fixture
+def record_tabs(qtbot, widget):
+    """The widget as the GUI holds it: one page of a record QTabWidget whose height is fitted to its
+    current page whenever the current tab changes (gui_hcs.resizeCurrentTab), next to another tab."""
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QLabel, QSplitter, QTabWidget
+
+    w = widget[0]
+    tabs = QTabWidget()
+
+    def fit_current_tab():
+        height = tabs.currentWidget().sizeHint().height() + tabs.tabBar().height()
+        tabs.resize(tabs.width(), height)
+        tabs.setMaximumHeight(height)
+
+    tabs.addTab(QLabel("acquisition settings"), "Wellplate Multipoint")
+    tabs.addTab(w, "Fluidics Protocol")
+    tabs.currentChanged.connect(fit_current_tab)
+    splitter = QSplitter(Qt.Vertical)
+    splitter.addWidget(tabs)
+    splitter.addWidget(QLabel("navigation"))
+    qtbot.addWidget(splitter)
+    splitter.resize(500, 1200)
+    splitter.show()
+    yield tabs, fit_current_tab
+    tabs.currentChanged.disconnect(fit_current_tab)
+    w.setParent(None)  # the widget fixture owns and closes it
+
+
+def _hold_on_a_flow_fault(qtbot, w):
+    w.set_fluidics_port(
+        FakeFluidicsPort(script=[("failed", 0, "Flow fault on syringe_draw"), ("finished",), ("finished",)])
+    )
+    w.start_run()
+    qtbot.waitUntil(lambda: not w.held_box.isHidden() or w.runner.outcome is not None, timeout=15000)
+    assert w.runner.state == RunnerState.HELD
+
+
+def test_a_hold_brings_the_record_tab_to_the_front_and_alerts_the_window(qtbot, widget, record_tabs, monkeypatch):
+    w = widget[0]
+    tabs, _fit = record_tabs
+    tabs.setCurrentIndex(0)
+    tabs.setTabEnabled(1, False)
+    alerts = []
+    monkeypatch.setattr(protocol_widget_module.QApplication, "alert", staticmethod(lambda *a: alerts.append(a)))
+
+    _hold_on_a_flow_fault(qtbot, w)
+    assert tabs.currentWidget() is w and tabs.isTabEnabled(1)
+    assert alerts and alerts[0][0] is w.window()
+    w.runner.hold_action(protocol_widget_module.HoldAction.END)
+    assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)
+
+
+def test_the_record_tab_refits_so_the_held_panel_is_not_squeezed(qtbot, widget, record_tabs):
+    # the tab's height was fitted to the idle panel when the tab was chosen; the HELD panel came later
+    # and got 26 px of the ~200 it needs, its message and buttons cut off
+    w = widget[0]
+    tabs, fit_current_tab = record_tabs
+    tabs.setCurrentWidget(w)
+    fit_current_tab()
+    w.signal_size_changed.connect(fit_current_tab)  # as gui_hcs connects it to resizeCurrentTab
+
+    _hold_on_a_flow_fault(qtbot, w)
+    qtbot.wait(50)
+    from qtpy.QtWidgets import QPushButton
+
+    parts = w.held_box.findChildren(QPushButton) + [w.held_for_label]
+    assert len(parts) >= 4  # restart, skip, end + the held-for line
+    for part in parts:
+        # resizeCurrentTab's fit leaves out the tab pane's frame, a couple of px the layout takes from the panel
+        assert part.height() >= part.sizeHint().height() - 4, part.text()
+        assert part.visibleRegion().boundingRect().height() == part.height(), part.text()
+    w.runner.hold_action(protocol_widget_module.HoldAction.END)
+    assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)
+
+
+def test_the_held_panel_shows_how_long_the_run_has_been_held_and_why(qtbot, widget):
+    from qtpy.QtWidgets import QLabel
+
+    w = widget[0]
+    _hold_on_a_flow_fault(qtbot, w)
+    labels = [label.text() for label in w.held_box.findChildren(QLabel)]
+    assert any("Flow fault on syringe_draw" in text for text in labels)
+    held_at = w.runner.snapshot().held_at
+    assert (
+        w.held_for_label.text()
+        == f"Held for less than a minute (since {time.strftime('%H:%M', time.localtime(held_at))})"
+    )
+
+    w.runner.hold_action(protocol_widget_module.HoldAction.RESTART)
+    qtbot.waitUntil(lambda: w.held_box.isHidden(), timeout=5000)
+    assert wait_until(lambda: w.runner.outcome is not None, timeout=15)
+
+
+def test_after_a_gui_restart_the_held_panel_counts_from_when_the_run_went_held(qtbot, widget):
+    # The run went HELD at 01:55 and the GUI was restarted at 09:27: the panel reads the manifest's held_at,
+    # not the time the reopened run's panel appeared.
+    w, _fluidics, _imaging, save_to = widget
+    _hold_on_a_flow_fault(qtbot, w)
+    run_dir = w.runner.run_dir
+    crashed = manifest_io.read_manifest(run_dir)
+    w.runner.hold_action(protocol_widget_module.HoldAction.END)
+    assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)
+    crashed.held_at = time.time() - (7 * 3600 + 32 * 60 + 10)
+    crashed.pid = 2**22 - 7
+    manifest_io.write_manifest(run_dir, crashed)
+
+    w.offer_recovery()
+    qtbot.waitUntil(lambda: w.runner.state == RunnerState.HELD and not w.held_box.isHidden(), timeout=15000)
+    assert w.runner.hold.reason == "recovered"
+    assert w.runner.snapshot().held_at == crashed.held_at == manifest_io.read_manifest(run_dir).held_at
+    since = time.strftime("%H:%M", time.localtime(crashed.held_at))
+    if time.localtime(crashed.held_at)[:3] != time.localtime()[:3]:
+        since = time.strftime("%d %b %H:%M", time.localtime(crashed.held_at))
+    assert w.held_for_label.text() == f"Held for 7 h 32 min (since {since})"
+    w.runner.hold_action(protocol_widget_module.HoldAction.END)
+    assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)

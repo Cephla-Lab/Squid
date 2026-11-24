@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
 )
 
@@ -54,6 +55,16 @@ def _hms(seconds: Optional[float]) -> str:
     return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
 
 
+def held_for_text(seconds: float) -> str:
+    """How long a run has sat HELD, to the minute: "Held for 7 h 32 min"."""
+    minutes = int(seconds) // 60
+    if minutes < 1:
+        return "Held for less than a minute"
+    if minutes < 60:
+        return f"Held for {minutes} min"
+    return f"Held for {minutes // 60} h {minutes % 60} min"
+
+
 class FluidicsProtocolWidget(QFrame):
     signal_acquisition_started = Signal(bool)  # True at run start, False at run end (the gui contract)
     signal_show_fluidics_tab = Signal()
@@ -61,6 +72,7 @@ class FluidicsProtocolWidget(QFrame):
     signal_reagent_rows = Signal(list)  # rows for the Reagents table
     signal_run_started = Signal(str, str)  # run dir, run name: a runner was created and is starting
     signal_run_finished = Signal(str, str)  # run dir, the runner's outcome word (finished | stopped | failed)
+    signal_size_changed = Signal()  # the run card or the HELD panel was shown or hidden: the tab must refit it
 
     REFRESH_MS = 500
 
@@ -88,6 +100,7 @@ class FluidicsProtocolWidget(QFrame):
         self._current_round = "—"
         self._current_sequence = "—"
         self._since_init_ul: Dict[int, float] = {}
+        self.held_for_label: Optional[QLabel] = None
 
         self._build_ui()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -361,6 +374,7 @@ class FluidicsProtocolWidget(QFrame):
         self.idle_box.setHidden(active)
         self.running_box.setHidden(not active)
         self.held_box.hide()
+        self.signal_size_changed.emit()
 
     def _render_progress(self, snap) -> None:
         """Map the run's progress fraction (elapsed vs. the rough estimate, held just under full
@@ -424,7 +438,7 @@ class FluidicsProtocolWidget(QFrame):
                 if event.state is RunnerState.HELD and event.hold is not None:
                     self._show_hold(event.hold)
                 elif event.state is not RunnerState.HELD:
-                    self.held_box.hide()
+                    self._hide_hold()
             elif isinstance(event, RunFinished):
                 self._finish(event.outcome)
         except Exception:
@@ -438,10 +452,16 @@ class FluidicsProtocolWidget(QFrame):
                 widget.deleteLater()
         headline = QLabel(f"Held at step {hold.step_index + 1} ({hold.kind}): {hold.reason}")
         theme.set_role(headline, "alert-bold-first")
+        headline.setWordWrap(True)
         self.held_layout.addWidget(headline)
+        self.held_for_label = QLabel()
+        theme.set_role(self.held_for_label, "alert-bold")
+        self.held_layout.addWidget(self.held_for_label)
+        self._render_held_for(self.runner.snapshot() if self.runner is not None else None)
         if hold.message:
             message = QLabel(hold.message)
             message.setWordWrap(True)
+            theme.set_role(message, "alert")
             self.held_layout.addWidget(message)
         self.held_layout.addWidget(QLabel("Pump halted · TEC output OFF" if hold.tec_before else "System made safe"))
         tec_checkbox = None
@@ -490,10 +510,40 @@ class FluidicsProtocolWidget(QFrame):
         holder.setLayout(buttons)
         self.held_layout.addWidget(holder)
         self.held_box.show()
+        self.signal_size_changed.emit()
+        self._bring_into_view()
         self.signal_run_notification.emit(
             f"Fluidics protocol held at step {hold.step_index + 1} ({hold.kind}): {hold.reason}"
             + (f" — {hold.message}" if hold.message else "")
         )
+
+    def _hide_hold(self) -> None:
+        if not self.held_box.isHidden():
+            self.held_box.hide()
+            self.signal_size_changed.emit()
+
+    def _bring_into_view(self) -> None:
+        """A hold waits for a person, but a run keeps the display on the Fluidics tab and this
+        record tab may sit behind another one: select it in whatever tab widget holds it, and
+        flash the window (taskbar) until someone activates it."""
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QTabWidget) and parent.indexOf(self) >= 0:
+                index = parent.indexOf(self)
+                parent.setTabEnabled(index, True)  # a run disables the record tabs that are not current
+                parent.setCurrentIndex(index)
+                break
+            parent = parent.parentWidget()
+        QApplication.alert(self.window())
+
+    def _render_held_for(self, snap) -> None:
+        """From the runner's held_at, which the run manifest keeps: still right after a GUI restart reopened the run."""
+        held_at = snap.held_at if snap is not None else None
+        if held_at is None or self.held_for_label is None:
+            return
+        same_day = time.localtime(held_at)[:3] == time.localtime()[:3]
+        since = time.strftime("%H:%M" if same_day else "%d %b %H:%M", time.localtime(held_at))
+        self.held_for_label.setText(f"{held_for_text(time.time() - held_at)} (since {since})")
 
     def _update_reagents(self) -> None:
         if self.runner is None:
@@ -572,6 +622,7 @@ class FluidicsProtocolWidget(QFrame):
             # imaging is priced at a rough 1 s/FOV (see IMAGING_SECONDS_PER_FOV); the total is a ballpark
             estimate = self._resolved.total_estimate_s if self._resolved else None
             self.elapsed_label.setText(f"elapsed {_hms(snap.elapsed_s)} / est. {_hms(estimate)}")
+            self._render_held_for(snap)
             self.folder_label.setText(str(runner.run_dir))
             if snap.state in (RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED):
                 self.pause_button.setText("Resume")
