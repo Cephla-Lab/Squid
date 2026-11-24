@@ -574,20 +574,18 @@ class MultiPointWorker:
             self._run_state_fatal = True
             raise
         finally:
-            # We do this above, but there are some paths that skip the proper end of the acquisition so make
-            # sure to always wait for final images here before removing our callback.
-            self._wait_for_outstanding_callback_images()
-            self._log.debug(self._timing.get_report())
-            if this_image_callback_id:
-                self.camera.remove_frame_callback(this_image_callback_id)
+            try:
+                # We do this above, but there are some paths that skip the proper end of the acquisition so make
+                # sure to always wait for final images here before removing our callback.
+                self._wait_for_outstanding_callback_images()
+                self._log.debug(self._timing.get_report())
+                if this_image_callback_id:
+                    self.camera.remove_frame_callback(this_image_callback_id)
 
-            self._finish_jobs()
-
-            if self._laser_af_record is not None:
-                try:
-                    self._laser_af_record.close()  # laser_af_summary.json, and its lines in the log
-                except Exception:
-                    self._log.exception("Could not summarize the laser AF record")
+                self._finish_jobs()
+            finally:
+                # Even when the teardown above raises: the record's rows are on disk, its summary should be too.
+                self._close_laser_af_record()
 
             # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
             reason = self.end_reason = self._compute_end_reason()
@@ -1354,6 +1352,15 @@ class MultiPointWorker:
                 return False
             self._laser_af_successes += 1
         return True
+
+    def _close_laser_af_record(self) -> None:
+        """Close laser_af.csv and write laser_af_summary.json (and its lines in the log). Never raises."""
+        if self._laser_af_record is None:
+            return
+        try:
+            self._laser_af_record.close()
+        except Exception:
+            self._log.exception("Could not summarize the laser AF record")
 
     def _laser_af_z_um(self) -> float:
         """The focus height for the laser AF record: stage z, plus the piezo when laser AF moves the piezo (um)."""

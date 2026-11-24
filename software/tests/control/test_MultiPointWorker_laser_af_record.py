@@ -138,6 +138,38 @@ def test_simulated_acquisition_writes_the_record_and_its_summary(monkeypatch, sa
     scope.close()
 
 
+def test_the_record_is_closed_and_summarized_when_the_teardown_raises(monkeypatch):
+    from control.core.multi_point_worker import MultiPointWorker
+
+    monkeypatch.setattr(control._def, "MERGE_CHANNELS", False)
+    monkeypatch.setattr(control._def, "SUPPORT_LASER_AUTOFOCUS", True)
+    monkeypatch.setattr(control._def, "LASER_AF_SAVE_RECORD", True)
+    real_finish_jobs = MultiPointWorker._finish_jobs
+
+    def finish_jobs_then_fail(worker, *args, **kwargs):
+        real_finish_jobs(worker, *args, **kwargs)  # the job runners still shut down: no orphaned subprocess
+        raise EOFError("the job runner's output queue closed")
+
+    monkeypatch.setattr(MultiPointWorker, "_finish_jobs", finish_jobs_then_fail)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    mpc.set_reflection_af_flag(True)
+    scope.addons.camera_focus.send_trigger()
+    mpc.laserAutoFocusController.laser_af_properties.set_reference_image(scope.addons.camera_focus.read_frame())
+
+    assert mpc.run_acquisition() is True
+    mpc.thread.join(30)
+    assert not mpc.thread.is_alive()
+    experiment_path = os.path.join(mpc.base_path, mpc.experiment_ID)
+    with open(os.path.join(experiment_path, "laser_af_summary.json")) as f:
+        (tp,) = json.load(f)["time_points"]
+    assert tp["n"] == len(_rows(experiment_path)) > 1
+    mpc.close()
+    scope.close()
+
+
 def test_the_laser_af_controller_keeps_its_last_displacement_and_correlation(monkeypatch):
     monkeypatch.setattr(control._def, "SUPPORT_LASER_AUTOFOCUS", True)
     scope = control.microscope.Microscope.build_from_global_config(True)
