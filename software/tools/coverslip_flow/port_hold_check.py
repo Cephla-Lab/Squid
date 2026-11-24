@@ -644,7 +644,8 @@ def _run_child(cmd, log_path, shield=False):
         try:
             rc = proc.wait()
         except KeyboardInterrupt:
-            with _ctrl_c_deferred("still waiting for the pull to stop and save its data"):
+            print("\nCtrl-C: waiting for the run to stop and save its data...", file=sys.stderr, flush=True)
+            with _ctrl_c_deferred("still waiting for the run to stop and save its data"):
                 try:
                     proc.wait(timeout=CHILD_STOP_S)
                 except subprocess.TimeoutExpired:
