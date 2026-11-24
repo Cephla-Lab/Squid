@@ -9,7 +9,7 @@ experiment_ID == the requested folder (a GUI-started acquisition never matches).
 import threading
 from typing import Dict, Optional
 
-from qtpy.QtCore import QObject, Qt, QThread, Signal, Slot
+from qtpy.QtCore import QMetaObject, QObject, Qt, QThread, Signal, Slot
 
 import squid.logging
 from control.core.acquisition_settings import acquisition_data_from_blocks, apply_acquisition_settings
@@ -58,6 +58,7 @@ class QtImagingPort(QObject):
         self._current: Optional[QtImagingHandle] = None
         self._start_error: Optional[ImagingStartError] = None
         self._restore_base_path = _NO_RESTORE  # the operator's base path while a protocol acquisition runs
+        self._resume_focus_live_after = False  # the focus-camera live view was paused for a laser AF reading
         self._start_requested.connect(self._do_start, Qt.BlockingQueuedConnection)
         controller.acquisition_finished.connect(self._on_acquisition_finished)
 
@@ -81,11 +82,50 @@ class QtImagingPort(QObject):
             return None
         if self._controller.acquisition_in_progress():
             return None
+        # Like every GUI caller of measure_displacement: the focus-camera live view must be off during the reading
+        # (the reading disables the camera callbacks and turns the AF laser off, and only start_live turns them back
+        # on; live triggers also contend with the AF laser commands on the serial link). Live is stopped and started
+        # on the GUI thread, which owns it; the reading itself stays on this thread.
+        self._on_gui_thread("_pause_focus_live")
         try:
             return float(laf.measure_displacement())
         except Exception as e:
             self._log.warning(f"Laser AF displacement reading failed: {e}")
             return float("nan")
+        finally:
+            self._on_gui_thread("_resume_focus_live")
+
+    def _on_gui_thread(self, slot: str) -> None:
+        if QThread.currentThread() is self.thread():
+            getattr(self, slot)()
+        else:
+            QMetaObject.invokeMethod(self, slot, Qt.BlockingQueuedConnection)
+
+    @Slot()
+    def _pause_focus_live(self) -> None:
+        # GUI thread. Qt swallows slot exceptions under BlockingQueuedConnection: log them here.
+        self._resume_focus_live_after = False
+        try:
+            live = self._controller.laserAutoFocusController.liveController
+            if not live.is_live:
+                return
+            self._resume_focus_live_after = True  # also when stop_live raises half-way: try to restore it after
+            live.stop_live()
+        except Exception:
+            self._log.exception("Could not pause the focus-camera live view for a laser AF reading")
+
+    @Slot()
+    def _resume_focus_live(self) -> None:
+        # GUI thread, after every reading that paused live (also when it raised).
+        if not self._resume_focus_live_after:
+            return
+        self._resume_focus_live_after = False
+        try:
+            live = self._controller.laserAutoFocusController.liveController
+            if not live.is_live:
+                live.start_live()
+        except Exception:
+            self._log.exception("Could not restart the focus-camera live view after a laser AF reading")
 
     def stage_position(self) -> Optional[Dict[str, float]]:
         """The stage's last known position (no query that moves anything), plus the piezo's when there is one."""
