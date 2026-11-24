@@ -367,8 +367,8 @@ class FluidicsProtocolWidget(QFrame):
                         protocol = load_protocol(path)
                     except Exception as e:
                         raise RuntimeError(f"could not open the protocol {path}: {e}") from e
+                    loaded = True  # before set_protocol: a failure part-way through it is put back as well
                     self.protocol_tab.set_protocol(protocol, path)
-                    loaded = True
                 if request.get("save_to"):
                     self.save_to_edit.setText(request["save_to"])
                 if request.get("run_name"):

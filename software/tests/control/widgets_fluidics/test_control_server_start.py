@@ -1,6 +1,7 @@
 """start_fluidics_protocol: the control server starts a run through the Fluidics Protocol tab's own start path,
 on the GUI thread, without opening a dialog. Offscreen, on the fake fluidics and imaging ports."""
 
+import os
 import threading
 from unittest.mock import MagicMock
 
@@ -180,6 +181,59 @@ def test_a_launch_that_fails_releases_the_run(qtbot, widget, no_dialogs, monkeyp
     reply = _from_another_thread(qtbot, _server(w), "start_fluidics_protocol", confirm=True, run_name="again")
     assert reply["success"], reply
     assert wait_until(lambda: w.runner.outcome is not None, timeout=15)
+
+
+@pytest.mark.parametrize("bad", [10**6, False, 1.5, ["a.yaml"], ""])  # never an open fd, nor 0-2
+def test_protocol_path_must_be_a_string_path(qtbot, widget, no_dialogs, bad):
+    w = widget[0]
+    reply = _server(w)._execute("start_fluidics_protocol", {"confirm": True, "protocol_path": bad})
+    assert not reply["success"] and "protocol_path" in reply["error"], reply
+    assert w.runner is None and w.protocol_tab.protocol.name == "demo"
+
+
+def test_an_integer_protocol_path_never_reaches_open_as_a_file_descriptor(qtbot, widget, no_dialogs):
+    w = widget[0]
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"name: injected\nsequences: []\n")
+    os.close(write_fd)
+    try:
+        reply = _from_another_thread(qtbot, _server(w), "start_fluidics_protocol", confirm=True, protocol_path=read_fd)
+        assert not reply["success"] and "protocol_path" in reply["error"]
+        os.fstat(read_fd)  # still open: nothing read from it or closed it
+        assert w.protocol_tab.protocol.name == "demo" and w.runner is None
+    finally:
+        os.close(read_fd)
+
+
+def test_protocol_path_must_be_an_existing_regular_file(qtbot, widget, no_dialogs, tmp_path):
+    w = widget[0]
+    server = _server(w)
+    for path in (tmp_path / "missing.yaml", tmp_path, "/dev/null"):
+        reply = server._execute("start_fluidics_protocol", {"confirm": True, "protocol_path": str(path)})
+        assert not reply["success"] and "not a protocol file" in reply["error"], (path, reply)
+    assert w.runner is None and w.protocol_tab.protocol.name == "demo"
+
+
+def test_a_protocol_the_tab_cannot_show_is_rolled_back(qtbot, widget, no_dialogs, tmp_path, monkeypatch):
+    """set_protocol failing part-way through must still put the tab's own protocol back."""
+    w = widget[0]
+    other = _protocol()
+    other.name = "other"
+    path = tmp_path / "other.yaml"
+    save_protocol(other, str(path))
+    before_path = w.protocol_tab.protocol_path
+    original_render = w.protocol_tab._render
+
+    def render():
+        if w.protocol_tab.protocol.name == "other":
+            raise ValueError("cannot show this protocol")
+        original_render()
+
+    monkeypatch.setattr(w.protocol_tab, "_render", render)
+    reply = _from_another_thread(qtbot, _server(w), "start_fluidics_protocol", confirm=True, protocol_path=str(path))
+    assert not reply["success"] and "cannot show this protocol" in reply["error"]
+    assert w.protocol_tab.protocol.name == "demo" and w.protocol_tab.protocol_path == before_path
+    assert w.runner is None
 
 
 @pytest.fixture

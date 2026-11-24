@@ -12,6 +12,7 @@ import contextlib
 import functools
 import inspect
 import json
+import os
 import socket
 import threading
 import time
@@ -1112,6 +1113,13 @@ class MicroscopeControlServer:
         self._require_fluidics_protocol_control()
         if not isinstance(confirm, bool):
             raise ValueError(f"confirm must be true or false, not {confirm!r}")
+        if protocol_path is not None:
+            # open() takes an integer as a file descriptor (and closes it), and a device file can block the GUI
+            # thread: only a path to an existing regular file goes on to the tab.
+            if not isinstance(protocol_path, str):
+                raise ValueError(f"protocol_path must be a file path (a string), not {protocol_path!r}")
+            if not os.path.isfile(protocol_path):
+                raise ValueError(f"protocol_path is not a protocol file: {protocol_path!r}")
         widget = self._fluidics_protocol_widget()
         request = json.dumps(
             {"confirm": confirm, "protocol_path": protocol_path, "save_to": save_to, "run_name": run_name}
