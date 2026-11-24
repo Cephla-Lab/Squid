@@ -1016,7 +1016,10 @@ class MicroscopeControlServer:
                 f"'{hold_action.value}' is not offered for this hold (step {hold.step_index + 1}, {hold.kind}, "
                 f"{hold.reason}): use one of {', '.join(allowed)}"
             )
-        runner.hold_action(hold_action, restore_tec=restore_tec)
+        if not isinstance(restore_tec, bool):
+            raise ValueError(f"restore_tec must be true or false, not {restore_tec!r}")
+        # bound to the hold checked above: refused if the run has moved on or another client decided it first
+        runner.hold_action(hold_action, restore_tec=restore_tec, hold=hold)
         self._log.info(
             f"Fluidics protocol hold at step {hold.step_index + 1} (attempt {hold.attempt}): '{hold_action.value}' "
             f"from the control server (restore_tec={restore_tec})"

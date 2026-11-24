@@ -171,3 +171,16 @@ def test_resume_of_a_held_run_points_to_the_hold_action(tmp_path, runners):
     server = _server(runner)
     assert _held(runner)
     assert "use fluidics_protocol_hold_action" in _refused(server, "resume_fluidics_protocol")
+
+
+def test_restore_tec_must_be_a_boolean(tmp_path, runners):
+    # "false" is a non-empty string: taken as-is it would turn the TEC back on
+    runner, *_ = _start(runners, tmp_path, fluidics=FakeFluidicsPort(script=[("failed", 0, "boom"), ("finished",)]))
+    server = _server(runner)
+    assert _held(runner)
+    assert "restore_tec must be true or false" in _refused(
+        server, "fluidics_protocol_hold_action", action="restart", restore_tec="false"
+    )
+    assert runner.state is RunnerState.HELD and len(runner.manifest.steps[0].attempts) == 1
+    _ok(server, "fluidics_protocol_hold_action", action="restart", restore_tec=False)
+    assert runner.wait(10) and runner.outcome == "finished"

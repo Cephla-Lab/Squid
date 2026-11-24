@@ -190,6 +190,28 @@ def test_end_run_from_hold_stops_the_run(tmp_path):
     assert imaging.requests == []
 
 
+def test_a_hold_action_bound_to_a_hold_is_refused_once_that_hold_is_decided_or_gone(tmp_path):
+    # The control server checks an action against the hold it read, then submits it bound to that hold: it
+    # must not land on a later hold (where it may not be offered), nor overwrite another client's decision.
+    fluidics = FakeFluidicsPort(script=[("failed", 0, "boom"), ("failed", 0, "boom again"), ("finished",)])
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, fluidics=fluidics)
+    runner.start()
+    assert _held(runner, attempt=1)
+    first = runner.snapshot().hold
+    with runner._lock:  # keep the runner thread from closing the hold in between
+        runner.hold_action(HoldAction.RESTART, hold=first)
+        with pytest.raises(RuntimeError, match="already being acted on"):
+            runner.hold_action(HoldAction.SKIP, hold=first)
+
+    assert _held(runner, attempt=2)
+    with pytest.raises(RuntimeError, match="no longer at that hold"):
+        runner.hold_action(HoldAction.SKIP, hold=first)
+    assert runner.state is RunnerState.HELD and not runner.manifest.steps[0].skipped
+    runner.hold_action(HoldAction.RESTART, hold=runner.snapshot().hold)
+    assert runner.wait(10) and runner.outcome == "finished"
+    assert len(runner.manifest.steps[0].attempts) == 3 and not runner.manifest.steps[0].skipped
+
+
 def test_imaging_abort_writes_the_marker_and_restart_uses_attempt2(tmp_path):
     imaging = FakeImagingPort(script=["hold", "completed"])
     runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging)
