@@ -175,7 +175,7 @@ they do, as if its own buttons were pressed.
 
 `get_fluidics_protocol_status` returns `has_run: false` until a run is started. `step_index` counts from 0 (the GUI
 shows step `step_index + 1`). When `state` is `HELD`, `hold` has `kind`, `reason`, `message`, `can_resume`,
-`can_accept`, `held_since` (Unix time), `held_for_s`, `tec_output_was_on` and `allowed_actions`: the actions the
+`can_accept`, `held_at` (Unix time; the run manifest's, which the HELD panel and the watchdog use too), `held_for_s`, `tec_output_was_on` and `allowed_actions`: the actions the
 HELD panel offers for this hold. `heartbeat_age_s` is the time since the runner last wrote its manifest (every few
 seconds while it is alive).
 

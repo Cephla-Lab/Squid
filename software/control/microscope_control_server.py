@@ -982,8 +982,8 @@ class MicroscopeControlServer:
                 "resume_position": hold.resume_position,
                 "tec_output_was_on": bool(hold.tec_before is not None and any(hold.tec_before.output_enabled)),
                 "allowed_actions": self._allowed_hold_actions(hold),
-                "held_since": snap.held_since,
-                "held_for_s": now - snap.held_since if snap.held_since is not None else None,
+                "held_at": snap.held_at,  # the run manifest's: the HELD panel and the watchdog show the same
+                "held_for_s": now - snap.held_at if snap.held_at is not None else None,
             }
         return result
 

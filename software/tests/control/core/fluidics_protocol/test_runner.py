@@ -190,21 +190,6 @@ def test_end_run_from_hold_stops_the_run(tmp_path):
     assert imaging.requests == []
 
 
-def test_snapshot_says_since_when_the_run_is_held(tmp_path):
-    fluidics = FakeFluidicsPort(script=[("failed", 0, "boom"), ("finished",)])
-    runner, fluidics, imaging, run_dir = _runner(tmp_path, fluidics=fluidics)
-    assert runner.snapshot().held_since is None
-    before = time.time()
-    runner.start()
-    assert _held(runner)
-    snap = runner.snapshot()
-    assert snap.hold is not None and before <= snap.held_since <= time.time()
-
-    runner.hold_action(HoldAction.SKIP)
-    assert runner.wait(10)
-    assert runner.snapshot().held_since is None
-
-
 def test_imaging_abort_writes_the_marker_and_restart_uses_attempt2(tmp_path):
     imaging = FakeImagingPort(script=["hold", "completed"])
     runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging)
@@ -318,9 +303,11 @@ def test_crash_recovery_starts_held_at_the_cursor_and_resumes_the_tail(tmp_path)
     resolved = resolve_protocol(_protocol(), tmp_path, fluidics=fluidics2)
     os.rename(run_dir / "R01_image", run_dir / "R01_image_old")  # the imaging step re-runs into R01_image
     recovered = ProtocolRunner(resolved, run_dir, imaging2, fluidics2, run_name="liver", manifest=crashed, poll_s=0.01)
+    reopened_at = time.time()
     recovered.start()
     assert _held(recovered)
     assert recovered.hold.reason == "recovered" and recovered.hold.step_index == 1
+    assert recovered.snapshot().held_at >= reopened_at  # it was running when it crashed: held from the reopening
     assert recovered.hold.resume_position == 1 and recovered.hold.can_resume
     assert fluidics2.make_safe_calls == 1
 
@@ -331,6 +318,40 @@ def test_crash_recovery_starts_held_at_the_cursor_and_resumes_the_tail(tmp_path)
     assert man.status == "finished" and man.steps[0].attempts[0].outcome == "finished"  # untouched history
     assert man.steps[1].attempts[0].outcome == "error" and man.steps[1].attempts[1].outcome == "finished"
     assert len(imaging2.requests) == 1 and len(fluidics2.starts) == 2
+
+
+def test_held_at_is_recorded_once_in_the_manifest_and_survives_a_crash_while_held(tmp_path):
+    # When the run went HELD is kept in run_manifest.json: the HELD panel, the control server and the watchdog
+    # all read that one value, and a GUI restart (crash recovery) keeps it.
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, fluidics=FakeFluidicsPort(script=[("failed", 0, "boom")]))
+    assert runner.snapshot().held_at is None
+    before = time.time()
+    runner.start()
+    assert _held(runner)
+    held_at = runner.snapshot().held_at
+    assert before <= held_at <= time.time()
+    crashed = manifest_io.read_manifest(run_dir)
+    assert crashed.status == "held" and crashed.held_at == held_at
+
+    # the GUI stops while the run waits; a new one reopens the run from its manifest
+    runner.abort_run()
+    assert runner.wait(10)
+    crashed.pid = 2**22 - 7
+    manifest_io.write_manifest(run_dir, crashed)
+    fluidics2 = FakeFluidicsPort()
+    resolved = resolve_protocol(_protocol(), tmp_path, fluidics=fluidics2)
+    recovered = ProtocolRunner(
+        resolved, run_dir, FakeImagingPort(), fluidics2, run_name="liver", manifest=crashed, poll_s=0.01
+    )
+    recovered.start()
+    assert _held(recovered)
+    assert recovered.hold.reason == "recovered"
+    assert recovered.snapshot().held_at == held_at
+    assert manifest_io.read_manifest(run_dir).held_at == held_at
+
+    recovered.hold_action(HoldAction.END)
+    assert recovered.wait(10)
+    assert recovered.snapshot().held_at is None and manifest_io.read_manifest(run_dir).held_at is None
 
 
 def test_abort_run_while_held_ends_the_run(tmp_path):

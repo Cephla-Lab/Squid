@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from control.core.fluidics_protocol import manifest as manifest_io
 from control.core.fluidics_protocol.events import RunnerState
 from control.microscope_control_server import MicroscopeControlServer
 from tests.control.core.fluidics_protocol.fakes import FakeFluidicsPort, FakeImagingPort, wait_until
@@ -91,7 +92,9 @@ def test_a_held_fluidics_step_reports_its_hold_and_restart_runs_it_again(tmp_pat
     assert hold["reason"] == "failed" and "Flow fault" in hold["message"]
     assert hold["can_resume"] and not hold["can_accept"] and hold["resume_position"] == 0
     assert hold["allowed_actions"] == ["resume", "restart", "skip", "end"]
-    assert hold["held_since"] is not None and hold["held_for_s"] >= 0
+    # one value: the runner's, kept in the run manifest (which the HELD panel and the watchdog read)
+    assert hold["held_at"] == runner.snapshot().held_at == manifest_io.read_manifest(run_dir).held_at
+    assert hold["held_for_s"] >= 0
     assert status["last_heartbeat"] == runner.manifest.heartbeat_at and status["heartbeat_age_s"] >= 0
 
     assert "not offered" in _refused(server, "fluidics_protocol_hold_action", action="accept")
