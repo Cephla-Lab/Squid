@@ -1,5 +1,6 @@
 import logging
 import os
+import platform
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -414,6 +415,24 @@ class TestRAMMonitorWidget:
         assert widget.label_current.text() != "--" and widget.label_available.text() != "--"
 
         widget.stop_monitoring()
+
+    @pytest.mark.skipif(platform.system() != "Linux", reason="Linux-specific test")
+    def test_timer_update_does_not_read_smaps(self, ram_monitor_widget):
+        """The once-a-second display update must not read /proc/<pid>/smaps(_rollup): it stalls the process."""
+        import builtins
+
+        real_open = builtins.open
+        opened = []
+
+        def recording_open(file, *args, **kwargs):
+            opened.append(str(file))
+            return real_open(file, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=recording_open):
+            ram_monitor_widget._update_memory_display()
+
+        assert not [p for p in opened if "smaps" in p], opened
+        assert ram_monitor_widget.label_current.text().endswith(" GB")
 
     def test_connect_monitor_stops_timer(self, ram_monitor_widget):
         """Test that connecting to a monitor stops the timer."""

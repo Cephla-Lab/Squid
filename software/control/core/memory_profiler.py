@@ -5,7 +5,7 @@ designed to capture actual peak memory usage that matches Activity Monitor readi
 
 Platform support:
     - macOS: Full support (RSS, kernel peak via ru_maxrss, physical footprint)
-    - Linux: Full support (RSS, kernel peak via ru_maxrss, PSS from /proc/smaps)
+    - Linux: Full support (RSS, kernel peak via ru_maxrss; footprint is RSS from /proc/[pid]/statm)
     - Windows: Full support (RSS, private bytes; no kernel peak)
 
 Usage:
@@ -184,8 +184,13 @@ def get_memory_footprint_mb(pid: int) -> float:
 
     This returns the most accurate "memory usage" metric for each platform:
     - macOS: Physical footprint (Activity Monitor's "Memory" column)
-    - Linux: PSS (Proportional Set Size) from /proc/[pid]/smaps
+    - Linux: RSS (Resident Set Size) from /proc/[pid]/statm, as in htop's RES column
     - Windows: Private bytes from memory_full_info()
+
+    This is called every 200 ms by MemoryMonitor and every second by the RAM display, so on Linux it must not
+    read /proc/[pid]/smaps or smaps_rollup (PSS): those walk every resident page under the process's mmap lock,
+    which costs ~12 ms per GB resident and stalls every thread of the process that maps memory or page-faults
+    meanwhile. statm reads the kernel's page counters and costs microseconds at any size.
 
     Args:
         pid: Process ID
@@ -198,7 +203,7 @@ def get_memory_footprint_mb(pid: int) -> float:
     if system == "Darwin":
         return _get_macos_footprint_mb(pid)
     elif system == "Linux":
-        return _get_linux_pss_mb(pid)
+        return _get_linux_rss_mb(pid)
     elif system == "Windows":
         return _get_windows_private_mb(pid)
 
@@ -234,34 +239,13 @@ def _get_macos_footprint_mb(pid: int) -> float:
     return 0.0
 
 
-def _get_linux_pss_mb(pid: int) -> float:
-    """Get Linux PSS (Proportional Set Size) from /proc/[pid]/smaps_rollup.
-
-    PSS accounts for shared memory proportionally, giving a more accurate
-    picture of actual memory usage than RSS.
-    """
+def _get_linux_rss_mb(pid: int) -> float:
+    """Get Linux RSS from /proc/[pid]/statm (via psutil), without walking the page tables."""
     try:
-        # Try smaps_rollup first (faster, available on Linux 4.14+)
-        smaps_path = f"/proc/{pid}/smaps_rollup"
-        if not os.path.exists(smaps_path):
-            smaps_path = f"/proc/{pid}/smaps"
-
-        with open(smaps_path, "r") as f:
-            content = f.read()
-
-        # Look for "Pss:" line and sum all values
-        pss_total_kb = 0
-        for line in content.split("\n"):
-            if line.startswith("Pss:"):
-                # Format: "Pss:                 1234 kB"
-                parts = line.split()
-                if len(parts) >= 2:
-                    pss_total_kb += int(parts[1])
-
-        return pss_total_kb / 1024
-    except (FileNotFoundError, PermissionError, ValueError):
-        pass
-    return 0.0
+        return psutil.Process(pid).memory_info().rss / (1024 * 1024)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        # Process may have exited (or be a zombie) between enumeration and the read.
+        return 0.0
 
 
 def _get_windows_private_mb(pid: int) -> float:
