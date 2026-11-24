@@ -43,7 +43,9 @@ Examples:
     python3 tools/coverslip_flow/flow_displacement_experiment.py --empty-first --port 1 --volume 500 \
         --rate 500 --out ~/flowtest/port1_500ul
 
-Ctrl-C stops the pump and the recording; whatever was recorded is still saved.
+Ctrl-C stops the pump and the recording; whatever was recorded is still saved (the bright-spot
+tracking and plot are then skipped: --reprocess does them). The script exits non-zero when the run
+did not complete (Ctrl-C, a pump or preparation error, the time cap).
 """
 
 import argparse
@@ -168,11 +170,15 @@ prep_done_at = None
 af_stack = None
 af_n = 0
 
-mc.turn_on_AF_laser()
-mc.wait_till_operation_is_completed()
+# Set while this recording runs: port_hold_check's release move waits for it to clear before it moves a valve.
+RUNNING_FLAG = "_flow_displacement_running"
+setattr(gui, RUNNING_FLAG, True)
 t0 = time.time()
-events.append([t0, "recording_start", None])
 try:
+    mc.turn_on_AF_laser()
+    mc.wait_till_operation_is_completed()
+    t0 = time.time()
+    events.append([t0, "recording_start", None])
     while True:
         now = time.time()
         if getattr(gui, ABORT_FLAG, False):
@@ -228,20 +234,29 @@ try:
             rest = P["interval"] - (time.time() - ta)
             if rest > 0:
                 time.sleep(rest)
+except Exception as e:  # keep what was recorded; the cleanup below stops the pump
+    end_reason = "error: " + str(e)
 finally:
+    # However the recording ended, a job it started that is still running is stopped first (a completed
+    # recording leaves none running), then the AF laser goes off, then the frames are flushed.
     try:
-        mc.turn_off_AF_laser()
-        mc.wait_till_operation_is_completed()
-    finally:
-        if af_stack is not None:
-            af_stack.flush()
-            del af_stack
-            af_stack = None
-        for s, h in handlers:
-            s.unsubscribe(h)
-        if (launched or prep_launched) and system.busy and end_reason != "completed":
+        if (launched or prep_launched) and system.busy:
             system.abort()
             system.wait(30)
+    finally:
+        try:
+            mc.turn_off_AF_laser()
+            mc.wait_till_operation_is_completed()
+        finally:
+            try:
+                if af_stack is not None:
+                    af_stack.flush()
+                    del af_stack
+                    af_stack = None
+                for s, h in handlers:
+                    s.unsubscribe(h)
+            finally:
+                setattr(gui, RUNNING_FLAG, False)
     events.append([time.time(), "recording_end", end_reason])
 
 # getattr: a missing setting must not cost the recording it describes
@@ -300,7 +315,36 @@ def _receive(sock):
     return json.loads(buf.decode())
 
 
+def receive_or_abort(sock, abort_code, what="the recording"):
+    """(reply, interrupted): the run's reply on sock. Ctrl-C sends abort_code on a second connection and keeps
+    waiting on sock: the run stops, cleans up in the GUI and still returns what it recorded."""
+    try:
+        return _receive(sock), False
+    except KeyboardInterrupt:
+        print(
+            "\nCtrl-C: stopping %s and waiting for it to clean up and return its data "
+            "(Ctrl-C again leaves the GUI to clean up on its own, and the data are lost)..." % what,
+            file=sys.stderr,
+            flush=True,
+        )
+        _receive(_send("python_exec", {"code": abort_code}, timeout=30))
+        return _receive(sock), True
+
+
+def prepare_out(out):
+    """Create the folder `out` (a path without extension) goes into and check that it is writable, before anything
+    reaches the GUI: the GUI writes the AF frames there during the run."""
+    folder = os.path.dirname(os.path.abspath(out))
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError as e:
+        sys.exit("Cannot create the output folder %s: %s" % (folder, e))
+    if not os.access(folder, os.W_OK):
+        sys.exit("The output folder %s is not writable" % folder)
+
+
 def run_remote(params):
+    """(result, interrupted) of one recording in the GUI."""
     code = REMOTE_CODE.replace("__PARAMS__", repr(params))
     try:
         sock = _send("python_exec", {"code": code}, timeout=params["hard_cap"] + 400)
@@ -309,19 +353,14 @@ def run_remote(params):
             "Cannot reach the GUI's control server on %s:%d. In the GUI: Settings -> "
             "Enable MCP Control Server." % (HOST, PORT)
         )
-    try:
-        reply = _receive(sock)
-    except KeyboardInterrupt:
-        print("\nStopping the pump and the recording...", file=sys.stderr)
-        _receive(_send("python_exec", {"code": ABORT_CODE}, timeout=30))
-        reply = _receive(sock)  # the recording returns what it has
+    reply, interrupted = receive_or_abort(sock, ABORT_CODE, "the pump and the recording")
     if not reply.get("success"):
         sys.exit("The GUI refused the experiment: %s" % reply.get("error"))
     # python_exec answers {"result": <the remote `result`>}, inside the server's own envelope.
     result = (reply.get("result") or {}).get("result")
     if not isinstance(result, dict):
         sys.exit("Unexpected reply from the GUI: %r" % (result,))
-    return result
+    return result, interrupted
 
 
 def summarize(result):
@@ -604,6 +643,7 @@ def main():
     for ext in (".csv", "_meta.json", "_af.tif", "_af_raw.npy"):
         if os.path.exists(out + ext):
             p.error("%s already exists; pick another --out" % (out + ext))
+    prepare_out(out)
     pump_s = 0 if args.dry_run else 60 * args.volume / args.rate
     params = {
         "dry_run": args.dry_run,
@@ -638,7 +678,7 @@ def main():
             "Recording: %.0f s, preparation, %.0f s baseline, pull %.0f uL at %.0f uL/min, then %.0f s. Ctrl-C to stop."
             % (args.pre, args.baseline, args.volume, args.rate, args.post)
         )
-    result = run_remote(params)
+    result, interrupted = run_remote(params)
     summary = summarize(result)
     summary["af_frames_saved"] = result.get("af_frames", 0)
     write_outputs(out, args, result, summary)
@@ -647,7 +687,9 @@ def main():
         print("Writing %d laser AF frames..." % result["af_frames"])
         af_file = convert_af_images(out + "_af_raw.npy", out + "_af.tif", result["af_frames"])
     bright = None
-    if af_file and af_file.endswith(".tif"):
+    if interrupted and af_file:
+        print("Stopped with Ctrl-C: bright-spot tracking skipped; redo it with --reprocess --out %s" % out)
+    elif af_file and af_file.endswith(".tif"):
         print("Tracking the bright laser spot in the saved frames...")
         tracked = track_bright_spot(out)
         if tracked:
@@ -658,7 +700,7 @@ def main():
             meta["summary"] = summary
             with open(meta_path, "w") as f:
                 json.dump(meta, f, indent=2)
-    if not args.no_plot:
+    if not args.no_plot and not interrupted:
         plot(out, result, bright)
 
     print("End: %s" % result["end_reason"])
@@ -674,6 +716,8 @@ def main():
         print("Laser AF frames: %s (frame times: %s_af_frames.csv)" % (af_file, out))
     if bright:
         print("Bright-spot displacement: %s_bright.csv" % out)
+    if result["end_reason"] != "completed":
+        sys.exit("The run did not complete: %s" % result["end_reason"])
 
 
 def reprocess(out, no_plot=False):
