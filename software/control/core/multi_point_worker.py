@@ -137,6 +137,12 @@ class MultiPointWorker:
         # did not finish (set in run()'s finally, None when not known; read by the controller).
         self.start_fov: int = int(acquisition_parameters.start_fov or 0)
         self._next_fov: int = self.start_fov
+        # The FOV being imaged, and the one the last triggered frame belongs to: a frame can arrive after the worker
+        # has moved on (HARDWARE trigger), so the callback needs the FOV of its own capture.
+        self._scan_index: int = self.start_fov
+        self._capture_scan_index: Optional[int] = None
+        # The lowest FOV with a frame the callback could not hand off for saving: not done, wherever the loop got to.
+        self._first_unsaved_fov: Optional[int] = None
         self._images_lost = False  # a frame or a save job given up on at the end: FOVs counted done may lack images
         self.end_fov: Optional[int] = None
         self.NZ = acquisition_parameters.NZ
@@ -489,10 +495,17 @@ class MultiPointWorker:
     def _compute_end_fov(self) -> Optional[int]:
         """Where a resumed run can start: the scan-order index of the first FOV this run did not finish, when every
         FOV before it was imaged and saved. None when that isn't known: more than one time point, an image that failed
-        to save, or a frame or save job given up on at the end."""
+        to save, or a frame or save job given up on at the end. A frame the callback could not hand off for saving
+        makes its FOV the end, even when the loop had already moved past it."""
         if self.Nt != 1 or self._acquisition_error_count > 0 or self._images_lost:
             return None
+        if self._first_unsaved_fov is not None:
+            return min(self._next_fov, self._first_unsaved_fov)
         return self._next_fov
+
+    def _fov_not_saved(self, scan_index: int) -> None:
+        if self._first_unsaved_fov is None or scan_index < self._first_unsaved_fov:
+            self._first_unsaved_fov = scan_index
 
     def run(self):
         this_image_callback_id = None
@@ -1134,6 +1147,7 @@ class MultiPointWorker:
                 scan_index += 1
                 if scan_index < self.start_fov:
                     continue
+                self._scan_index = scan_index
                 # Just so the job result queues don't get too big, check and print a summary of intermediate results here
                 with self._timing.get_timer("job result summaries"):
                     result = self._summarize_runner_outputs()
@@ -1603,6 +1617,8 @@ class MultiPointWorker:
         self._log.info(f"[multi-point] {reason} — ignoring non-zero z-offsets on channels: [{summary}]")
 
     def _image_callback(self, camera_frame: CameraFrame):
+        capture_scan_index = None  # set once this frame is known to answer a trigger
+        handed_off = False  # every save job for the frame dispatched (or run)
         try:
             if self._ready_for_next_trigger.is_set():
                 self._log.warning(
@@ -1614,6 +1630,7 @@ class MultiPointWorker:
             with self._timing.get_timer("_image_callback"):
                 self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
                 info = self._current_capture_info
+                capture_scan_index = self._capture_scan_index
                 self._current_capture_info = None
 
                 self._ready_for_next_trigger.set()
@@ -1666,6 +1683,7 @@ class MultiPointWorker:
                                 self._log.exception("Failed to execute job, abandoning acquisition!")
                                 self._abort_due_to_error()
                                 return
+                handed_off = True
 
                 height, width = image.shape[:2]
                 # with self._timing.get_timer("crop_image"):
@@ -1681,6 +1699,8 @@ class MultiPointWorker:
                     self.callbacks.signal_new_image(camera_frame, info)
 
         finally:
+            if capture_scan_index is not None and not handed_off:
+                self._fov_not_saved(capture_scan_index)
             self._image_callback_idle.set()
 
     def _frame_wait_timeout_s(self):
@@ -1743,6 +1763,7 @@ class MultiPointWorker:
                 configuration_idx=config_idx,
                 time_point=self.time_point,
             )
+            self._capture_scan_index = self._scan_index
             self._current_capture_info = current_capture_info
         with self._timing.get_timer("send_trigger"):
             try:

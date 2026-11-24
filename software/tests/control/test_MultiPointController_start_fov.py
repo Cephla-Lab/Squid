@@ -1,10 +1,16 @@
 """An acquisition can start at a FOV in scan order (a resumed protocol imaging step) and reports where it stopped."""
 
+import threading
+import time
+
 import pytest
 
 import control._def
 import control.microscope
+from control._def import TriggerMode
+from control.core.job_processing import JobRunner
 from control.core.multi_point_worker import MultiPointWorker
+from squid.abc import CameraFrame
 
 import tests.control.test_stubs as ts
 from tests.control.test_MultiPointController import TestAcquisitionTracker as AcquisitionTracker, select_some_configs
@@ -96,6 +102,73 @@ def test_an_error_reports_the_first_fov_not_done_and_a_resume_images_the_rest():
     assert mpc.last_end_fov == 6
 
 
+@pytest.mark.parametrize("failure", ["none-frame", "dispatch-refused"])
+def test_a_frame_lost_in_the_callback_after_the_worker_moved_on_is_not_counted_done(monkeypatch, failure):
+    """HARDWARE trigger: the worker does not wait for a frame, so FOV 1's last frame arrives during the move to
+    FOV 2, and the callback fails on it (a None frame, or its save job refused). FOV 1 was not saved, so the run
+    must not report it done: a resume starts at FOV 1, not FOV 2."""
+    scope, mpc, tt, imaged = _controller()
+    camera = scope.camera
+    stage = scope.stage
+    mpc.liveController.trigger_mode = TriggerMode.HARDWARE  # the camera stays software-triggered in simulation
+    last_config = len(mpc.selected_configurations) - 1
+    fov_2_x = mpc.scanCoordinates.region_fov_coordinates["A1"][2][0]
+    moving_to_fov_2 = threading.Event()
+
+    def is_fov_1_last_frame(info):
+        return (info.region_id, info.fov, info.configuration_idx) == ("A1", 1, last_config)
+
+    real_move_x_to = stage.move_x_to
+
+    def move_x_to(x_mm, *args, **kwargs):
+        if abs(x_mm - fov_2_x) < 0.01:
+            moving_to_fov_2.set()
+        return real_move_x_to(x_mm, *args, **kwargs)
+
+    stage.move_x_to = move_x_to
+
+    real_send_trigger = camera._send_trigger_imp
+
+    def send_trigger(illumination_time=None):
+        info = mpc.multiPointWorker._current_capture_info
+        if info is None or not is_fov_1_last_frame(info):
+            return real_send_trigger(illumination_time)
+        camera._last_trigger_timestamp = time.time()
+
+        def deliver_late():
+            moving_to_fov_2.wait(TIMEOUT_S)
+            if failure == "none-frame":
+                frame = CameraFrame(
+                    frame_id=camera.get_frame_id() + 1,
+                    timestamp=time.time(),
+                    frame=None,
+                    frame_format=camera.get_frame_format(),
+                    frame_pixel_format=camera.get_pixel_format(),
+                )
+                camera._propogate_frame(frame)
+            else:
+                camera._next_frame()
+
+        threading.Thread(target=deliver_late, daemon=True).start()
+
+    camera._send_trigger_imp = send_trigger
+
+    real_dispatch = JobRunner.dispatch
+
+    def dispatch(self, job):
+        if failure == "dispatch-refused" and is_fov_1_last_frame(job.capture_info):
+            return False
+        return real_dispatch(self, job)
+
+    monkeypatch.setattr(JobRunner, "dispatch", dispatch)
+
+    _run(mpc, tt)
+
+    assert moving_to_fov_2.is_set()
+    assert mpc.last_end_reason == "error"
+    assert mpc.last_end_fov == 1
+
+
 @pytest.mark.parametrize(
     "setup, problem",
     [
@@ -122,6 +195,7 @@ def _worker(**fields):
     w._acquisition_error_count = 0
     w._images_lost = False
     w._next_fov = 5
+    w._first_unsaved_fov = None
     for name, value in fields.items():
         setattr(w, name, value)
     return w
@@ -141,3 +215,10 @@ def test_end_fov_is_the_next_fov_after_a_clean_single_time_point_run():
 )
 def test_end_fov_is_unknown_when_fovs_counted_done_may_lack_images(fields):
     assert _worker(**fields)._compute_end_fov() is None
+
+
+def test_end_fov_is_the_lowest_fov_the_callback_could_not_hand_off():
+    w = _worker()
+    w._fov_not_saved(3)
+    w._fov_not_saved(4)
+    assert w._compute_end_fov() == 3
