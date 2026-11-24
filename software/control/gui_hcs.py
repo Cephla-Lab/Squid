@@ -642,6 +642,29 @@ class QtMultiPointController(MultiPointController, QObject):
         return len(scan_info.scan_region_names) > 0
 
 
+def fluidics_notification_warnings(
+    slack_enabled: bool, watchdog_alerts_enabled: bool, watchdog_problem: Optional[str]
+) -> List[str]:
+    """The Start run… pre-flight's warnings (not problems): who would not hear of a held or stopped run."""
+    warnings = []
+    if not slack_enabled:
+        warnings.append(
+            "Slack notifications are off: if this run goes HELD, nobody is told "
+            "(Settings → Slack Notifications; the acquisition watchdog uses the same settings)"
+        )
+    if watchdog_problem:
+        warnings.append(
+            f"{watchdog_problem[0].upper()}{watchdog_problem[1:]}: nobody is told if the GUI stops, and a long hold "
+            "gets no reminder (python3 -m acquisition_watchdog; see acquisition_watchdog/README.md)"
+        )
+    if not watchdog_alerts_enabled:  # the watchdog still beats, so watchdog_problem cannot tell
+        warnings.append(
+            "Watchdog alerts are off: the watchdog sends nothing if the GUI stops or a hold runs long "
+            "(Settings → Slack Notifications → Enable watchdog alerts)"
+        )
+    return warnings
+
+
 @dataclass(eq=False)
 class _HistoryRun:
     """One acquisition's gallery-preview timing: its last timepoint, the overview saves seen, the one awaited."""
@@ -2294,20 +2317,13 @@ class HighContentScreeningGui(QMainWindow):
             return None
 
         def fluidics_notify_check():
-            warnings = []
             notifier = getattr(self, "slackNotifier", None)
-            if notifier is None or not notifier.enabled:
-                warnings.append(
-                    "Slack notifications are off: if this run goes HELD, nobody is told "
-                    "(Settings → Slack Notifications; the acquisition watchdog uses the same settings)"
-                )
-            watchdog = squid.acquisition_state.watchdog_problem()  # the state dir this run's breadcrumb goes to
-            if watchdog:
-                warnings.append(
-                    f"{watchdog[0].upper()}{watchdog[1:]}: nobody is told if the GUI stops, and a long hold gets "
-                    "no reminder (python3 -m acquisition_watchdog; see acquisition_watchdog/README.md)"
-                )
-            return warnings
+            return fluidics_notification_warnings(
+                slack_enabled=notifier is not None and notifier.enabled,
+                # the GUI's copy of the "Enable watchdog alerts" setting the dialog saves for the watchdog
+                watchdog_alerts_enabled=control._def.SlackNotifications.WATCHDOG_ENABLED,
+                watchdog_problem=squid.acquisition_state.watchdog_problem(),  # the state dir of this run's breadcrumb
+            )
 
         self.fluidicsDisplayTab = FluidicsDisplayTab(self.fluidics, current_source=current_imaging_source)
         if isinstance(self.imageDisplayTabs, QTabWidget):  # absent in live-only mode
