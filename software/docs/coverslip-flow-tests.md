@@ -107,7 +107,9 @@ Replace the port numbers with your own. Outputs go wherever `--out` / `--out-dir
 python3 tools/coverslip_flow/piezo_check.py
 ```
 
-PASS when the spot moves about 10 µm ÷ (µm per pixel) each way and comes back within a pixel. On FAIL the piezo driver
+PASS when the spot moves about 10 µm ÷ (µm per pixel) each way, in opposite directions, and comes back within a pixel
+(the calibration's µm per pixel may be negative, depending on how the focus camera is mounted; the check uses its size).
+A zero or missing laser AF calibration fails: recalibrate. On any other FAIL the piezo driver
 is not following its input: every laser AF correction in a scan then fails its cross-correlation check and the whole
 scan stays at one z. Restart the piezo driver, refocus, run it again. Tests 1–6 don't move focus and don't need it, but
 run it before any imaging check. It leaves the piezo where it started.
