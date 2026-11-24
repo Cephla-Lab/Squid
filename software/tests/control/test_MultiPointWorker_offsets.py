@@ -40,6 +40,9 @@ class _Stub:
     _laser_af_anchor = MultiPointWorker._laser_af_anchor
     _save_laser_af_diagnostic = MultiPointWorker._save_laser_af_diagnostic
     _move_z_for_offset = MultiPointWorker._move_z_for_offset
+    _laser_af_record = MultiPointWorker._laser_af_record  # None: not recorded
+    _laser_af_record_start = MultiPointWorker._laser_af_record_start
+    _laser_af_record_add = MultiPointWorker._laser_af_record_add
 
     def _apply_channel_z_offset(self, config, af_succeeded: bool = True):
         # Default af_succeeded=True so the common-case tests don't have to thread it;

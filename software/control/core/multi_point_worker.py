@@ -54,6 +54,7 @@ from control.core.mosaic_utils import (
     parse_well_id,
 )
 from control.core.backpressure import BackpressureController, BackpressureValues
+from control.core.laser_af_record import LaserAFRecord
 from squid.config import CameraPixelFormat
 
 # Module-level logger for static methods
@@ -82,6 +83,8 @@ def _z_steps_below_center(nz: int) -> int:
 
 
 class MultiPointWorker:
+    _laser_af_record: Optional[LaserAFRecord] = None  # laser_af.csv; None: not recorded
+
     def __init__(
         self,
         scope: Microscope,
@@ -149,6 +152,10 @@ class MultiPointWorker:
         self.experiment_ID = acquisition_parameters.experiment_ID
         self.base_path = acquisition_parameters.base_path
         self.experiment_path = os.path.join(self.base_path or "", self.experiment_ID or "")
+        if self.do_reflection_af and control._def.LASER_AF_SAVE_RECORD and self.experiment_ID:
+            self._laser_af_record = LaserAFRecord(
+                self.experiment_path, save_frames=bool(control._def.LASER_AF_SAVE_FRAMES)
+            )
         self.selected_configurations = acquisition_parameters.selected_configurations
 
         # Pre-compute acquisition metadata that remains constant throughout the run.
@@ -567,14 +574,18 @@ class MultiPointWorker:
             self._run_state_fatal = True
             raise
         finally:
-            # We do this above, but there are some paths that skip the proper end of the acquisition so make
-            # sure to always wait for final images here before removing our callback.
-            self._wait_for_outstanding_callback_images()
-            self._log.debug(self._timing.get_report())
-            if this_image_callback_id:
-                self.camera.remove_frame_callback(this_image_callback_id)
+            try:
+                # We do this above, but there are some paths that skip the proper end of the acquisition so make
+                # sure to always wait for final images here before removing our callback.
+                self._wait_for_outstanding_callback_images()
+                self._log.debug(self._timing.get_report())
+                if this_image_callback_id:
+                    self.camera.remove_frame_callback(this_image_callback_id)
 
-            self._finish_jobs()
+                self._finish_jobs()
+            finally:
+                # Even when the teardown above raises: the record's rows are on disk, its summary should be too.
+                self._close_laser_af_record()
 
             # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
             reason = self.end_reason = self._compute_end_reason()
@@ -1333,11 +1344,66 @@ class MultiPointWorker:
                     self.autofocusController.wait_till_autofocus_has_completed()
         else:
             self._log.info("laser reflection af")
-            if not self._laser_af_anchor(region_id, fov, restore_on_failure=False):
+            record = self._laser_af_record_start()
+            af_succeeded = self._laser_af_anchor(region_id, fov, restore_on_failure=False)
+            self._laser_af_record_add(record, region_id, fov, af_succeeded)
+            if not af_succeeded:
                 self._laser_af_failures += 1
                 return False
             self._laser_af_successes += 1
         return True
+
+    def _close_laser_af_record(self) -> None:
+        """Close laser_af.csv and write laser_af_summary.json (and its lines in the log). Never raises."""
+        if self._laser_af_record is None:
+            return
+        try:
+            self._laser_af_record.close()
+        except Exception:
+            self._log.exception("Could not summarize the laser AF record")
+
+    def _laser_af_z_um(self) -> float:
+        """The focus height for the laser AF record: stage z, plus the piezo when laser AF moves the piezo (um)."""
+        piezo = getattr(self.laser_auto_focus_controller, "piezo", None)
+        return self.stage.get_pos().z_mm * 1000 + (piezo.position if piezo is not None else 0.0)
+
+    def _laser_af_record_start(self) -> Optional[Tuple[float, float]]:
+        """(start time, z before) of a laser AF call to record, or None when there is no record."""
+        if self._laser_af_record is None:
+            return None
+        try:
+            return time.time(), self._laser_af_z_um()
+        except Exception:
+            self._log.exception("laser AF record: could not read z before the AF")
+            return time.time(), math.nan
+
+    def _laser_af_record_add(self, record, region_id, fov, ok, channel_name=None) -> None:
+        """One row of laser_af.csv for the laser AF call that _laser_af_record_start() began. Never raises."""
+        if record is None:
+            return
+        start_time, z_before_um = record
+        try:
+            laser_af = self.laser_auto_focus_controller
+            pos = self.stage.get_pos()
+            row = {
+                "time": round(start_time, 3),
+                "time_point": self.time_point,
+                "region": region_id,
+                "fov": fov,
+                "channel": channel_name or "",
+                "x_mm": round(pos.x_mm, 4),
+                "y_mm": round(pos.y_mm, 4),
+                "z_before_um": round(z_before_um, 3),
+                "z_after_um": round(self._laser_af_z_um(), 3),
+                "displacement_um": round(float(laser_af.last_displacement_um), 3),
+                "correlation": round(float(laser_af.last_correlation), 4),
+                "ok": bool(ok),
+                "target_um": self.region_laser_af_offsets.get(region_id, 0.0),
+                "af_time_s": round(time.time() - start_time, 3),
+            }
+            self._laser_af_record.add(row, laser_af.last_frame)  # None when this call read no frame
+        except Exception:
+            self._log.exception(f"laser AF record: could not record region '{region_id}' FOV {fov}")
 
     def _laser_af_anchor(self, region_id, fov, *, restore_on_failure: bool, channel_name=None) -> bool:
         """Closed-loop laser AF to the reference plane, then the region's open-loop offset. True on success.
@@ -1413,7 +1479,10 @@ class MultiPointWorker:
         even if the FOV's per-FOV AF had failed), else the FOV's current value (the previous anchor stands and
         the channel offset is still applied from it).
         """
-        if self._laser_af_anchor(region_id, fov, restore_on_failure=True, channel_name=config.name):
+        record = self._laser_af_record_start()
+        anchored = self._laser_af_anchor(region_id, fov, restore_on_failure=True, channel_name=config.name)
+        self._laser_af_record_add(record, region_id, fov, anchored, config.name)
+        if anchored:
             # The AF consumed the previous channel's offset: Z is at the anchored plane again.
             self._current_z_offset_um = 0.0
             self._laser_af_per_stack_successes += 1

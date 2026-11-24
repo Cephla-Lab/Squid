@@ -1090,6 +1090,13 @@ SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS = False
 LASER_AF_FILTER_SIGMA = None
 LASER_AF_INITIALIZE_CROP_WIDTH = 1200
 LASER_AF_INITIALIZE_CROP_HEIGHT = 800
+# Opt-in ([GENERAL] laser_af_save_record): acquisitions with laser AF write one row per laser AF call to laser_af.csv
+# in the experiment folder, and a summary per time point (counts, |displacement|, the focus surface) to
+# laser_af_summary.json and the log.
+LASER_AF_SAVE_RECORD = False
+# With the record: also save the focus-camera frame of each laser AF call (laser_af_frames/<time point>/ in the
+# experiment folder): one 8-bit BMP per call, about 0.4 MB for a 1536 x 256 crop.
+LASER_AF_SAVE_FRAMES = False
 
 MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT = False
 MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT = False

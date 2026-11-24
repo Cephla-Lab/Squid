@@ -88,6 +88,9 @@ class _AFStub:
         self.time_point = 0
 
     perform_autofocus = MultiPointWorker.perform_autofocus
+    _laser_af_record = MultiPointWorker._laser_af_record  # None: not recorded
+    _laser_af_record_start = MultiPointWorker._laser_af_record_start
+    _laser_af_record_add = MultiPointWorker._laser_af_record_add
 
 
 def test_perform_autofocus_uses_region_offset():
