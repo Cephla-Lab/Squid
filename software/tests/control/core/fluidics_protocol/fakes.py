@@ -83,6 +83,15 @@ class FakeFluidicsPort:
 
     def __init__(self, script: Optional[List[tuple]] = None, tec: Optional[TecState] = None):
         self.script = list(script or [])
+        # release-and-settle: the valve, and a flow sensor publishing flow_ul_min(s since the valve last arrived)
+        self.ports = tuple(range(1, 31))
+        self.port: Optional[int] = 1
+        self.opened: List[int] = []
+        self.opened_at: List[float] = []
+        self.open_error: Optional[str] = None  # start_valve_move() is refused with this
+        self.valve_hold = False  # the next valve moves block until aborted (a valve that does not arrive)
+        self.moves: List["FakeValveMove"] = []
+        self.flow_ul_min = None  # None: no flow sensor
         self.starts: List[dict] = []
         self.tickets: List[Optional["FakeTicket"]] = []
         self.validated: List[List[dict]] = []
@@ -136,6 +145,64 @@ class FakeFluidicsPort:
     def restore_tec(self, state):
         self.restored.append(state)
 
+    def valve_ports(self):
+        return self.ports
+
+    def current_port(self):
+        return self.port
+
+    def start_valve_move(self, port):
+        if self.open_error:
+            raise RuntimeError(self.open_error)
+        move = FakeValveMove(self, port, hold=self.valve_hold)
+        self.moves.append(move)
+        return move
+
+    def _arrive(self, port):
+        self.port = port
+        self.opened.append(port)
+        self.opened_at.append(time.monotonic())
+
+    def since_open(self) -> Optional[float]:
+        return time.monotonic() - self.opened_at[-1] if self.opened_at else None
+
+    def subscribe_flow(self, callback):
+        if self.flow_ul_min is None:
+            return None
+        stop = threading.Event()
+
+        def publish():
+            while not stop.wait(0.002):
+                callback(self.flow_ul_min(self.since_open()), time.time())
+
+        threading.Thread(target=publish, daemon=True).start()
+        return stop.set
+
+
+class FakeValveMove:
+    """Arrives at once, unless `hold`: then it blocks until abort(), and ends stopped without arriving."""
+
+    def __init__(self, fluidics: FakeFluidicsPort, port: int, hold: bool = False):
+        self.port = port
+        self.aborted = False
+        self.ended = threading.Event()
+        self._stopped = False
+        if not hold:
+            fluidics._arrive(port)
+            self.ended.set()
+
+    def wait(self, timeout: float) -> bool:
+        return self.ended.wait(timeout)
+
+    def abort(self) -> bool:
+        self.aborted = True
+        self._stopped = not self.ended.is_set()
+        self.ended.set()
+        return True
+
+    def failure(self) -> Optional[str]:
+        return f"selector valve to port {self.port} was stopped" if self._stopped else None
+
 
 class FakeHandle:
     def __init__(self, result: ImagingResult, hold: bool = False):
@@ -163,12 +230,20 @@ class FakeHandle:
 class FakeImagingPort:
     """Creates the session folder like start_new_experiment(add_timestamp=False) would (FileExistsError ->
     ImagingStartError). `script`: one entry per start(): "completed" | "completed_with_errors" | "user_abort" |
-    "error" | "raise" (start fails) | "hold" (blocks until release()/abort())."""
+    "error" | "raise" (start fails) | "hold" (blocks until release()/abort()). `focus`: the laser AF reading."""
 
-    def __init__(self, script: Optional[List[str]] = None):
+    def __init__(self, script: Optional[List[str]] = None, focus=None):
         self.script = list(script or [])
         self.requests: List[ImagingRequest] = []
         self.handles: List[FakeHandle] = []
+        self.focus = focus  # () -> um | nan; None: no laser AF
+        self.focus_reads = 0
+
+    def measure_focus_um(self):
+        if self.focus is None:
+            return None
+        self.focus_reads += 1
+        return float(self.focus())
 
     def start(self, request: ImagingRequest) -> FakeHandle:
         entry = self.script.pop(0) if self.script else "completed"

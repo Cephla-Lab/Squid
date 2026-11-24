@@ -1,7 +1,7 @@
 """FluidicsPort over the Squid-Fluidics library's FluidicsSystem (one per initialized service)."""
 
 import threading
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from fluidics.events import RunEnded, RunStarted, SequenceStarted
 from fluidics.sequences import SequenceListAdapter, validate_sequences
@@ -67,6 +67,38 @@ class LibraryTicket:
         return bool(snapshot.paused and snapshot.at_rest)
 
 
+class LibraryValveMove:
+    """One selector-valve move: the library's manual open_port verb on its job thread, so it excludes a run.
+    abort() is the library's abort - the valve verbs check its cancel signal, so the move ends as stopped."""
+
+    def __init__(self, system, port: int):
+        self._system = system
+        self.port = port
+        self._errors: List[str] = []
+        self._stopped = False
+        manual = system.manual
+        system.run_manual(
+            lambda: manual.open_port(port),
+            callbacks={"on_error": self._errors.append, "on_stopped": self._on_stopped},
+        )
+
+    def _on_stopped(self) -> None:
+        self._stopped = True
+
+    def wait(self, timeout: float) -> bool:
+        return bool(self._system.wait(timeout))
+
+    def abort(self) -> bool:
+        return bool(self._system.abort())
+
+    def failure(self) -> Optional[str]:
+        if self._errors:
+            return f"selector valve to port {self.port} failed: {'; '.join(self._errors)}"
+        if self._stopped:
+            return f"selector valve to port {self.port} was stopped"
+        return None
+
+
 class LibraryFluidicsPort:
     def __init__(self, system):
         self._system = system
@@ -129,3 +161,26 @@ class LibraryFluidicsPort:
         for channel, (target, on) in enumerate(zip(state.targets, state.output_enabled), start=1):
             tc.set_target_temperature(channel, target)
             tc.set_output_enabled(channel, on)
+
+    # ---- release-and-settle before an imaging row ----
+
+    def valve_ports(self) -> tuple:
+        return tuple(self._system.devices.selector_valves.get_ports())
+
+    def current_port(self) -> Optional[int]:
+        try:
+            return int(self._system.manual.current_port())
+        except Exception as e:
+            _log.warning(f"Could not read the selector valve port: {e}")
+            return None
+
+    def start_valve_move(self, port: int) -> LibraryValveMove:
+        return LibraryValveMove(self._system, port)
+
+    def subscribe_flow(self, callback) -> Optional[Callable[[], None]]:
+        sensors = list(self._system.devices.flow_sensors or [])
+        if not sensors:
+            return None
+        sensor = sensors[0]
+        sensor.subscribe(callback)
+        return lambda: sensor.unsubscribe(callback)

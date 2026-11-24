@@ -30,6 +30,39 @@ sequences:
   - {type: flow_reagent, round: R01,   name: rinse, fluidic_port: 25, flow_rate: 10000, volume: 2000, repeat: 2}
 ```
 
+### Release and settle before imaging (optional)
+
+Some lines hold suction after a syringe draw: the coverslip stays pulled in (tens of µm) until the selector
+valve moves to a free port, then springs back over several seconds, and the flow sensor sees a few µL come
+in. To let that happen before the first FOV rather than during the scan, add to the `imaging:` header:
+
+```yaml
+imaging:
+  release_and_settle:
+    release_port: 30     # before every imaging row the valve turns here (a wash/buffer port: free, no reagent)
+    alternate_port: 15   # optional: used when the valve already sits on release_port
+    tolerance_um: 0.2    # settled: the median laser AF displacement of the last window differs
+    window_s: 5          #   from the window before by less than tolerance_um
+    timeout_s: 90        # after the valve reaches the port
+    on_timeout: hold     # hold: the step goes HELD (Restart checks again, Skip leaves the row out); warn: log, image
+    fixed_wait_s: 15     # no laser AF reading (no reference, no spot): wait this long once the valve is there
+```
+
+Before each imaging attempt the runner takes one window of laser AF displacement readings where the stage is
+(z is not moved), moves the valve (the library's manual `open_port`, so it excludes a run; the runner polls the
+move like an ordinary fluidics step, so Abort step / Stop abort it and wait for it to end, and a valve not there
+within 60 s is aborted and fails the release), then reads until settled or the timeout; settle time, timeout and fixed wait count from when the valve reached
+the port. A window only counts when the spot was found in at least 80 % of its readings and in the newest one,
+so a spot lost part-way (a rebound beyond the laser AF range looks like that) waits on until it is back or
+the timeout instead of settling on the readings left. The first flow sensor, if any, is watched throughout
+(for one window before the move also without laser AF). The result — ports, valve travel time, rise (final − baseline), settle time,
+last change, inflow (µL from the move on in the draw direction, net of the reading before it; empty without a
+reading before the move) — is logged to `run.log` (one line), stored on the attempt in `run_manifest.json`
+(`release_and_settle`), in `acquisition.yaml`'s `protocol:` section, and with the reading series in the
+session's `protocol_step.json`. A valve move that fails holds the step (`release_failed`); Abort step during
+the wait holds it as `user_abort`. Pre-flight refuses release/alternate ports the fluidics config does not
+offer. The header applies to every imaging row; without it nothing changes.
+
 Models: `control/models/fluidics_protocol.py` (`ProtocolFile`, `SettingsBlock`, `CoordinatesBlock`,
 `split_into_steps`, `expand_rounds` for "Add rounds…") and `control/models/fluidics_run.py` (`RunManifest`).
 
@@ -43,7 +76,8 @@ Models: `control/models/fluidics_protocol.py` (`ProtocolFile`, `SettingsBlock`, 
   `runner.py` (`ProtocolRunner`: IDLE → RUNNING ⇄ PAUSED → HELD → … → ENDED; one library run per contiguous
   block of fluidics rows with the same round; one acquisition per imaging row; HELD actions resume-from-
   sequence / restart / skip / accept / end), `ports.py` (the two engines as `typing.Protocol`s),
-  `library_port.py` (`LibraryFluidicsPort` over `FluidicsSystem`), `manifest.py` (run folder, atomic
+  `library_port.py` (`LibraryFluidicsPort` over `FluidicsSystem`), `release_settle.py` (the release-and-settle
+wait before an imaging row), `manifest.py` (run folder, atomic
   `run_manifest.json`, `find_unfinished_runs` for crash recovery).
 - `control/core/acquisition_settings.py` — Qt-free `apply_acquisition_settings` shared by the TCP command and
   the imaging port; rebuilds Load-Coordinates regions from FOV lists

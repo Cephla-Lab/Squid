@@ -125,11 +125,29 @@ def _load_coordinates_source(ref: str, base_dir: str) -> CoordinatesBlock:
     return coordinates_block_from_acquisition(parse_acquisition_yaml(path), path)
 
 
+def release_port_problems(release, ports) -> List[str]:
+    """imaging.release_and_settle names ports this rig must offer."""
+    ports = sorted(set(int(p) for p in ports))
+    spans: List[str] = []
+    for p in ports:  # 1..24, 26..28 - the gaps are unplumbed positions
+        if spans and int(spans[-1].split("..")[-1]) == p - 1:
+            spans[-1] = f"{spans[-1].split('..')[0]}..{p}"
+        else:
+            spans.append(str(p))
+    offered = ", ".join(spans) or "none"
+    named = [("release_port", release.release_port), ("alternate_port", release.alternate_port)]
+    return [
+        f"imaging.release_and_settle: {name} {port} is not a port of this fluidics system (it offers {offered})"
+        for name, port in named
+        if port is not None and port not in ports
+    ]
+
+
 def resolve_protocol(protocol: ProtocolFile, base_dir, fluidics: Optional[FluidicsPort] = None) -> ResolvedProtocol:
     """Bind every included imaging row; validate the fluidics rows through `fluidics` when given.
 
     Raises ProtocolProblems listing every problem found (folders, missing blocks, unreadable files,
-    zero FOVs, library validation)."""
+    zero FOVs, library validation, release-and-settle ports)."""
     base_dir = str(base_dir)
     problems: List[str] = list(folder_problems(protocol))
     work = protocol.model_copy(deep=True)
@@ -188,6 +206,9 @@ def resolve_protocol(protocol: ProtocolFile, base_dir, fluidics: Optional[Fluidi
                 problems.append(f"{step.label}: {e}")
                 continue
             estimate += plan_seconds(fluidics.plan(rows))
+        release = work.imaging.release_and_settle
+        if release is not None:
+            problems.extend(release_port_problems(release, fluidics.valve_ports()))
 
     if problems:
         raise ProtocolProblems(problems)
