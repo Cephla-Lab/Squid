@@ -1,8 +1,9 @@
-"""What an acquisition does when laser AF fails at a FOV: the optional piezo search for the spot, and the optional stop.
+"""What an acquisition does when laser AF fails at FOVs: by default it images each FOV where it is; with
+LASER_AF_STOP_AFTER_CONSECUTIVE_FAILURES = N it stops (as an error) at the Nth FOV in a row whose laser AF failed.
 
 The worker tests use a bare MultiPointWorker (the harness of test_MultiPointWorker_z_stack_order) with a fake laser AF
-whose spot is in view only within a few um of a coverslip height, so the search has something to find. The end-to-end
-test runs a simulated acquisition, whose laser AF finds no spot.
+that succeeds or fails per call as scripted. The end-to-end tests run a simulated acquisition, whose laser AF finds no
+spot at any FOV, on its own and as the imaging step of a fluidics protocol run.
 """
 
 import math
@@ -13,52 +14,54 @@ import pytest
 import control._def
 import control.microscope
 import squid.acquisition_state as ast
-from control.core.multi_point_worker import laser_af_spot_search_offsets_um
+from control.core.fluidics_protocol.events import HoldAction
+from control.core.fluidics_protocol.ports import ImagingResult
+from control.core.multi_point_worker import laser_af_stop_after_consecutive_failures
 import tests.control.test_stubs as ts
+from tests.control.core.fluidics_protocol.test_runner import _held, _runner
 from tests.control.test_MultiPointController import CountingTracker, add_some_coordinates, select_some_configs
 from tests.control.test_MultiPointWorker_z_stack_order import _FakePiezo, _worker
 
-OFFSETS = (5.0, -5.0, 10.0, -10.0, 15.0, -15.0, 20.0, -20.0)
 
+class _ScriptedLaserAF:
+    """Laser AF whose move_to_target succeeds or fails as `results` says, one entry per call."""
 
-class _SurfaceLaserAF:
-    """Laser AF over a coverslip at `surface_um` (piezo um): the spot is in view within `capture_um` of it."""
-
-    def __init__(self, piezo, surface_um, capture_um=4.0, laser_af_range=100.0):
+    def __init__(self, piezo, results):
         self.piezo = piezo
-        self.surface_um = surface_um
-        self.capture_um = capture_um
-        self.laser_af_properties = type("P", (), {"laser_af_range": laser_af_range})()
-        self.measured_at = []  # piezo position of every measure_displacement()
-        self.move_to_target_calls = 0
+        self.results = list(results)
+        self.calls = 0
+        self.during_move = None  # called inside move_to_target, e.g. to press Stop
         self.image = None
         self.characterization_mode = False
 
-    def measure_displacement(self):
-        self.measured_at.append(self.piezo.position)
-        d = self.piezo.position - self.surface_um
-        return d if abs(d) <= self.capture_um else math.nan
-
     def move_to_target(self, target_um):
-        self.move_to_target_calls += 1
-        d = self.piezo.position - self.surface_um
-        if abs(d) > self.capture_um:
-            return False
-        self.piezo.move_to(self.piezo.position + target_um - d)
-        return True
+        self.calls += 1
+        if self.during_move is not None:
+            self.during_move()
+        return self.results.pop(0)
 
     def apply_relative_offset_um(self, offset_um):
         self.piezo.move_to(self.piezo.position + offset_um)
 
 
-def _spot_loss_worker(surface_um, *, offsets=(), stop=False, start_um=100.0, range_um=300.0):
-    w = _worker("CHANNEL FIRST", nz=1, channels=("A",), use_piezo=True)
-    w.piezo = _FakePiezo(position=start_um, range_um=range_um)
-    w.laser_auto_focus_controller = _SurfaceLaserAF(w.piezo, surface_um)
+class _RecordingPiezo(_FakePiezo):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.moves = []
+
+    def move_to(self, um):
+        self.moves.append(um)
+        super().move_to(um)
+
+
+def _stop_worker(results, *, stop_after=0, nz=1, z_stacking_config="FROM BOTTOM"):
+    w = _worker("CHANNEL FIRST", nz=nz, channels=("A",), use_piezo=True, z_stacking_config=z_stacking_config)
+    w.piezo = _RecordingPiezo(position=100.0)
+    w.laser_auto_focus_controller = _ScriptedLaserAF(w.piezo, results)
     w.do_reflection_af = True
     del w.perform_autofocus  # the real one
-    w._laser_af_search_offsets_um = tuple(offsets)
-    w._laser_af_stop_on_spot_loss = stop
+    w._laser_af_stop_after_failures = stop_after
+    w._laser_af_consecutive_failures = 0
     aborted = []
 
     def request_abort():
@@ -67,110 +70,82 @@ def _spot_loss_worker(surface_um, *, offsets=(), stop=False, start_um=100.0, ran
     w.request_abort_fn = request_abort
     w.abort_requested_fn = lambda: bool(aborted)
     w._abort_cause = None
+    w._end_detail = None
     w.aborted = aborted
     return w
 
 
-def test_by_default_a_failed_laser_af_images_the_fov_where_it_is():
-    w = _spot_loss_worker(surface_um=112.0)  # 12 um away: out of view
-    w.acquire_at_position("A1", "/tmp", 0)
-    assert w.laser_auto_focus_controller.measured_at == []  # no search
-    assert w.frames == [(0, "A", 100.0)]
-    assert (w._laser_af_successes, w._laser_af_failures) == (0, 1)
+def _acquire_fovs(w, n, region_id="A1"):
+    """Like run_coordinate_acquisition: acquire FOVs 0, 1, ... in turn until an abort."""
+    for fov in range(n):
+        w.acquire_at_position(region_id, "/tmp", fov)
+        if w.abort_requested_fn():
+            break
+
+
+def test_by_default_failed_laser_afs_never_stop_the_acquisition():
+    w = _stop_worker([False] * 5)
+    _acquire_fovs(w, 5)
+    assert len(w.frames) == 5  # every FOV imaged where it is
     assert not w.aborted
+    assert (w._laser_af_successes, w._laser_af_failures) == (0, 5)
 
 
-def test_the_search_steps_the_offsets_in_order_and_laser_afs_from_the_first_spot():
-    w = _spot_loss_worker(surface_um=112.0, offsets=OFFSETS)
-    w.acquire_at_position("A1", "/tmp", 0)
-    # +5 (105) and -5 (95) see no spot; +10 (110) does, and laser AF from there reaches the surface.
-    assert w.laser_auto_focus_controller.measured_at == [105.0, 95.0, 110.0]
-    assert w.laser_auto_focus_controller.move_to_target_calls == 2
-    assert w.frames == [(0, "A", 112.0)]
-    assert (w._laser_af_successes, w._laser_af_failures) == (1, 0)
-
-
-def test_a_search_that_finds_nothing_puts_z_back_and_images_the_fov_there():
-    w = _spot_loss_worker(surface_um=150.0, offsets=OFFSETS)
-    w.acquire_at_position("A1", "/tmp", 0)
-    assert w.laser_auto_focus_controller.measured_at == [100.0 + o for o in OFFSETS]
-    assert w.piezo.position == 100.0
-    assert w.frames == [(0, "A", 100.0)]
-    assert (w._laser_af_successes, w._laser_af_failures) == (0, 1)
-    assert not w.aborted
-
-
-def test_the_search_skips_offsets_past_the_piezo_travel():
-    w = _spot_loss_worker(surface_um=250.0, offsets=OFFSETS, start_um=290.0, range_um=300.0)
-    w.acquire_at_position("A1", "/tmp", 0)
-    assert w.laser_auto_focus_controller.measured_at == [295.0, 285.0, 300.0, 280.0, 275.0, 270.0]
-    assert w.piezo.position == 290.0
-
-
-def test_no_search_without_a_piezo():
-    w = _spot_loss_worker(surface_um=112.0, offsets=OFFSETS)
-    w.laser_auto_focus_controller.piezo = None  # laser AF moves the stage
-    w.acquire_at_position("A1", "/tmp", 0)
-    assert w.laser_auto_focus_controller.measured_at == []
-    assert w.frames == [(0, "A", 100.0)]
-
-
-def test_stop_on_spot_loss_ends_the_acquisition_as_an_error_without_imaging_the_fov():
-    w = _spot_loss_worker(surface_um=150.0, offsets=OFFSETS, stop=True)
-    w.acquire_at_position("B2", "/tmp", 7)
+@pytest.mark.parametrize("n", [1, 3])
+def test_n_consecutive_failures_stop_the_acquisition_without_imaging_the_nth_fov(n):
+    w = _stop_worker([True] + [False] * n, stop_after=n)
+    _acquire_fovs(w, n + 1, region_id="B2")
     assert w.aborted == [True]
     assert w._abort_cause == "error"
-    assert w.frames == []
-    assert "region 'B2' FOV 7" in w._end_detail and "after searching" in w._end_detail
+    assert len(w.frames) == n  # FOV 0 (AF ok) and the n - 1 failed FOVs before the stop
+    assert w._end_detail == f"laser AF failed at {n} FOV(s) in a row, the last region 'B2' FOV {n} (time point 0)"
 
 
-def test_stop_on_spot_loss_without_the_search():
-    w = _spot_loss_worker(surface_um=150.0, stop=True)
-    w.acquire_at_position("B2", "/tmp", 7)
-    assert w.laser_auto_focus_controller.measured_at == []
-    assert w.aborted == [True] and w.frames == []
-
-
-def test_stop_on_spot_loss_does_not_stop_when_the_search_finds_the_spot():
-    w = _spot_loss_worker(surface_um=92.0, offsets=OFFSETS, stop=True)
-    w.acquire_at_position("A1", "/tmp", 0)
+def test_n_minus_1_failures_then_a_success_do_not_stop():
+    w = _stop_worker([False, False, True, False, False, True], stop_after=3)
+    _acquire_fovs(w, 6)
     assert not w.aborted
-    assert w.frames == [(0, "A", 92.0)]
+    assert len(w.frames) == 6
+    assert w._laser_af_consecutive_failures == 0
 
 
-def test_a_user_abort_during_the_search_stays_a_user_abort():
-    w = _spot_loss_worker(surface_um=150.0, offsets=OFFSETS, stop=True)
-    laser_af = w.laser_auto_focus_controller
-    measure = laser_af.measure_displacement
+def test_the_count_carries_over_fovs_that_are_imaged_after_a_failure():
+    w = _stop_worker([False, False, True, False, False, False], stop_after=3)
+    _acquire_fovs(w, 6)
+    assert w.aborted == [True]
+    assert len(w.frames) == 5  # stopped at FOV 5, the third failure since the success at FOV 2
 
-    def measure_then_user_abort():
-        w.aborted.append("user")  # the user's Stop arrives during the first measurement
-        return measure()
 
-    laser_af.measure_displacement = measure_then_user_abort
+def test_a_user_stop_during_the_nth_failed_laser_af_stays_a_user_abort():
+    w = _stop_worker([False, False], stop_after=2)
     w.acquire_at_position("A1", "/tmp", 0)
-    assert laser_af.measured_at == [105.0]
-    assert w.piezo.position == 100.0
-    assert w._abort_cause is None  # not turned into an error end
+    w.laser_auto_focus_controller.during_move = lambda: w.aborted.append("user")
+    w.acquire_at_position("A1", "/tmp", 1)
+    assert w.aborted == ["user"]
+    assert w._abort_cause is None and w._end_detail is None  # not turned into an error end
+    assert len(w.frames) == 1
+
+
+def test_a_user_stop_during_a_successful_laser_af_makes_no_further_move_or_image():
+    w = _stop_worker([True], nz=3, z_stacking_config="FROM CENTER")
+    w.laser_auto_focus_controller.during_move = lambda: w.aborted.append("user")
+    w.acquire_at_position("A1", "/tmp", 0)
+    assert w.piezo.moves == []  # no From Center move down for the stack
     assert w.frames == []
+    assert w._abort_cause is None
 
 
-def test_search_offsets_setting(monkeypatch):
-    monkeypatch.setattr(control._def, "LASER_AF_SPOT_SEARCH", False)
-    assert laser_af_spot_search_offsets_um() == ()
-    monkeypatch.setattr(control._def, "LASER_AF_SPOT_SEARCH", True)
-    assert laser_af_spot_search_offsets_um() == OFFSETS  # the default list
-    monkeypatch.setattr(control._def, "LASER_AF_SPOT_SEARCH_OFFSETS_UM", [2, 0, "-2"])
-    assert laser_af_spot_search_offsets_um() == (2.0, -2.0)
-    monkeypatch.setattr(control._def, "LASER_AF_SPOT_SEARCH_OFFSETS_UM", ["up"])
-    assert laser_af_spot_search_offsets_um() == ()
+def test_stop_after_consecutive_failures_setting(monkeypatch):
+    assert control._def.LASER_AF_STOP_AFTER_CONSECUTIVE_FAILURES == 0  # off by default
+    assert laser_af_stop_after_consecutive_failures() == 0
+    monkeypatch.setattr(control._def, "LASER_AF_STOP_AFTER_CONSECUTIVE_FAILURES", 3)
+    assert laser_af_stop_after_consecutive_failures() == 3
+    for bad in (-1, 2.5, "3", True, None):
+        monkeypatch.setattr(control._def, "LASER_AF_STOP_AFTER_CONSECUTIVE_FAILURES", bad)
+        assert laser_af_stop_after_consecutive_failures() == 0
 
 
-@pytest.mark.parametrize("stop", [False, True])
-def test_simulated_acquisition_with_no_laser_af_spot(monkeypatch, stop):
-    monkeypatch.setattr(control._def, "MERGE_CHANNELS", False)
-    monkeypatch.setattr(control._def, "SUPPORT_LASER_AUTOFOCUS", True)
-    monkeypatch.setattr(control._def, "LASER_AF_STOP_ON_SPOT_LOSS", stop)
+def _simulated_controller_with_no_laser_af_spot():
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = CountingTracker()
     mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
@@ -181,19 +156,78 @@ def test_simulated_acquisition_with_no_laser_af_spot(monkeypatch, stop):
     mpc.laserAutoFocusController.laser_af_properties.set_reference_image(scope.addons.camera_focus.read_frame())
     # The simulated focus camera shows no spot this detector finds: every laser AF of the run fails.
     assert math.isnan(mpc.laserAutoFocusController.measure_displacement())
+    return scope, tt, mpc
+
+
+@pytest.mark.parametrize("stop_after", [0, 2])
+def test_simulated_acquisition_with_no_laser_af_spot(monkeypatch, stop_after):
+    monkeypatch.setattr(control._def, "MERGE_CHANNELS", False)
+    monkeypatch.setattr(control._def, "SUPPORT_LASER_AUTOFOCUS", True)
+    monkeypatch.setattr(control._def, "LASER_AF_STOP_AFTER_CONSECUTIVE_FAILURES", stop_after)
+    scope, tt, mpc = _simulated_controller_with_no_laser_af_spot()
 
     mpc.run_acquisition()
     assert tt.finished_event.wait(30)
     mpc.thread.join(10)
 
     record = ast.read_run(os.environ["SQUID_WATCHDOG_STATE_DIR"])
-    if stop:
+    if stop_after:
         assert mpc.last_end_reason == "error"
-        assert tt.image_count == 0  # stopped at the first FOV, before imaging it
-        assert "laser AF lost the spot" in record["stats"]["detail"]
+        assert tt.image_count == 2  # the first FOV's two channels; it stopped at the second FOV
+        assert "laser AF failed at 2 FOV(s) in a row" in record["stats"]["detail"]
     else:
         assert mpc.last_end_reason == "completed"
         assert tt.image_count == mpc.get_acquisition_image_count()
         assert "detail" not in record["stats"]
     mpc.close()
     scope.close()
+
+
+class _SimulatedImagingPort:
+    """An ImagingPort that runs each imaging step as an acquisition of the simulated controller, and reports how it
+    ended the way the GUI's port does (last_end_reason, last_image_count)."""
+
+    def __init__(self, mpc, tracker):
+        self.mpc = mpc
+        self.tracker = tracker
+        self.results = []
+
+    def start(self, request):
+        self.tracker.finished_event.clear()
+        self.mpc.set_base_path(request.run_dir)
+        self.mpc.start_new_experiment(request.folder, add_timestamp=False)
+        self.mpc.run_acquisition()
+        port = self
+
+        class _Handle:
+            def wait(self, timeout):
+                if not port.tracker.finished_event.wait(timeout):
+                    return None
+                port.mpc.thread.join(10)
+                result = ImagingResult(port.mpc.last_end_reason, port.mpc.last_image_count, request.folder)
+                port.results.append(result)
+                return result
+
+            def abort(self):
+                port.mpc.request_abort_aquisition()
+
+        return _Handle()
+
+
+def test_a_protocol_run_holds_when_its_acquisition_stops_on_laser_af_failures(monkeypatch, tmp_path):
+    monkeypatch.setattr(control._def, "MERGE_CHANNELS", False)
+    monkeypatch.setattr(control._def, "SUPPORT_LASER_AUTOFOCUS", True)
+    monkeypatch.setattr(control._def, "LASER_AF_STOP_AFTER_CONSECUTIVE_FAILURES", 2)
+    scope, tt, mpc = _simulated_controller_with_no_laser_af_spot()
+    imaging = _SimulatedImagingPort(mpc, tt)
+    runner, _, _, _ = _runner(tmp_path, imaging=imaging)
+    try:
+        runner.start()
+        assert _held(runner, attempt=1)
+        assert runner.hold.kind == "imaging" and runner.hold.reason == "error"
+        assert [(r.end_reason, r.image_count) for r in imaging.results] == [("error", 2)]
+        runner.hold_action(HoldAction.END)
+        assert runner.wait(10)
+    finally:
+        mpc.close()
+        scope.close()

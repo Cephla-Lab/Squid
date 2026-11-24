@@ -1090,14 +1090,11 @@ SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS = False
 LASER_AF_FILTER_SIGMA = None
 LASER_AF_INITIALIZE_CROP_WIDTH = 1200
 LASER_AF_INITIALIZE_CROP_HEIGHT = 800
-# When laser AF fails at a FOV of an acquisition (no spot, a displacement out of range, or a failed alignment check).
-# LASER_AF_SPOT_SEARCH: step the piezo to each of LASER_AF_SPOT_SEARCH_OFFSETS_UM (um, from where the AF failed,
-# in this order; offsets past the piezo's travel are skipped) and measure there; at the first spot, laser AF again.
-# Needs a piezo. LASER_AF_STOP_ON_SPOT_LOSS: if laser AF still failed, end the acquisition as an error (a fluidics
-# protocol run then holds) instead of imaging the FOV at the z it is at. Both off: the FOV is imaged where it is.
-LASER_AF_SPOT_SEARCH = False
-LASER_AF_SPOT_SEARCH_OFFSETS_UM = [5, -5, 10, -10, 15, -15, 20, -20]
-LASER_AF_STOP_ON_SPOT_LOSS = False
+# Stop an acquisition when laser AF has failed at this many FOVs in a row (no spot, a displacement out of range, or a
+# failed alignment check) instead of imaging each of them at the z it is at; a FOV where laser AF succeeds resets the
+# count. The FOV where it stops is not imaged, and the acquisition ends as an error (a fluidics protocol run then
+# holds). 0: off, every FOV is imaged where it is.
+LASER_AF_STOP_AFTER_CONSECUTIVE_FAILURES = 0
 
 MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT = False
 MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT = False
