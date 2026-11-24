@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -302,9 +303,11 @@ def test_crash_recovery_starts_held_at_the_cursor_and_resumes_the_tail(tmp_path)
     resolved = resolve_protocol(_protocol(), tmp_path, fluidics=fluidics2)
     os.rename(run_dir / "R01_image", run_dir / "R01_image_old")  # the imaging step re-runs into R01_image
     recovered = ProtocolRunner(resolved, run_dir, imaging2, fluidics2, run_name="liver", manifest=crashed, poll_s=0.01)
+    reopened_at = time.time()
     recovered.start()
     assert _held(recovered)
     assert recovered.hold.reason == "recovered" and recovered.hold.step_index == 1
+    assert recovered.snapshot().held_at >= reopened_at  # it was running when it crashed: held from the reopening
     assert recovered.hold.resume_position == 1 and recovered.hold.can_resume
     assert fluidics2.make_safe_calls == 1
 
@@ -315,6 +318,40 @@ def test_crash_recovery_starts_held_at_the_cursor_and_resumes_the_tail(tmp_path)
     assert man.status == "finished" and man.steps[0].attempts[0].outcome == "finished"  # untouched history
     assert man.steps[1].attempts[0].outcome == "error" and man.steps[1].attempts[1].outcome == "finished"
     assert len(imaging2.requests) == 1 and len(fluidics2.starts) == 2
+
+
+def test_held_at_is_recorded_once_in_the_manifest_and_survives_a_crash_while_held(tmp_path):
+    # When the run went HELD is kept in run_manifest.json: the HELD panel, the control server and the watchdog
+    # all read that one value, and a GUI restart (crash recovery) keeps it.
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, fluidics=FakeFluidicsPort(script=[("failed", 0, "boom")]))
+    assert runner.snapshot().held_at is None
+    before = time.time()
+    runner.start()
+    assert _held(runner)
+    held_at = runner.snapshot().held_at
+    assert before <= held_at <= time.time()
+    crashed = manifest_io.read_manifest(run_dir)
+    assert crashed.status == "held" and crashed.held_at == held_at
+
+    # the GUI stops while the run waits; a new one reopens the run from its manifest
+    runner.abort_run()
+    assert runner.wait(10)
+    crashed.pid = 2**22 - 7
+    manifest_io.write_manifest(run_dir, crashed)
+    fluidics2 = FakeFluidicsPort()
+    resolved = resolve_protocol(_protocol(), tmp_path, fluidics=fluidics2)
+    recovered = ProtocolRunner(
+        resolved, run_dir, FakeImagingPort(), fluidics2, run_name="liver", manifest=crashed, poll_s=0.01
+    )
+    recovered.start()
+    assert _held(recovered)
+    assert recovered.hold.reason == "recovered"
+    assert recovered.snapshot().held_at == held_at
+    assert manifest_io.read_manifest(run_dir).held_at == held_at
+
+    recovered.hold_action(HoldAction.END)
+    assert recovered.wait(10)
+    assert recovered.snapshot().held_at is None and manifest_io.read_manifest(run_dir).held_at is None
 
 
 def test_abort_run_while_held_ends_the_run(tmp_path):
@@ -407,3 +444,52 @@ def test_recovery_refuses_a_missing_or_different_protocol_copy(tmp_path):
     (run_dir / "protocol.yaml").unlink()
     with pytest.raises(ValueError, match="missing"):
         ProtocolRunner(same, run_dir, FakeImagingPort(), FakeFluidicsPort(), run_name="liver", manifest=crashed)
+
+
+def test_a_run_points_the_watchdog_at_its_manifest_and_records_when_it_went_held(tmp_path):
+    import time
+
+    import squid.acquisition_state
+    from acquisition_watchdog.monitor import Monitor
+
+    fluidics = FakeFluidicsPort(script=[("failed", 0, "Flow fault on syringe_draw")])
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, fluidics=fluidics)
+    before = time.time()
+    runner.start()
+    assert _held(runner)
+
+    pointer = squid.acquisition_state.read_protocol_run()  # the test's SQUID_WATCHDOG_STATE_DIR
+    assert pointer["run_dir"] == str(run_dir) and pointer["pid"] == os.getpid()
+    assert pointer["manifest_path"] == str((run_dir / manifest_io.MANIFEST_NAME).resolve())
+    held = manifest_io.read_manifest(run_dir)
+    assert held.status == "held" and held.held_at is not None and held.held_at >= before
+
+    # what the watchdog makes of the manifest the runner wrote (no hold delay here)
+    monitor = Monitor(state_dir=tmp_path / "watchdog-alerted", protocol_held_alert_s=0.0)
+    with open(pointer["manifest_path"]) as f:
+        assert monitor.classify_protocol(json.load(f), time.time())[0] == "protocol_held"
+
+    runner.hold_action(HoldAction.END)
+    assert runner.wait(10)
+    ended = manifest_io.read_manifest(run_dir)
+    assert ended.status == "stopped" and ended.held_at is None
+    with open(pointer["manifest_path"]) as f:
+        assert monitor.classify_protocol(json.load(f), time.time()) is None
+
+
+def test_the_watchdog_breadcrumb_has_an_absolute_manifest_path_for_a_relative_run_folder(tmp_path, monkeypatch):
+    import squid.acquisition_state
+
+    monkeypatch.chdir(tmp_path)  # the watchdog runs from another directory: a relative path would miss
+    fluidics = FakeFluidicsPort(script=[("failed", 0, "boom")])
+    resolved = resolve_protocol(_protocol(), tmp_path, fluidics=fluidics)
+    run_dir = manifest_io.create_run_dir("runs", "liver")
+    assert not run_dir.is_absolute()
+    runner = ProtocolRunner(resolved, run_dir, FakeImagingPort(), fluidics, run_name="liver", poll_s=0.01)
+    runner.start()
+    assert _held(runner)
+    pointer = squid.acquisition_state.read_protocol_run()
+    assert os.path.isabs(pointer["manifest_path"]) and os.path.isfile(pointer["manifest_path"])
+    assert pointer["manifest_path"] == str((tmp_path / run_dir / manifest_io.MANIFEST_NAME).resolve())
+    runner.abort_run()
+    assert runner.wait(10)

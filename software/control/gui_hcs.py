@@ -79,6 +79,7 @@ import control.microscope
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
 import squid.abc
+import squid.acquisition_state
 import squid.camera.settings_cache
 import squid.camera.utils
 import squid.config
@@ -639,6 +640,29 @@ class QtMultiPointController(MultiPointController, QObject):
             if not well_pattern.match(region_name):
                 return False
         return len(scan_info.scan_region_names) > 0
+
+
+def fluidics_notification_warnings(
+    slack_enabled: bool, watchdog_alerts_enabled: bool, watchdog_problem: Optional[str]
+) -> List[str]:
+    """The Start run… pre-flight's warnings (not problems): who would not hear of a held or stopped run."""
+    warnings = []
+    if not slack_enabled:
+        warnings.append(
+            "Slack notifications are off: if this run goes HELD, nobody is told "
+            "(Settings → Slack Notifications; the acquisition watchdog uses the same settings)"
+        )
+    if watchdog_problem:
+        warnings.append(
+            f"{watchdog_problem[0].upper()}{watchdog_problem[1:]}: nobody is told if the GUI stops, and a long hold "
+            "gets no reminder (python3 -m acquisition_watchdog; see acquisition_watchdog/README.md)"
+        )
+    if not watchdog_alerts_enabled:  # the watchdog still beats, so watchdog_problem cannot tell
+        warnings.append(
+            "Watchdog alerts are off: the watchdog sends nothing if the GUI stops or a hold runs long "
+            "(Settings → Slack Notifications → Enable watchdog alerts)"
+        )
+    return warnings
 
 
 @dataclass(eq=False)
@@ -2292,6 +2316,15 @@ class HighContentScreeningGui(QMainWindow):
                 return "a manual fluidics operation is running"
             return None
 
+        def fluidics_notify_check():
+            notifier = getattr(self, "slackNotifier", None)
+            return fluidics_notification_warnings(
+                slack_enabled=notifier is not None and notifier.enabled,
+                # the GUI's copy of the "Enable watchdog alerts" setting the dialog saves for the watchdog
+                watchdog_alerts_enabled=control._def.SlackNotifications.WATCHDOG_ENABLED,
+                watchdog_problem=squid.acquisition_state.watchdog_problem(),  # the state dir of this run's breadcrumb
+            )
+
         self.fluidicsDisplayTab = FluidicsDisplayTab(self.fluidics, current_source=current_imaging_source)
         if isinstance(self.imageDisplayTabs, QTabWidget):  # absent in live-only mode
             self.imageDisplayTabs.addTab(self.fluidicsDisplayTab, self.FLUIDICS_TAB_NAME)
@@ -2300,6 +2333,7 @@ class HighContentScreeningGui(QMainWindow):
             self.fluidicsDisplayTab.protocol_tab,
             imaging_port=self.qtImagingPort,
             busy_check=fluidics_busy_check,
+            notify_check=fluidics_notify_check,
         )
         # Acquisition history: a protocol run is one Gallery entry, its imaging rounds nested under it.
         self.fluidicsProtocolWidget.signal_run_started.connect(self._on_protocol_run_started)

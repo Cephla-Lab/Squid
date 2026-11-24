@@ -3,7 +3,7 @@ attention panel and crash recovery — a thin Qt face over the Qt-free ProtocolR
 
 import os
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 from qtpy.QtCore import QEventLoop, QTimer, QUrl, Signal
 from qtpy.QtGui import QDesktopServices
@@ -70,6 +70,7 @@ class FluidicsProtocolWidget(QFrame):
         protocol_tab,
         imaging_port: object,
         busy_check: Callable[[], Optional[str]] = lambda: None,
+        notify_check: Callable[[], List[str]] = lambda: [],
         parent=None,
     ):
         super().__init__(parent)
@@ -78,6 +79,7 @@ class FluidicsProtocolWidget(QFrame):
         self.protocol_tab = protocol_tab
         self.imaging_port = imaging_port
         self.busy_check = busy_check
+        self.notify_check = notify_check  # warnings for the pre-flight: nobody would hear of a held run
         self._recovery_checked_dir: Optional[str] = None
         self.fluidics_port = None
         self.runner: Optional[ProtocolRunner] = None
@@ -210,6 +212,13 @@ class FluidicsProtocolWidget(QFrame):
     def is_run_active(self) -> bool:
         return self.runner is not None and self.runner.state in _ACTIVE_STATES
 
+    def _notify_warnings(self) -> List[str]:
+        try:
+            return list(self.notify_check() or [])
+        except Exception as e:
+            self._log.warning(f"Could not check the run notifications: {e}")
+            return []
+
     def _refresh_idle(self) -> None:
         protocol = self.protocol_tab.protocol
         self.protocol_label.setText(
@@ -270,6 +279,7 @@ class FluidicsProtocolWidget(QFrame):
             f"{imaging_steps} imaging session(s)",
             f"est. {_hms(resolved.total_estimate_s)} (imaging priced at a rough 1 s/FOV)",
             f"run folder: {os.path.join(save_to, run_name)}_<start time>",
+            *(f"⚠ {warning}" for warning in self._notify_warnings()),  # warnings, not problems: Start stays enabled
         ]
         if PreflightDialog([], summary, self).exec_() != QDialog.Accepted:
             return

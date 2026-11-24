@@ -27,6 +27,52 @@ def _progress_line(run: dict) -> str:
     return f"timepoint {tp}/{exp_tp}, {images} images"
 
 
+_PROTOCOL_KIND_TITLE = {
+    "protocol_held": ":large_orange_circle: Fluidics protocol run HELD, waiting for someone",
+    "protocol_held_reminder": ":red_circle: Fluidics protocol run still HELD",
+    "protocol_stalled": ":red_circle: Fluidics protocol run stopped responding (no heartbeat)",
+}
+
+
+def _fmt_duration(seconds: float) -> str:
+    minutes = max(0, int(seconds)) // 60
+    return f"{minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"{minutes} min"
+
+
+def _protocol_step_line(manifest: dict) -> str:
+    steps = manifest.get("steps") or []
+    index = (manifest.get("cursor") or {}).get("step")
+    if index is None or not 0 <= index < len(steps):
+        return "unknown"
+    step = steps[index] or {}
+    label = step.get("label") or step.get("round") or ""
+    return f"{index + 1}/{len(steps)} ({step.get('kind', '?')}{', ' + label if label else ''})"
+
+
+def format_protocol_alert(kind: str, manifest: dict, pointer: dict, now: float) -> Tuple[str, list]:
+    title = _PROTOCOL_KIND_TITLE.get(kind, f"Fluidics protocol alert: {kind}")
+    run_name = manifest.get("run_name") or pointer.get("run_name") or "unknown"
+    machine = pointer.get("machine", "unknown")
+    text = f"{title}: {run_name} on {machine}"
+
+    lines = [f"*Run:* {run_name}", f"*Machine:* {machine}", f"*Step:* {_protocol_step_line(manifest)}"]
+    if kind in ("protocol_held", "protocol_held_reminder"):
+        held_at = manifest.get("held_at")
+        lines.append(f"*Held for:* {_fmt_duration(now - held_at) if held_at else 'unknown'} (since {_fmt_ts(held_at)})")
+        reason = manifest.get("hold_reason") or "unknown"
+        message = manifest.get("hold_message")
+        lines.append(f"*Reason:* {reason}" + (f": {message}" if message else ""))
+    else:
+        lines.append(f"*Status:* {manifest.get('status', 'unknown')}")
+        lines.append(f"*Last heartbeat:* {_fmt_ts(manifest.get('heartbeat_at'))}")
+    lines.append(f"*Run folder:* {manifest.get('run_dir') or pointer.get('run_dir', 'unknown')}")
+    blocks = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}},
+    ]
+    return text, blocks
+
+
 def format_alert(kind: str, run: dict) -> Tuple[str, list]:
     title = _KIND_TITLE.get(kind, f"Acquisition alert: {kind}")
     experiment = run.get("experiment_id", "unknown")

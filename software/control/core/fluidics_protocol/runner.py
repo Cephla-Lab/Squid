@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 
+import squid.acquisition_state
 import squid.logging
 from control.core.fluidics_protocol import manifest as manifest_io
 from control.core.fluidics_protocol.events import (
@@ -58,6 +59,7 @@ class RunnerSnapshot:
     outcome: Optional[str]
     elapsed_s: float
     progress_fraction: Optional[float]  # 0..1 how-far-through, or None when there's no estimate to go on
+    held_at: Optional[float] = None  # when the current hold began (epoch s, the manifest's held_at); None if not held
 
 
 @dataclass
@@ -159,6 +161,7 @@ class ProtocolRunner:
                 outcome=self._outcome,
                 elapsed_s=elapsed,
                 progress_fraction=self._progress_fraction(elapsed),
+                held_at=self._manifest.held_at if self._hold is not None else None,
             )
 
     def _progress_fraction(self, elapsed_s: float) -> Optional[float]:
@@ -242,6 +245,16 @@ class ProtocolRunner:
         if not self._recovering or not self._manifest.protocol_sha256:
             self._manifest.protocol_sha256 = manifest_io.sha256_of_file(protocol_copy)
         self._set_state(RunnerState.RUNNING, status="running")
+        # The acquisition watchdog finds the run (and alerts on a long hold or a stall) through this breadcrumb.
+        self._safe(
+            lambda: squid.acquisition_state.write_protocol_run(
+                run_dir=str(self.run_dir.resolve()),
+                manifest_path=str((self.run_dir / manifest_io.MANIFEST_NAME).resolve()),  # read from another cwd
+                run_name=self._manifest.run_name,
+                pid=os.getpid(),
+            ),
+            "writing the watchdog breadcrumb",
+        )
         self._log.info(f"Protocol run '{self._manifest.run_name}' started: {len(self._steps)} steps in {self.run_dir}")
 
     def _close_run(self, outcome: str) -> None:
@@ -486,6 +499,10 @@ class ProtocolRunner:
             self._hold = hold
             self._manifest.hold_reason = hold.reason
             self._manifest.hold_message = hold.message
+            # Recorded once, here, and kept in run_manifest.json: the HELD panel, the control server and the
+            # watchdog read this one value. A run reopened after the GUI stopped while it was held keeps it.
+            if self._manifest.held_at is None:
+                self._manifest.held_at = time.time()
         self._set_state(RunnerState.HELD, status="held")
         self._log.warning(
             f"Protocol held at step {hold.step_index + 1} ({hold.kind}, attempt {hold.attempt}): "
@@ -503,6 +520,7 @@ class ProtocolRunner:
             self._hold = None
             self._manifest.hold_reason = None
             self._manifest.hold_message = None
+            self._manifest.held_at = None
         self._pause_requested.clear()
         self._abort_step_requested.clear()
         if decision[0] is not HoldAction.END:

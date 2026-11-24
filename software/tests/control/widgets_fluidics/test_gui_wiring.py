@@ -87,3 +87,20 @@ def test_close_and_show_events_cover_the_protocol_lifecycle():
 
     shutdown_src = inspect.getsource(FluidicsDisplayTab.shutdown)
     assert "disconnect_logging" in shutdown_src and "close_recordings" in shutdown_src
+
+
+def test_the_start_preflight_warns_when_no_slack_notifier_is_configured_or_no_watchdog_runs():
+    # warnings, not blocking problems: a held run would otherwise go unreported
+    setup_src = _source("_setup_fluidics_widgets")
+    assert "notify_check=fluidics_notify_check" in setup_src and "notifier.enabled" in setup_src
+    assert "squid.acquisition_state.watchdog_problem()" in setup_src
+
+
+def test_the_start_preflight_warns_when_watchdog_alerts_are_turned_off():
+    # the watchdog keeps its heartbeat with "Enable watchdog alerts" unchecked, but drops every alert
+    assert gui_hcs.fluidics_notification_warnings(True, True, None) == []
+    (warning,) = gui_hcs.fluidics_notification_warnings(True, False, None)
+    assert "watchdog alerts are off" in warning.lower() and "Enable watchdog alerts" in warning
+    assert len(gui_hcs.fluidics_notification_warnings(False, True, None)) == 1  # Slack off
+    assert len(gui_hcs.fluidics_notification_warnings(True, True, "the acquisition watchdog is not running")) == 1
+    assert "control._def.SlackNotifications.WATCHDOG_ENABLED" in _source("_setup_fluidics_widgets")
