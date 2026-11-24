@@ -59,33 +59,33 @@ class Monitor:
         self._held_alert_s = protocol_held_alert_s
         self._held_reminder_s = protocol_held_reminder_s  # after the first held alert; 0 = no reminder
         self._base = self._state_dir or acquisition_state.default_state_dir()
+        # one record, written atomically: the de-dup keys, when each protocol_held alert went out (its reminder
+        # is due the reminder delay after it), and when each not-yet-alerted hold was first seen (late or not)
         self._alerted_path = self._base / "alerted.json"
-        self._alerted = self._load_alerted()
-        # when each protocol_held alert was settled: the reminder is due the reminder delay after it
-        self._held_alerted_at_path = self._base / "held_alerted_at.json"
-        self._held_alerted_at: Dict[str, float] = self._load_held_alerted_at()
+        self._alerted, self._held_alerted_at, self._held_first_seen = self._load_alerted()
 
-    def _load_alerted(self) -> Set[str]:
+    def _load_alerted(self) -> Tuple[Set[str], Dict[str, float], Dict[str, float]]:
         try:
             with open(self._alerted_path) as f:
-                return set(json.load(f))
-        except (FileNotFoundError, json.JSONDecodeError):
-            return set()
-
-    def _load_held_alerted_at(self) -> Dict[str, float]:
-        try:
-            with open(self._held_alerted_at_path) as f:
-                return {str(k): float(v) for k, v in json.load(f).items()}
-        except (FileNotFoundError, json.JSONDecodeError, AttributeError, TypeError, ValueError):
-            return {}
+                data = json.load(f)
+            if isinstance(data, list):  # written before protocol runs were watched: the de-dup keys only
+                return set(data), {}, {}
+            return (
+                set(data["keys"]),
+                {str(k): float(v) for k, v in data["held_alerted_at"].items()},
+                {str(k): float(v) for k, v in data["held_first_seen"].items()},
+            )
+        except (FileNotFoundError, json.JSONDecodeError, KeyError, AttributeError, TypeError, ValueError):
+            return set(), {}, {}
 
     def _save_alerted(self) -> None:
+        record = {
+            "keys": sorted(self._alerted),
+            "held_alerted_at": self._held_alerted_at,
+            "held_first_seen": self._held_first_seen,
+        }
         try:
-            self._alerted_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._alerted_path, "w") as f:
-                json.dump(sorted(self._alerted), f)
-            with open(self._held_alerted_at_path, "w") as f:
-                json.dump(self._held_alerted_at, f)
+            acquisition_state._atomic_write_json(self._alerted_path, record)
         except OSError as e:
             _log.warning(f"Could not persist alerted set: {e}")
 
@@ -125,10 +125,15 @@ class Monitor:
         held_for = now - held_at
         held_key, reminder_key = f"{run_key}:held:{held_at}", f"{run_key}:held-reminder:{held_at}"
         if held_key not in self._alerted:
+            if held_key not in self._held_first_seen:
+                self._held_first_seen[held_key] = now
+                self._save_alerted()  # late or not is decided at first sight, also across a restart
             if held_for < self._held_alert_s:
                 return None
-            # found late (watchdog started mid-hold): one alert, not an alert and a reminder seconds apart
-            late = self._held_reminder_s > 0 and held_for >= self._held_alert_s + self._held_reminder_s
+            # found late (watchdog started mid-hold): one alert, not an alert and a reminder seconds apart. Judged
+            # from when the hold was first seen, so an alert that Slack held up past the reminder keeps its reminder
+            first_seen_for = self._held_first_seen[held_key] - held_at
+            late = self._held_reminder_s > 0 and first_seen_for >= self._held_alert_s + self._held_reminder_s
             return "protocol_held", [held_key] + ([reminder_key] if late else [])
         if self._held_reminder_s <= 0 or reminder_key in self._alerted:
             return None
@@ -185,8 +190,9 @@ class Monitor:
         keys = list(keys)
         self._alerted.update(keys)
         for key in keys:
-            if ":held:" in key:  # a protocol_held alert: its reminder counts from now
+            if ":held:" in key:  # a protocol_held alert: its reminder counts from now, when the send got through
                 self._held_alerted_at.setdefault(key, time.time() if now is None else now)
+                self._held_first_seen.pop(key, None)  # settled: only needed until the alert goes out
         self._save_alerted()
 
     def run_forever(self) -> None:

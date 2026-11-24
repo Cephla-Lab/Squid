@@ -262,3 +262,82 @@ def test_a_running_watchdog_leaves_a_heartbeat_the_gui_can_check(tmp_path, monke
     assert ast.watchdog_problem(tmp_path) is None
     assert ast.watchdog_problem(tmp_path, now=beat["written_at"] + 59) is None
     assert "last heartbeat 3 min ago" in ast.watchdog_problem(tmp_path, now=beat["written_at"] + 200)
+
+
+# ---- review follow-up: late-ness, and the de-dup state written as one atomic record ----
+
+
+def test_a_hold_seen_on_time_whose_alert_only_got_through_late_still_gets_its_reminder(tmp_path, monkeypatch):
+    # Slack fails from the alert's due time (10 min) until 71 min: the alert that finally goes out is not a
+    # "found late" alert, so the reminder still comes, the reminder delay after that send
+    slack_up = {"v": False}
+    sent = []
+    monkeypatch.setattr("squid.slack.post_message", lambda *a, **k: (sent.append(a[2]) or (slack_up["v"], "1")))
+    monkeypatch.setattr("acquisition_watchdog.config.load_slack_config", lambda p: SlackConfig("xoxb", "C1", True))
+    manifest = _protocol_run(tmp_path, held_age=0)
+    t0 = manifest["held_at"]
+    mon = _protocol_mon(tmp_path)
+    for minute in range(10, 71):
+        mon.check_once(_beat(manifest, t0 + minute * 60 + 1))
+    failed = len(sent)
+    slack_up["v"] = True
+    mon.check_once(_beat(manifest, t0 + 71 * 60))
+    assert len(sent) == failed + 1 and "still HELD" not in sent[-1]
+    _protocol_mon(tmp_path).check_once(_beat(manifest, t0 + 71 * 60 + REMINDER_S - 5))  # survives a restart
+    assert len(sent) == failed + 1
+    _protocol_mon(tmp_path).check_once(_beat(manifest, t0 + 71 * 60 + REMINDER_S + 1))
+    assert len(sent) == failed + 2 and "still HELD" in sent[-1]
+
+
+def test_a_hold_first_seen_late_stays_late_across_a_restart_while_slack_is_down(tmp_path, monkeypatch):
+    slack_up = {"v": False}
+    sent = []
+    monkeypatch.setattr("squid.slack.post_message", lambda *a, **k: (sent.append(a[2]) or (slack_up["v"], "1")))
+    monkeypatch.setattr("acquisition_watchdog.config.load_slack_config", lambda p: SlackConfig("xoxb", "C1", True))
+    manifest = _protocol_run(tmp_path, held_age=7.5 * 3600)
+    now = time.time()
+    _protocol_mon(tmp_path).check_once(now)
+    slack_up["v"] = True
+    _protocol_mon(tmp_path).check_once(_beat(manifest, now + 60))
+    for hour in range(1, 6):
+        _protocol_mon(tmp_path).check_once(_beat(manifest, now + hour * REMINDER_S + 60))
+    assert len(sent) == 2 and all("still HELD" not in text for text in sent)  # one failed try, one alert
+
+
+def test_the_dedup_keys_and_send_times_are_one_record_so_a_restart_keeps_the_reminder_timing(tmp_path, monkeypatch):
+    sent = _slack(monkeypatch)
+    manifest = _protocol_run(tmp_path, held_age=69 * 60)
+    first = time.time()
+    _protocol_mon(tmp_path).check_once(first)
+    assert len(sent) == 1
+    assert sorted(p.name for p in tmp_path.iterdir() if "alert" in p.name) == ["alerted.json"]
+    record = json.loads((tmp_path / "alerted.json").read_text())
+    held_key = f"protocol:{manifest['run_dir']}:held:{manifest['held_at']}"
+    assert held_key in record["keys"] and record["held_alerted_at"][held_key] == first
+    _protocol_mon(tmp_path).check_once(_beat(manifest, first + 61))  # 70 min held, 1 min after the alert
+    assert len(sent) == 1
+
+
+def test_the_dedup_record_is_written_atomically(tmp_path, monkeypatch):
+    _slack(monkeypatch)
+    writes = []
+    real = ast._atomic_write_json
+    monkeypatch.setattr(ast, "_atomic_write_json", lambda path, data: (writes.append(path), real(path, data))[1])
+    _protocol_run(tmp_path, held_age=HELD_ALERT_S + 30)
+    _protocol_mon(tmp_path).check_once(time.time())
+    assert tmp_path / "alerted.json" in writes
+
+
+def test_an_alerted_json_in_the_old_list_format_still_suppresses_the_alert(tmp_path, monkeypatch):
+    sent = []
+    monkeypatch.setattr("squid.slack.post_message", lambda *a, **k: (sent.append(a) or (True, "1")))
+    monkeypatch.setattr("acquisition_watchdog.config.load_slack_config", lambda p: SlackConfig("xoxb", "C1", True))
+    (tmp_path / "alerted.json").write_text(json.dumps(["r1"]))  # written by a watchdog before this version
+    _running(tmp_path, pid=2_000_000_000)
+    Monitor(state_dir=tmp_path).check_once(time.time())
+    assert sent == []
+    _protocol_run(tmp_path, held_age=HELD_ALERT_S + 30)
+    _protocol_mon(tmp_path).check_once(time.time())  # an alert rewrites the record in the new format
+    assert len(sent) == 1
+    _protocol_mon(tmp_path).check_once(time.time())
+    assert len(sent) == 1  # neither the old run nor the hold is alerted again

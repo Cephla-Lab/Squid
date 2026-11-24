@@ -122,8 +122,10 @@ timepoint 3/10").
   stale `running` breadcrumb, sees the PID is dead, and alerts once.
 - **One alert per run.** Alerted run IDs persist in `<state_dir>/alerted.json`, so it never
   double-alerts and never re-alerts after a restart. For a protocol run that is one alert (and
-  one reminder) per hold, and one per stall. When each held alert went out is kept in
-  `<state_dir>/held_alerted_at.json`, so the reminder timing survives a restart too.
+  one reminder) per hold, and one per stall. When each held alert went out is kept in the same
+  file (written atomically, as one record), so the reminder timing survives a restart too. A hold
+  the watchdog first sees more than the alert delay plus the reminder delay after it began gets
+  one alert and no reminder; a hold seen in time keeps its reminder even if Slack held the alert up.
 - **Turn alerts off** on a machine (without disabling the GUI notifier): uncheck *"Enable
   watchdog alerts"*, or set `watchdog_enabled: false` in `cache/slack_settings.yaml`. Takes
   effect on the next check — no watchdog restart needed.
