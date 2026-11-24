@@ -2,9 +2,14 @@ import threading
 
 import pytest
 
+from control.core.fluidics_protocol import manifest as manifest_io
+from control.core.fluidics_protocol.events import HoldAction, RunnerState
 from control.core.fluidics_protocol.ports import ImagingRequest, ImagingStartError
-from control.models.fluidics_protocol import CoordinatesBlock, SettingsBlock
+from control.core.fluidics_protocol.resolve import resolve_protocol
+from control.core.fluidics_protocol.runner import ProtocolRunner
+from control.models.fluidics_protocol import CoordinatesBlock, ProtocolFile, SettingsBlock
 from control.widgets_fluidics.qt_imaging_port import QtImagingPort
+from tests.control.core.fluidics_protocol.fakes import FakeFluidicsPort, FakeImagingPort
 
 
 def _request(scope, controller, run_dir, folder="R01_image"):
@@ -122,3 +127,78 @@ def test_start_refusals_raise_imaging_start_error(qtbot, qt_controller, tmp_path
     with pytest.raises(ImagingStartError, match="Invalid channels"):
         port.start(bad)
     assert not (tmp_path / "R05_image").exists()
+
+
+def test_a_refused_start_of_a_resumed_attempt_keeps_its_resume_point(qtbot, qt_controller, tmp_path):
+    """The runner resumes a failed imaging step at FOV 2 through the real controller, whose start is refused (the
+    microcontroller still busy): run_acquisition() returns False, so the attempt ends failed_to_start with nothing
+    imaged. The next hold must still offer Resume from FOV 2, and that resume images the rest."""
+    scope, controller = qt_controller
+    qt_port = QtImagingPort(controller, controller.scanCoordinates, scope)
+    first_attempt = FakeImagingPort(script=[("error", 2)])  # FOVs 0-1 done, then a fault
+
+    class Imaging:  # attempt 1 from the fake, every later attempt through the Qt port
+        def start(self, request):
+            return (first_attempt if request.attempt == 1 else qt_port).start(request)
+
+    base = _request(scope, controller, tmp_path)
+    x, y, z = base.coordinates.regions[0].fovs[0]
+    protocol = ProtocolFile(
+        name="demo",
+        imaging={
+            "settings": {"cur": base.settings.model_dump()},
+            "coordinates": {"cur": {"regions": [{"name": "A1", "fovs": [[x + 0.5 * i, y, z] for i in range(3)]}]}},
+        },
+        sequences=[
+            {
+                "type": "imaging",
+                "round": "R01",
+                "name": "image",
+                "folder": "image",
+                "settings": "cur",
+                "coordinates": "cur",
+            }
+        ],
+    )
+    fluidics = FakeFluidicsPort()
+    resolved = resolve_protocol(protocol, tmp_path, fluidics=fluidics)
+    run_dir = manifest_io.create_run_dir(tmp_path, "resume")
+    runner = ProtocolRunner(resolved, run_dir, Imaging(), fluidics, run_name="resume", poll_s=0.01)
+
+    def held(attempt):
+        hold = runner.hold
+        return runner.state == RunnerState.HELD and hold is not None and hold.attempt == attempt
+
+    microcontroller = controller.microcontroller
+    real_wait = microcontroller.wait_till_operation_is_completed
+
+    def still_busy(*args, **kwargs):
+        if kwargs.get("timeout_limit_s") == controller._MCU_IDLE_WAIT_S:
+            raise TimeoutError("still busy")
+        return real_wait(*args, **kwargs)
+
+    microcontroller.wait_till_operation_is_completed = still_busy
+    try:
+        runner.start()
+        qtbot.waitUntil(lambda: held(1), timeout=10000)
+        assert runner.hold.resume_position == 2
+        runner.hold_action(HoldAction.RESUME)
+        qtbot.waitUntil(lambda: held(2), timeout=30000)
+    finally:
+        microcontroller.wait_till_operation_is_completed = real_wait
+
+    hold = runner.hold
+    assert hold.reason == "failed_to_start"
+    assert hold.can_resume and hold.resume_position == 2
+    attempt = manifest_io.read_manifest(run_dir).steps[0].attempts[1]
+    assert (attempt.folder, attempt.start_fov, attempt.end_fov) == ("R01_image_attempt2", 2, 2)
+
+    runner.hold_action(HoldAction.RESUME)
+    qtbot.waitUntil(lambda: runner.state == RunnerState.ENDED, timeout=30000)
+    assert runner.outcome == "finished"
+    attempts = manifest_io.read_manifest(run_dir).steps[0].attempts
+    assert [(a.start_fov, a.end_fov, a.outcome) for a in attempts] == [
+        (0, 2, "error"),
+        (2, 2, "failed_to_start"),
+        (2, 3, "completed"),
+    ]

@@ -448,8 +448,11 @@ class ProtocolRunner:
         self._active = handle
         result = self._drive_imaging(handle)
         self._active = None
+        # A start refused after start() returned (the acquisition reports failed_to_start: no worker ran) imaged
+        # nothing, like one that raised: the attempt ends where it started.
+        end_fov = start_fov if result.end_reason == "failed_to_start" else result.end_fov
         self._end_attempt(
-            step, attempt, result.end_reason, None, folder=folder, images=result.image_count, end_fov=result.end_fov
+            step, attempt, result.end_reason, None, folder=folder, images=result.image_count, end_fov=end_fov
         )
         if result.end_reason in _OK_IMAGING:
             return _StepResult(ok=True, outcome=result.end_reason)
@@ -463,13 +466,14 @@ class ProtocolRunner:
                 "attempt": attempt,
                 "ended_at": time.time(),
                 **info,
-                "end_fov": result.end_fov,
+                "end_fov": end_fov,
             }
             self._safe(lambda: manifest_io.write_aborted_marker(session_dir, marker), "writing aborted.json")
         message = f"Acquisition ended with {result.end_reason}"
-        # After an error, a new attempt can image only the FOVs not done yet, when the acquisition knows which.
-        end_fov = result.end_fov
-        resumable = result.end_reason == "error" and end_fov is not None and 0 < end_fov < fov_count
+        # After an error or a refused start, a new attempt can image only the FOVs not done yet, when they are known.
+        resumable = (
+            result.end_reason in ("error", "failed_to_start") and end_fov is not None and 0 < end_fov < fov_count
+        )
         if resumable:
             message += f"; FOVs 1-{end_fov} of {fov_count} are done"
         return _StepResult(

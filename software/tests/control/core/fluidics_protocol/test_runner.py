@@ -253,6 +253,23 @@ def test_a_resumed_attempt_that_fails_again_resumes_from_where_it_stopped(tmp_pa
     assert [r.start_fov for r in imaging.requests] == [0, 4, 6, 6]
 
 
+def test_a_resumed_attempt_whose_start_is_refused_after_start_returned_keeps_its_resume_point(tmp_path):
+    # The acquisition itself refuses the start (start() returned a handle; it reports failed_to_start), as the
+    # controller does when the microcontroller is still busy: nothing was imaged, so resume from the same FOV.
+    imaging = FakeImagingPort(script=[("error", 4), "failed_to_start", ("completed", 9)])
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging, coords=NINE_FOVS)
+    runner.start()
+    assert _held(runner)
+    runner.hold_action(HoldAction.RESUME)
+    assert _held(runner, attempt=2)
+    assert runner.hold.reason == "failed_to_start" and runner.hold.can_resume and runner.hold.resume_position == 4
+    runner.hold_action(HoldAction.RESUME)
+    assert runner.wait(10) and runner.outcome == "finished"
+    assert [r.start_fov for r in imaging.requests] == [0, 4, 4]
+    attempts = manifest_io.read_manifest(run_dir).steps[2].attempts
+    assert [(a.start_fov, a.end_fov) for a in attempts] == [(0, 4), (4, 4), (4, 9)]
+
+
 @pytest.mark.parametrize(
     "first",
     [

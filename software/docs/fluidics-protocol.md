@@ -95,7 +95,8 @@ progress, elapsed, open-folder) with **Pause** (finishes the current step first;
 resume from the failed sequence / restart the step / skip / accept (imaging `completed_with_errors`) /
 end run, with an optional TEC-restore checkbox. An imaging step that ended with an `error` (a stage or camera
 fault) offers **Resume from FOV n** when every FOV before n was imaged and saved: a new attempt folder images only
-FOVs n onward, under their original FOV numbers. A run in progress locks the protocol structure, keeps the
+FOVs n onward, under their original FOV numbers. A resumed attempt that could not start (for example the
+microcontroller still busy) imaged nothing, so its hold offers the same Resume again. A run in progress locks the protocol structure, keeps the
 display on the Fluidics tab, and asks before exit; after Initialize (and when the Save to folder changes) unfinished
 run folders offer crash recovery — reopening the run HELD at the interrupted step. Run notifications go to
 Slack when the notifier is configured.
