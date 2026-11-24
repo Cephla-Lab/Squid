@@ -248,8 +248,8 @@ class ProtocolRunner:
         # The acquisition watchdog finds the run (and alerts on a long hold or a stall) through this breadcrumb.
         self._safe(
             lambda: squid.acquisition_state.write_protocol_run(
-                run_dir=str(self.run_dir),
-                manifest_path=str(self.run_dir / manifest_io.MANIFEST_NAME),
+                run_dir=str(self.run_dir.resolve()),
+                manifest_path=str((self.run_dir / manifest_io.MANIFEST_NAME).resolve()),  # read from another cwd
                 run_name=self._manifest.run_name,
                 pid=os.getpid(),
             ),

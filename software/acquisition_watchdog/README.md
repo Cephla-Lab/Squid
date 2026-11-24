@@ -21,7 +21,12 @@ died / gone silent, or ended with a non-clean reason. One alert per run (de-dupl
 A fluidics protocol run writes `fluidics_protocol_run.json` into the same state dir when it
 starts (or is reopened after a crash). It only points at the run folder: the run's own
 `run_manifest.json` (status, hold reason/message, when the hold began, a heartbeat every 5 s,
-held or not) is what the watchdog reads.
+held or not) is what the watchdog reads. `held_at` there is when the current hold began; the GUI's HELD panel
+and the control server's status read the same value.
+
+The watchdog writes its own heartbeat, `watchdog.json` (pid, machine, poll interval, time), into the state dir
+at every poll. The GUI's **Start run…** pre-flight for a fluidics protocol reads it and warns (without
+blocking) when no watchdog has polled that state dir in the last minute (or 3 polls, if longer).
 
 ## Prerequisites
 
@@ -51,7 +56,7 @@ Slack alert. A clean finish produces nothing.
 | `--heartbeat-timeout` | `120` | Seconds of heartbeat silence (with a live process) before declaring a hang. Raise it if you have very long single exposures / fluidics steps. |
 | `--poll-interval` | `5` | Seconds between checks. |
 | `--protocol-held-alert-minutes` | `10` | Alert when a fluidics protocol run has been HELD this long. |
-| `--protocol-held-reminder-minutes` | `60` | Remind once, this long after the held alert, if the same hold is still waiting. `0` = no reminder. |
+| `--protocol-held-reminder-minutes` | `60` | Remind once, this long after the held alert was sent, if the same hold is still waiting. `0` = no reminder. |
 | `--once` | — | Run a single check and exit (handy for testing or a cron probe). |
 | `--slack-settings <path>` | `cache/slack_settings.yaml` | Only needed if you don't run from `software/`. |
 | `--state-dir <path>` | platformdirs user-state dir | Must match the GUI's; override here or via `$SQUID_WATCHDOG_STATE_DIR`. |
@@ -117,7 +122,8 @@ timepoint 3/10").
   stale `running` breadcrumb, sees the PID is dead, and alerts once.
 - **One alert per run.** Alerted run IDs persist in `<state_dir>/alerted.json`, so it never
   double-alerts and never re-alerts after a restart. For a protocol run that is one alert (and
-  one reminder) per hold, and one per stall.
+  one reminder) per hold, and one per stall. When each held alert went out is kept in
+  `<state_dir>/held_alerted_at.json`, so the reminder timing survives a restart too.
 - **Turn alerts off** on a machine (without disabling the GUI notifier): uncheck *"Enable
   watchdog alerts"*, or set `watchdog_enabled: false` in `cache/slack_settings.yaml`. Takes
   effect on the next check — no watchdog restart needed.
@@ -129,7 +135,7 @@ timepoint 3/10").
 
 | Symptom | Check |
 |---|---|
-| No alerts at all | Is the watchdog process actually running? Are `bot_token`/`channel_id` set (GUI → *Test Connection*)? Is *"Enable watchdog alerts"* checked? |
+| No alerts at all | Is the watchdog process actually running (the Start run… pre-flight of a fluidics protocol says so when it is not)? Are `bot_token`/`channel_id` set (GUI → *Test Connection*)? Is *"Enable watchdog alerts"* checked? |
 | Log says Slack not configured | Run from `software/` so `cache/slack_settings.yaml` resolves, or pass `--slack-settings <path>`. |
 | False "hang" alerts | Raise `--heartbeat-timeout` — a single very long exposure/fluidics step can exceed the default. |
 | Crash reported slowly (~2 min) | `psutil` missing → falls back to the heartbeat timeout. Install `psutil` for instant PID-based detection. |

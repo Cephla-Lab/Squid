@@ -460,7 +460,7 @@ def test_a_run_points_the_watchdog_at_its_manifest_and_records_when_it_went_held
 
     pointer = squid.acquisition_state.read_protocol_run()  # the test's SQUID_WATCHDOG_STATE_DIR
     assert pointer["run_dir"] == str(run_dir) and pointer["pid"] == os.getpid()
-    assert pointer["manifest_path"] == str(run_dir / manifest_io.MANIFEST_NAME)
+    assert pointer["manifest_path"] == str((run_dir / manifest_io.MANIFEST_NAME).resolve())
     held = manifest_io.read_manifest(run_dir)
     assert held.status == "held" and held.held_at is not None and held.held_at >= before
 
@@ -475,3 +475,21 @@ def test_a_run_points_the_watchdog_at_its_manifest_and_records_when_it_went_held
     assert ended.status == "stopped" and ended.held_at is None
     with open(pointer["manifest_path"]) as f:
         assert monitor.classify_protocol(json.load(f), time.time()) is None
+
+
+def test_the_watchdog_breadcrumb_has_an_absolute_manifest_path_for_a_relative_run_folder(tmp_path, monkeypatch):
+    import squid.acquisition_state
+
+    monkeypatch.chdir(tmp_path)  # the watchdog runs from another directory: a relative path would miss
+    fluidics = FakeFluidicsPort(script=[("failed", 0, "boom")])
+    resolved = resolve_protocol(_protocol(), tmp_path, fluidics=fluidics)
+    run_dir = manifest_io.create_run_dir("runs", "liver")
+    assert not run_dir.is_absolute()
+    runner = ProtocolRunner(resolved, run_dir, FakeImagingPort(), fluidics, run_name="liver", poll_s=0.01)
+    runner.start()
+    assert _held(runner)
+    pointer = squid.acquisition_state.read_protocol_run()
+    assert os.path.isabs(pointer["manifest_path"]) and os.path.isfile(pointer["manifest_path"])
+    assert pointer["manifest_path"] == str((tmp_path / run_dir / manifest_io.MANIFEST_NAME).resolve())
+    runner.abort_run()
+    assert runner.wait(10)

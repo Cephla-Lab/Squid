@@ -141,17 +141,34 @@ def test_a_protocol_run_held_past_the_alert_delay_alerts_then_reminds_once(tmp_p
     assert mon.classify_protocol(_protocol_run(tmp_path, held_age=HELD_ALERT_S - 30), time.time()) is None
 
     manifest = _protocol_run(tmp_path, held_age=HELD_ALERT_S + 30)
-    kind, keys = mon.classify_protocol(manifest, time.time())
+    alerted_at = time.time()
+    kind, keys = mon.classify_protocol(manifest, alerted_at)
     assert kind == "protocol_held" and len(keys) == 1
-    mon._mark_alerted(keys)
+    mon._mark_alerted(keys, alerted_at)
     assert mon.classify_protocol(manifest, time.time()) is None  # alerted: quiet until the reminder
 
-    later = _beat(manifest, manifest["held_at"] + HELD_ALERT_S + REMINDER_S + 1)
+    later = _beat(manifest, alerted_at + REMINDER_S + 1)
     kind, keys = mon.classify_protocol(manifest, later)
     assert kind == "protocol_held_reminder"
     mon._mark_alerted(keys)
     much_later = _beat(manifest, later + 10 * REMINDER_S)
     assert mon.classify_protocol(manifest, much_later) is None  # one reminder, not a stream
+
+
+def test_the_reminder_comes_the_reminder_delay_after_the_held_alert_not_after_the_hold_began(tmp_path, monkeypatch):
+    # the watchdog first sees the hold at 69 min (alert at 10, reminder 60 later): the reminder must not follow
+    # the alert one minute later, and its timing survives a watchdog restart
+    sent = _slack(monkeypatch)
+    manifest = _protocol_run(tmp_path, held_age=69 * 60)
+    first = time.time()
+    _protocol_mon(tmp_path).check_once(first)
+    assert len(sent) == 1 and "HELD" in sent[0][2]
+    _protocol_mon(tmp_path).check_once(_beat(manifest, first + 60))
+    assert len(sent) == 1  # 70 min held, 1 min after the alert
+    _protocol_mon(tmp_path).check_once(_beat(manifest, first + REMINDER_S - 5))
+    assert len(sent) == 1
+    _protocol_mon(tmp_path).check_once(_beat(manifest, first + REMINDER_S + 1))
+    assert len(sent) == 2 and "still HELD" in sent[1][2]
 
 
 def test_a_hold_found_late_gets_one_alert_not_an_alert_and_a_reminder(tmp_path):
@@ -195,9 +212,9 @@ def test_protocol_alerts_are_sent_once_across_a_watchdog_restart(tmp_path, monke
     assert len(sent) == 1 and "HELD" in sent[0][2]
     _protocol_mon(tmp_path).check_once(time.time())  # simulated restart
     assert len(sent) == 1
-    _protocol_mon(tmp_path).check_once(_beat(manifest, manifest["held_at"] + HELD_ALERT_S + REMINDER_S + 1))
+    _protocol_mon(tmp_path).check_once(_beat(manifest, time.time() + REMINDER_S + 1))
     assert len(sent) == 2 and "still HELD" in sent[1][2]
-    _protocol_mon(tmp_path).check_once(_beat(manifest, manifest["held_at"] + HELD_ALERT_S + 3 * REMINDER_S))
+    _protocol_mon(tmp_path).check_once(_beat(manifest, time.time() + 3 * REMINDER_S))
     assert len(sent) == 2
 
 
@@ -219,3 +236,29 @@ def test_no_breadcrumb_or_a_missing_run_folder_is_silent(tmp_path, monkeypatch):
     os.remove(os.path.join(manifest["run_dir"], "run_manifest.json"))
     _protocol_mon(tmp_path).check_once(time.time())
     assert sent == []
+
+
+# ---- the watchdog's own heartbeat (read by the GUI's Start run… pre-flight) ----
+
+
+def test_a_running_watchdog_leaves_a_heartbeat_the_gui_can_check(tmp_path, monkeypatch):
+    assert "not running (no heartbeat in" in ast.watchdog_problem(tmp_path)
+    mon = Monitor(state_dir=tmp_path, poll_interval=5.0)
+    polls = []
+
+    def check_once(now):
+        polls.append(now)
+        if len(polls) == 2:
+            raise KeyboardInterrupt  # leave run_forever after the second poll
+
+    monkeypatch.setattr(mon, "check_once", check_once)
+    monkeypatch.setattr("acquisition_watchdog.monitor.time.sleep", lambda s: None)
+    try:
+        mon.run_forever()
+    except KeyboardInterrupt:
+        pass
+    beat = json.loads((tmp_path / ast.WATCHDOG_FILE_NAME).read_text())
+    assert beat["pid"] == os.getpid() and beat["poll_interval"] == 5.0
+    assert ast.watchdog_problem(tmp_path) is None
+    assert ast.watchdog_problem(tmp_path, now=beat["written_at"] + 59) is None
+    assert "last heartbeat 3 min ago" in ast.watchdog_problem(tmp_path, now=beat["written_at"] + 200)

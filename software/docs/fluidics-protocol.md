@@ -96,9 +96,10 @@ resume from the failed sequence / restart the step / skip / accept (imaging `com
 end run, with an optional TEC-restore checkbox. A run in progress locks the protocol structure, keeps the
 display on the Fluidics tab, and asks before exit; after Initialize (and when the Save to folder changes) unfinished
 run folders offer crash recovery — reopening the run HELD at the interrupted step. Run notifications go to
-Slack when the notifier is configured; the Start run… summary warns (without blocking) when it is not. The
-acquisition watchdog (`acquisition_watchdog/README.md`), when it is running, alerts on a run HELD for more than
-10 min (one reminder an hour later) and on a run that stops responding.
+Slack when the notifier is configured. The acquisition watchdog (`acquisition_watchdog/README.md`), when it is
+running, alerts on a run HELD for more than 10 min (one reminder an hour later) and on a run that stops responding.
+The Start run… summary warns (without blocking) when the Slack notifier is not configured, and when no watchdog
+is running (its heartbeat in the watchdog state dir is missing or more than a minute old).
 
 ## Run folder
 

@@ -23,6 +23,7 @@ SCHEMA_VERSION = 1
 HEARTBEAT_INTERVAL_S = 5.0
 RUN_FILE_NAME = "run.json"
 PROTOCOL_RUN_FILE_NAME = "fluidics_protocol_run.json"
+WATCHDOG_FILE_NAME = "watchdog.json"
 
 
 def default_state_dir() -> Path:
@@ -102,6 +103,44 @@ def read_protocol_run(state_dir: Optional[Path] = None) -> Optional[dict]:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
+
+
+def watchdog_file_path(state_dir: Optional[Path] = None) -> Path:
+    return Path(state_dir or default_state_dir()) / WATCHDOG_FILE_NAME
+
+
+def write_watchdog_heartbeat(
+    *, pid: int, poll_interval: float, machine: Optional[str] = None, state_dir: Optional[Path] = None
+) -> None:
+    """The watchdog's own heartbeat, rewritten every poll: the GUI reads it to tell whether a watchdog is
+    watching this state dir. Never raises."""
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "pid": pid,
+        "machine": machine or socket.gethostname(),
+        "poll_interval": poll_interval,
+        "written_at": time.time(),
+    }
+    try:
+        _atomic_write_json(watchdog_file_path(state_dir), record)
+    except OSError as e:
+        _log.warning(f"Failed to write the watchdog heartbeat: {e}")
+
+
+def watchdog_problem(state_dir: Optional[Path] = None, now: Optional[float] = None) -> Optional[str]:
+    """None when a watchdog has polled this state dir recently (within 3 polls, at least 60 s); else what is wrong."""
+    path = watchdog_file_path(state_dir)
+    try:
+        with open(path) as f:
+            beat = json.load(f)
+        written_at = float(beat["written_at"])
+        poll_interval = float(beat.get("poll_interval") or 5.0)
+    except (OSError, ValueError, KeyError, TypeError):  # missing, unreadable, or not a heartbeat
+        return f"the acquisition watchdog is not running (no heartbeat in {path.parent})"
+    age = (time.time() if now is None else now) - written_at
+    if age > max(60.0, 3 * poll_interval):
+        return f"the acquisition watchdog is not running (last heartbeat {int(age // 60)} min ago in {path.parent})"
+    return None
 
 
 class RunStateWriter:

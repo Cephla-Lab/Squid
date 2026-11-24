@@ -89,7 +89,8 @@ def test_close_and_show_events_cover_the_protocol_lifecycle():
     assert "disconnect_logging" in shutdown_src and "close_recordings" in shutdown_src
 
 
-def test_the_start_preflight_warns_when_no_slack_notifier_is_configured():
-    # a warning, not a blocking problem: a held run would otherwise go unreported
+def test_the_start_preflight_warns_when_no_slack_notifier_is_configured_or_no_watchdog_runs():
+    # warnings, not blocking problems: a held run would otherwise go unreported
     setup_src = _source("_setup_fluidics_widgets")
     assert "notify_check=fluidics_notify_check" in setup_src and "notifier.enabled" in setup_src
+    assert "squid.acquisition_state.watchdog_problem()" in setup_src

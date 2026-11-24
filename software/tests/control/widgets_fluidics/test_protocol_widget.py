@@ -156,10 +156,14 @@ def test_preflight_warns_when_nobody_would_be_told_of_a_hold_but_still_starts(qt
             super().__init__(problems, summary_lines, parent)
 
     monkeypatch.setattr(protocol_widget_module, "PreflightDialog", RecordingPreflight)
-    w.notify_check = lambda: "Slack notifications are off: if this run goes HELD, nobody is told"
+    w.notify_check = lambda: [
+        "Slack notifications are off: if this run goes HELD, nobody is told",
+        "The acquisition watchdog is not running (no heartbeat in /state): nobody is told if the GUI stops",
+    ]
 
     w.start_run()
     assert any(line.startswith("⚠ Slack notifications are off") for line in summaries[-1])
+    assert any(line.startswith("⚠ The acquisition watchdog is not running") for line in summaries[-1])
     assert w.runner is not None  # a warning, not a blocking problem
     assert wait_until(lambda: w.runner.outcome is not None, timeout=15)
 
@@ -173,7 +177,7 @@ def test_preflight_has_no_notification_warning_when_a_notifier_is_configured(qtb
         lambda problems, summary_lines, parent=None: summaries.append(summary_lines)
         or SimpleNamespace(exec_=lambda: QDialog.Rejected),
     )
-    w.notify_check = lambda: None
+    w.notify_check = lambda: []
     w.start_run()
     assert summaries and not any(line.startswith("⚠") for line in summaries[-1])
 

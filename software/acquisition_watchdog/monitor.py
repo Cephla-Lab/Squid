@@ -5,7 +5,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import squid.acquisition_state as acquisition_state
 import squid.logging
@@ -61,6 +61,9 @@ class Monitor:
         self._base = self._state_dir or acquisition_state.default_state_dir()
         self._alerted_path = self._base / "alerted.json"
         self._alerted = self._load_alerted()
+        # when each protocol_held alert was settled: the reminder is due the reminder delay after it
+        self._held_alerted_at_path = self._base / "held_alerted_at.json"
+        self._held_alerted_at: Dict[str, float] = self._load_held_alerted_at()
 
     def _load_alerted(self) -> Set[str]:
         try:
@@ -69,11 +72,20 @@ class Monitor:
         except (FileNotFoundError, json.JSONDecodeError):
             return set()
 
+    def _load_held_alerted_at(self) -> Dict[str, float]:
+        try:
+            with open(self._held_alerted_at_path) as f:
+                return {str(k): float(v) for k, v in json.load(f).items()}
+        except (FileNotFoundError, json.JSONDecodeError, AttributeError, TypeError, ValueError):
+            return {}
+
     def _save_alerted(self) -> None:
         try:
             self._alerted_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self._alerted_path, "w") as f:
                 json.dump(sorted(self._alerted), f)
+            with open(self._held_alerted_at_path, "w") as f:
+                json.dump(self._held_alerted_at, f)
         except OSError as e:
             _log.warning(f"Could not persist alerted set: {e}")
 
@@ -97,7 +109,8 @@ class Monitor:
 
         'protocol_stalled': not ended, and its process is gone or its heartbeat is older than the timeout
         (a held or paused run still beats). 'protocol_held': HELD for longer than the alert delay;
-        'protocol_held_reminder': still the same hold, the reminder delay after that. One of each per hold.
+        'protocol_held_reminder': still the same hold, the reminder delay after the held alert went out (a hold
+        first seen late is not reminded of a minute after its alert). One of each per hold.
         """
         if not manifest or manifest.get("status") not in PROTOCOL_ACTIVE_STATUSES:
             return None
@@ -111,13 +124,16 @@ class Monitor:
             return None
         held_for = now - held_at
         held_key, reminder_key = f"{run_key}:held:{held_at}", f"{run_key}:held-reminder:{held_at}"
-        reminder_due = self._held_reminder_s > 0 and held_for >= self._held_alert_s + self._held_reminder_s
         if held_key not in self._alerted:
             if held_for < self._held_alert_s:
                 return None
             # found late (watchdog started mid-hold): one alert, not an alert and a reminder seconds apart
-            return "protocol_held", [held_key] + ([reminder_key] if reminder_due else [])
-        if reminder_due and reminder_key not in self._alerted:
+            late = self._held_reminder_s > 0 and held_for >= self._held_alert_s + self._held_reminder_s
+            return "protocol_held", [held_key] + ([reminder_key] if late else [])
+        if self._held_reminder_s <= 0 or reminder_key in self._alerted:
+            return None
+        alerted_at = self._held_alerted_at.get(held_key, held_at + self._held_alert_s)  # unknown: when it was due
+        if now - alerted_at >= self._held_reminder_s:
             return "protocol_held_reminder", [reminder_key]
         return None
 
@@ -131,7 +147,7 @@ class Monitor:
         if kind is None:
             return
         text, blocks = alerts.format_alert(kind, run)
-        self._send(kind, [run["run_id"]], text, blocks, f"run_id={run.get('run_id')}")
+        self._send(kind, [run["run_id"]], text, blocks, f"run_id={run.get('run_id')}", now)
 
     def _check_protocol_run(self, now: float) -> None:
         pointer = acquisition_state.read_protocol_run(self._state_dir)
@@ -147,26 +163,30 @@ class Monitor:
             return
         kind, keys = verdict
         text, blocks = alerts.format_protocol_alert(kind, manifest, pointer, now)
-        self._send(kind, keys, text, blocks, f"protocol run {manifest.get('run_dir')}")
+        self._send(kind, keys, text, blocks, f"protocol run {manifest.get('run_dir')}", now)
 
-    def _send(self, kind: str, keys: List[str], text: str, blocks: list, what: str) -> None:
+    def _send(self, kind: str, keys: List[str], text: str, blocks: list, what: str, now: float) -> None:
         cfg_path = config.resolve_slack_settings_path(self._slack_settings)
         slack_cfg = config.load_slack_config(cfg_path)
         if not (slack_cfg.bot_token and slack_cfg.channel_id and slack_cfg.watchdog_enabled):
             _log.warning(f"Alert ({kind}) for {what} but Slack is not configured/enabled; not alerting.")
-            self._mark_alerted(keys)
+            self._mark_alerted(keys, now)
             return
 
         ok, _ = squid.slack.post_message(slack_cfg.bot_token, slack_cfg.channel_id, text, blocks)
         if ok:
             _log.info(f"Sent watchdog alert ({kind}) for {what}")
-            self._mark_alerted(keys)
+            self._mark_alerted(keys, now)
         else:
             # Leave unmarked so a transient Slack failure retries on the next poll.
             _log.warning(f"Failed to send watchdog alert ({kind}) for {what}; will retry")
 
-    def _mark_alerted(self, keys: Iterable[str]) -> None:
+    def _mark_alerted(self, keys: Iterable[str], now: Optional[float] = None) -> None:
+        keys = list(keys)
         self._alerted.update(keys)
+        for key in keys:
+            if ":held:" in key:  # a protocol_held alert: its reminder counts from now
+                self._held_alerted_at.setdefault(key, time.time() if now is None else now)
         self._save_alerted()
 
     def run_forever(self) -> None:
@@ -175,6 +195,10 @@ class Monitor:
             f"protocol_held_alert={self._held_alert_s}s protocol_held_reminder={self._held_reminder_s}s"
         )
         while True:
+            # the GUI's Start run… pre-flight reads this to tell whether a watchdog is watching its runs
+            acquisition_state.write_watchdog_heartbeat(
+                pid=os.getpid(), poll_interval=self._poll, state_dir=self._state_dir
+            )
             try:
                 self.check_once(time.time())
             except Exception as e:

@@ -79,6 +79,7 @@ import control.microscope
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
 import squid.abc
+import squid.acquisition_state
 import squid.camera.settings_cache
 import squid.camera.utils
 import squid.config
@@ -2293,13 +2294,20 @@ class HighContentScreeningGui(QMainWindow):
             return None
 
         def fluidics_notify_check():
+            warnings = []
             notifier = getattr(self, "slackNotifier", None)
-            if notifier is not None and notifier.enabled:
-                return None
-            return (
-                "Slack notifications are off: if this run goes HELD, nobody is told "
-                "(Settings → Slack Notifications; the acquisition watchdog uses the same settings)"
-            )
+            if notifier is None or not notifier.enabled:
+                warnings.append(
+                    "Slack notifications are off: if this run goes HELD, nobody is told "
+                    "(Settings → Slack Notifications; the acquisition watchdog uses the same settings)"
+                )
+            watchdog = squid.acquisition_state.watchdog_problem()  # the state dir this run's breadcrumb goes to
+            if watchdog:
+                warnings.append(
+                    f"{watchdog[0].upper()}{watchdog[1:]}: nobody is told if the GUI stops, and a long hold gets "
+                    "no reminder (python3 -m acquisition_watchdog; see acquisition_watchdog/README.md)"
+                )
+            return warnings
 
         self.fluidicsDisplayTab = FluidicsDisplayTab(self.fluidics, current_source=current_imaging_source)
         if isinstance(self.imageDisplayTabs, QTabWidget):  # absent in live-only mode
