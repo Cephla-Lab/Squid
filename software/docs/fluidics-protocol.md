@@ -95,7 +95,8 @@ progress, elapsed, open-folder) with **Pause** (finishes the current step first;
 resume from the failed sequence / restart the step / skip / accept (imaging `completed_with_errors`) /
 end run, with an optional TEC-restore checkbox. Going HELD brings the record tab to the front (even if another
 record tab was showing) and flashes the window in the taskbar; the panel shows the reason and message and how long
-the run has waited ("Held for 7 h 32 min (since 01:55)"). A run in progress locks the protocol structure, keeps the
+the run has waited ("Held for 7 h 32 min (since 01:55)"), counted from `held_at` in the run manifest, so a run
+reopened after a GUI restart still counts from when it went HELD. A run in progress locks the protocol structure, keeps the
 display on the Fluidics tab, and asks before exit; after Initialize (and when the Save to folder changes) unfinished
 run folders offer crash recovery — reopening the run HELD at the interrupted step. Run notifications go to
 Slack when the notifier is configured.

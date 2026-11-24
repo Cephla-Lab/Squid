@@ -1,4 +1,5 @@
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -471,13 +472,37 @@ def test_the_held_panel_shows_how_long_the_run_has_been_held_and_why(qtbot, widg
     _hold_on_a_flow_fault(qtbot, w)
     labels = [label.text() for label in w.held_box.findChildren(QLabel)]
     assert any("Flow fault on syringe_draw" in text for text in labels)
-    assert w.held_for_label.text().startswith("Held for less than a minute (since ")
-
-    w._held_since -= 7 * 3600 + 32 * 60  # as if it went HELD at 01:55 and nobody came until 09:27
-    w._refresh()
-    assert w.held_for_label.text().startswith("Held for 7 h 32 min (since ")
+    held_at = w.runner.snapshot().held_at
+    assert (
+        w.held_for_label.text()
+        == f"Held for less than a minute (since {time.strftime('%H:%M', time.localtime(held_at))})"
+    )
 
     w.runner.hold_action(protocol_widget_module.HoldAction.RESTART)
     qtbot.waitUntil(lambda: w.held_box.isHidden(), timeout=5000)
-    assert w._held_since is None
     assert wait_until(lambda: w.runner.outcome is not None, timeout=15)
+
+
+def test_after_a_gui_restart_the_held_panel_counts_from_when_the_run_went_held(qtbot, widget):
+    # The run went HELD at 01:55 and the GUI was restarted at 09:27: the panel reads the manifest's held_at,
+    # not the time the reopened run's panel appeared.
+    w, _fluidics, _imaging, save_to = widget
+    _hold_on_a_flow_fault(qtbot, w)
+    run_dir = w.runner.run_dir
+    crashed = manifest_io.read_manifest(run_dir)
+    w.runner.hold_action(protocol_widget_module.HoldAction.END)
+    assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)
+    crashed.held_at = time.time() - (7 * 3600 + 32 * 60 + 10)
+    crashed.pid = 2**22 - 7
+    manifest_io.write_manifest(run_dir, crashed)
+
+    w.offer_recovery()
+    qtbot.waitUntil(lambda: w.runner.state == RunnerState.HELD and not w.held_box.isHidden(), timeout=15000)
+    assert w.runner.hold.reason == "recovered"
+    assert w.runner.snapshot().held_at == crashed.held_at == manifest_io.read_manifest(run_dir).held_at
+    since = time.strftime("%H:%M", time.localtime(crashed.held_at))
+    if time.localtime(crashed.held_at)[:3] != time.localtime()[:3]:
+        since = time.strftime("%d %b %H:%M", time.localtime(crashed.held_at))
+    assert w.held_for_label.text() == f"Held for 7 h 32 min (since {since})"
+    w.runner.hold_action(protocol_widget_module.HoldAction.END)
+    assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)

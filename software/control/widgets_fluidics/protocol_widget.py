@@ -100,8 +100,6 @@ class FluidicsProtocolWidget(QFrame):
         self._current_round = "—"
         self._current_sequence = "—"
         self._since_init_ul: Dict[int, float] = {}
-        self._held_since: Optional[float] = None  # time.monotonic() when the current hold began
-        self._held_since_clock = ""  # the same moment as wall-clock "HH:MM"
         self.held_for_label: Optional[QLabel] = None
 
         self._build_ui()
@@ -375,7 +373,6 @@ class FluidicsProtocolWidget(QFrame):
         shown only by _show_hold."""
         self.idle_box.setHidden(active)
         self.running_box.setHidden(not active)
-        self._held_since = None
         self.held_box.hide()
         self.signal_size_changed.emit()
 
@@ -457,12 +454,10 @@ class FluidicsProtocolWidget(QFrame):
         theme.set_role(headline, "alert-bold-first")
         headline.setWordWrap(True)
         self.held_layout.addWidget(headline)
-        self._held_since = time.monotonic()
-        self._held_since_clock = time.strftime("%H:%M")
         self.held_for_label = QLabel()
         theme.set_role(self.held_for_label, "alert-bold")
         self.held_layout.addWidget(self.held_for_label)
-        self._render_held_for()
+        self._render_held_for(self.runner.snapshot() if self.runner is not None else None)
         if hold.message:
             message = QLabel(hold.message)
             message.setWordWrap(True)
@@ -523,7 +518,6 @@ class FluidicsProtocolWidget(QFrame):
         )
 
     def _hide_hold(self) -> None:
-        self._held_since = None
         if not self.held_box.isHidden():
             self.held_box.hide()
             self.signal_size_changed.emit()
@@ -542,10 +536,14 @@ class FluidicsProtocolWidget(QFrame):
             parent = parent.parentWidget()
         QApplication.alert(self.window())
 
-    def _render_held_for(self) -> None:
-        if self._held_since is not None and self.held_for_label is not None:
-            held_s = time.monotonic() - self._held_since
-            self.held_for_label.setText(f"{held_for_text(held_s)} (since {self._held_since_clock})")
+    def _render_held_for(self, snap) -> None:
+        """From the runner's held_at, which the run manifest keeps: still right after a GUI restart reopened the run."""
+        held_at = snap.held_at if snap is not None else None
+        if held_at is None or self.held_for_label is None:
+            return
+        same_day = time.localtime(held_at)[:3] == time.localtime()[:3]
+        since = time.strftime("%H:%M" if same_day else "%d %b %H:%M", time.localtime(held_at))
+        self.held_for_label.setText(f"{held_for_text(time.time() - held_at)} (since {since})")
 
     def _update_reagents(self) -> None:
         if self.runner is None:
@@ -624,7 +622,7 @@ class FluidicsProtocolWidget(QFrame):
             # imaging is priced at a rough 1 s/FOV (see IMAGING_SECONDS_PER_FOV); the total is a ballpark
             estimate = self._resolved.total_estimate_s if self._resolved else None
             self.elapsed_label.setText(f"elapsed {_hms(snap.elapsed_s)} / est. {_hms(estimate)}")
-            self._render_held_for()
+            self._render_held_for(snap)
             self.folder_label.setText(str(runner.run_dir))
             if snap.state in (RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED):
                 self.pause_button.setText("Resume")
