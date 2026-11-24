@@ -171,6 +171,7 @@ The summary (`port_hold_summary.csv` and the printed table):
 | `sensor_volume_ul` | Sensor volume during and 30 s after the pull. Clearly below the other ports = the line did not deliver |
 | `valve_move_um`, `valve_move_inflow_ul` | Shift when the valve turned onto this port, with no pumping (bottle height or route differences) |
 | `sensor_verdict` | The sensor-only verdict (4b) of the same run |
+| `verdict` | HOLDS PRESSURE / ok, or **INCONCLUSIVE - repeat**: the run did not complete (its `end_reason` is printed), or the bright spot was not found through the 10 s before the pull or the last 10 s of the recording. An inconclusive port has not been checked; run it again |
 
 A holding line typically also dips deeper during the pull and passes a few µL less: more resistance while flowing and
 a cut-off near rest, i.e. a partial blockage (a pinned bubble, debris, an inline filter). Holding can come and go on
@@ -218,7 +219,7 @@ re-check ports quickly. Re-analyse with `--analyze-only --sensor-only`. Writes `
 | `release_inflow_ul` | Sensor volume in the 15 s after the move to the release port, above the sensor's rest reading. **HOLDS ≥ 1.0 µL**, borderline 0.6–1.0 µL, ok below |
 | `release_peak_ul_min` | Peak of that refill above the rest reading |
 | `pull_volume_ul`, `tail_ul` | Sensor volume during and 30 s after the pull, and after it stopped |
-| `verdict` | HOLDS / borderline / ok, or **SENSOR GLITCH - repeat**: a reading above 1000 µL/min, or flow still 20 µL/min above rest 12–15 s after the move (air or a bad reading, not a refill) |
+| `verdict` | HOLDS / borderline / ok, or **SENSOR GLITCH - repeat**: a reading above 1000 µL/min, or flow still 20 µL/min above rest 12–15 s after the move (air or a bad reading, not a refill); or **INCONCLUSIVE - repeat**: the run did not complete, there is no rest reading before the move, or the valid readings leave a gap of more than 1 s in the 15 s after it |
 
 The 1.0 µL threshold was set against the coverslip check, where a holding line takes in roughly 1–4 µL on release and
 a free line under 1 µL (about 4 µm of coverslip per µL). Limits: always release to the same free port, at a similar or

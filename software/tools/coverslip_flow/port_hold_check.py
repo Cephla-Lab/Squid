@@ -57,23 +57,34 @@ SENSOR_HOLD_UL = 1.0  # inflow in the 15 s after the release move
 SENSOR_BORDERLINE_UL = 0.6
 GLITCH_UL_MIN = 1000  # any reading above this in the window: air or a bad reading
 SETTLE_UL_MIN = 20  # still above rest by this at 12-15 s after the move: not a refill pulse
+# A verdict needs its data. A window with too few valid readings, or a gap in them longer than this, is
+# INCONCLUSIVE: a missing reading must never read as "this line is free".
+SENSOR_MAX_GAP_S = 1.0  # the sensor reads ~16 Hz
+COVERSLIP_MAX_GAP_S = 3.0  # bright-spot readings, ~30 Hz, in 3-10 s windows
+MIN_READINGS = 5
+INCONCLUSIVE = "INCONCLUSIVE - repeat"
 
 
 def coverslip_verdict(held_um):
-    """HOLDS PRESSURE when the coverslip is still more than HOLD_FLAG_UM from where it was before the pull."""
+    """HOLDS PRESSURE when the coverslip is still more than HOLD_FLAG_UM from where it was before the pull;
+    INCONCLUSIVE when there is no held reading (no spot at the end, or no baseline before the pull)."""
+    if not np.isfinite(held_um):
+        return INCONCLUSIVE
     return "HOLDS PRESSURE" if abs(held_um) > HOLD_FLAG_UM else "ok"
 
 
 def sensor_verdict(ft, fv, rv, rest):
     """(inflow_ul, peak_ul_min, verdict) for the 15 s after the release move at rv.
-    ft, fv unfiltered sensor readings; rest the sensor's reading just before the move."""
-    w = (ft > rv - 0.5) & (ft < rv + 15)
-    if w.sum() < 5:
-        return np.nan, np.nan, "no sensor data"
+    ft, fv unfiltered sensor readings; rest the sensor's reading just before the move. INCONCLUSIVE without a
+    rest reading or without valid readings covering the whole window."""
+    a, b = rv - 0.5, rv + 15
+    w = (ft > a) & (ft < b)
     raw = fv[w]
     ok = np.isfinite(raw) & (np.abs(raw) < 5000)
-    inflow = _volume(ft[w][ok], raw[ok], rv - 0.5, rv + 15, rest)
-    peak = float(np.max(raw[ok]) - rest) if ok.any() else np.nan
+    if not np.isfinite(rest) or not _covered(ft[w][ok], a, b, SENSOR_MAX_GAP_S):
+        return np.nan, np.nan, INCONCLUSIVE
+    inflow = _volume(ft[w][ok], raw[ok], a, b, rest)
+    peak = float(np.max(raw[ok]) - rest)
     late = fv[(ft > rv + 12) & (ft < rv + 15)]
     late = late[np.isfinite(late) & (np.abs(late) < 5000)]
     if np.any(np.abs(raw[np.isfinite(raw)]) > GLITCH_UL_MIN) or (len(late) and np.median(late) - rest > SETTLE_UL_MIN):
@@ -116,9 +127,25 @@ def _series(csv_path, tcol, vcol):
     return t, v
 
 
-def _med(t, z, a, b):
+def _covered(t, a, b, max_gap):
+    """True when the valid readings at times t cover [a, b]: at least MIN_READINGS of them and no gap longer than
+    max_gap, the window's edges included."""
+    t = np.sort(t[(t >= a) & (t <= b)])
+    if len(t) < MIN_READINGS:
+        return False
+    return float(np.max(np.diff(np.concatenate(([a], t, [b]))))) <= max_gap
+
+
+def _med(t, z, a, b, max_gap=COVERSLIP_MAX_GAP_S):
+    """Median of the valid readings in [a, b); NaN unless they cover the window."""
     w = (t >= a) & (t < b) & np.isfinite(z)
-    return float(np.median(z[w])) if w.any() else np.nan
+    return float(np.median(z[w])) if _covered(t[w], a, b, max_gap) else np.nan
+
+
+def _rest(v):
+    """The sensor's at-rest reading: the median of the valid readings v; NaN with fewer than MIN_READINGS."""
+    v = v[np.isfinite(v) & (np.abs(v) < 5000)]
+    return float(np.median(v)) if len(v) >= MIN_READINGS else np.nan
 
 
 def _volume(ft, fv, a, b, rest):
@@ -132,14 +159,14 @@ def _volume(ft, fv, a, b, rest):
 # ---------------------------------------------------------------- analysis
 def analyze_pair(pull_base, release_base):
     ev = _events(pull_base + "_meta.json")
+    end_reason = json.load(open(pull_base + "_meta.json"))["end_reason"]
     t, z = _series(pull_base + "_bright.csv", "t_s", "bright_spot_um")
     ft, fv = _flow_main(pull_base + ".csv")
     vs = ev.get("valve_start", ev.get("prep_start", 5.0))
     ps = ev["pull_start"]
     pe = ev.get("pump_idle", ev.get("pull_end"))
     # the sensor's own zero: its median reading at rest before anything moves
-    pre = fv[ft < vs - 0.5]
-    rest_flow = float(np.median(pre)) if len(pre) else 0.0
+    rest_flow = _rest(fv[ft < vs - 0.5])
     start = _med(t, z, 0, 4.5)
     before_pull = _med(t, z, ps - 10, ps)
     dip = float(np.nanmin(z[(t >= ps) & (t <= pe + 5)])) - before_pull
@@ -153,18 +180,23 @@ def analyze_pair(pull_base, release_base):
         "held_um": held,
         "sensor_rest_ul_min": rest_flow,
         "abs_before_pull_um": before_pull,
+        "end_reason": end_reason,
     }
     if release_base and os.path.exists(release_base + "_samples.csv"):
         rt, rz = _series(release_base + "_samples.csv", "t_s", "bright_spot_um")
         rft_raw, rfv_raw = _series(release_base + "_flow.csv", "t_s", "flow_ul_min")
         ok = np.isfinite(rfv_raw) & (np.abs(rfv_raw) < 5000)
         rft, rfv = rft_raw[ok], rfv_raw[ok]
-        rv = [tt for tt, e, _v in json.load(open(release_base + "_meta.json"))["events_s"] if e == "valve_start"][0]
-        rpre = rfv[rft < rv - 0.5]
-        rrest = float(np.median(rpre)) if len(rpre) else rest_flow
+        release_meta = json.load(open(release_base + "_meta.json"))
+        rv = [tt for tt, e, _v in release_meta["events_s"] if e == "valve_start"][0]
+        rrest = _rest(rfv[rft < rv - 0.5])
+        if not np.isfinite(rrest):
+            rrest = rest_flow
         r0 = _med(rt, rz, rv - 3, rv)
         r1 = _med(rt, rz, rt[-1] - 8, rt[-1] + 1)
         _inf, peak, sv = sensor_verdict(rft_raw, rfv_raw, rv, rrest)
+        if release_meta["end_reason"] != "completed":
+            sv = INCONCLUSIVE
         out.update(
             {
                 "release_rise_um": r1 - r0,
@@ -213,7 +245,7 @@ def analyze_dir(out_dir):
             print("failed %s: %s" % (os.path.basename(base), e))
             continue
         r = {"run": nn, "port": port, **r}
-        r["verdict"] = coverslip_verdict(r["held_um"])
+        r["verdict"] = coverslip_verdict(r["held_um"]) if r["end_reason"] == "completed" else INCONCLUSIVE
         rows.append(r)
     if not rows:
         sys.exit("no analysable runs in %s" % out_dir)
@@ -234,6 +266,7 @@ def analyze_dir(out_dir):
         "verdict",
         "release_peak_ul_min",
         "sensor_verdict",
+        "end_reason",
     ]
     path = os.path.join(out_dir, "port_hold_summary.csv")
     with open(path, "w", newline="") as fh:
@@ -255,14 +288,16 @@ def analyze_dir(out_dir):
                 fmt(r["dip_um"]),
                 fmt(r["sensor_volume_ul"], "%.1f"),
                 fmt(r["valve_move_um"]),
-                r["verdict"],
+                r["verdict"] + ("" if r["end_reason"] == "completed" else " (" + r["end_reason"] + ")"),
                 r["sensor_verdict"],
             )
         )
     print("\nSaved %s" % path)
     print(
         "A port passing liquid freely holds < 2 um and rises < 5 um on release. 'held' is the "
-        "coverslip at the end of the post-pull recording relative to just before it (negative = still pulled in)."
+        "coverslip at the end of the post-pull recording relative to just before it (negative = still pulled in). "
+        "%s: the run did not complete or the spot was lost before the pull or at the end; that port is not checked."
+        % INCONCLUSIVE
     )
     return rows
 
@@ -389,9 +424,11 @@ def analyze_sensor_run(base):
     ft, fv = _series(base + "_flow.csv", "t_s", "flow_ul_min")
     ok = np.isfinite(fv) & (np.abs(fv) < 5000)
     ps, pe, rv = ev["pull_start"], ev["pump_idle"], ev["release_valve_start"]
-    rest = float(np.median(fv[ok & (ft > ps - 8) & (ft < ps - 0.5)]))
-    rrest = float(np.median(fv[ok & (ft > rv - 8) & (ft < rv - 0.5)]))
+    rest = _rest(fv[(ft > ps - 8) & (ft < ps - 0.5)])
+    rrest = _rest(fv[(ft > rv - 8) & (ft < rv - 0.5)])
     inflow, peak, verdict = sensor_verdict(ft, fv, rv, rrest)
+    if meta["end_reason"] != "completed":
+        verdict = INCONCLUSIVE
     return {
         "pull_volume_ul": _volume(ft[ok], fv[ok], ps, pe + 30, rest),
         "tail_ul": _volume(ft[ok], fv[ok], pe + 3, pe + 30, rest),
@@ -454,7 +491,8 @@ def analyze_sensor_dir(out_dir):
     print("\nSaved %s" % path)
     print(
         "HOLDS: >= %.1f uL flowed in when the valve moved to the release port (the line had left the flow cell "
-        "under suction). borderline: %.1f-%.1f uL." % (SENSOR_HOLD_UL, SENSOR_BORDERLINE_UL, SENSOR_HOLD_UL)
+        "under suction). borderline: %.1f-%.1f uL. %s: the run did not complete or the sensor data do not cover "
+        "the release; that port is not checked." % (SENSOR_HOLD_UL, SENSOR_BORDERLINE_UL, SENSOR_HOLD_UL, INCONCLUSIVE)
     )
     return rows
 
