@@ -515,3 +515,20 @@ def test_focus_log_names_the_sequences_of_a_resumed_plan_tail(tmp_path):
         ("2", "before", "", ""),
         ("2", "after", "2/2", "wash"),  # the tail's 1st entry is the step's 2nd sequence
     ]
+
+
+def test_an_abort_during_a_focus_log_reading_stops_the_readings(tmp_path):
+    box = {}
+
+    def reading():
+        box["runner"].abort_run()  # the operator presses Abort run while the first reading is being taken
+        return 1.0
+
+    imaging = FakeImagingPort(focus=reading)
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging, focus_log=True)
+    box["runner"] = runner
+    runner.start()
+    assert runner.wait(10)
+    assert imaging.focus_reads == 1  # the other readings of that row and of later rows never started
+    rows = _focus_rows(run_dir)
+    assert "stopped after 1 of 3 readings: abort requested" in rows[0]["message"]

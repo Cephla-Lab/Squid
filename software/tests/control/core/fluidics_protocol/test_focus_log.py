@@ -69,3 +69,82 @@ def test_a_request_on_the_runner_thread_is_recorded_at_once_and_a_write_failure_
     log = FocusLog(tmp_path / "missing" / "focus_log.csv", FakeImagingPort(focus=lambda: 0.5), started_at=0.0)
     assert log.request({"step": 0, "point": "before"}) is True
     assert not (tmp_path / "missing").exists()
+
+
+def _slow_readings(seconds, value=1.0):
+    def reading():
+        time.sleep(seconds)
+        return value
+
+    return FakeImagingPort(focus=reading)
+
+
+def _rows(path):
+    with open(path, newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def test_a_reading_the_boundary_gave_up_on_is_marked_late_not_written_under_its_label(tmp_path):
+    # Three 0.2 s readings, but the sequence boundary waits only 0.3 s: the next sequence starts during the reading.
+    imaging = _slow_readings(0.2)
+    log = FocusLog(tmp_path / "focus_log.csv", imaging, started_at=time.time(), wait_s=0.3)
+    result = {}
+    engine = threading.Thread(target=lambda: result.setdefault("ok", log.request({"step": 0, "sequence": "1/2"})))
+    engine.start()
+    assert wait_until(lambda: log._request is not None)
+    log.serve()
+    engine.join(5)
+    assert result["ok"] is False
+    assert imaging.focus_reads < 3  # no reading started after the boundary's deadline
+    (row,) = _rows(tmp_path / "focus_log.csv")
+    assert row["sequence"] == "1/2" and row["ok"] == "false" and row["displacement_um"] == ""
+    assert "late" in row["message"]
+
+
+def test_a_reading_that_ends_in_time_is_kept(tmp_path):
+    imaging = _slow_readings(0.01, value=2.0)
+    log = FocusLog(tmp_path / "focus_log.csv", imaging, started_at=time.time(), wait_s=5.0)
+    result = {}
+    engine = threading.Thread(target=lambda: result.setdefault("ok", log.request({"step": 0, "sequence": "1/2"})))
+    engine.start()
+    assert wait_until(lambda: log._request is not None)
+    log.serve()
+    engine.join(5)
+    assert result["ok"] is True
+    (row,) = _rows(tmp_path / "focus_log.csv")
+    assert row["ok"] == "true" and row["displacement_um"] == "2.000" and row["readings_ok"] == "3"
+
+
+def test_an_abort_stops_the_reading_between_two_readings(tmp_path):
+    stop = threading.Event()
+
+    def reading():
+        stop.set()  # the operator presses abort while the first reading is being taken
+        time.sleep(0.05)
+        return 1.0
+
+    imaging = FakeImagingPort(focus=reading)
+    log = FocusLog(tmp_path / "focus_log.csv", imaging, started_at=time.time(), should_stop=stop.is_set)
+    result = {}
+    engine = threading.Thread(target=lambda: result.setdefault("ok", log.request({"step": 0, "sequence": "1/2"})))
+    engine.start()
+    assert wait_until(lambda: log._request is not None)
+    log.serve()
+    engine.join(5)
+    assert imaging.focus_reads == 1  # the abort is seen after one reading, not after all of them
+    (row,) = _rows(tmp_path / "focus_log.csv")
+    assert row["readings_ok"] == "1" and "stopped" in row["message"]
+
+    log.record({"step": 1, "point": "before"})  # abort already requested: no reading at all
+    assert imaging.focus_reads == 1
+    assert _rows(tmp_path / "focus_log.csv")[-1]["ok"] == "false"
+
+
+def test_the_before_step_reading_is_bounded_too(tmp_path):
+    imaging = _slow_readings(0.2)
+    log = FocusLog(tmp_path / "focus_log.csv", imaging, started_at=time.time(), wait_s=0.3)
+    log.record({"step": 0, "point": "before"})
+    assert 1 <= imaging.focus_reads < 3  # no reading started after wait_s
+    (row,) = _rows(tmp_path / "focus_log.csv")
+    assert row["ok"] == "true" and row["readings_ok"] == str(imaging.focus_reads)
+    assert "time limit 0.3 s" in row["message"]

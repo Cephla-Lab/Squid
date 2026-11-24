@@ -51,8 +51,10 @@ It only measures: z, the stage and the valves are not moved, and nothing about t
 wait between two sequences while the readings are taken. Rows are comparable within a step (the stage does not
 move during fluidics); across steps compare z (+ piezo) − displacement, the z at which laser AF would read 0,
 since imaging leaves the stage elsewhere. When laser AF is not initialized or has no reference, or there is no
-spot or the reading fails, the row says so (`ok = false`) and the run goes on; a sequence boundary waits at
-most 30 s for its reading.
+spot or the reading fails, the row says so (`ok = false`) and the run goes on. A row takes at most 30 s plus
+the one reading in flight: no new reading starts after that or after an abort (the message says how many were
+taken). When a sequence boundary stopped waiting before its readings were done, the next sequence was already
+running while they were taken, so that row is marked late (`ok = false`, no displacement).
 
 Models: `control/models/fluidics_protocol.py` (`ProtocolFile`, `SettingsBlock`, `CoordinatesBlock`,
 `split_into_steps`, `expand_rounds` for "Add rounds…") and `control/models/fluidics_run.py` (`RunManifest`).

@@ -9,7 +9,10 @@ Measurement only: z, the stage and the valves are not moved. A reading that fail
 initialized or has no reference, is a row with ok = false; it never changes the run.
 
 The library runs the sequences on its own thread and reports each completed one there; that thread waits (at most
-WAIT_S) while the runner thread takes the reading, so every laser AF call stays on the runner thread.
+WAIT_S) while the runner thread takes the reading, so every laser AF call stays on the runner thread. A row takes
+at most WAIT_S plus the one laser AF reading in flight: no reading starts after that time or after an abort. When
+the boundary has stopped waiting before the readings were finished, the next sequence was already running while
+they were taken, so the row is written as late (ok = false, no displacement) instead of under the sequence's name.
 Qt-free."""
 
 import csv
@@ -17,10 +20,10 @@ import math
 import statistics
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional
 
 import squid.logging
 
@@ -62,19 +65,25 @@ class FocusReading:
     message: str = ""
 
 
-def read_focus(imaging, readings: int = READINGS) -> FocusReading:
+def read_focus(imaging, readings: int = READINGS, stop_reason: Optional[Callable[[], str]] = None) -> FocusReading:
     """`readings` laser AF displacement readings where the stage is, averaged. Stops at the first None (laser AF
-    cannot be used: not initialized, no reference) without asking again."""
+    cannot be used: not initialized, no reference) without asking again, and before a reading when
+    `stop_reason()` gives a reason (abort, time limit); the readings taken until then still count."""
     values: List[float] = []
-    for _ in range(readings):
+    note = ""
+    for taken in range(readings):
+        reason = stop_reason() if stop_reason is not None else ""
+        if reason:
+            note = f"stopped after {taken} of {readings} readings: {reason}"
+            break
         value = imaging.measure_focus_um()
         if value is None:
             return FocusReading(None, None, 0, False, "laser AF not available (not initialized or no reference)")
         if not math.isnan(value):
             values.append(float(value))
     if not values:
-        return FocusReading(None, None, 0, False, "no laser AF spot")
-    return FocusReading(statistics.fmean(values), max(values) - min(values), len(values), True)
+        return FocusReading(None, None, 0, False, note or "no laser AF spot")
+    return FocusReading(statistics.fmean(values), max(values) - min(values), len(values), True, note)
 
 
 def sequence_context(rows: List[dict], entry, position: int, total: int) -> dict:
@@ -96,6 +105,19 @@ def sequence_context(rows: List[dict], entry, position: int, total: int) -> dict
     }
 
 
+@dataclass
+class _Request:
+    """A sequence boundary waiting for its reading. `answered` and `expired` are set under FocusLog._lock: the
+    runner thread answers when its readings are done, the engine's thread expires the request when it stops
+    waiting first; whichever comes first decides."""
+
+    context: dict
+    deadline: float  # time.monotonic() when the boundary stops waiting
+    done: threading.Event = field(default_factory=threading.Event)
+    answered: bool = False
+    expired: bool = False
+
+
 def _fmt(value, digits: int) -> str:
     return "" if value is None else f"{value:.{digits}f}"
 
@@ -112,6 +134,7 @@ class FocusLog:
         readings: int = READINGS,
         wait_s: float = WAIT_S,
         clock: Callable[[], float] = time.time,
+        should_stop: Callable[[], bool] = lambda: False,
     ):
         self._log = squid.logging.get_logger(__name__)
         self.path = Path(path)
@@ -120,15 +143,27 @@ class FocusLog:
         self._readings = readings
         self._wait_s = wait_s
         self._clock = clock
+        self._should_stop = should_stop  # the run is being aborted: no new reading starts
         self._owner = threading.current_thread()
         self._lock = threading.Lock()
-        self._request: Optional[Tuple[dict, threading.Event]] = None
+        self._request: Optional[_Request] = None
 
     def record(self, context: dict) -> dict:
-        """One reading now (runner thread), appended to the CSV. Never raises."""
+        """One reading now (runner thread), appended to the CSV; at most wait_s plus the reading in flight.
+        Never raises."""
+        return self._record(context, time.monotonic() + self._wait_s, None)
+
+    def _stop_reason(self, deadline: float) -> str:
+        if self._should_stop():
+            return "abort requested"
+        if time.monotonic() >= deadline:
+            return f"time limit {self._wait_s:g} s"
+        return ""
+
+    def _record(self, context: dict, deadline: float, request: Optional[_Request]) -> dict:
         t = self._clock()
         try:
-            reading = read_focus(self._imaging, self._readings)
+            reading = read_focus(self._imaging, self._readings, lambda: self._stop_reason(deadline))
         except Exception as e:
             reading = FocusReading(None, None, 0, False, f"reading failed: {e}")
         try:
@@ -136,6 +171,18 @@ class FocusLog:
         except Exception as e:
             self._log.warning(f"Focus log: could not read the stage position: {e}")
             position = {}
+        if request is not None:
+            with self._lock:
+                late = request.expired
+                request.answered = not late
+            if late:  # the next sequence was running while these readings were taken: not this boundary's
+                reading = FocusReading(
+                    None,
+                    None,
+                    0,
+                    False,
+                    f"late: not finished within {self._wait_s:g} s, the next sequence had started; readings not used",
+                )
         row = {column: "" for column in COLUMNS}
         row.update({k: v for k, v in context.items() if k in row})
         row.update(
@@ -173,14 +220,18 @@ class FocusLog:
         if threading.current_thread() is self._owner:
             self.record(context)
             return True
-        done = threading.Event()
+        request = _Request(context, time.monotonic() + self._wait_s)
         with self._lock:
-            self._request = (context, done)
-        if done.wait(self._wait_s):
+            self._request = request
+        if request.done.wait(self._wait_s):
             return True
         with self._lock:
-            if self._request is not None and self._request[1] is done:
-                self._request = None
+            if self._request is request:
+                self._request = None  # never taken
+            elif request.answered:
+                return True  # the readings were done in time; only writing the row was left
+            else:
+                request.expired = True  # being taken: the runner thread writes it as late
         self._log.warning(
             f"Focus log: no reading after sequence {context.get('sequence')} within {self._wait_s:g} s; "
             "the run goes on without it"
@@ -190,11 +241,10 @@ class FocusLog:
     def serve(self) -> None:
         """Runner thread, from its poll loop: take the reading a sequence boundary is waiting for, if any."""
         with self._lock:
-            pending, self._request = self._request, None
-        if pending is None:
+            request, self._request = self._request, None
+        if request is None:
             return
-        context, done = pending
         try:
-            self.record(context)
+            self._record(request.context, request.deadline, request)
         finally:
-            done.set()
+            request.done.set()

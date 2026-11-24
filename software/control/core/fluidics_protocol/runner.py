@@ -247,7 +247,12 @@ class ProtocolRunner:
         self._log.info(f"Protocol run '{self._manifest.run_name}' started: {len(self._steps)} steps in {self.run_dir}")
         if self._resolved.protocol.imaging.focus_log:
             path = self.run_dir / manifest_io.FOCUS_LOG_NAME
-            self._focus_log = FocusLog(path, self._imaging, started_at=self._manifest.started_at)
+            self._focus_log = FocusLog(
+                path,
+                self._imaging,
+                started_at=self._manifest.started_at,
+                should_stop=lambda: self._abort_step_requested.is_set() or self._abort_run_requested.is_set(),
+            )
             self._log.info("Focus log on: a laser AF reading before each fluidics step and after each sequence")
 
     def _close_run(self, outcome: str) -> None:
