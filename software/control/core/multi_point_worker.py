@@ -77,30 +77,12 @@ class SummarizeResult(NamedTuple):
     had_results: bool  # True if any results were pulled from queue
 
 
-def laser_af_spot_search_offsets_um() -> Tuple[float, ...]:
-    """The piezo offsets (um) a failed per-FOV laser AF searches, in order; () when the search is off."""
-    if not control._def.LASER_AF_SPOT_SEARCH:
-        return ()
-    try:
-        offsets = tuple(float(o) for o in control._def.LASER_AF_SPOT_SEARCH_OFFSETS_UM)
-    except (TypeError, ValueError):
-        _log.error(
-            f"LASER_AF_SPOT_SEARCH_OFFSETS_UM must be a list of numbers (um), not "
-            f"{control._def.LASER_AF_SPOT_SEARCH_OFFSETS_UM!r}; the laser AF spot search is off"
-        )
-        return ()
-    return tuple(o for o in offsets if math.isfinite(o) and o != 0)
-
-
 def _z_steps_below_center(nz: int) -> int:
     """Number of z steps a From Center stack starts below its centre (and climbs back afterwards)."""
     return round((nz - 1) / 2.0)
 
 
 class MultiPointWorker:
-    # What a failed per-FOV laser AF does; __init__ reads them from control._def. Off: the FOV is imaged where it is.
-    _laser_af_search_offsets_um: Tuple[float, ...] = ()
-    _laser_af_stop_on_spot_loss: bool = False
     _laser_af_record: Optional[LaserAFRecord] = None  # laser_af.csv; None: not recorded
 
     def __init__(
@@ -165,15 +147,6 @@ class MultiPointWorker:
         self.use_piezo = acquisition_parameters.use_piezo
         self.apply_channel_offset = acquisition_parameters.apply_channel_offset
         self.region_laser_af_offsets = acquisition_parameters.region_laser_af_offsets
-        self._laser_af_search_offsets_um = laser_af_spot_search_offsets_um()
-        self._laser_af_stop_on_spot_loss = bool(control._def.LASER_AF_STOP_ON_SPOT_LOSS)
-        if self.do_reflection_af and (self._laser_af_search_offsets_um or self._laser_af_stop_on_spot_loss):
-            search = ""
-            if self._laser_af_search_offsets_um:
-                search = f"search the piezo at {list(self._laser_af_search_offsets_um)} um, then "
-            then = "stop the acquisition" if self._laser_af_stop_on_spot_loss else "image the FOV where it is"
-            self._log.info(f"If laser AF fails at a FOV: {search}{then}")
-        self._end_detail: Optional[str] = None  # why the worker ended the run itself, when it says (run.json)
         self.display_resolution_scaling = acquisition_parameters.display_resolution_scaling
 
         self.experiment_ID = acquisition_parameters.experiment_ID
@@ -626,7 +599,6 @@ class MultiPointWorker:
                     "total_timepoints": self.time_point,
                     "total_duration_seconds": total_duration,
                     "errors_encountered": self._acquisition_error_count,
-                    **({"detail": self._end_detail} if self._end_detail else {}),
                 },
             )
 
@@ -1171,8 +1143,6 @@ class MultiPointWorker:
     def acquire_at_position(self, region_id, current_path, fov):
         self._applied_config = None
         af_succeeded = self.perform_autofocus(region_id, fov)
-        if not af_succeeded and self.abort_requested_fn():
-            return  # e.g. LASER_AF_STOP_ON_SPOT_LOSS: do not image this FOV out of focus
         if not af_succeeded:
             self._log.error(
                 f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={self.stage.get_pos().z_mm} [mm])"
@@ -1378,15 +1348,9 @@ class MultiPointWorker:
             self._log.info("laser reflection af")
             record = self._laser_af_record_start()
             af_succeeded = self._laser_af_anchor(region_id, fov, restore_on_failure=False)
-            displacement_um = getattr(self.laser_auto_focus_controller, "last_displacement_um", math.nan)
-            searched = not af_succeeded and bool(self._laser_af_search_offsets_um)
-            if searched:
-                af_succeeded = self._search_for_laser_af_spot(region_id, fov)
-            self._laser_af_record_add(record, region_id, fov, af_succeeded, displacement_um, searched)
+            self._laser_af_record_add(record, region_id, fov, af_succeeded)
             if not af_succeeded:
                 self._laser_af_failures += 1
-                if self._laser_af_stop_on_spot_loss and not self.abort_requested_fn():  # not over a user abort
-                    self._stop_for_laser_af_spot_loss(region_id, fov)
                 return False
             self._laser_af_successes += 1
         return True
@@ -1406,7 +1370,7 @@ class MultiPointWorker:
             self._log.exception("laser AF record: could not read z before the AF")
             return time.time(), math.nan
 
-    def _laser_af_record_add(self, record, region_id, fov, ok, displacement_um, searched, channel_name=None) -> None:
+    def _laser_af_record_add(self, record, region_id, fov, ok, channel_name=None) -> None:
         """One row of laser_af.csv for the laser AF call that _laser_af_record_start() began. Never raises."""
         if record is None:
             return
@@ -1424,71 +1388,15 @@ class MultiPointWorker:
                 "y_mm": round(pos.y_mm, 4),
                 "z_before_um": round(z_before_um, 3),
                 "z_after_um": round(self._laser_af_z_um(), 3),
-                "displacement_um": round(float(displacement_um), 3),
-                "correlation": round(float(getattr(laser_af, "last_correlation", math.nan)), 4),
+                "displacement_um": round(float(laser_af.last_displacement_um), 3),
+                "correlation": round(float(laser_af.last_correlation), 4),
                 "ok": bool(ok),
                 "target_um": self.region_laser_af_offsets.get(region_id, 0.0),
                 "af_time_s": round(time.time() - start_time, 3),
-                "searched": bool(searched),
             }
             self._laser_af_record.add(row, getattr(laser_af, "image", None))
         except Exception:
             self._log.exception(f"laser AF record: could not record region '{region_id}' FOV {fov}")
-
-    def _search_for_laser_af_spot(self, region_id, fov) -> bool:
-        """After a failed per-FOV laser AF: step the piezo to each search offset from where the AF left it and
-        measure; at the first offset with a spot in range, laser AF again from there. True when that AF succeeds.
-
-        Offsets past the piezo's travel are skipped. Z goes back to where the search started when it finds nothing,
-        or when the AF from the spot it found fails.
-        """
-        laser_af = self.laser_auto_focus_controller
-        piezo = getattr(laser_af, "piezo", None)  # the actuator laser AF moves (its _move_z)
-        if piezo is None:
-            self._log.warning("The laser AF spot search needs a piezo; there is none, so it does not search")
-            return False
-        z_start_um = piezo.position
-        max_displacement_um = laser_af.laser_af_properties.laser_af_range
-        try:
-            for offset_um in self._laser_af_search_offsets_um:
-                if self.abort_requested_fn():
-                    break
-                z_um = z_start_um + offset_um
-                if not 0 <= z_um <= piezo.range_um:
-                    continue
-                piezo.move_to(z_um)
-                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-                displacement_um = laser_af.measure_displacement()
-                if math.isnan(displacement_um) or abs(displacement_um) > max_displacement_um:
-                    continue
-                self._log.info(
-                    f"laser AF spot search, region '{region_id}' FOV {fov}: spot at {offset_um:+g} um from "
-                    f"{z_start_um:.1f} um (displacement {displacement_um:.1f} um); laser AF again from there"
-                )
-                if self._laser_af_anchor(region_id, fov, restore_on_failure=False):
-                    return True
-                self._log.warning(f"laser AF from the spot found at {offset_um:+g} um failed")
-                break
-        except Exception:
-            self._log.exception(f"laser AF spot search, region '{region_id}' FOV {fov}, failed")
-        piezo.move_to(z_start_um)
-        self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-        self._log.error(
-            f"laser AF spot search, region '{region_id}' FOV {fov}: laser AF did not succeed from any of "
-            f"{list(self._laser_af_search_offsets_um)} um; the piezo is back at {z_start_um:.1f} um"
-        )
-        return False
-
-    def _stop_for_laser_af_spot_loss(self, region_id, fov) -> None:
-        """LASER_AF_STOP_ON_SPOT_LOSS: end the acquisition as an error rather than image out of focus."""
-        searched = (
-            f" after searching {list(self._laser_af_search_offsets_um)} um" if self._laser_af_search_offsets_um else ""
-        )
-        self._end_detail = (
-            f"laser AF lost the spot at region '{region_id}' FOV {fov} (time point {self.time_point}){searched}"
-        )
-        self._log.error(f"{self._end_detail}; stopping the acquisition (LASER_AF_STOP_ON_SPOT_LOSS)")
-        self._abort_due_to_error()
 
     def _laser_af_anchor(self, region_id, fov, *, restore_on_failure: bool, channel_name=None) -> bool:
         """Closed-loop laser AF to the reference plane, then the region's open-loop offset. True on success.
@@ -1566,8 +1474,7 @@ class MultiPointWorker:
         """
         record = self._laser_af_record_start()
         anchored = self._laser_af_anchor(region_id, fov, restore_on_failure=True, channel_name=config.name)
-        displacement_um = getattr(self.laser_auto_focus_controller, "last_displacement_um", math.nan)
-        self._laser_af_record_add(record, region_id, fov, anchored, displacement_um, False, config.name)
+        self._laser_af_record_add(record, region_id, fov, anchored, config.name)
         if anchored:
             # The AF consumed the previous channel's offset: Z is at the anchored plane again.
             self._current_z_offset_um = 0.0

@@ -68,7 +68,6 @@ def _row(**kw):
         ok=True,
         target_um=0.0,
         af_time_s=0.2,
-        searched=False,
     )
     row.update(kw)
     return row
@@ -76,9 +75,9 @@ def _row(**kw):
 
 def test_summarize_counts_and_displacements():
     rows = [_row(displacement_um=d) for d in range(-10, 11)]  # |d| 0..10
-    rows += [_row(ok=False, displacement_um=math.nan, searched=True)]
+    rows += [_row(ok=False, displacement_um=math.nan)]
     s = summarize(rows)
-    assert (s["n"], s["ok"], s["searched"]) == (22, 21, 1)
+    assert (s["n"], s["ok"]) == (22, 21)
     assert s["abs_displacement_um_max"] == 10.0
     assert s["abs_displacement_um_p95"] == pytest.approx(np.percentile(np.abs(np.arange(-10, 11)), 95))
 

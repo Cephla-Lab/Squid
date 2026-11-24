@@ -12,7 +12,41 @@ import control.microscope
 from control.core.laser_af_record import LaserAFRecord
 import tests.control.test_stubs as ts
 from tests.control.test_MultiPointController import CountingTracker, add_some_coordinates, select_some_configs
-from tests.control.test_MultiPointWorker_laser_af_spot_loss import OFFSETS, _spot_loss_worker
+from tests.control.test_MultiPointWorker_z_stack_order import _FakePiezo, _worker
+
+
+class _SurfaceLaserAF:
+    """Laser AF over a coverslip at `surface_um` (piezo um): the spot is in view within `capture_um` of it."""
+
+    def __init__(self, piezo, surface_um, capture_um=4.0):
+        self.piezo = piezo
+        self.surface_um = surface_um
+        self.capture_um = capture_um
+        self.image = None
+        self.characterization_mode = False
+        self.last_displacement_um = self.last_correlation = math.nan
+
+    def move_to_target(self, target_um):
+        d = self.piezo.position - self.surface_um
+        self.last_displacement_um = d if abs(d) <= self.capture_um else math.nan
+        self.last_correlation = math.nan
+        if math.isnan(self.last_displacement_um):
+            return False
+        self.piezo.move_to(self.piezo.position + target_um - d)
+        self.last_correlation = 0.95
+        return True
+
+    def apply_relative_offset_um(self, offset_um):
+        self.piezo.move_to(self.piezo.position + offset_um)
+
+
+def _record_worker(surface_um, start_um=100.0):
+    w = _worker("CHANNEL FIRST", nz=1, channels=("A",), use_piezo=True)
+    w.piezo = _FakePiezo(position=start_um)
+    w.laser_auto_focus_controller = _SurfaceLaserAF(w.piezo, surface_um)
+    w.do_reflection_af = True
+    del w.perform_autofocus  # the real one
+    return w
 
 
 def _rows(path):
@@ -21,34 +55,25 @@ def _rows(path):
 
 
 def test_one_row_per_per_fov_laser_af(tmp_path):
-    w = _spot_loss_worker(surface_um=103.0, offsets=OFFSETS)  # in view from 100: 3 um off
+    w = _record_worker(surface_um=103.0)  # in view from 100: 3 um off
     w._laser_af_record = LaserAFRecord(str(tmp_path))
     w.acquire_at_position("A1", "/tmp", 0)
-    w.laser_auto_focus_controller.surface_um = 150.0  # the next FOV: out of view, and the search finds nothing
+    w.laser_auto_focus_controller.surface_um = 150.0  # the next FOV: out of view
     w.acquire_at_position("A1", "/tmp", 1)
-    w.laser_auto_focus_controller.surface_um = 113.0  # found by the search, at +10 um from 103
-    w.acquire_at_position("A1", "/tmp", 2)
     rows = _rows(tmp_path)
 
-    assert [(r["fov"], r["ok"], r["searched"]) for r in rows] == [
-        ("0", "True", "False"),
-        ("1", "False", "True"),
-        ("2", "True", "True"),
-    ]
+    assert [(r["fov"], r["ok"]) for r in rows] == [("0", "True"), ("1", "False")]
     # z is the stage (1 mm) plus the piezo
-    assert [(float(r["z_before_um"]), float(r["z_after_um"])) for r in rows] == [
-        (1100.0, 1103.0),
-        (1103.0, 1103.0),
-        (1103.0, 1113.0),
-    ]
+    assert [(float(r["z_before_um"]), float(r["z_after_um"])) for r in rows] == [(1100.0, 1103.0), (1103.0, 1103.0)]
     assert float(rows[0]["displacement_um"]) == pytest.approx(-3.0)  # what the first measurement saw
+    assert float(rows[0]["correlation"]) == pytest.approx(0.95)
     assert math.isnan(float(rows[1]["displacement_um"]))  # no spot
-    assert math.isnan(float(rows[2]["displacement_um"]))  # no spot before the search found it
+    assert math.isnan(float(rows[1]["correlation"]))  # not reached
     assert (rows[0]["x_mm"], rows[0]["y_mm"], rows[0]["channel"], rows[0]["target_um"]) == ("10.0", "20.0", "", "0.0")
 
 
 def test_no_record_by_default_on_a_bare_worker(tmp_path):
-    w = _spot_loss_worker(surface_um=103.0)
+    w = _record_worker(surface_um=103.0)
     w.acquire_at_position("A1", str(tmp_path), 0)
     assert w._laser_af_record is None
 
@@ -84,7 +109,7 @@ def test_simulated_acquisition_writes_the_record_and_its_summary(monkeypatch, sa
         assert {r["ok"] for r in rows} == {"False"}
         with open(os.path.join(experiment_path, "laser_af_summary.json")) as f:
             (tp,) = json.load(f)["time_points"]
-        assert (tp["n"], tp["ok"], tp["searched"], tp["focus_surface"]) == (n_fovs, 0, 0, None)
+        assert (tp["n"], tp["ok"], tp["focus_surface"]) == (n_fovs, 0, None)
         assert len(os.listdir(os.path.join(experiment_path, "laser_af_frames", "0"))) == n_fovs
     mpc.close()
     scope.close()

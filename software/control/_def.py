@@ -1090,14 +1090,6 @@ SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS = False
 LASER_AF_FILTER_SIGMA = None
 LASER_AF_INITIALIZE_CROP_WIDTH = 1200
 LASER_AF_INITIALIZE_CROP_HEIGHT = 800
-# When laser AF fails at a FOV of an acquisition (no spot, a displacement out of range, or a failed alignment check).
-# LASER_AF_SPOT_SEARCH: step the piezo to each of LASER_AF_SPOT_SEARCH_OFFSETS_UM (um, from where the AF failed,
-# in this order; offsets past the piezo's travel are skipped) and measure there; at the first spot, laser AF again.
-# Needs a piezo. LASER_AF_STOP_ON_SPOT_LOSS: if laser AF still failed, end the acquisition as an error (a fluidics
-# protocol run then holds) instead of imaging the FOV at the z it is at. Both off: the FOV is imaged where it is.
-LASER_AF_SPOT_SEARCH = False
-LASER_AF_SPOT_SEARCH_OFFSETS_UM = [5, -5, 10, -10, 15, -15, 20, -20]
-LASER_AF_STOP_ON_SPOT_LOSS = False
 # Acquisitions with laser AF write one row per laser AF call to laser_af.csv in the experiment folder, and a summary
 # per time point (counts, |displacement|, the focus surface) to laser_af_summary.json and the log.
 LASER_AF_SAVE_RECORD = True

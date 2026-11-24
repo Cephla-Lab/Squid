@@ -38,7 +38,6 @@ COLUMNS = (
     "ok",
     "target_um",  # the displacement laser AF was asked to reach (the region's laser AF offset)
     "af_time_s",
-    "searched",  # the spot search ran (LASER_AF_SPOT_SEARCH)
 )
 
 _MIN_POINTS = {"quadratic": 6, "plane": 3, "constant": 1}
@@ -88,7 +87,6 @@ def summarize(rows: List[dict]) -> dict:
     return {
         "n": len(rows),
         "ok": len(ok_rows),
-        "searched": sum(1 for r in rows if r["searched"]),
         "abs_displacement_um_p95": float(np.percentile(abs_d, 95)) if abs_d.size else None,
         "abs_displacement_um_max": float(abs_d.max()) if abs_d.size else None,
         # The reference plane: z after laser AF, less the region's laser AF offset (applied 1:1 in z).
@@ -105,7 +103,7 @@ def _summary_line(time_point, s: dict) -> str:
         return "n/a" if v is None else f"{v:.1f} um"
 
     line = (
-        f"laser AF, time point {time_point}: {s['ok']}/{s['n']} ok, {s['searched']} searched, "
+        f"laser AF, time point {time_point}: {s['ok']}/{s['n']} ok, "
         f"|displacement| p95 {um(s['abs_displacement_um_p95'])}, max {um(s['abs_displacement_um_max'])}"
     )
     fs = s["focus_surface"]
