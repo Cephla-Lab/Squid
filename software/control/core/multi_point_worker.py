@@ -76,12 +76,30 @@ class SummarizeResult(NamedTuple):
     had_results: bool  # True if any results were pulled from queue
 
 
+def laser_af_stop_after_consecutive_failures() -> int:
+    """LASER_AF_STOP_AFTER_CONSECUTIVE_FAILURES: after how many FOVs in a row with a failed laser AF an acquisition
+    stops; 0 when that is off."""
+    n = control._def.LASER_AF_STOP_AFTER_CONSECUTIVE_FAILURES
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        _log.error(
+            f"LASER_AF_STOP_AFTER_CONSECUTIVE_FAILURES must be a whole number of FOVs (0: off), not {n!r}; "
+            "an acquisition does not stop when laser AF fails"
+        )
+        return 0
+    return n
+
+
 def _z_steps_below_center(nz: int) -> int:
     """Number of z steps a From Center stack starts below its centre (and climbs back afterwards)."""
     return round((nz - 1) / 2.0)
 
 
 class MultiPointWorker:
+    # Stop after this many FOVs in a row whose laser AF failed (__init__ reads it from control._def); 0: off, the
+    # FOV is imaged where it is.
+    _laser_af_stop_after_failures: int = 0
+    _laser_af_consecutive_failures: int = 0  # FOVs in a row whose laser AF failed; a success resets it
+
     def __init__(
         self,
         scope: Microscope,
@@ -144,6 +162,13 @@ class MultiPointWorker:
         self.use_piezo = acquisition_parameters.use_piezo
         self.apply_channel_offset = acquisition_parameters.apply_channel_offset
         self.region_laser_af_offsets = acquisition_parameters.region_laser_af_offsets
+        self._laser_af_stop_after_failures = laser_af_stop_after_consecutive_failures()
+        self._laser_af_consecutive_failures = 0
+        if self.do_reflection_af and self._laser_af_stop_after_failures:
+            self._log.info(
+                f"The acquisition stops if laser AF fails at {self._laser_af_stop_after_failures} FOV(s) in a row"
+            )
+        self._end_detail: Optional[str] = None  # why the worker ended the run itself, when it says (run.json)
         self.display_resolution_scaling = acquisition_parameters.display_resolution_scaling
 
         self.experiment_ID = acquisition_parameters.experiment_ID
@@ -586,6 +611,7 @@ class MultiPointWorker:
                     "total_timepoints": self.time_point,
                     "total_duration_seconds": total_duration,
                     "errors_encountered": self._acquisition_error_count,
+                    **({"detail": self._end_detail} if self._end_detail else {}),
                 },
             )
 
@@ -1130,6 +1156,10 @@ class MultiPointWorker:
     def acquire_at_position(self, region_id, current_path, fov):
         self._applied_config = None
         af_succeeded = self.perform_autofocus(region_id, fov)
+        if self.abort_requested_fn():
+            # A Stop during the AF, or LASER_AF_STOP_AFTER_CONSECUTIVE_FAILURES: no z-stack move and no image
+            # (out of focus after a failed AF); run_coordinate_acquisition handles the abort.
+            return
         if not af_succeeded:
             self._log.error(
                 f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={self.stage.get_pos().z_mm} [mm])"
@@ -1335,9 +1365,29 @@ class MultiPointWorker:
             self._log.info("laser reflection af")
             if not self._laser_af_anchor(region_id, fov, restore_on_failure=False):
                 self._laser_af_failures += 1
+                self._laser_af_consecutive_failures += 1
+                stop_after = self._laser_af_stop_after_failures
+                if stop_after and not self.abort_requested_fn():  # a user Stop stays a user abort
+                    if self._laser_af_consecutive_failures >= stop_after:
+                        self._stop_for_laser_af_failures(region_id, fov)
+                    else:
+                        self._log.warning(
+                            f"laser AF failed at {self._laser_af_consecutive_failures} FOV(s) in a row; the "
+                            f"acquisition stops at {stop_after}"
+                        )
                 return False
             self._laser_af_successes += 1
+            self._laser_af_consecutive_failures = 0
         return True
+
+    def _stop_for_laser_af_failures(self, region_id, fov) -> None:
+        """LASER_AF_STOP_AFTER_CONSECUTIVE_FAILURES: end the acquisition as an error rather than image out of focus."""
+        self._end_detail = (
+            f"laser AF failed at {self._laser_af_consecutive_failures} FOV(s) in a row, the last region "
+            f"'{region_id}' FOV {fov} (time point {self.time_point})"
+        )
+        self._log.error(f"{self._end_detail}; stopping the acquisition (LASER_AF_STOP_AFTER_CONSECUTIVE_FAILURES)")
+        self._abort_due_to_error()
 
     def _laser_af_anchor(self, region_id, fov, *, restore_on_failure: bool, channel_name=None) -> bool:
         """Closed-loop laser AF to the reference plane, then the region's open-loop offset. True on success.
