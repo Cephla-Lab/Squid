@@ -114,3 +114,41 @@ def test_three_round_protocol_runs_on_the_simulated_fluidics_system(tmp_path, fl
         assert (run_dir / "run.log").stat().st_size > 0
     finally:
         assert service.close() == []
+
+
+def test_focus_log_on_the_simulated_fluidics_system(tmp_path, fluidics_config_path):
+    service = FluidicsService(default_config_path=fluidics_config_path, simulated=True)
+    service.initialize(report_dir=str(tmp_path / "reports"), instant=True)
+    try:
+        import csv
+
+        port = LibraryFluidicsPort(service.system)
+        protocol = _protocol()
+        protocol.imaging.focus_log = True
+        resolved = resolve_protocol(protocol, tmp_path, fluidics=port)
+        run_dir = manifest_io.create_run_dir(tmp_path, "liver")
+        imaging = FakeImagingPort(focus=lambda: 3.25, position={"x_mm": 1.0, "y_mm": 2.0, "z_um": 3000.0})
+        runner = ProtocolRunner(resolved, run_dir, imaging, port, run_name="liver", poll_s=0.01)
+
+        runner.start()
+        assert runner.wait(60), runner.snapshot()
+        assert runner.outcome == "finished"
+
+        with open(run_dir / manifest_io.FOCUS_LOG_NAME, newline="") as f:
+            rows = list(csv.DictReader(f))
+        # 8 fluidics steps; R01-R03 each: probe + buffer, then rinse x2 (two plan entries)
+        assert len([r for r in rows if r["point"] == "before"]) == 8
+        after = [(r["round"], r["sequence"], r["name"], r["port"], r["repeat"]) for r in rows if r["point"] == "after"]
+        assert after[:6] == [
+            ("setup", "1/1", "prime", "25", ""),
+            ("R01", "1/2", "probe", "1", ""),
+            ("R01", "2/2", "buffer", "27", ""),
+            ("R01", "1/2", "rinse", "25", "1/2"),
+            ("R01", "2/2", "rinse", "25", "2/2"),
+            ("R02", "1/2", "probe", "2", ""),
+        ]
+        assert after[-1] == ("final", "1/1", "cleanup", "28", "")
+        assert all(r["ok"] == "true" and r["displacement_um"] == "3.250" for r in rows)
+        assert set(imaging.focus_threads) == {"fluidics-protocol"}  # never the library's job thread
+    finally:
+        assert service.close() == []

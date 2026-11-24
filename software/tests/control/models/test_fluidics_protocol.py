@@ -153,6 +153,20 @@ def test_round_trip_as_a_plain_sequence_file(tmp_path):
     assert plain.name is None and len(plain.sequences) == 2 and plain.imaging.settings == {}
 
 
+def test_focus_log_is_off_by_default_and_written_only_when_on(tmp_path):
+    p = _protocol()
+    path = tmp_path / "demo.yaml"
+    save_protocol(p, str(path))
+    assert p.imaging.focus_log is False and "focus_log" not in yaml.safe_load(path.read_text())["imaging"]
+
+    p.imaging.focus_log = True
+    save_protocol(p, str(path))
+    assert yaml.safe_load(path.read_text())["imaging"]["focus_log"] is True
+    assert load_protocol(str(path)).imaging.focus_log is True
+    with pytest.raises(ValueError):
+        ProtocolFile(imaging={"focus_log": "sometimes"})
+
+
 def test_folder_problems():
     p = _protocol()
     assert folder_problems(p) == []

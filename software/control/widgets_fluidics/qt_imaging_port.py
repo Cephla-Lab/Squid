@@ -7,14 +7,13 @@ payload-less acquisition_finished signal plus last_end_reason/last_image_count, 
 experiment_ID == the requested folder (a GUI-started acquisition never matches)."""
 
 import threading
-from typing import Optional
+from typing import Dict, Optional
 
 from qtpy.QtCore import QObject, Qt, QThread, Signal, Slot
 
 import squid.logging
 from control.core.acquisition_settings import acquisition_data_from_blocks, apply_acquisition_settings
 from control.core.fluidics_protocol.ports import ImagingRequest, ImagingResult, ImagingStartError
-
 
 _NO_RESTORE = object()  # distinguishes "nothing to restore" from a legitimate None base path
 
@@ -72,6 +71,33 @@ class QtImagingPort(QObject):
         if error is not None:
             raise error
         return self._current
+
+    def measure_focus_um(self) -> Optional[float]:
+        """One laser AF displacement reading at the current position, z untouched (the runner's focus log;
+        runner thread, like the acquisition worker's AF). None: no laser AF controller, not initialized,
+        no reference, or an acquisition is running; nan: no spot this time."""
+        laf = getattr(self._controller, "laserAutoFocusController", None)
+        if laf is None or not laf.is_initialized or not laf.laser_af_properties.has_reference:
+            return None
+        if self._controller.acquisition_in_progress():
+            return None
+        try:
+            return float(laf.measure_displacement())
+        except Exception as e:
+            self._log.warning(f"Laser AF displacement reading failed: {e}")
+            return float("nan")
+
+    def stage_position(self) -> Optional[Dict[str, float]]:
+        """The stage's last known position (no query that moves anything), plus the piezo's when there is one."""
+        stage = getattr(self._microscope, "stage", None)
+        if stage is None:
+            return None
+        pos = stage.get_pos()
+        out = {"x_mm": float(pos.x_mm), "y_mm": float(pos.y_mm), "z_um": float(pos.z_mm) * 1000.0}
+        piezo = getattr(getattr(self._microscope, "addons", None), "piezo_stage", None)
+        if piezo is not None:
+            out["piezo_um"] = float(piezo.position)
+        return out
 
     @Slot(object)
     def _do_start(self, request: ImagingRequest) -> None:

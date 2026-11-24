@@ -26,6 +26,7 @@ from control.core.fluidics_protocol.events import (
     StepEnded,
     StepStarted,
 )
+from control.core.fluidics_protocol.focus_log import FocusLog, sequence_context
 from control.core.fluidics_protocol.ports import (
     FluidicsOutcome,
     FluidicsPort,
@@ -127,6 +128,7 @@ class ProtocolRunner:
         self._current_attempt = 0
         self._active = None  # the ticket/handle being driven, aborted if the runner itself crashes
         self._tec_before: Optional[TecState] = None
+        self._focus_log: Optional[FocusLog] = None  # imaging.focus_log: readings around each fluidics sequence
 
     # ---- public API (any thread) ----
 
@@ -243,6 +245,10 @@ class ProtocolRunner:
             self._manifest.protocol_sha256 = manifest_io.sha256_of_file(protocol_copy)
         self._set_state(RunnerState.RUNNING, status="running")
         self._log.info(f"Protocol run '{self._manifest.run_name}' started: {len(self._steps)} steps in {self.run_dir}")
+        if self._resolved.protocol.imaging.focus_log:
+            path = self.run_dir / manifest_io.FOCUS_LOG_NAME
+            self._focus_log = FocusLog(path, self._imaging, started_at=self._manifest.started_at)
+            self._log.info("Focus log on: a laser AF reading before each fluidics step and after each sequence")
 
     def _close_run(self, outcome: str) -> None:
         with self._lock:
@@ -332,7 +338,11 @@ class ProtocolRunner:
             plan = self._fluidics.plan(rows)
             tail = plan[offset:] if offset else plan
             self._set_cursor_sequence(offset)
-            ticket = self._fluidics.start(rows, plan=tail)
+            hooks = {}
+            if self._focus_log is not None:
+                self._focus_log.record({**self._focus_step(step, attempt), "point": "before"})
+                hooks["after_sequence"] = self._focus_after_sequence(step, attempt, rows, plan, offset)
+            ticket = self._fluidics.start(rows, plan=tail, **hooks)
         except Exception as e:  # a refused/failed launch holds like everything else
             self._log.error(f"Fluidics step {step.label} could not start: {e}")
             self._end_attempt(step, attempt, "failed_to_start", str(e))
@@ -361,11 +371,29 @@ class ProtocolRunner:
             resume_position=position if position is not None else 0,
         )
 
+    def _focus_step(self, step: FluidicsStep, attempt: int) -> dict:
+        return {"step": step.index, "round": step.round or "", "attempt": attempt}
+
+    def _focus_after_sequence(self, step: FluidicsStep, attempt: int, rows, plan, offset: int):
+        """The library's after_sequence hook: position is relative to the tail it was handed."""
+        focus = self._focus_log
+
+        def after_sequence(position: int) -> None:
+            index = offset + int(position)
+            context = {**self._focus_step(step, attempt), "point": "after"}
+            if 0 <= index < len(plan):
+                context.update(sequence_context(rows, plan[index], index, len(plan)))
+            focus.request(context)
+
+        return after_sequence
+
     def _drive_fluidics(self, ticket, step: FluidicsStep, offset: int, total: int) -> FluidicsOutcome:
         aborted = False
         pause_deferred = False  # the library refused the pause (no gate left): park at the step boundary
         last_position = None
         while True:
+            if self._focus_log is not None:
+                self._focus_log.serve()  # a sequence boundary waiting for its reading
             result = ticket.wait(self._poll_s)
             if result is not None:
                 self._abort_step_requested.clear()

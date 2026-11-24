@@ -105,3 +105,55 @@ def test_start_refusals_raise_imaging_start_error(qtbot, qt_controller, tmp_path
     with pytest.raises(ImagingStartError, match="Invalid channels"):
         port.start(bad)
     assert not (tmp_path / "R05_image").exists()
+
+
+@pytest.fixture
+def laser_af_controller(qtbot, monkeypatch):
+    """A simulated microscope with laser AF (simulated focus camera), not yet initialized."""
+    import control._def
+    import control.microscope
+    from tests.control.gui_test_stubs import get_test_qt_multi_point_controller
+
+    monkeypatch.setattr(control._def, "MERGE_CHANNELS", False)
+    monkeypatch.setattr(control._def, "SUPPORT_LASER_AUTOFOCUS", True)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    controller = get_test_qt_multi_point_controller(scope)
+    yield scope, controller
+    controller.close()
+    scope.close()
+
+
+def test_measure_focus_reads_the_simulated_laser_af_without_moving_anything(laser_af_controller, monkeypatch):
+    scope, controller = laser_af_controller
+    port = QtImagingPort(controller, controller.scanCoordinates, scope)
+    laf = controller.laserAutoFocusController
+    props = laf.laser_af_properties
+    # The simulated focus camera shows noise, not a spot: put the spot 10 px right of the reference.
+    monkeypatch.setattr(laf, "_get_laser_spot_centroid", lambda *a, **k: (510.0, 20.0))
+
+    laf.is_initialized = False
+    assert port.measure_focus_um() is None  # skipped: not initialized
+    laf.is_initialized = True
+    laf.laser_af_properties = props.model_copy(update={"has_reference": False, "x_reference": 500.0})
+    assert port.measure_focus_um() is None  # skipped: no reference
+    laf.laser_af_properties = props.model_copy(update={"has_reference": True, "x_reference": 500.0, "pixel_to_um": 0.4})
+
+    before = scope.stage.get_pos()
+    moves = []
+    monkeypatch.setattr(laf, "move_to_target", lambda *a, **k: moves.append(a))
+    monkeypatch.setattr(laf, "_move_z", lambda *a, **k: moves.append(a))
+    assert port.measure_focus_um() == pytest.approx(4.0)  # the real measure_displacement, simulated laser on/off
+    assert moves == [] and scope.stage.get_pos() == before
+
+    position = port.stage_position()
+    assert position["x_mm"] == pytest.approx(before.x_mm) and position["z_um"] == pytest.approx(before.z_mm * 1000)
+
+    monkeypatch.setattr(controller, "acquisition_in_progress", lambda: True)
+    assert port.measure_focus_um() is None  # never during an acquisition
+    monkeypatch.setattr(controller, "acquisition_in_progress", lambda: False)
+    monkeypatch.setattr(laf, "_get_laser_spot_centroid", lambda *a, **k: None)
+    value = port.measure_focus_um()
+    assert value != value  # nan: no spot this time
+    monkeypatch.setattr(laf, "measure_displacement", lambda: (_ for _ in ()).throw(TimeoutError("AF laser")))
+    value = port.measure_focus_um()
+    assert value != value  # nan: the reading raised

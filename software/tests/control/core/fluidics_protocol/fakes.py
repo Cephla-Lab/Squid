@@ -96,24 +96,44 @@ class FakeFluidicsPort:
     def plan(self, rows):
         return tuple(FakePlanEntry(i) for i in range(len(rows)))
 
-    def start(self, rows, plan=None):
+    def start(self, rows, plan=None, after_sequence=None):
         entry = self.script.pop(0) if self.script else ("finished",)
         plan = plan if plan is not None else self.plan(rows)
-        self.starts.append({"rows": rows, "plan": plan, "outcome": entry})
+        self.starts.append({"rows": rows, "plan": plan, "outcome": entry, "after_sequence": after_sequence})
         run_id = f"run-{len(self.starts)}"
         if entry[0] == "raise":
             raise RuntimeError("the rig is busy: a run is in progress")
         self.tickets.append(None)
+        if after_sequence is not None and entry[0] in ("finished", "stopped", "failed"):
+            # Like the library: the hook runs on the engine's thread after each completed sequence, and the run
+            # ends only after the last one returned.
+            ticket = self._ticket(entry, plan, run_id, hold=True)
+            completed = len(plan) if entry[0] == "finished" else entry[1]
+
+            def engine():
+                for position in range(completed):
+                    after_sequence(position)
+                ticket.release()
+
+            threading.Thread(target=engine, name="fake-fluidics-engine", daemon=True).start()
+            return ticket
+        return self._ticket(entry, plan, run_id)
+
+    def _ticket(self, entry, plan, run_id, hold=False):
         if entry[0] == "explode":
             ticket = FakeTicket(FluidicsOutcome("failed", "boom", 0.0, 0, run_id, {}), run_id=run_id, explode=True)
             self.tickets[-1] = ticket
             return ticket
         if entry[0] == "finished":
-            return FakeTicket(FluidicsOutcome("finished", None, 1.0, None, run_id, {1: 500.0}), run_id=run_id)
+            return FakeTicket(
+                FluidicsOutcome("finished", None, 1.0, None, run_id, {1: 500.0}), run_id=run_id, hold=hold
+            )
         if entry[0] == "stopped":
-            return FakeTicket(FluidicsOutcome("stopped", None, 0.5, entry[1], run_id, {1: 100.0}), run_id=run_id)
+            return FakeTicket(
+                FluidicsOutcome("stopped", None, 0.5, entry[1], run_id, {1: 100.0}), run_id=run_id, hold=hold
+            )
         if entry[0] == "failed":
-            return FakeTicket(FluidicsOutcome("failed", entry[2], 0.5, entry[1], run_id, {}), run_id=run_id)
+            return FakeTicket(FluidicsOutcome("failed", entry[2], 0.5, entry[1], run_id, {}), run_id=run_id, hold=hold)
         if entry[0] in ("hold", "nopause"):
             ticket = FakeTicket(
                 FluidicsOutcome("finished", None, 1.0, None, run_id, {}),
@@ -163,12 +183,26 @@ class FakeHandle:
 class FakeImagingPort:
     """Creates the session folder like start_new_experiment(add_timestamp=False) would (FileExistsError ->
     ImagingStartError). `script`: one entry per start(): "completed" | "completed_with_errors" | "user_abort" |
-    "error" | "raise" (start fails) | "hold" (blocks until release()/abort())."""
+    "error" | "raise" (start fails) | "hold" (blocks until release()/abort()). `focus`: the laser AF reading."""
 
-    def __init__(self, script: Optional[List[str]] = None):
+    def __init__(self, script: Optional[List[str]] = None, focus=None, position=None):
         self.script = list(script or [])
         self.requests: List[ImagingRequest] = []
         self.handles: List[FakeHandle] = []
+        self.focus = focus  # () -> um | nan; None: no laser AF
+        self.focus_reads = 0
+        self.focus_threads: List[str] = []
+        self.position = position  # stage_position(); a callable raises/returns
+
+    def measure_focus_um(self):
+        if self.focus is None:
+            return None
+        self.focus_reads += 1
+        self.focus_threads.append(threading.current_thread().name)
+        return float(self.focus())
+
+    def stage_position(self):
+        return self.position() if callable(self.position) else self.position
 
     def start(self, request: ImagingRequest) -> FakeHandle:
         entry = self.script.pop(0) if self.script else "completed"

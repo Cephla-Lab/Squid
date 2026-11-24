@@ -108,6 +108,10 @@ class CoordinatesBlock(BaseModel):
 class ImagingHeader(BaseModel):
     settings: Dict[str, SettingsBlock] = Field(default_factory=dict)
     coordinates: Dict[str, CoordinatesBlock] = Field(default_factory=dict)
+    # `imaging.focus_log: true` - a laser AF displacement reading before each fluidics step and after each of
+    # its sequences, into focus_log.csv in the run folder (measure only: nothing moves, a failed reading is
+    # logged and the run goes on).
+    focus_log: bool = False
 
 
 class ImagingRow(BaseModel):
@@ -185,7 +189,7 @@ def _type_first(row: dict) -> dict:
 
 def protocol_to_dict(protocol: ProtocolFile) -> dict:
     header = protocol.imaging.model_dump(exclude_none=True)
-    for key in ("settings", "coordinates"):
+    for key in ("settings", "coordinates", "focus_log"):
         if not header.get(key):
             header.pop(key, None)
     out = {"version": protocol.version}

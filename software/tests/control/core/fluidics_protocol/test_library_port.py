@@ -1,4 +1,6 @@
 import logging
+import threading
+import time
 
 import pytest
 
@@ -73,6 +75,40 @@ def test_run_finishes_with_reagent_totals_and_run_id(service):
     assert ticket.position == 1  # the last sequence started was the 2nd of the plan
     assert outcome.reagent_used_ul.get(1, 0) > 0 and outcome.reagent_used_ul.get(2, 0) > 0
     assert service.system.busy is False
+
+
+def test_after_sequence_runs_on_the_job_thread_between_sequences(service):
+    from fluidics.events import SequenceStarted
+
+    order = []
+    threads = []
+
+    def on_event(event):
+        if isinstance(event, SequenceStarted):
+            order.append(("started", event.position))
+
+    def after_sequence(position):
+        threads.append(threading.current_thread())
+        time.sleep(0.05)  # the next sequence must wait for this to return
+        order.append(("after", position))
+
+    service.system.session.events.subscribe(on_event)
+    port = LibraryFluidicsPort(service.system)
+    ticket = port.start(ROWS, after_sequence=after_sequence)
+    outcome = _wait_outcome(ticket)
+
+    assert outcome is not None and outcome.outcome == "finished"
+    assert order == [("started", 0), ("after", 0), ("started", 1), ("after", 1)]
+    assert threads and all(t is not threading.current_thread() for t in threads)
+
+
+def test_a_failing_after_sequence_hook_does_not_change_the_run(service):
+    def after_sequence(position):
+        raise RuntimeError("focus camera gone")
+
+    ticket = LibraryFluidicsPort(service.system).start(ROWS, after_sequence=after_sequence)
+    outcome = _wait_outcome(ticket)
+    assert outcome is not None and outcome.outcome == "finished" and outcome.reagent_used_ul.get(2, 0) > 0
 
 
 def test_abort_during_incubation_reports_stopped_with_position_and_the_tail_resumes(service):
