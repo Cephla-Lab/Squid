@@ -1395,13 +1395,20 @@ class MultiPointWorker:
 
         Named per region and FOV, plus the channel for a per-stack re-AF, so one failure never overwrites another.
         """
+        image = self.laser_auto_focus_controller.image
+        if image is None:
+            self._log.warning(
+                f"Laser AF for region '{region_id}' FOV {fov} captured no focus-camera frame before it failed: "
+                "no focus-camera frame to save."
+            )
+            return
         try:
             file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}"
             if channel_name:
                 file_ID += "_" + channel_name.replace(" ", "_")
             file_ID += "_focus_camera.bmp"
             saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
-            iio.imwrite(saving_path, self.laser_auto_focus_controller.image)
+            iio.imwrite(saving_path, image)
         except Exception as e:
             self._log.warning(f"Could not save the laser AF focus-camera image for region '{region_id}': {e}")
 

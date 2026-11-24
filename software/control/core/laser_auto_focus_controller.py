@@ -52,7 +52,9 @@ class LaserAutofocusController(QObject):
 
         self.spot_spacing_pixels = None  # spacing between the spots from the two interfaces (unit: pixel)
 
-        self.image = None  # for saving the focus camera image for debugging when centroid cannot be found
+        # The last focus-camera frame read, kept for the failed-AF diagnostic image. move_to_target clears it first,
+        # so after a call it is a frame of that call or None.
+        self.image = None
 
         # Load configurations if available
         self.load_cached_configuration()
@@ -363,6 +365,8 @@ class LaserAutofocusController(QObject):
         Returns:
             bool: True if move was successful, False if measurement failed or displacement was out of range
         """
+        # A call that fails before it reads a frame must not leave an earlier call's frame as its diagnostic image.
+        self.image = None
         if not self.laser_af_properties.has_reference:
             self._log.warning("Cannot move to target - reference not set")
             return False
