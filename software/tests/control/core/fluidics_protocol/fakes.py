@@ -83,12 +83,14 @@ class FakeFluidicsPort:
 
     def __init__(self, script: Optional[List[tuple]] = None, tec: Optional[TecState] = None):
         self.script = list(script or [])
-        # release-and-settle: the valve, and a flow sensor publishing flow_ul_min(s since the last open_port)
+        # release-and-settle: the valve, and a flow sensor publishing flow_ul_min(s since the valve last arrived)
         self.ports = tuple(range(1, 31))
         self.port: Optional[int] = 1
         self.opened: List[int] = []
         self.opened_at: List[float] = []
-        self.open_error: Optional[str] = None
+        self.open_error: Optional[str] = None  # start_valve_move() is refused with this
+        self.valve_hold = False  # the next valve moves block until aborted (a valve that does not arrive)
+        self.moves: List["FakeValveMove"] = []
         self.flow_ul_min = None  # None: no flow sensor
         self.starts: List[dict] = []
         self.tickets: List[Optional["FakeTicket"]] = []
@@ -149,9 +151,14 @@ class FakeFluidicsPort:
     def current_port(self):
         return self.port
 
-    def open_port(self, port, timeout=60.0):
+    def start_valve_move(self, port):
         if self.open_error:
             raise RuntimeError(self.open_error)
+        move = FakeValveMove(self, port, hold=self.valve_hold)
+        self.moves.append(move)
+        return move
+
+    def _arrive(self, port):
         self.port = port
         self.opened.append(port)
         self.opened_at.append(time.monotonic())
@@ -170,6 +177,31 @@ class FakeFluidicsPort:
 
         threading.Thread(target=publish, daemon=True).start()
         return stop.set
+
+
+class FakeValveMove:
+    """Arrives at once, unless `hold`: then it blocks until abort(), and ends stopped without arriving."""
+
+    def __init__(self, fluidics: FakeFluidicsPort, port: int, hold: bool = False):
+        self.port = port
+        self.aborted = False
+        self.ended = threading.Event()
+        self._stopped = False
+        if not hold:
+            fluidics._arrive(port)
+            self.ended.set()
+
+    def wait(self, timeout: float) -> bool:
+        return self.ended.wait(timeout)
+
+    def abort(self) -> bool:
+        self.aborted = True
+        self._stopped = not self.ended.is_set()
+        self.ended.set()
+        return True
+
+    def failure(self) -> Optional[str]:
+        return f"selector valve to port {self.port} was stopped" if self._stopped else None
 
 
 class FakeHandle:

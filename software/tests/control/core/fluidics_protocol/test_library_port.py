@@ -1,4 +1,6 @@
 import logging
+import time
+import types
 
 import pytest
 
@@ -136,11 +138,43 @@ def test_release_valve_moves_through_the_manual_verb_and_reports_the_port(servic
     port = LibraryFluidicsPort(service.system)
     ports = port.valve_ports()
     assert ports[0] == 1 and 28 in ports
-    port.open_port(28)
+    move = port.start_valve_move(28)
+    assert move.wait(5) and move.failure() is None
     assert port.current_port() == 28 and service.system.busy is False
-    with pytest.raises(RuntimeError, match="selector valve to port 99 failed"):
-        port.open_port(99)
+    move = port.start_valve_move(99)
+    assert move.wait(5) and "selector valve to port 99 failed" in move.failure()
     assert port.current_port() == 28
+
+
+def test_a_release_valve_move_can_be_aborted(service):
+    service.system.devices.controller.COMMAND_SECONDS = 3  # a slow valve: each command takes 3 s
+    port = LibraryFluidicsPort(service.system)
+    move = port.start_valve_move(28)
+    assert not move.wait(0.2)
+    t0 = time.monotonic()
+    assert move.abort()
+    assert move.wait(2) and time.monotonic() - t0 < 1.0
+    assert move.failure() == "selector valve to port 28 was stopped" and service.system.busy is False
+
+
+def test_release_and_settle_stops_a_slow_valve_move_over_the_library(service):
+    from control.core.fluidics_protocol.release_settle import release_and_settle
+    from control.models.fluidics_protocol import ReleaseAndSettle
+
+    service.system.devices.controller.COMMAND_SECONDS = 3
+    port = LibraryFluidicsPort(service.system)
+    started = []
+    real_start = port.start_valve_move
+    port.start_valve_move = lambda p: started.append(time.monotonic()) or real_start(p)
+
+    outcome = release_and_settle(
+        ReleaseAndSettle(release_port=28, fixed_wait_s=0),
+        port,
+        types.SimpleNamespace(measure_focus_um=lambda: None),  # no laser AF
+        should_stop=lambda: bool(started) and time.monotonic() - started[0] > 0.2,
+    )
+    assert outcome.stopped and time.monotonic() - started[0] < 1.5
+    assert service.system.busy is False
 
 
 def test_release_valve_move_is_refused_while_a_run_holds_the_rig(service):
@@ -149,7 +183,7 @@ def test_release_valve_move_is_refused_while_a_run_holds_the_rig(service):
     assert wait_until(lambda: service.system.busy, timeout=2)
     try:
         with pytest.raises(RuntimeError, match="busy"):
-            port.open_port(28)
+            port.start_valve_move(28)
     finally:
         ticket.abort()
         assert _wait_outcome(ticket) is not None

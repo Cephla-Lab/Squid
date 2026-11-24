@@ -51,10 +51,20 @@ class FluidicsPort(Protocol):
 
     def current_port(self) -> Optional[int]: ...
 
-    def open_port(self, port: int, timeout: float = 60.0) -> None: ...  # blocks until the valve is there; raises
+    def start_valve_move(self, port: int) -> "ValveMove": ...  # raises RuntimeError when refused (rig busy)
 
     def subscribe_flow(self, callback: Callable[[Optional[float], float], None]) -> Optional[Callable[[], None]]:
         """callback(flow_ul_min, timestamp) from the first flow sensor; returns the unsubscribe, None: no sensor."""
+
+
+class ValveMove(Protocol):
+    """One selector-valve move in flight on the fluidics engine's job thread; the caller polls it like a ticket."""
+
+    def wait(self, timeout: float) -> bool: ...  # True once the move has ended (arrived, failed or stopped)
+
+    def abort(self) -> bool: ...  # cancel it; wait() then reports the end
+
+    def failure(self) -> Optional[str]: ...  # once ended: None when the valve reached the port, else why not
 
 
 @dataclass

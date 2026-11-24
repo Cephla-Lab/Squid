@@ -552,6 +552,36 @@ def test_abort_step_during_the_settle_wait_holds_as_user_abort(tmp_path, fast_sa
     assert runner.wait(10) and runner.outcome == "finished"
 
 
+def test_abort_step_during_the_valve_move_aborts_the_move_and_holds_as_user_abort(tmp_path, fast_sampling):
+    fluidics = FakeFluidicsPort()
+    fluidics.valve_hold = True  # the valve does not get there on its own
+    runner, fluidics, imaging, run_dir = _release_runner(tmp_path, FAST_RELEASE, focus=lambda: 0.0, fluidics=fluidics)
+    runner.start()
+    assert wait_until(lambda: len(fluidics.moves) == 1)
+    runner.abort_step()
+    assert _held(runner)
+    move = fluidics.moves[0]
+    assert move.aborted and move.ended.is_set() and fluidics.opened == []
+    assert runner.hold.reason == "user_abort" and "release-and-settle" in runner.hold.message
+    assert imaging.requests == []
+    record = manifest_io.read_manifest(run_dir).steps[2].attempts[0].release_and_settle
+    assert record.message == "stopped during the valve move"
+    fluidics.valve_hold = False
+    runner.hold_action(HoldAction.RESTART)
+    assert runner.wait(10) and runner.outcome == "finished" and fluidics.opened == [30]
+
+
+def test_stop_run_during_the_valve_move_aborts_the_move_and_ends_the_run(tmp_path, fast_sampling):
+    fluidics = FakeFluidicsPort()
+    fluidics.valve_hold = True
+    runner, fluidics, imaging, run_dir = _release_runner(tmp_path, FAST_RELEASE, focus=lambda: 0.0, fluidics=fluidics)
+    runner.start()
+    assert wait_until(lambda: len(fluidics.moves) == 1)
+    runner.abort_run()
+    assert runner.wait(10) and runner.outcome == "stopped"
+    assert fluidics.moves[0].aborted and fluidics.moves[0].ended.is_set() and imaging.requests == []
+
+
 def test_the_resolver_refuses_release_ports_the_rig_does_not_offer(tmp_path):
     fluidics = FakeFluidicsPort()
     fluidics.ports = tuple(range(1, 29))

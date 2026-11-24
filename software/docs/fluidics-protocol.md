@@ -49,8 +49,9 @@ imaging:
 ```
 
 Before each imaging attempt the runner takes one window of laser AF displacement readings where the stage is
-(z is not moved), moves the valve (the library's manual `open_port`, so it excludes a run and Stop stops it),
-then reads until settled or the timeout; settle time, timeout and fixed wait count from when the valve reached
+(z is not moved), moves the valve (the library's manual `open_port`, so it excludes a run; the runner polls the
+move like an ordinary fluidics step, so Abort step / Stop abort it and wait for it to end, and a valve not there
+within 60 s is aborted and fails the release), then reads until settled or the timeout; settle time, timeout and fixed wait count from when the valve reached
 the port. A window only counts when the spot was found in at least 80 % of its readings and in the newest one,
 so a spot lost part-way (a rebound beyond the laser AF range looks like that) waits on until it is back or
 the timeout instead of settling on the readings left. The first flow sensor, if any, is watched throughout

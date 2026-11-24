@@ -67,6 +67,38 @@ class LibraryTicket:
         return bool(snapshot.paused and snapshot.at_rest)
 
 
+class LibraryValveMove:
+    """One selector-valve move: the library's manual open_port verb on its job thread, so it excludes a run.
+    abort() is the library's abort - the valve verbs check its cancel signal, so the move ends as stopped."""
+
+    def __init__(self, system, port: int):
+        self._system = system
+        self.port = port
+        self._errors: List[str] = []
+        self._stopped = False
+        manual = system.manual
+        system.run_manual(
+            lambda: manual.open_port(port),
+            callbacks={"on_error": self._errors.append, "on_stopped": self._on_stopped},
+        )
+
+    def _on_stopped(self) -> None:
+        self._stopped = True
+
+    def wait(self, timeout: float) -> bool:
+        return bool(self._system.wait(timeout))
+
+    def abort(self) -> bool:
+        return bool(self._system.abort())
+
+    def failure(self) -> Optional[str]:
+        if self._errors:
+            return f"selector valve to port {self.port} failed: {'; '.join(self._errors)}"
+        if self._stopped:
+            return f"selector valve to port {self.port} was stopped"
+        return None
+
+
 class LibraryFluidicsPort:
     def __init__(self, system):
         self._system = system
@@ -142,21 +174,8 @@ class LibraryFluidicsPort:
             _log.warning(f"Could not read the selector valve port: {e}")
             return None
 
-    def open_port(self, port: int, timeout: float = 60.0) -> None:
-        """The manual verb on the library's job thread (so it excludes a run and abort() stops it); blocks."""
-        errors: List[str] = []
-        stopped: List[bool] = []
-        manual = self._system.manual
-        self._system.run_manual(
-            lambda: manual.open_port(port),
-            callbacks={"on_error": errors.append, "on_stopped": lambda: stopped.append(True)},
-        )
-        if not self._system.wait(timeout):
-            raise RuntimeError(f"the selector valve did not reach port {port} within {timeout:g} s")
-        if errors:
-            raise RuntimeError(f"selector valve to port {port} failed: {'; '.join(errors)}")
-        if stopped:
-            raise RuntimeError(f"selector valve to port {port} was stopped")
+    def start_valve_move(self, port: int) -> LibraryValveMove:
+        return LibraryValveMove(self._system, port)
 
     def subscribe_flow(self, callback) -> Optional[Callable[[], None]]:
         sensors = list(self._system.devices.flow_sensors or [])

@@ -30,10 +30,45 @@ from control.models.fluidics_run import ReleaseSettleRecord
 SAMPLE_INTERVAL_S = 0.25  # at most 4 readings a second; a reading itself takes a few camera frames
 MIN_READINGS_PER_WINDOW = 2
 MIN_VALID_PERCENT = 80  # of a window's readings that must have found the spot
+VALVE_POLL_S = 0.05  # how often a valve move in flight is checked for a stop request
+VALVE_TIMEOUT_S = 60.0  # a valve that is not there by then is aborted and the release fails
+VALVE_STOP_S = 10.0  # how long an aborted move may take to end
 
 
 class ReleaseFailed(RuntimeError):
     """The valve could not be moved to the release port."""
+
+
+def _move_valve(fluidics, port: int, should_stop, tick, now) -> bool:
+    """Move the valve, polling for a stop request like an ordinary fluidics step does. True once it is on
+    `port`; False when a stop request aborted the move (which has ended by then). Raises ReleaseFailed when
+    the move is refused, fails, times out (aborted first) or does not end after the abort."""
+    try:
+        return _drive_valve_move(fluidics.start_valve_move(port), port, should_stop, tick, now)
+    except ReleaseFailed:
+        raise
+    except Exception as e:  # the engine refused the move or broke while it was in flight
+        raise ReleaseFailed(str(e)) from e
+
+
+def _drive_valve_move(move, port: int, should_stop, tick, now) -> bool:
+    deadline = now() + VALVE_TIMEOUT_S
+    while not move.wait(VALVE_POLL_S):
+        tick()
+        stop = should_stop()
+        if stop or now() >= deadline:
+            move.abort()
+            if not move.wait(VALVE_STOP_S):
+                raise ReleaseFailed(
+                    f"the selector valve move to port {port} did not stop within {VALVE_STOP_S:g} s of the abort"
+                )
+            if stop:
+                return False
+            raise ReleaseFailed(f"the selector valve did not reach port {port} within {VALVE_TIMEOUT_S:g} s")
+    failure = move.failure()
+    if failure is not None:
+        raise ReleaseFailed(failure)
+    return True
 
 
 @dataclass
@@ -134,16 +169,16 @@ def release_and_settle(
         final = None
         stopped = should_stop()
         valve_move_s = None
-        if not stopped:
-            try:
-                fluidics.open_port(port)
-            except Exception as e:
-                raise ReleaseFailed(str(e)) from e
+        if stopped:
+            message = "stopped before the valve move"
+        elif not _move_valve(fluidics, port, should_stop, tick, now):
+            stopped, message = True, "stopped during the valve move"
+        else:
             valve_move_s = now() - t_move
         t_arrived = now()  # the settle windows, the timeout and the fixed wait count from here
 
         if stopped:
-            message = "stopped before the valve move"
+            pass  # nothing to wait for
         elif mode == "fixed_wait":
             while now() - t_arrived < settings.fixed_wait_s:
                 if should_stop():

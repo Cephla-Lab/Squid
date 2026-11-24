@@ -22,13 +22,16 @@ class Clock:
 class Valve:
     """FluidicsPort's release-and-settle half; `flow(s since the move)` is pushed on every focus reading."""
 
-    def __init__(self, clock, port=25, flow=None, error=None, move_s=0.0):
+    def __init__(self, clock, port=25, flow=None, error=None, move_s=0.0, failure=None, stubborn=False):
         self.clock = clock
         self.port = port
         self.flow = flow
-        self.error = error
+        self.error = error  # start_valve_move() refused
+        self.failure = failure  # the move ends with this error
+        self.stubborn = stubborn  # abort() does not stop the move
         self.move_s = move_s  # valve travel time
         self.opened = []
+        self.moves = []
         self.started_at = None
         self.moved_at = None  # when the valve reached the port
         self.callback = None
@@ -36,14 +39,14 @@ class Valve:
     def current_port(self):
         return self.port
 
-    def open_port(self, port, timeout=60.0):
+    def start_valve_move(self, port):
         if self.error:
             raise RuntimeError(self.error)
         self.opened.append(port)
         self.started_at = self.clock.now()
-        self.clock.sleep(self.move_s)
-        self.port = port
-        self.moved_at = self.clock.now()
+        move = Move(self, port)
+        self.moves.append(move)
+        return move
 
     def subscribe_flow(self, callback):
         if self.flow is None:
@@ -55,6 +58,43 @@ class Valve:
         if self.callback is not None:
             since = None if self.moved_at is None else self.clock.now() - self.moved_at
             self.callback(self.flow(since), 0.0)
+
+
+class Move:
+    """A valve move on the fake clock: wait() spends clock time; abort() ends it (stopped) at the next wait()."""
+
+    def __init__(self, valve, port):
+        self.valve = valve
+        self.port = port
+        self.ends_at = valve.clock.now() + valve.move_s
+        self.aborts = 0
+        self.ended = False
+        self.waits = 0
+        self._failure = None
+
+    def wait(self, timeout):
+        clock = self.valve.clock
+        self.waits += 1
+        if not self.ended and self.aborts and not self.valve.stubborn:
+            self.ended, self._failure = True, f"selector valve to port {self.port} was stopped"
+        elif not self.ended and self.ends_at <= clock.now() + timeout:
+            clock.t = max(clock.t, self.ends_at)
+            self.ended = True
+            if self.valve.failure:
+                self._failure = self.valve.failure
+            else:
+                self.valve.port = self.port
+                self.valve.moved_at = clock.now()
+        elif not self.ended:
+            clock.t += timeout
+        return self.ended
+
+    def abort(self):
+        self.aborts += 1
+        return True
+
+    def failure(self):
+        return self._failure
 
 
 class SensorClock(Clock):
@@ -96,9 +136,11 @@ def inflow_pulse(since):
     return 10.0 + (90.0 if since is not None and since < 2.0 else 0.0)
 
 
-def _run(um, flow=None, port=25, error=None, settings=None, should_stop=lambda: False, move_s=0.0, clock=None):
+def _run(
+    um, flow=None, port=25, error=None, settings=None, should_stop=lambda: False, move_s=0.0, clock=None, failure=None
+):
     clock = clock or Clock()
-    valve = Valve(clock, port=port, flow=flow, error=error, move_s=move_s)
+    valve = Valve(clock, port=port, flow=flow, error=error, move_s=move_s, failure=failure)
     clock.valve = valve
     focus = Focus(clock, valve, um)
     settings = settings or ReleaseAndSettle(release_port=30, alternate_port=15)
@@ -277,3 +319,75 @@ def test_without_laser_af_or_flow_sensor_the_valve_moves_at_once():
 def test_no_flow_reading_before_the_move_leaves_the_inflow_unknown():
     outcome, _ = _run(lambda since: 1.5, flow=lambda since: None if since is None else 10.0)
     assert outcome.record.inflow_ul is None
+
+
+# ---- the valve move itself can be stopped, and does not outlive a timeout ----
+
+
+def test_a_stop_request_during_the_valve_move_aborts_it_and_waits_for_it_to_end():
+    clock = Clock()
+    stop_at = {"t": None}
+    ticks = []
+
+    def stop():
+        return stop_at["t"] is not None and clock.now() >= stop_at["t"]
+
+    valve = Valve(clock, move_s=30.0)
+    focus = Focus(clock, valve, lambda since: 1.5)
+    real_start = valve.start_valve_move
+
+    def start(port):  # the operator presses Abort one second into the move
+        stop_at["t"] = clock.now() + 1.0
+        return real_start(port)
+
+    valve.start_valve_move = start
+    outcome = release_and_settle(
+        ReleaseAndSettle(release_port=30),
+        valve,
+        focus,
+        should_stop=stop,
+        tick=lambda: ticks.append(clock.now()),
+        now=clock.now,
+        sleep=clock.sleep,
+    )
+    move = valve.moves[0]
+    assert outcome.stopped and move.aborts == 1 and move.ended  # aborted, and over before the step reports
+    assert valve.port == 25 and valve.moved_at is None  # it never got there
+    assert clock.now() - valve.started_at == pytest.approx(1.0, abs=0.1)
+    assert outcome.record.message == "stopped during the valve move" and outcome.record.valve_move_s is None
+    assert sum(1 for t in ticks if t > valve.started_at) >= 10  # the heartbeat goes on during the move
+
+
+def test_a_valve_that_does_not_arrive_in_time_is_aborted_and_fails():
+    clock = Clock()
+    with pytest.raises(ReleaseFailed, match="the selector valve did not reach port 30 within 60 s"):
+        _run(lambda since: 1.5, move_s=1000.0, clock=clock)
+
+
+def test_the_timed_out_move_is_aborted_before_the_failure_is_reported():
+    clock = Clock()
+    valve = Valve(clock, move_s=1000.0)
+    with pytest.raises(ReleaseFailed):
+        release_and_settle(
+            ReleaseAndSettle(release_port=30), valve, Focus(clock, valve, None), now=clock.now, sleep=clock.sleep
+        )
+    assert valve.moves[0].aborts == 1 and valve.moves[0].ended
+
+
+def test_a_move_that_will_not_stop_after_the_abort_fails():
+    clock = Clock()
+    valve = Valve(clock, move_s=1000.0, stubborn=True)
+    with pytest.raises(ReleaseFailed, match="did not stop within 10 s of the abort"):
+        release_and_settle(
+            ReleaseAndSettle(release_port=30),
+            valve,
+            Focus(clock, valve, None),
+            should_stop=lambda: valve.started_at is not None,
+            now=clock.now,
+            sleep=clock.sleep,
+        )
+
+
+def test_a_move_that_ends_in_an_error_raises():
+    with pytest.raises(ReleaseFailed, match="selector valve to port 30 failed: no reply"):
+        _run(held_line, move_s=2.0, failure="selector valve to port 30 failed: no reply")
