@@ -76,15 +76,20 @@ def sample(phase, idx, x, y, _l=laf, _st=st, _s=samples, _P=P, _xr=x_ref, _u=um_
 def goto(x, y, _st=stage, _sl=time.sleep, _P=P):
     _st.move_x_to(x); _st.move_y_to(y); _sl(_P["move_settle"])
 
-def hold(phase, seconds, _P=P, _t=time.time, _sample=sample, _g=gui):
+def check_abort(_g=gui):
+    # Ctrl-C in the client sets the flag: raising ends the whole sequence (nothing after it is launched)
+    if getattr(_g, "_af_map_abort", False): raise RuntimeError("aborted")
+
+def hold(phase, seconds, _P=P, _t=time.time, _sample=sample, _check=check_abort):
     t_end = _t() + seconds
-    while _t() < t_end and not getattr(_g, "_af_map_abort", False):
+    while _t() < t_end:
+        _check()
         _sample(phase, -1, _P["center"][0], _P["center"][1])
 
-def map_pass(name, _P=P, _goto=goto, _sample=sample, _g=gui, _ev=events, _t=time.time):
+def map_pass(name, _P=P, _goto=goto, _sample=sample, _check=check_abort, _ev=events, _t=time.time):
     _ev.append([_t(), name + "_start", None])
     for i, (x, y) in enumerate(_P["positions"]):
-        if getattr(_g, "_af_map_abort", False): break
+        _check()
         if _P["revisit"] and i and i % _P["revisit"] == 0:
             _goto(*_P["center"]); _sample(name + "_center", -1, _P["center"][0], _P["center"][1])
         _goto(x, y); _sample(name, i, x, y)
@@ -104,8 +109,9 @@ def pump(_m=manual, _P=P, _ev=events, _t=time.time, _xp=xp):
 
 t0 = time.time()
 end_reason = "completed"
-mc.turn_on_AF_laser(); mc.wait_till_operation_is_completed()
+launched = False
 try:
+    mc.turn_on_AF_laser(); mc.wait_till_operation_is_completed()
     goto(*P["center"])
     if P["map_only"]:
         hold("settle", P["settle"])
@@ -114,6 +120,7 @@ try:
         goto(*P["center"]); hold("final", 5)
         raise StopIteration("map_only")
     events.append([time.time(), "prep_start", None])
+    launched = True
     system.run_manual(prep, callbacks={"on_error": _err})
     wait_fluidics("prep")
     events.append([time.time(), "prep_end", None])
@@ -132,20 +139,22 @@ try:
     map_pass("after")
     goto(*P["center"])
     hold("final", 10)
-    if getattr(gui, "_af_map_abort", False): end_reason = "aborted"
 except StopIteration:
     end_reason = "completed"
 except Exception as e:
-    end_reason = "error: " + str(e)
+    end_reason = "aborted" if getattr(gui, "_af_map_abort", False) else "error: " + str(e)
 finally:
+    # however it ended: a job this run started that still runs is stopped, then the laser, then the frames
     try:
-        mc.turn_off_AF_laser(); mc.wait_till_operation_is_completed()
-    finally:
-        if st["af"] is not None:
-            st["af"].flush(); del st["af"]; st["af"] = None
-        for s in sensors: s.unsubscribe(h)
-        if system.busy and end_reason != "completed":
+        if launched and system.busy:
             system.abort(); system.wait(30)
+    finally:
+        try:
+            mc.turn_off_AF_laser(); mc.wait_till_operation_is_completed()
+        finally:
+            if st["af"] is not None:
+                st["af"].flush(); del st["af"]; st["af"] = None
+            for s in sensors: s.unsubscribe(h)
 events.append([time.time(), "end", end_reason])
 det = {}
 for k in ("y_window", "x_window", "min_peak_width", "min_peak_distance", "min_peak_prominence", "spot_spacing", "filter_sigma"):
@@ -158,16 +167,12 @@ ABORT = 'setattr(gui, "_af_map_abort", True)\nresult = "abort requested"'
 
 
 def run(params, timeout, remote=None):
-    """Run `remote` (default: the map recording) in the GUI with `params`; returns its `result`."""
+    """Run `remote` (default: the map recording) in the GUI with `params`; returns its `result`. Ctrl-C stops the
+    sequence (and a pump or valve job it started) and still returns what was recorded."""
     code = (remote or REMOTE).replace("__PARAMS__", repr(params))
     fde.PORT = params.pop("_server_port", fde.PORT)
     sock = fde._send("python_exec", {"code": code}, timeout=timeout)
-    try:
-        reply = fde._receive(sock)
-    except KeyboardInterrupt:
-        print("\nAborting...", file=sys.stderr)
-        fde._receive(fde._send("python_exec", {"code": ABORT}, timeout=30))
-        reply = fde._receive(sock)
+    reply, _interrupted = fde.receive_or_abort(sock, ABORT, "the sequence")
     if not reply.get("success"):
         sys.exit("GUI refused: %s" % reply.get("error"))
     return reply["result"]["result"]
@@ -231,6 +236,7 @@ def main():
     out = os.path.expanduser(a.out)
     if os.path.exists(out + "_samples.csv"):
         sys.exit(out + "_samples.csv exists")
+    fde.prepare_out(out)
     rows = list(csv.DictReader(open(os.path.expanduser(a.positions))))
     pos = [(float(r["x (mm)"]), float(r["y (mm)"])) for r in rows]
     xs, ys = [q[0] for q in pos], [q[1] for q in pos]
@@ -301,6 +307,8 @@ def main():
         indent=1,
     )
     print("Saved %s_samples.csv, _flow.csv, _meta.json, _af_raw.npy" % out)
+    if res["end_reason"] != "completed":
+        sys.exit("The run did not complete: %s" % res["end_reason"])
 
 
 if __name__ == "__main__":

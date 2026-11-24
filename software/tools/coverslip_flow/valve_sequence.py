@@ -6,7 +6,8 @@ a sequence of ports, with no pumping (valve-only test).
 
 Each step is PORT:SECONDS (turn the valve to PORT, then hold). Frames are saved and the bright
 reflection re-detected afterwards, as in af_map_flow.py. Needs the GUI's control server with
-python_exec enabled.
+python_exec enabled. Ctrl-C stops the sequence (no further valve moves) and saves what was
+recorded; the script exits non-zero when the sequence did not complete.
 """
 
 import argparse, csv, json, os, sys
@@ -38,31 +39,38 @@ def sample(phase, _l=laf, _st=st, _s=samples, _P=P, _xr=x_ref, _u=um_per_px, _np
             _st["af"][_st["n"]] = img; fi = _st["n"]; _st["n"] += 1
     _s.append([(ta + tb) / 2, phase, -1, 0.0, 0.0, None if c is None else (c[0] - _xr) * _u, fi])
 def hold(phase, seconds, _t=time.time, _sample=sample, _g=gui):
+    # Ctrl-C in the client sets the flag: raising ends the sequence (no further valve moves)
     t_end = _t() + seconds
-    while _t() < t_end and not getattr(_g, "_af_map_abort", False): _sample(phase)
+    while _t() < t_end:
+        if getattr(_g, "_af_map_abort", False): raise RuntimeError("aborted")
+        _sample(phase)
 def valve(port, _m=manual): _m.open_port(port)
-t0 = time.time(); end_reason = "completed"
-mc.turn_on_AF_laser(); mc.wait_till_operation_is_completed()
+t0 = time.time(); end_reason = "completed"; launched = False
 try:
+    mc.turn_on_AF_laser(); mc.wait_till_operation_is_completed()
     hold("start", P["pre"])
     for port, secs in P["steps"]:
         events.append([time.time(), "valve_start", port])
+        launched = True
         system.run_manual(lambda _p=port, _v=valve: _v(_p), callbacks={"on_error": _err})
         time.sleep(0.2)
         while system.busy: hold("port%d" % port, 0.2)
         events.append([time.time(), "valve_end", port])
         if errors: raise RuntimeError("; ".join(errors))
         hold("port%d" % port, secs)
-    if getattr(gui, "_af_map_abort", False): end_reason = "aborted"
 except Exception as e:
-    end_reason = "error: " + str(e)
+    end_reason = "aborted" if getattr(gui, "_af_map_abort", False) else "error: " + str(e)
 finally:
     try:
-        mc.turn_off_AF_laser(); mc.wait_till_operation_is_completed()
+        if launched and system.busy:
+            system.abort(); system.wait(30)
     finally:
-        if st["af"] is not None:
-            st["af"].flush(); del st["af"]; st["af"] = None
-        for s in sensors: s.unsubscribe(h)
+        try:
+            mc.turn_off_AF_laser(); mc.wait_till_operation_is_completed()
+        finally:
+            if st["af"] is not None:
+                st["af"].flush(); del st["af"]; st["af"] = None
+            for s in sensors: s.unsubscribe(h)
 events.append([time.time(), "end", end_reason])
 det = {}
 for k in ("y_window", "x_window", "min_peak_width", "min_peak_distance", "min_peak_prominence", "spot_spacing", "filter_sigma"):
@@ -82,6 +90,7 @@ def main():
     out = os.path.expanduser(a.out)
     if os.path.exists(out + "_samples.csv"):
         sys.exit(out + "_samples.csv exists")
+    fde.prepare_out(out)
     steps = [[int(s.split(":")[0]), float(s.split(":")[1])] for s in a.steps]
     total = a.pre + sum(s for _, s in steps) + 5 * len(steps)
     params = {
@@ -125,6 +134,8 @@ def main():
         indent=1,
     )
     print("Saved %s_samples.csv" % out)
+    if res["end_reason"] != "completed":
+        sys.exit("The sequence did not complete: %s" % res["end_reason"])
 
 
 if __name__ == "__main__":
