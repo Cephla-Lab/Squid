@@ -8,7 +8,7 @@ from control.startup_homing import require_objective_lowered
 import squid.ftdi
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
-from squid.exceptions import SquidError, SquidTimeout
+from squid.exceptions import SquidError, SquidReplyTimeout, SquidTimeout
 
 
 class PriorStage(AbstractStage):
@@ -530,7 +530,7 @@ class PriorStage(AbstractStage):
                         f"after a move ({unreadable} unreadable, last: {e})"
                     )
                     self._log.error(message)
-                    raise SquidTimeout(message) from e
+                    raise SquidReplyTimeout(message) from e
                 time.sleep(PriorStage.MOVE_POLLING_PERIOD)
                 continue
             if unreadable:

@@ -535,9 +535,20 @@ def test_a_move_raises_when_the_position_stays_unreadable(fake, monkeypatch):
     ser.timeout = 0.01
     _unreadable_position_replies_to_the_mover(ser, b"R\r", 10**6)
     t0 = time.perf_counter()
-    with pytest.raises(squid.exceptions.SquidTimeout, match="'P'"):
+    # A lost reply, not a stuck stage: the acquisition's move retry sends the move again on SquidReplyTimeout.
+    with pytest.raises(squid.exceptions.SquidReplyTimeout, match="'P'") as raised:
         stage.move_x_to(1.0)
+    assert type(raised.value) is squid.exceptions.SquidReplyTimeout
     assert time.perf_counter() - t0 < 1.0
+
+
+def test_a_stage_still_busy_after_wait_for_idle_is_a_plain_timeout(fake):
+    # A stage that stays busy is not a lost reply, so it must not be retried as one.
+    stage, ser = make_stage(fake)
+    stage.is_busy = True
+    with pytest.raises(squid.exceptions.SquidTimeout) as raised:
+        stage.wait_for_idle(0.05)
+    assert type(raised.value) is squid.exceptions.SquidTimeout
 
 
 def test_missing_stage_model_fails_startup_clearly(fake, monkeypatch):
