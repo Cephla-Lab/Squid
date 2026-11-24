@@ -144,3 +144,123 @@ def test_measure_focus_reads_the_laser_af_displacement_only_when_it_can(qtbot, q
     laf.reading = TimeoutError("AF laser")
     value = port.measure_focus_um()
     assert value != value
+
+
+@pytest.fixture
+def laser_af_controller(qtbot, monkeypatch):
+    """A simulated microscope with laser AF (simulated focus camera), not yet initialized."""
+    import control._def
+    import control.microscope
+    from tests.control.gui_test_stubs import get_test_qt_multi_point_controller
+
+    monkeypatch.setattr(control._def, "MERGE_CHANNELS", False)
+    monkeypatch.setattr(control._def, "SUPPORT_LASER_AUTOFOCUS", True)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    controller = get_test_qt_multi_point_controller(scope)
+    yield scope, controller
+    controller.close()
+    scope.close()
+
+
+def _focus_live_on(laf):
+    """Focus-camera live on, the way the GUI's focus-camera Live button does it."""
+    laf.liveController.start_live()
+    assert laf.liveController.is_live and laf.camera.get_callbacks_enabled()
+
+
+def _spy_focus_live(monkeypatch, laf):
+    """Record which thread stops/starts the focus-camera live view, and whether live was off during the reading."""
+    seen = {"stop": [], "start": [], "live_during_reading": []}
+    live = laf.liveController
+    stop, start, measure = live.stop_live, live.start_live, laf.measure_displacement
+
+    def spy_stop():
+        seen["stop"].append(threading.current_thread())
+        stop()
+
+    def spy_start():
+        seen["start"].append(threading.current_thread())
+        start()
+
+    def spy_measure():
+        seen["live_during_reading"].append(live.is_live)
+        seen["reading_thread"] = threading.current_thread()
+        return measure()  # the real reading: laser on/off, the real centroid path on the simulated focus camera
+
+    monkeypatch.setattr(live, "stop_live", spy_stop)
+    monkeypatch.setattr(live, "start_live", spy_start)
+    monkeypatch.setattr(laf, "measure_displacement", spy_measure)
+    return seen
+
+
+def _with_reference(laf):
+    laf.is_initialized = True
+    laf.laser_af_properties = laf.laser_af_properties.model_copy(
+        update={"has_reference": True, "x_reference": 500.0, "pixel_to_um": 0.4}
+    )
+
+
+def test_measure_focus_from_the_runner_thread_pauses_focus_live_on_the_gui_thread(
+    qtbot, laser_af_controller, monkeypatch
+):
+    scope, controller = laser_af_controller
+    port = QtImagingPort(controller, controller.scanCoordinates, scope)
+    laf = controller.laserAutoFocusController
+    _with_reference(laf)
+    _focus_live_on(laf)
+    seen = _spy_focus_live(monkeypatch, laf)
+    box = {}
+
+    def runner_side():
+        try:
+            box["value"] = port.measure_focus_um()
+        except Exception as e:  # pragma: no cover - surfaced by the assertion below
+            box["error"] = e
+
+    thread = threading.Thread(target=runner_side, name="fluidics-protocol", daemon=True)
+    thread.start()
+    qtbot.waitUntil(lambda: "value" in box or "error" in box, timeout=30000)
+    thread.join(5)
+    try:
+        assert box.get("error") is None
+        assert isinstance(box["value"], float)  # a value or nan; the simulated focus camera shows no real spot
+        assert seen["live_during_reading"] == [False]  # paused around the reading
+        assert seen["reading_thread"] is thread  # the reading itself stays on the runner thread
+        gui = threading.main_thread()
+        assert seen["stop"] == [gui] and seen["start"] == [gui]  # live stopped and started on the GUI thread
+        assert laf.liveController.is_live and laf.camera.get_callbacks_enabled()  # restored
+    finally:
+        laf.liveController.stop_live()
+
+
+def test_measure_focus_restores_focus_live_when_the_reading_raises(qtbot, laser_af_controller, monkeypatch):
+    scope, controller = laser_af_controller
+    port = QtImagingPort(controller, controller.scanCoordinates, scope)
+    laf = controller.laserAutoFocusController
+    _with_reference(laf)
+    _focus_live_on(laf)
+    seen = _spy_focus_live(monkeypatch, laf)
+
+    def failing_centroid(*a, **k):
+        laf.camera.enable_callbacks(False)  # what the real centroid path does first
+        raise TimeoutError("focus camera frame")
+
+    monkeypatch.setattr(laf, "_get_laser_spot_centroid", failing_centroid)
+    try:
+        value = port.measure_focus_um()  # GUI thread: no queued call, no deadlock
+        assert value != value  # nan: the reading raised
+        assert seen["live_during_reading"] == [False]
+        assert len(seen["stop"]) == 1 and len(seen["start"]) == 1
+        assert laf.liveController.is_live and laf.camera.get_callbacks_enabled()
+    finally:
+        laf.liveController.stop_live()
+
+
+def test_measure_focus_leaves_focus_live_off_when_it_was_off(qtbot, laser_af_controller, monkeypatch):
+    scope, controller = laser_af_controller
+    port = QtImagingPort(controller, controller.scanCoordinates, scope)
+    laf = controller.laserAutoFocusController
+    _with_reference(laf)
+    seen = _spy_focus_live(monkeypatch, laf)
+    assert isinstance(port.measure_focus_um(), float)
+    assert seen["stop"] == [] and seen["start"] == [] and not laf.liveController.is_live
