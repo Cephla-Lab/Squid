@@ -522,7 +522,7 @@ class LaserAutofocusController(QObject):
         self.camera.send_trigger()
         current_image = self.camera.read_frame()
         """
-        self._get_laser_spot_centroid()
+        spot = self._get_laser_spot_centroid()
         current_image = self.image
 
         try:
@@ -531,6 +531,11 @@ class LaserAutofocusController(QObject):
         except TimeoutError:
             self._log.exception("Failed to turn off AF laser after verifying spot alignment, laser in unknown state!")
             # Continue on because we got a reading, but the system is in a potentially weird and unknown state here.
+
+        if spot is None:
+            # A blank or spotless frame cannot confirm the alignment, whatever its crop correlates to.
+            self._log.error("No laser spot detected in the alignment verification frame")
+            return failure_return_value
 
         if self.reference_crop is None:
             self._log.warning("No reference crop stored")
@@ -554,12 +559,20 @@ class LaserAutofocusController(QObject):
         y_end = min(current_image.shape[0], center_y + self.laser_af_properties.spot_crop_size // 2)
 
         current_crop = current_image[y_start:y_end, x_start:x_end].astype(np.float32)
-        current_norm = (current_crop - np.mean(current_crop)) / np.max(current_crop)
+        # A uniform crop has no defined correlation: the normalisation (0/0 for an all-zero crop) and np.corrcoef
+        # (zero variance) give NaN, which is rejected below.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            current_norm = (current_crop - np.mean(current_crop)) / np.max(current_crop)
 
-        # Calculate normalized cross correlation
-        correlation = np.corrcoef(current_norm.ravel(), self.reference_crop.ravel())[0, 1]
+            # Calculate normalized cross correlation
+            correlation = np.corrcoef(current_norm.ravel(), self.reference_crop.ravel())[0, 1]
 
         self._log.info(f"Cross correlation with reference: {correlation:.3f}")
+
+        if not np.isfinite(correlation):
+            # NaN compares False with the threshold, so it must be rejected explicitly.
+            self._log.warning("Cross correlation check failed - correlation is undefined (uniform crop)")
+            return False, correlation
 
         # Check if correlation exceeds threshold
         if correlation < self.laser_af_properties.correlation_threshold:
