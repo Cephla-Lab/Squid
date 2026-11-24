@@ -203,6 +203,55 @@ class TestGetMemoryFootprintMb:
         assert footprint_mb > 0
 
 
+def _record_opened_paths():
+    """Patch builtins.open to record every path opened (and still open it), for the smaps checks below."""
+    import builtins
+
+    real_open = builtins.open
+    opened = []
+
+    def recording_open(file, *args, **kwargs):
+        opened.append(str(file))
+        return real_open(file, *args, **kwargs)
+
+    return patch("builtins.open", side_effect=recording_open), opened
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="Linux-specific test")
+class TestLinuxSamplingDoesNotReadSmaps:
+    """The periodic sampling path must not read /proc/<pid>/smaps or smaps_rollup.
+
+    Reading either walks every resident page of the process under its mmap lock (~12 ms per GB resident), and
+    every thread of the process that maps memory or page-faults meanwhile waits for it.
+    """
+
+    def test_footprint_does_not_open_smaps(self):
+        patcher, opened = _record_opened_paths()
+        with patcher:
+            footprint_mb = get_memory_footprint_mb(os.getpid())
+        assert footprint_mb > 0
+        assert opened, "expected the footprint to be read from /proc"
+        assert not [p for p in opened if "smaps" in p], opened
+
+    def test_footprint_is_this_process_rss(self):
+        footprint_mb = get_memory_footprint_mb(os.getpid())
+        rss_mb = psutil.Process().memory_info().rss / (1024 * 1024)
+        assert footprint_mb > 0
+        # Same counter read twice a few microseconds apart: allow for small allocations in between.
+        assert abs(footprint_mb - rss_mb) < max(16.0, 0.05 * rss_mb)
+
+    def test_monitor_sample_does_not_open_smaps(self):
+        """One sample of the acquisition monitor, including its periodic system-wide log, reads no smaps."""
+        monitor = MemoryMonitor(sample_interval_ms=200, enable_signals=False, track_children=True, log_interval_s=1)
+        monitor._last_log_time = 0.0  # due for the periodic log on this sample
+        patcher, opened = _record_opened_paths()
+        with patcher:
+            monitor._take_sample()
+        assert monitor._samples_count == 1
+        assert monitor.footprint_peak > 0
+        assert not [p for p in opened if "smaps" in p], opened
+
+
 class TestGetAllPythonProcessesMb:
     """Tests for get_all_python_processes_mb function."""
 
