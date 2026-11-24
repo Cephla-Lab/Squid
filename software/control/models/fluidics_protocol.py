@@ -116,9 +116,9 @@ class ReleaseAndSettle(BaseModel):
     alternate_port: Optional[int] = Field(None, ge=1)  # when the valve already sits on release_port
     tolerance_um: float = Field(0.2, gt=0)  # settled: medians of the last two windows differ less than this
     window_s: float = Field(5.0, gt=0)
-    timeout_s: float = Field(90.0, gt=0)  # after the valve move
+    timeout_s: float = Field(90.0, gt=0)  # after the valve reached the port
     on_timeout: Literal["hold", "warn"] = "hold"
-    fixed_wait_s: float = Field(15.0, ge=0)  # without a laser AF reading: wait this long after the move
+    fixed_wait_s: float = Field(15.0, ge=0)  # without a laser AF reading: wait this long once the valve is there
 
     @model_validator(mode="after")
     def _consistent(self):

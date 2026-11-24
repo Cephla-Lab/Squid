@@ -7,10 +7,15 @@ FOVs out of focus or starts laser AF on a moving surface. So, before the acquisi
 1. one window of laser AF displacement readings where the stage is (z is not moved) - the baseline;
 2. the selector valve to the release port (the alternate port when it is already there);
 3. readings until the medians of the last two windows differ by less than the tolerance (settled), or the
-   timeout. Without a laser AF reading the wait is a fixed time after the move instead.
+   timeout. Without a laser AF reading the wait is a fixed time instead. Settle time, timeout and fixed wait
+   all count from when the valve reached the port, not from when it started to turn.
 
-The first flow sensor, when there is one, is watched throughout: the volume it sees after the move (in the
-draw direction, net of its reading before the move) is the liquid the released line let in.
+A window only counts when the spot was found in most of its readings (MIN_VALID_PERCENT) and in the newest
+one: a spot lost part-way (a rebound beyond the laser AF range looks like that) is not settled, it waits on.
+
+The first flow sensor, when there is one, is watched throughout (also for one window before the move when
+laser AF is not available): the volume it sees from the move on (in the draw direction, net of its reading
+before the move) is the liquid the released line let in; without a reading before the move it is unknown.
 Qt-free; the runner drives it on its own thread through the two ports."""
 
 import math
@@ -24,6 +29,7 @@ from control.models.fluidics_run import ReleaseSettleRecord
 
 SAMPLE_INTERVAL_S = 0.25  # at most 4 readings a second; a reading itself takes a few camera frames
 MIN_READINGS_PER_WINDOW = 2
+MIN_VALID_PERCENT = 80  # of a window's readings that must have found the spot
 
 
 class ReleaseFailed(RuntimeError):
@@ -33,7 +39,8 @@ class ReleaseFailed(RuntimeError):
 @dataclass
 class SettleOutcome:
     record: ReleaseSettleRecord
-    series: List[Tuple[float, Optional[float]]] = field(default_factory=list)  # (s after the move, um | None)
+    # (s after the valve reached the port - negative: the baseline before the move, um | None)
+    series: List[Tuple[float, Optional[float]]] = field(default_factory=list)
     stopped: bool = False  # should_stop() ended the wait early
 
 
@@ -46,16 +53,31 @@ def _median(values: List[float]) -> Optional[float]:
 
 
 def _net_volume_ul(flow: List[Tuple[float, Optional[float]]], t_move: float) -> Optional[float]:
-    """Trapezoid integral of (flow - its median before the move) from the move on; uL/min x s -> uL."""
+    """Trapezoid integral of (flow - its median before the move) from the move on; uL/min x s -> uL. None
+    without a reading before the move: a sensor's resting offset would otherwise count as inflow."""
     before = [f for t, f in flow if t < t_move and f is not None]
     after = [(t, f) for t, f in flow if t >= t_move and f is not None]
-    if not after:
+    if not before or not after:
         return None
-    rest = float(statistics.median(before)) if before else 0.0
+    rest = float(statistics.median(before))
     total = 0.0
     for (t0, f0), (t1, f1) in zip(after, after[1:]):
         total += 0.5 * ((f0 - rest) + (f1 - rest)) * (t1 - t0) / 60.0
     return total
+
+
+def _unreliable(tail, prev, w: float) -> Optional[str]:
+    """Why the last two windows (all readings, newest last) cannot decide settled; None when they can."""
+    for name, window in (("last", tail), ("previous", prev)):
+        found = len(_valid(window))
+        if found < MIN_READINGS_PER_WINDOW or 100 * found < MIN_VALID_PERCENT * len(window):
+            return (
+                f"the laser AF spot was found in only {found} of {len(window)} readings of the {name} {w:g} s "
+                f"window (needs {MIN_VALID_PERCENT} %)"
+            )
+    if tail[-1][1] is None:
+        return "the newest laser AF reading found no spot"
+    return None
 
 
 def release_and_settle(
@@ -88,6 +110,9 @@ def release_and_settle(
         first = imaging.measure_focus_um()
         if first is None:
             mode, message = "fixed_wait", "laser AF not available"
+            if unsubscribe is not None:  # the inflow still needs the sensor's reading before the move
+                while now() - t0 < settings.window_s and not should_stop():
+                    pace(min(now() + SAMPLE_INTERVAL_S, t0 + settings.window_s))
         else:
             readings.append((t0, None if math.isnan(first) else float(first)))
             pace(t0 + SAMPLE_INTERVAL_S)
@@ -108,54 +133,63 @@ def release_and_settle(
         settle_s = last_change = None
         final = None
         stopped = should_stop()
+        valve_move_s = None
         if not stopped:
             try:
                 fluidics.open_port(port)
             except Exception as e:
                 raise ReleaseFailed(str(e)) from e
+            valve_move_s = now() - t_move
+        t_arrived = now()  # the settle windows, the timeout and the fixed wait count from here
 
         if stopped:
             message = "stopped before the valve move"
         elif mode == "fixed_wait":
-            while now() - t_move < settings.fixed_wait_s:
+            while now() - t_arrived < settings.fixed_wait_s:
                 if should_stop():
                     stopped = True
                     break
-                pace(min(now() + SAMPLE_INTERVAL_S, t_move + settings.fixed_wait_s))
+                pace(min(now() + SAMPLE_INTERVAL_S, t_arrived + settings.fixed_wait_s))
         else:
             settled = False
             w = settings.window_s
+            unreliable = None
             while True:
                 if should_stop():
                     stopped = True
                     break
                 t = now()
                 readings.append((t, read()))
-                elapsed = t - t_move
+                elapsed = t - t_arrived
                 if elapsed >= 2 * w:
-                    tail = _valid([r for r in readings if t - w < r[0] <= t])
-                    prev = _valid([r for r in readings if t - 2 * w < r[0] <= t - w])
-                    if len(tail) >= MIN_READINGS_PER_WINDOW and len(prev) >= MIN_READINGS_PER_WINDOW:
-                        last_change = _median(tail) - _median(prev)
-                        final = _median(tail)
+                    tail = [r for r in readings if t - w < r[0] <= t]
+                    prev = [r for r in readings if t - 2 * w < r[0] <= t - w]
+                    unreliable = _unreliable(tail, prev, w)
+                    if unreliable is None:
+                        final = _median(_valid(tail))
+                        last_change = final - _median(_valid(prev))
                         if abs(last_change) < settings.tolerance_um:
                             settled, settle_s = True, elapsed
                             break
+                    else:  # what an earlier window said no longer holds
+                        final = last_change = None
                 if elapsed >= settings.timeout_s:
                     break
                 pace(t + SAMPLE_INTERVAL_S)
             if final is None:
-                final = _median(_valid([r for r in readings if r[0] > now() - w and r[0] >= t_move]))
+                final = _median(_valid([r for r in readings if r[0] > now() - w and r[0] >= t_arrived]))
             if not stopped and not settled:
                 if final is None:
                     message = f"no laser AF reading in the last {w:g} s"
+                elif unreliable is not None:
+                    message = f"{settings.timeout_s:g} s after the valve move {unreliable}"
                 else:
                     change = "n/a" if last_change is None else f"{last_change:+.2f} um"
                     message = (
                         f"{settings.timeout_s:g} s after the valve move the last {w:g} s window still changed "
                         f"{change} (tolerance {settings.tolerance_um:g} um)"
                     )
-        waited = now() - t_move
+        waited = now() - t_arrived
     finally:
         if unsubscribe is not None:
             try:
@@ -170,6 +204,7 @@ def release_and_settle(
         settled=None if mode == "fixed_wait" else settled,
         settle_s=settle_s,
         waited_s=waited,
+        valve_move_s=valve_move_s,
         baseline_um=baseline if mode == "laser_af" else None,
         final_um=final,
         rise_um=None if final is None or baseline is None or mode != "laser_af" else final - baseline,
@@ -177,7 +212,7 @@ def release_and_settle(
         inflow_ul=_net_volume_ul(flow, t_move) if unsubscribe is not None else None,
         message=message,
     )
-    series = [(round(t - t_move, 3), None if v is None else round(v, 3)) for t, v in readings]
+    series = [(round(t - t_arrived, 3), None if v is None else round(v, 3)) for t, v in readings]
     return SettleOutcome(record=record, series=series, stopped=stopped)
 
 

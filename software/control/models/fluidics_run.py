@@ -21,13 +21,15 @@ class ReleaseSettleRecord(BaseModel):
     release_port: int
     mode: Literal["laser_af", "fixed_wait"]
     settled: Optional[bool] = None  # None for a fixed wait
-    settle_s: Optional[float] = None  # after the valve move, when settled
-    waited_s: float = 0.0  # after the valve move, in all
+    settle_s: Optional[float] = None  # after the valve reached the port, when settled
+    waited_s: float = 0.0  # after the valve reached the port, in all
+    valve_move_s: Optional[float] = None  # how long the valve took to get there
     baseline_um: Optional[float] = None  # laser AF displacement before the move (median of one window)
     final_um: Optional[float] = None  # ... and over the last window
     rise_um: Optional[float] = None  # final - baseline: how far the coverslip came back
     last_change_um: Optional[float] = None  # median change between the last two windows
-    inflow_ul: Optional[float] = None  # flow-sensor volume after the move, in the draw direction; None: no sensor
+    # flow-sensor volume from the move on, in the draw direction; None: no sensor, or no reading before the move
+    inflow_ul: Optional[float] = None
     message: Optional[str] = None
 
 

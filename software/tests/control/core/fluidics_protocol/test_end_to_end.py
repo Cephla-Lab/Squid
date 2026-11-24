@@ -127,8 +127,8 @@ def test_release_and_settle_runs_on_the_simulated_fluidics_system(tmp_path, flui
         port = LibraryFluidicsPort(service.system)
         protocol = _protocol()
         protocol.imaging.release_and_settle = ReleaseAndSettle(
-            release_port=25, alternate_port=26, window_s=0.05, timeout_s=0.5
-        )
+            release_port=25, alternate_port=26, window_s=0.2, timeout_s=1.0
+        )  # a window holds a few of the simulated sensor's readings (one every 60 ms): the inflow has a baseline
         resolved = resolve_protocol(protocol, tmp_path, fluidics=port)
         run_dir = manifest_io.create_run_dir(tmp_path, "liver")
         imaging = FakeImagingPort(focus=lambda: 0.0)

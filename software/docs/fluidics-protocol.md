@@ -43,16 +43,20 @@ imaging:
     alternate_port: 15   # optional: used when the valve already sits on release_port
     tolerance_um: 0.2    # settled: the median laser AF displacement of the last window differs
     window_s: 5          #   from the window before by less than tolerance_um
-    timeout_s: 90        # after the valve move
+    timeout_s: 90        # after the valve reaches the port
     on_timeout: hold     # hold: the step goes HELD (Restart checks again, Skip leaves the row out); warn: log, image
-    fixed_wait_s: 15     # no laser AF reading (no reference, no spot): wait this long after the move instead
+    fixed_wait_s: 15     # no laser AF reading (no reference, no spot): wait this long once the valve is there
 ```
 
 Before each imaging attempt the runner takes one window of laser AF displacement readings where the stage is
 (z is not moved), moves the valve (the library's manual `open_port`, so it excludes a run and Stop stops it),
-then reads until settled or the timeout. The first flow sensor, if any, is watched throughout. The result —
-ports, rise (final − baseline), settle time, last change, inflow (µL after the move in the draw direction, net
-of the reading before it) — is logged to `run.log` (one line), stored on the attempt in `run_manifest.json`
+then reads until settled or the timeout; settle time, timeout and fixed wait count from when the valve reached
+the port. A window only counts when the spot was found in at least 80 % of its readings and in the newest one,
+so a spot lost part-way (a rebound beyond the laser AF range looks like that) waits on until it is back or
+the timeout instead of settling on the readings left. The first flow sensor, if any, is watched throughout
+(for one window before the move also without laser AF). The result — ports, valve travel time, rise (final − baseline), settle time,
+last change, inflow (µL from the move on in the draw direction, net of the reading before it; empty without a
+reading before the move) — is logged to `run.log` (one line), stored on the attempt in `run_manifest.json`
 (`release_and_settle`), in `acquisition.yaml`'s `protocol:` section, and with the reading series in the
 session's `protocol_step.json`. A valve move that fails holds the step (`release_failed`); Abort step during
 the wait holds it as `user_abort`. Pre-flight refuses release/alternate ports the fluidics config does not
