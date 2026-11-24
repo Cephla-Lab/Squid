@@ -1394,7 +1394,7 @@ class MultiPointWorker:
                 "target_um": self.region_laser_af_offsets.get(region_id, 0.0),
                 "af_time_s": round(time.time() - start_time, 3),
             }
-            self._laser_af_record.add(row, getattr(laser_af, "image", None))
+            self._laser_af_record.add(row, laser_af.last_frame)  # None when this call read no frame
         except Exception:
             self._log.exception(f"laser AF record: could not record region '{region_id}' FOV {fov}")
 

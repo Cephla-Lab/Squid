@@ -56,6 +56,9 @@ class LaserAutofocusController(QObject):
         # The result of the last measure_displacement() and of the last alignment check (nan: none), for records.
         self.last_displacement_um = float("nan")
         self.last_correlation = float("nan")
+        # The last focus-camera frame read since the last move_to_target() began (None: that call read none), for
+        # records. Unlike self.image it never holds a frame of an earlier call.
+        self.last_frame = None
 
         # Load configurations if available
         self.load_cached_configuration()
@@ -368,6 +371,7 @@ class LaserAutofocusController(QObject):
             bool: True if move was successful, False if measurement failed or displacement was out of range
         """
         self.last_displacement_um = self.last_correlation = float("nan")
+        self.last_frame = None
         if not self.laser_af_properties.has_reference:
             self._log.warning("Cannot move to target - reference not set")
             return False
@@ -605,7 +609,7 @@ class LaserAutofocusController(QObject):
                     self._log.warning(f"Failed to read frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}")
                     continue
 
-                self.image = image  # store for debugging # TODO: add to return instead of storing
+                self.image = self.last_frame = image  # store for debugging # TODO: add to return instead of storing
                 full_height, full_width = image.shape[:2]
 
                 if use_center_crop is not None:

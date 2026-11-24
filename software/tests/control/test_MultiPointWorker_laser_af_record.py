@@ -5,6 +5,8 @@ import json
 import math
 import os
 
+import imageio as iio
+import numpy as np
 import pytest
 
 import control._def
@@ -25,11 +27,16 @@ class _SurfaceLaserAF:
         self.image = None
         self.characterization_mode = False
         self.last_displacement_um = self.last_correlation = math.nan
+        self.last_frame = None
+        self.reads_frames = True  # False: every focus-camera read of a call returns None
 
     def move_to_target(self, target_um):
         d = self.piezo.position - self.surface_um
         self.last_displacement_um = d if abs(d) <= self.capture_um else math.nan
         self.last_correlation = math.nan
+        self.last_frame = None
+        if self.reads_frames:
+            self.image = self.last_frame = np.full((4, 6), int(self.piezo.position), dtype=np.uint8)
         if math.isnan(self.last_displacement_um):
             return False
         self.piezo.move_to(self.piezo.position + target_um - d)
@@ -70,6 +77,21 @@ def test_one_row_per_per_fov_laser_af(tmp_path):
     assert math.isnan(float(rows[1]["displacement_um"]))  # no spot
     assert math.isnan(float(rows[1]["correlation"]))  # not reached
     assert (rows[0]["x_mm"], rows[0]["y_mm"], rows[0]["channel"], rows[0]["target_um"]) == ("10.0", "20.0", "", "0.0")
+
+
+def test_a_frame_is_saved_only_for_the_call_that_read_it(tmp_path):
+    w = _record_worker(surface_um=103.0)
+    w._laser_af_record = LaserAFRecord(str(tmp_path), save_frames=True)
+    w.acquire_at_position("A1", "/tmp", 0)  # reads a frame at 100 um
+    laser_af = w.laser_auto_focus_controller
+    laser_af.surface_um, laser_af.reads_frames = 150.0, False  # FOV 1: every read returns None, the AF fails
+    w.acquire_at_position("A1", "/tmp", 1)
+    assert laser_af.image is not None  # the controller still holds FOV 0's frame
+
+    frames = tmp_path / "laser_af_frames" / "0"
+    assert sorted(os.listdir(frames)) == ["A1_0.bmp"]  # no FOV 0 frame saved under FOV 1's name
+    assert (iio.imread(frames / "A1_0.bmp") == 100).all()
+    assert [r["ok"] for r in _rows(tmp_path)] == ["True", "False"]  # FOV 1 still has its row
 
 
 def test_no_record_by_default_on_a_bare_worker(tmp_path):
@@ -135,5 +157,29 @@ def test_the_laser_af_controller_keeps_its_last_displacement_and_correlation(mon
     monkeypatch.setattr(laser_af, "_get_laser_spot_centroid", lambda *a, **k: None)  # the spot is lost
     assert not laser_af.move_to_target(0.0)
     assert math.isnan(laser_af.last_displacement_um) and math.isnan(laser_af.last_correlation)
+    mpc.close()
+    scope.close()
+
+
+def test_the_laser_af_controller_keeps_the_frame_of_its_last_move_to_target_only(monkeypatch):
+    monkeypatch.setattr(control._def, "SUPPORT_LASER_AUTOFOCUS", True)
+    # Displaying the spot image of a call that read no frame emits None, which raises; not what this test is about.
+    monkeypatch.setattr(control._def, "LASER_AF_DISPLAY_SPOT_IMAGE", False)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    laser_af = mpc.laserAutoFocusController
+    laser_af.laser_af_properties = laser_af.laser_af_properties.model_copy(
+        update={"has_reference": True, "x_reference": 500.0, "pixel_to_um": 0.5}
+    )
+    assert laser_af.last_frame is None
+    frame = np.zeros((256, 1536), dtype=np.uint8)
+    monkeypatch.setattr(laser_af, "get_new_frame", lambda: frame)
+    laser_af.move_to_target(0.0)  # no spot in a dark frame: fails, but read frames
+    assert laser_af.last_frame is frame and laser_af.image is frame
+
+    monkeypatch.setattr(laser_af, "get_new_frame", lambda: None)  # every read of the next call fails
+    assert not laser_af.move_to_target(0.0)
+    assert laser_af.last_frame is None
+    assert laser_af.image is frame  # unchanged for its other users (the failed-AF diagnostic image)
     mpc.close()
     scope.close()
