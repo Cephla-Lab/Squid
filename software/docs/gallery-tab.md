@@ -2,6 +2,8 @@
 
 The Gallery tab is the view onto Squid's acquisition history: a per-machine record of every acquisition Squid runs, wherever it was saved. It lets you recognise a past run by its picture and metadata and open it in one click. It sits after the NDViewer tab among the image display tabs.
 
+The tab is shown only when Squid has a viewer to open an acquisition with: the NDViewer tab, or an ndviewer_light it can start in a window (see [Opening an acquisition](#opening-an-acquisition)). Without one the tab is hidden and the first-launch import is not offered. Acquisitions are recorded in the history all the same, so they are in the gallery once a viewer is there. Squid looks for a viewer at startup and when the Preferences are applied: setting "ndviewer_light location" brings the tab up without a restart.
+
 ## What it shows
 
 Entries are listed newest first, as a grid of picture tiles or as a table (list view). The choice is remembered across sessions in `cache/last_gallery_view.yaml`.
@@ -22,7 +24,7 @@ The mosaic overview of a z-stack is a max intensity projection (MIP) across z. M
 ## Opening an acquisition
 
 - **Open in Squid** loads the folder into the NDViewer tab and switches to it. It is hidden when "Enable NDViewer" is off, and disabled while an acquisition is running (the NDViewer tab is feeding the live run). See [NDViewer Tab](ndviewer-tab.md).
-- **Open in window** starts a standalone ndviewer_light window as a separate process that outlives Squid. The program is found in this order: the location set in Preferences > Views > "ndviewer_light location"; the `ndviewer-light` command on the PATH; the `ndviewer_light` package in Squid's Python; the `ndviewer_light` submodule. If none is found the button is disabled and gives the reason. The viewer's output goes to `ndviewer_light.log` in the history folder (rewritten at each launch); if the viewer exits within a few seconds, Squid shows the last lines of that log.
+- **Open in window** starts a standalone ndviewer_light window as a separate process that outlives Squid. The program is found in this order: the location set in Preferences > Views > "ndviewer_light location"; the `ndviewer-light` command on the PATH; the `ndviewer_light` package in Squid's Python; the `ndviewer_light` submodule. If none is found the button is disabled and gives the reason (the tab is then there only because the NDViewer tab is, or because the program went away after Squid started). The viewer's output goes to `ndviewer_light.log` in the history folder (rewritten at each launch); if the viewer exits within a few seconds, Squid shows the last lines of that log.
 - Double-click or Enter does Open in Squid when available, otherwise Open in window, otherwise Show folder.
 
 ## Other actions
@@ -39,7 +41,7 @@ Also available from the right-click menu:
 
 "Add folder to history" scans the chosen folder one level deep for acquisition folders (any of `acquisition.yaml`, `acquisition parameters.json`, `acquisition_channels.yaml`, `configurations.xml`), records new ones, skips those already in the history, and builds previews in the background (the size on disk of imported runs is not computed). The button is disabled while an acquisition runs. A folder whose acquisition subfolders carry a `protocol` section is imported as one protocol run with its rounds grouped. `snapped images...` folders are taken only when "Record snaps in the acquisition history" is on.
 
-On the first launch with an empty history, Squid offers once to import the current saving folder (the folder is checked in the background; an import accepted during an acquisition starts when it ends).
+On the first launch with an empty history, Squid offers once to import the current saving folder (the folder is checked in the background; an import accepted during an acquisition starts when it ends). While the tab is hidden because there is no viewer, the offer is not made; it is made when the tab first appears.
 
 ## Offline and interrupted runs
 
@@ -51,10 +53,10 @@ A run whose Squid process died before it finished is closed the next time Squid 
 
 Settings > Preferences > Views:
 
-- **Enable NDViewer**: shows the NDViewer tab; governs Open in Squid.
+- **Enable NDViewer**: shows the NDViewer tab; governs Open in Squid, and is one of the two viewers that make the Gallery tab appear.
 - **Z-stack projection**: Max intensity projection (default) or Last plane acquired.
 - **Record snaps in the acquisition history**: off by default. When on, Snap acquisitions are recorded (Snap badge and filter) and imported.
-- **ndviewer_light location**: a command or folder used first by Open in window. A command line is split as the system splits one: on Windows the way Windows programs read theirs (double quotes group words; a backslash is literal except before a quote), elsewhere with shell quoting.
+- **ndviewer_light location**: a command or folder used first by Open in window. With the NDViewer tab off, the Gallery tab is shown only if ndviewer_light is found here or in one of the other places. A command line is split as the system splits one: on Windows the way Windows programs read theirs (double quotes group words; a backslash is literal except before a quote), elsewhere with shell quoting.
 
 ## Where the history lives
 

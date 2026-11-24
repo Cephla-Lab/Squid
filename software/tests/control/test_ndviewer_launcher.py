@@ -12,6 +12,7 @@ from control.ndviewer_launcher import (
     launch_ndviewer_light,
     read_log_tail,
     resolve_ndviewer_light,
+    submodule_checked_out,
 )
 
 PY = "python-for-tests"
@@ -82,6 +83,18 @@ def test_a_checkout_without_the_package_main_is_not_the_submodule(tmp_path):
     # The old check looked for __main__.py at the checkout's top level, which ndviewer_light has never had.
     (tmp_path / "__main__.py").write_text("")
     assert _resolve(submodule=str(tmp_path)).source == "none"
+
+
+def test_a_submodule_that_was_never_fetched_is_not_checked_out(tmp_path):
+    # git leaves an empty folder for it, which Python imports without error (a namespace package): the NDViewer
+    # tab, which imports control.ndviewer_light, must not go by the import.
+    assert not submodule_checked_out(str(tmp_path / "missing"))
+    assert not submodule_checked_out(str(tmp_path))
+    (tmp_path / "__init__.py").write_text("")  # the shim alone, without the package it re-exports
+    assert not submodule_checked_out(str(tmp_path))
+    (tmp_path / "ndviewer_light").mkdir()
+    (tmp_path / "ndviewer_light" / "__init__.py").write_text("")
+    assert submodule_checked_out(str(tmp_path))
 
 
 def test_default_submodule_location_is_squids_checkout():

@@ -128,7 +128,13 @@ from control.widgets_slack import SlackSettingsDialog, load_slack_settings_from_
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from control.acquisition_history_recorder import AcquisitionHistoryRecorder
-from control.ndviewer_launcher import default_log_path, launch_ndviewer_light, read_log_tail, resolve_ndviewer_light
+from control.ndviewer_launcher import (
+    default_log_path,
+    launch_ndviewer_light,
+    read_log_tail,
+    resolve_ndviewer_light,
+    submodule_checked_out,
+)
 from squid.acquisition_history import HistoryStore, history_dir, normalize_folder
 from squid.version import software_version
 
@@ -1357,7 +1363,12 @@ class HighContentScreeningGui(QMainWindow):
             # NDV and napari both use vispy for OpenGL rendering. Initializing NDV first
             # can cause OpenGL context conflicts since both libraries share vispy state.
             self.ndviewerTab = None
-            if control._def.ENABLE_NDVIEWER:
+            if control._def.ENABLE_NDVIEWER and not submodule_checked_out():
+                self.log.warning(
+                    "NDViewer tab unavailable: the ndviewer_light submodule is not checked out "
+                    "(git submodule update --init software/control/ndviewer_light)"
+                )
+            elif control._def.ENABLE_NDVIEWER:
                 try:
                     self.ndviewerTab = widgets.NDViewerTab()
                     self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
@@ -1377,7 +1388,8 @@ class HighContentScreeningGui(QMainWindow):
                 self.log.debug("NDViewer tab not available, FOV click navigation disabled")
 
             # Gallery of the acquisitions saved under the saving folder: one opens in the NDViewer tab, shows
-            # in the file browser, or hands its settings back to the multipoint tab it was run from.
+            # in the file browser, or hands its settings back to the multipoint tab it was run from. Its tab is
+            # hidden while Squid has no viewer to open one with (_update_gallery_tab_visibility).
             from control.widgets_gallery import AcquisitionGalleryWidget
 
             self.acquisitionGalleryWidget = AcquisitionGalleryWidget(
@@ -1385,7 +1397,7 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.imageDisplayTabs.addTab(self.acquisitionGalleryWidget, "Gallery")
             self._set_gallery_open_in_squid(acquiring=False)
-            self._refresh_ndviewer_launcher()
+            self._refresh_viewers()
 
             # z plot
             self.zPlotWidget = widgets.SurfacePlotWidget()
@@ -1799,7 +1811,8 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController.signal_acquisition_progress.connect(self._on_gallery_acquisition_progress)
             self.multipointController.signal_region_progress.connect(self._on_gallery_region_progress)
             self.multipointController.acquisition_finished.connect(self._refresh_gallery_after_acquisition)
-            QTimer.singleShot(0, gallery.offer_initial_import)
+            if self._gallery_tab_visible():  # else when a viewer is found (_update_gallery_tab_visibility)
+                QTimer.singleShot(0, gallery.offer_initial_import)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
@@ -2216,8 +2229,9 @@ class HighContentScreeningGui(QMainWindow):
             dialog.signal_config_changed.connect(
                 lambda: self.navigationWidget.set_click_to_move(control._def.ENABLE_CLICK_TO_MOVE)
             )
-            # The ndviewer_light location preference applies live: the gallery re-resolves the launcher.
-            dialog.signal_config_changed.connect(self._refresh_ndviewer_launcher)
+            # The ndviewer_light location preference applies live: the gallery re-resolves the launcher, and its
+            # tab comes or goes with it.
+            dialog.signal_config_changed.connect(self._refresh_viewers)
             # The Z-stack order dropdown preference applies live: the tabs re-read the flag.
             for tab in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget, self.templateMultiPointWidget):
                 if tab is not None:
@@ -3766,6 +3780,44 @@ class HighContentScreeningGui(QMainWindow):
             return
         self._ndviewer_launcher = resolution
         self.acquisitionGalleryWidget.set_open_in_window(resolution.command is not None, resolution.reason)
+
+    def _refresh_viewers(self) -> None:
+        """At startup and when the Preferences change: look for ndviewer_light again, then show or hide the
+        Gallery tab."""
+        self._refresh_ndviewer_launcher()
+        self._update_gallery_tab_visibility()
+
+    def _gallery_tab_index(self) -> int:
+        """The Gallery tab's index, or -1 without one (live-only mode has no gallery and no display tabs)."""
+        gallery = self.acquisitionGalleryWidget
+        return self.imageDisplayTabs.indexOf(gallery) if gallery is not None else -1
+
+    def _gallery_tab_visible(self) -> bool:
+        index = self._gallery_tab_index()
+        return index >= 0 and self.imageDisplayTabs.isTabVisible(index)
+
+    def _update_gallery_tab_visibility(self) -> None:
+        """The Gallery tab is shown only while Squid has a viewer to open an acquisition with: the NDViewer tab,
+        or an ndviewer_light it can start in a window. Without one the tab is hidden and the first-launch import
+        is not offered; the history is recorded all the same, so the runs are there once a viewer is.
+
+        Not called when the tab is shown (a tab must not vanish as the user opens it): a viewer that went away
+        since startup disables Open in window, which says why."""
+        gallery = self.acquisitionGalleryWidget
+        index = self._gallery_tab_index()
+        if index < 0:
+            return
+        launcher = self._ndviewer_launcher
+        has_viewer = self.ndviewerTab is not None or (launcher is not None and launcher.command is not None)
+        if has_viewer == self.imageDisplayTabs.isTabVisible(index):
+            return
+        self.imageDisplayTabs.setTabVisible(index, has_viewer)
+        if has_viewer:
+            self.log.info("Gallery tab shown: a viewer for saved acquisitions is available")
+            QTimer.singleShot(0, gallery.offer_initial_import)
+        else:
+            reason = launcher.reason if launcher is not None else "ndviewer_light could not be looked for"
+            self.log.info(f"Gallery tab hidden: no viewer for saved acquisitions ({reason})")
 
     def _open_acquisition_in_window(self, folder: str) -> None:
         if self._ndviewer_launcher is None:
