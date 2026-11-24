@@ -7,6 +7,8 @@ from unittest.mock import MagicMock
 import pytest
 
 import control.widgets_fluidics.protocol_widget as protocol_widget_module
+from control.core.fluidics_protocol import runner as runner_module
+from control.core.fluidics_protocol.events import RunnerState
 from control.core.fluidics_protocol import manifest as manifest_io
 from control.microscope_control_server import MicroscopeControlServer
 from control.models.fluidics_protocol import save_protocol
@@ -67,7 +69,7 @@ def test_confirm_true_starts_the_run_like_the_start_button(qtbot, widget, no_dia
 
     status = server._execute("get_fluidics_protocol_status", {})["result"]
     assert status["has_run"] and status["run_name"] == "kidney"
-    assert wait_until(lambda: w.runner.outcome is not None, timeout=15) and w.runner.outcome == "finished"
+    assert w.runner.wait(15) and w.runner.outcome == "finished"  # wait(): the outcome is set before the save
     assert manifest_io.read_manifest(w.runner.run_dir).status == "finished"
     assert len(imaging.requests) == 1
 
@@ -123,3 +125,110 @@ def test_confirm_must_be_a_boolean(qtbot, widget, no_dialogs):
     w = widget[0]
     reply = _server(w)._execute("start_fluidics_protocol", {"confirm": "yes"})
     assert not reply["success"] and "confirm must be true or false" in reply["error"] and w.runner is None
+
+
+def test_a_second_start_while_the_first_run_is_still_opening_is_refused(qtbot, widget, no_dialogs, monkeypatch):
+    """The runner is IDLE until its thread has opened the run folder (mkdir, run.log, protocol copy, hash); a
+    second start in that window must not replace the first runner."""
+    w, fluidics, _imaging, _save_to = widget
+    fluidics.script = [("hold",)]
+    opening = threading.Event()
+    release = threading.Event()
+    original_open_run = runner_module.ProtocolRunner._open_run
+
+    def slow_open_run(runner):
+        opening.set()
+        release.wait(10)  # e.g. a slow network Save to drive
+        return original_open_run(runner)
+
+    monkeypatch.setattr(runner_module.ProtocolRunner, "_open_run", slow_open_run)
+    server = _server(w)
+    assert _from_another_thread(qtbot, server, "start_fluidics_protocol", confirm=True, run_name="first")["success"]
+    first = w.runner
+    try:
+        assert opening.wait(5) and first.state is RunnerState.IDLE
+        assert w.is_run_active()
+        reply = _from_another_thread(qtbot, server, "start_fluidics_protocol", confirm=True, run_name="second")
+        assert not reply["success"] and "already in progress" in reply["error"]
+        assert w.runner is first
+    finally:
+        release.set()
+        first.abort_run()
+        assert first.wait(10)
+
+
+def test_a_launch_that_fails_releases_the_run(qtbot, widget, no_dialogs, monkeypatch):
+    w, _fluidics, _imaging, _save_to = widget
+    started = []
+    w.signal_acquisition_started.connect(started.append)
+
+    original_start = runner_module.ProtocolRunner.start
+    fail = [True]
+
+    def start(runner):
+        if fail[0]:
+            raise RuntimeError("can't start new thread")
+        original_start(runner)
+
+    monkeypatch.setattr(runner_module.ProtocolRunner, "start", start)
+    reply = _from_another_thread(qtbot, _server(w), "start_fluidics_protocol", confirm=True)
+    assert not reply["success"] and "can't start new thread" in reply["error"]
+    assert w.runner is None and not w.is_run_active()
+    assert started == [] and w.running_box.isHidden() and w.protocol_tab.add_step_button.isEnabled()
+
+    fail[0] = False
+    reply = _from_another_thread(qtbot, _server(w), "start_fluidics_protocol", confirm=True, run_name="again")
+    assert reply["success"], reply
+    assert wait_until(lambda: w.runner.outcome is not None, timeout=15)
+
+
+@pytest.fixture
+def record_tabs(qtbot, widget):
+    """The record tabs as the GUI builds them, a multipoint tab current: the GUI keeps only the current record tab
+    enabled while a run rides (toggleAcquisitionStart), so the protocol tab must be current when the run starts."""
+    from qtpy.QtWidgets import QTabWidget, QWidget
+
+    from control.widgets_fluidics import wire_record_tab
+
+    w = widget[0]
+    tabs = QTabWidget()
+    qtbot.addWidget(tabs)
+    wellplate = QWidget()
+    tabs.addTab(wellplate, "Wellplate Multipoint")
+    tabs.addTab(w, "Fluidics Protocol")
+    tabs.setCurrentWidget(wellplate)
+    wire_record_tab(tabs, w)
+    current_at_start = []
+    w.signal_acquisition_started.connect(lambda started: started and current_at_start.append(tabs.currentWidget() is w))
+    return tabs, current_at_start
+
+
+def test_a_server_start_selects_the_protocol_tab_before_the_run_starts(qtbot, widget, no_dialogs, record_tabs):
+    w = widget[0]
+    tabs, current_at_start = record_tabs
+    assert _from_another_thread(qtbot, _server(w), "start_fluidics_protocol", confirm=True)["success"]
+    assert current_at_start == [True] and tabs.currentWidget() is w
+    assert wait_until(lambda: w.runner.outcome is not None, timeout=15)
+
+
+def test_a_recovered_run_selects_the_protocol_tab_before_it_starts(qtbot, widget, record_tabs):
+    w, _fluidics, _imaging, save_to = widget
+    tabs, current_at_start = record_tabs
+    w.start_run()
+    assert w.runner.wait(15)  # its manifest is written (the outcome is set just before)
+    run_dir = next(save_to.glob("liver_*"))
+    crashed = manifest_io.read_manifest(run_dir)
+    crashed.status = "running"
+    crashed.pid = 2**22 - 7
+    crashed.cursor.step, crashed.cursor.attempt, crashed.cursor.sequence = 0, 1, 0
+    crashed.steps[0].attempts[0].outcome = None
+    manifest_io.write_manifest(run_dir, crashed)
+    qtbot.waitUntil(lambda: w.running_box.isHidden(), timeout=5000)  # the first run's end reached the tab
+    tabs.setCurrentIndex(0)  # the operator went back to the multipoint tab
+    current_at_start.clear()
+
+    w.offer_recovery(startup=True)
+    assert current_at_start == [True] and tabs.currentWidget() is w
+    qtbot.waitUntil(lambda: w.runner.state == RunnerState.HELD, timeout=15000)
+    w.runner.hold_action(protocol_widget_module.HoldAction.END)
+    assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)

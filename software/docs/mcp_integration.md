@@ -196,8 +196,10 @@ went HELD; the HELD panel and the acquisition watchdog use the same value, and i
 `heartbeat_age_s` is the time since the runner last wrote its manifest (every few seconds while it is alive).
 
 `start_fluidics_protocol` runs the tab's own start path on the GUI thread, with the protocol open in the tab (or
-`protocol_path`, opened first; refused while the open protocol has unsaved changes), the tab's Save to and run name
-(or `save_to` / `run_name`). It never opens a dialog. Where the button would show a message box (nothing to run,
+`protocol_path`, opened first; refused while the open protocol has unsaved
+changes), the tab's Save to and run name (or `save_to` / `run_name`). It never opens a dialog. It makes the Fluidics
+Protocol tab the current record tab, as the button's run does, so the panel's Pause, Abort and HELD controls stay
+usable in the GUI. Where the button would show a message box (nothing to run,
 fluidics not initialized, a run already active, a problem in the protocol) the command is refused with that message.
 The button then asks to confirm a summary; the command starts only with `confirm: true`. Without it nothing starts
 and the error lists the summary the dialog would have shown, including its warnings. A refused start leaves the tab

@@ -102,6 +102,7 @@ def _hms(seconds: Optional[float]) -> str:
 class FluidicsProtocolWidget(QFrame):
     signal_acquisition_started = Signal(bool)  # True at run start, False at run end (the gui contract)
     signal_show_fluidics_tab = Signal()
+    signal_select_record_tab = Signal()  # make this record tab the current one: emitted before a run starts
     signal_run_notification = Signal(str)  # Slack-worthy: held / finished
     signal_reagent_rows = Signal(list)  # rows for the Reagents table
     signal_run_started = Signal(str, str)  # run dir, run name: a runner was created and is starting
@@ -253,7 +254,9 @@ class FluidicsProtocolWidget(QFrame):
         self._refresh_idle()
 
     def is_run_active(self) -> bool:
-        return self.runner is not None and self.runner.state in _ACTIVE_STATES
+        """True from the moment a run is launched until it has ended: a launched runner is IDLE until its thread
+        has opened the run folder, and that window counts as active (see _launch)."""
+        return self.runner is not None and self.runner.state is not RunnerState.ENDED
 
     def _refresh_idle(self) -> None:
         protocol = self.protocol_tab.protocol
@@ -446,7 +449,21 @@ class FluidicsProtocolWidget(QFrame):
         self._launch(runner, resolved)
 
     def _launch(self, runner: ProtocolRunner, resolved) -> None:
+        """Every start comes here: the Start run… button, the control server's start command and crash recovery."""
+        # The GUI keeps only the current record tab enabled while a run rides (toggleAcquisitionStart). A server
+        # start or the startup recovery offer can come while a multipoint tab is current, which would leave that
+        # tab's Start live and this tab (Pause, Abort, the HELD panel) disabled; recovery had this flaw before the
+        # server start existed. So this tab is made current before the run is announced.
+        self.signal_select_record_tab.emit()
+        # Holding the runner reserves the run: is_run_active() counts it from here, while its thread is still
+        # opening the run folder (IDLE), so a second start is refused. A thread that cannot start gives it back.
+        previous = self.runner
         self.runner = runner
+        try:
+            runner.start()
+        except Exception:
+            self.runner = previous
+            raise
         self._resolved = resolved
         self._current_step_kind = None
         self._current_round = "—"
@@ -455,7 +472,6 @@ class FluidicsProtocolWidget(QFrame):
         self._set_run_visible(True)
         self.signal_acquisition_started.emit(True)
         self.signal_run_started.emit(str(runner.run_dir), runner.manifest.run_name)
-        runner.start()
 
     def _set_run_visible(self, active: bool) -> None:
         """The status card replaces the idle panel while a run rides; the HELD box is
