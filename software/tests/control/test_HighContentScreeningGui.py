@@ -1173,6 +1173,7 @@ def test_gallery_is_wired_to_the_history_viewer_and_launcher(qtbot, confirm_exit
     gallery = win.acquisitionGalleryWidget
     assert gallery._store is win.historyStore
     assert win.imageDisplayTabs.tabText(win.imageDisplayTabs.indexOf(gallery)) == "Gallery"
+    assert win.imageDisplayTabs.isTabVisible(win.imageDisplayTabs.indexOf(gallery))  # there is a viewer to start
     assert win._acquisition_saving_root() == win.multipointController.base_path
 
     gallery.reload()
@@ -1283,6 +1284,79 @@ def test_gallery_is_wired_to_the_history_viewer_and_launcher(qtbot, confirm_exit
     assert win._load_acquisition_settings_from_folder(str(flexible)) is False
     assert [title for title, _text in warnings] == ["Acquisition Running"]
     assert len(loaded) == 1
+
+
+def test_gallery_tab_is_shown_only_with_a_viewer(qtbot, confirm_exit_yes, monkeypatch):
+    """Without the NDViewer tab or an ndviewer_light to start, the Gallery tab is hidden and the first-launch import
+    is not offered; both come once the Preferences make a viewer available, and the tab goes again with it."""
+    import control.widgets_gallery
+    from control.ndviewer_launcher import LauncherResolution
+
+    none = LauncherResolution(None, "none", "ndviewer_light is not installed")
+    found = LauncherResolution(["ndviewer-light"], "preference", "the location set in Preferences")
+    resolutions = [none]
+    monkeypatch.setattr(control.gui_hcs, "resolve_ndviewer_light", lambda preference="": resolutions[-1])
+    monkeypatch.setattr(control._def, "ENABLE_NDVIEWER", False)
+    offers = []
+    monkeypatch.setattr(
+        control.widgets_gallery.AcquisitionGalleryWidget, "offer_initial_import", lambda self: offers.append(self)
+    )
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    tabs, gallery = win.imageDisplayTabs, win.acquisitionGalleryWidget
+    index = tabs.indexOf(gallery)
+
+    assert win.ndviewerTab is None and tabs.tabText(index) == "Gallery"
+    assert not tabs.isTabVisible(index)
+    qtbot.wait(100)  # the offer is made from a zero-delay timer
+    assert offers == []
+    assert win.multipointController.history_recorder is win.historyRecorder  # runs are recorded all the same
+
+    # A viewer set in Preferences: the tab comes up without a restart, and the import is offered now.
+    resolutions.append(found)
+    win._refresh_viewers()
+    assert tabs.isTabVisible(index)
+    qtbot.waitUntil(lambda: offers == [gallery], timeout=2000)
+
+    # Applying the Preferences again changes nothing.
+    win._refresh_viewers()
+    qtbot.wait(100)
+    assert tabs.isTabVisible(index) and offers == [gallery]
+
+    # The viewer goes away while Squid runs. Showing the tab only looks for it again: the tab stays ...
+    resolutions.append(none)
+    tabs.setCurrentIndex(index)
+    gallery.signal_shown.emit()
+    assert tabs.isTabVisible(index) and tabs.currentWidget() is gallery
+    # ... and goes when the Preferences are applied.
+    win._refresh_viewers()
+    assert not tabs.isTabVisible(index) and tabs.currentWidget() is not gallery
+    qtbot.wait(100)
+    assert offers == [gallery]
+
+
+@pytest.mark.parametrize("checked_out", [False, True])
+def test_ndviewer_tab_needs_the_checked_out_submodule(qtbot, confirm_exit_yes, monkeypatch, checked_out):
+    """With "Enable NDViewer" on, the NDViewer tab is made only when the ndviewer_light submodule is checked out:
+    the empty folder of one that was never fetched imports without error, and the tab then failed when used. The
+    NDViewer tab alone is viewer enough for the Gallery tab."""
+    from control.ndviewer_launcher import LauncherResolution
+
+    none = LauncherResolution(None, "none", "ndviewer_light is not installed")
+    monkeypatch.setattr(control.gui_hcs, "resolve_ndviewer_light", lambda preference="": none)
+    monkeypatch.setattr(control.gui_hcs, "submodule_checked_out", lambda: checked_out)
+    monkeypatch.setattr(control._def, "ENABLE_NDVIEWER", True)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    tabs, gallery = win.imageDisplayTabs, win.acquisitionGalleryWidget
+
+    assert (win.ndviewerTab is not None) == checked_out
+    assert ("NDViewer" in [tabs.tabText(i) for i in range(tabs.count())]) == checked_out
+    assert tabs.isTabVisible(tabs.indexOf(gallery)) == checked_out
 
 
 def _preview_timing_gui(qtbot, monkeypatch, tmp_path):

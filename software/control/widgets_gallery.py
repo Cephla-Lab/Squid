@@ -809,7 +809,12 @@ class AcquisitionGalleryWidget(QWidget):
         """At first launch, with an empty history and acquisitions in the saving folder, offer once to add them.
 
         The history and the marker (local files) are checked here; whether the saving folder (possibly on a slow
-        network drive) holds acquisitions is checked on the scan worker, and the question comes after."""
+        network drive) holds acquisitions is checked on the scan worker, and the question comes after.
+
+        Called again whenever the Gallery tab comes back after being hidden: it does nothing while an earlier
+        call's folder check is running or its question is open."""
+        if self._offer_pending:
+            return
         marker = IMPORT_OFFER_MARKER
         try:
             if self._store.load() or os.path.exists(marker):
@@ -852,23 +857,26 @@ class AcquisitionGalleryWidget(QWidget):
         self._emit(self._events.offer_checked, root, found)
 
     def _on_offer_checked(self, root: str, found: bool) -> None:
-        self._offer_pending = False
         if self._closed or not found:
+            self._offer_pending = False
             return
         marker = IMPORT_OFFER_MARKER
-        answer = QMessageBox.question(
-            self,
-            "Add existing acquisitions?",
-            f"Add the acquisitions already in\n{root}\nto the history?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        try:
-            os.makedirs(os.path.dirname(os.path.abspath(marker)), exist_ok=True)
-            with open(marker, "w", encoding="utf-8") as f:
-                f.write(f"offered {datetime.now().isoformat()}\n")
-        except OSError as e:
-            self._log.warning(f"Could not write {marker}: {e}")
-            self.status_label.setText(f"Could not write the history: {e}")
+        try:  # still pending until the marker is written: offer_initial_import called meanwhile does nothing
+            answer = QMessageBox.question(
+                self,
+                "Add existing acquisitions?",
+                f"Add the acquisitions already in\n{root}\nto the history?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(marker)), exist_ok=True)
+                with open(marker, "w", encoding="utf-8") as f:
+                    f.write(f"offered {datetime.now().isoformat()}\n")
+            except OSError as e:
+                self._log.warning(f"Could not write {marker}: {e}")
+                self.status_label.setText(f"Could not write the history: {e}")
+        finally:
+            self._offer_pending = False
         if answer != QMessageBox.Yes:
             return
         if self._acquiring:

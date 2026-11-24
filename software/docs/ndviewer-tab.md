@@ -166,7 +166,7 @@ The `_ndviewer_region_fov_offset` dict maps region names to their starting flat 
 
 Check the application logs for errors. Common causes:
 - NDViewer disabled in Settings > Preferences > Views
-- Missing ndviewer_light submodule (run `git submodule update --init`)
+- Missing ndviewer_light submodule (run `git submodule update --init software/control/ndviewer_light`). The log then says "NDViewer tab unavailable: the ndviewer_light submodule is not checked out"
 - Import errors due to missing dependencies
 
 ### Images appear black

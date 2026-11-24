@@ -2103,7 +2103,8 @@ class PreferencesDialog(QDialog):
         self.ndviewer_light_command_edit.setToolTip(
             "Leave empty to find ndviewer_light automatically (the ndviewer-light command on the PATH, "
             "the package in Squid's Python, or Squid's submodule). Otherwise an executable, a command line, "
-            "or a folder containing the ndviewer_light package."
+            "or a folder containing the ndviewer_light package.\n"
+            "The Gallery tab is shown only when ndviewer_light is found or the NDViewer tab is on."
         )
         gallery_layout.addRow("ndviewer_light location:", self.ndviewer_light_command_edit)
 

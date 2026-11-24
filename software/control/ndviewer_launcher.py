@@ -49,6 +49,15 @@ class LauncherResolution:
     cwd: Optional[str] = None
 
 
+def submodule_checked_out(submodule_dir: str = _DEFAULT_SUBMODULE_DIR) -> bool:
+    """Whether control/ndviewer_light holds the ndviewer_light checkout, which the NDViewer tab imports as
+    control.ndviewer_light. A submodule that was never fetched leaves an empty folder there, and Python imports an
+    empty folder without error (as a namespace package), so trying the import does not tell the two apart."""
+    return os.path.isfile(os.path.join(submodule_dir, "__init__.py")) and os.path.isfile(
+        os.path.join(submodule_dir, "ndviewer_light", "__init__.py")
+    )
+
+
 def _package_importable() -> bool:
     try:
         return importlib.util.find_spec("ndviewer_light") is not None
