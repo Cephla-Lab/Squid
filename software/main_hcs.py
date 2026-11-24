@@ -266,6 +266,39 @@ if __name__ == "__main__":
             python_exec_action.toggled.connect(on_python_exec_toggled)
             settings_menu.addAction(python_exec_action)
 
+            # Fluidics protocol control toggle (start / pause / resume / abort a run, act on its holds)
+            if getattr(win, "fluidicsProtocolWidget", None) is not None:
+                fluidics_control_action = QAction("Enable MCP Fluidics Protocol Control", win)
+                fluidics_control_action.setCheckable(True)
+                fluidics_control_action.setChecked(False)
+                fluidics_control_action.setToolTip(
+                    "Allow MCP clients to start, pause, resume and abort fluidics protocol runs and act on holds"
+                )
+
+                def on_fluidics_control_toggled(checked):
+                    if checked:
+                        reply = QMessageBox.warning(
+                            win,
+                            "Security Warning",
+                            "Enabling MCP Fluidics Protocol Control allows any program on this computer that "
+                            "connects to the control server to start a fluidics protocol run, pause, resume or "
+                            "abort it, and restart, skip or end a held step - moving liquid through the flow "
+                            "cell with nobody at the GUI.\n\n"
+                            "Only enable this if you trust the connected MCP client.\n\n"
+                            "Do you want to continue?",
+                            QMessageBox.Yes | QMessageBox.No,
+                            QMessageBox.No,
+                        )
+                        if reply == QMessageBox.Yes:
+                            control_server.set_fluidics_protocol_control_enabled(True)
+                        else:
+                            fluidics_control_action.setChecked(False)
+                    else:
+                        control_server.set_fluidics_protocol_control_enabled(False)
+
+                fluidics_control_action.toggled.connect(on_fluidics_control_toggled)
+                settings_menu.addAction(fluidics_control_action)
+
             # Add Set Anthropic API Key action
             def open_api_key_dialog():
                 dialog = ClaudeApiKeyDialog(parent=win)

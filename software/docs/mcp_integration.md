@@ -95,6 +95,19 @@ The `python_exec` command is disabled by default for security. To enable it:
 2. Read and accept the security warning
 3. The setting resets to disabled when the GUI restarts
 
+### Enable Fluidics Protocol Control (Optional)
+
+The commands that act on a fluidics protocol run (`start_fluidics_protocol`, `pause_fluidics_protocol`,
+`resume_fluidics_protocol`, `abort_fluidics_protocol`, `fluidics_protocol_hold_action`) are disabled by default: the
+control server has no authentication, and these commands move liquid through the flow cell and can restart a step.
+To enable them:
+
+1. In Squid GUI, go to **Settings → Enable MCP Fluidics Protocol Control** (shown when the GUI has fluidics)
+2. Read and accept the warning
+3. The setting resets to disabled when the GUI restarts
+
+`get_fluidics_protocol_status` is always available: it only reads, like `get_acquisition_status`.
+
 ## Available Commands
 
 > **Note:** When accessed via MCP (e.g., from Claude Code), commands are exposed with a `microscope_` prefix. For example, `ping` becomes `microscope_ping`, `move_to` becomes `microscope_move_to`, etc.
@@ -163,11 +176,13 @@ stage until the stage reports it stopped.
 ### Fluidics Protocol Runs
 
 These act on the run of the GUI's **Fluidics Protocol** tab (configurations with fluidics only). The tab shows what
-they do, as if its own buttons were pressed.
+they do, as if its own buttons were pressed. All but the status need **Settings → Enable MCP Fluidics Protocol
+Control** (see above); `control_enabled` in the status says whether it is on.
 
 | Command | Parameters | Description |
 |---------|------------|-------------|
 | `get_fluidics_protocol_status` | - | State, run folder, step, round, attempt, last heartbeat, and the hold when held |
+| `start_fluidics_protocol` | `confirm`, `protocol_path`, `save_to`, `run_name` | Start a run like the **Start run…** button |
 | `fluidics_protocol_hold_action` | `action`, `restore_tec` | Act on a held run: `resume`, `restart`, `skip`, `accept` or `end` |
 | `pause_fluidics_protocol` | - | Pause the run (an imaging step finishes first) |
 | `resume_fluidics_protocol` | - | Resume a paused run |
@@ -175,17 +190,31 @@ they do, as if its own buttons were pressed.
 
 `get_fluidics_protocol_status` returns `has_run: false` until a run is started. `step_index` counts from 0 (the GUI
 shows step `step_index + 1`). When `state` is `HELD`, `hold` has `kind`, `reason`, `message`, `can_resume`,
-`can_accept`, `held_at` (Unix time; the run manifest's, which the HELD panel and the watchdog use too), `held_for_s`, `tec_output_was_on` and `allowed_actions`: the actions the
-HELD panel offers for this hold. `heartbeat_age_s` is the time since the runner last wrote its manifest (every few
-seconds while it is alive).
+`can_accept`, `held_at` (Unix time), `held_for_s`, `tec_output_was_on` and `allowed_actions`: the actions the HELD
+panel offers for this hold. `held_at` is the time the runner recorded in the run's `run_manifest.json` when the run
+went HELD; the HELD panel and the acquisition watchdog use the same value, and it survives a GUI restart.
+`heartbeat_age_s` is the time since the runner last wrote its manifest (every few seconds while it is alive).
+
+`start_fluidics_protocol` runs the tab's own start path on the GUI thread, with the protocol open in the tab (or
+`protocol_path`, opened first; refused while the open protocol has unsaved changes), the tab's Save to and run name
+(or `save_to` / `run_name`). It never opens a dialog. Where the button would show a message box (nothing to run,
+fluidics not initialized, a run already active, a problem in the protocol) the command is refused with that message.
+The button then asks to confirm a summary; the command starts only with `confirm: true`. Without it nothing starts
+and the error lists the summary the dialog would have shown, including its warnings. A refused start leaves the tab
+as it was. The reply has `run_dir`, `run_name`, `protocol_name` and the `summary`.
 
 `fluidics_protocol_hold_action` is refused when the run is not held, or when the hold does not offer the action
 (`resume` needs a fluidics step that stopped in a known sequence; `accept` needs an imaging step that completed with
-errors). `restore_tec: true` turns the TEC output back on to its targets from before the step; it is off by default,
-unlike the panel's checkbox, so a client must ask for it. A held run is continued with this command, not with
-`resume_fluidics_protocol`.
+errors). The action is bound to the hold it was checked against: if the run has moved on to another hold, or another
+client (or the panel) has decided this one, it is refused. `restore_tec: true` turns the TEC output back on to its
+targets from before the step; it is off by default, unlike the panel's checkbox, so a client must ask for it. A held
+run is continued with this command, not with `resume_fluidics_protocol`.
 
 ```
+# Check the summary, then start
+microscope_start_fluidics_protocol(run_name="liver_R1-20")              # refused: lists the summary
+microscope_start_fluidics_protocol(run_name="liver_R1-20", confirm=True)
+
 # Check a run, then restart the held step
 microscope_get_fluidics_protocol_status()
 microscope_fluidics_protocol_hold_action(action="restart", restore_tec=True)

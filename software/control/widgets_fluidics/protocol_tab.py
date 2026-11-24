@@ -136,6 +136,10 @@ class ProtocolTab(QWidget):
     def protocol(self) -> ProtocolFile:
         return self._protocol
 
+    @property
+    def has_unsaved_changes(self) -> bool:
+        return self._dirty
+
     def set_protocol(self, protocol: ProtocolFile, path: Optional[str] = None) -> None:
         self._protocol = protocol
         self.protocol_path = path

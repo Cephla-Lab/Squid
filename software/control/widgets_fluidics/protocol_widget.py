@@ -1,11 +1,12 @@
 """The Fluidics Protocol record tab: Start/pre-flight, the status card, Pause/Abort, the HELD
 attention panel and crash recovery — a thin Qt face over the Qt-free ProtocolRunner."""
 
+import json
 import os
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
-from qtpy.QtCore import QEventLoop, QTimer, QUrl, Signal
+from qtpy.QtCore import QEventLoop, QTimer, QUrl, Signal, Slot
 from qtpy.QtGui import QDesktopServices
 from qtpy.QtWidgets import (
     QApplication,
@@ -45,6 +46,50 @@ from control.widgets_fluidics.dialogs import PreflightDialog, RecoveryDialog
 from control.widgets_fluidics.runner_bridge import RunnerEventBridge
 
 _ACTIVE_STATES = (RunnerState.RUNNING, RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED, RunnerState.HELD)
+
+
+class _DialogStart:
+    """How the Start run… button reports: message boxes, and the pre-flight dialog to confirm."""
+
+    def __init__(self, parent):
+        self._parent = parent
+
+    def cannot_start(self, message: str) -> None:
+        QMessageBox.warning(self._parent, "Cannot start", message)
+
+    def show_problems(self, problems: List[str]) -> None:
+        PreflightDialog(problems, [], self._parent).exec_()
+
+    def confirm(self, summary: List[str]) -> bool:
+        return PreflightDialog([], summary, self._parent).exec_() == QDialog.Accepted
+
+
+class ServerStart:
+    """How the control server's start command reports: never a dialog. It starts without the pre-flight
+    confirmation only when the command asked to (confirmed); otherwise it keeps the summary and refuses."""
+
+    def __init__(self, confirmed: bool):
+        self.confirmed = confirmed
+        self.error: Optional[str] = None
+        self.problems: List[str] = []
+        self.summary: List[str] = []
+
+    def cannot_start(self, message: str) -> None:
+        self.error = message
+
+    def show_problems(self, problems: List[str]) -> None:
+        self.problems = list(problems)
+        self.error = "the protocol has problems: " + "; ".join(self.problems)
+
+    def confirm(self, summary: List[str]) -> bool:
+        self.summary = list(summary)
+        if not self.confirmed:
+            self.error = (
+                "the Start run… button asks to confirm this summary first: "
+                + "; ".join(self.summary)
+                + ". Pass confirm=true to start without the dialog"
+            )
+        return self.confirmed
 
 
 def _hms(seconds: Optional[float]) -> str:
@@ -128,7 +173,7 @@ class FluidicsProtocolWidget(QFrame):
         run_row.addWidget(self.run_name_edit, 1)
 
         self.start_button = QPushButton("Start run…")
-        self.start_button.clicked.connect(self.start_run)
+        self.start_button.clicked.connect(lambda: self.start_run())
         self.resume_button = QPushButton("Resume unfinished run…")
         self.resume_button.clicked.connect(lambda: self.offer_recovery(startup=False))
         self.hint_label = QLabel("")
@@ -243,10 +288,12 @@ class FluidicsProtocolWidget(QFrame):
             return "give the run a name"
         return None
 
-    def start_run(self) -> None:
+    def start_run(self, *, ui=None) -> None:
+        """The Start run… button. `ui` replaces its dialogs: ServerStart for the control server's start command."""
+        ui = ui or _DialogStart(self)
         problem = self._guard_start()
         if problem:
-            QMessageBox.warning(self, "Cannot start", problem)
+            ui.cannot_start(problem)
             return
         protocol = self.protocol_tab.protocol
         save_to = self.save_to_edit.text().strip()
@@ -259,10 +306,10 @@ class FluidicsProtocolWidget(QFrame):
         try:
             resolved = resolve_protocol(protocol, base_dir, fluidics=self.fluidics_port)
         except ProtocolProblems as problems:
-            PreflightDialog(problems.problems, [], self).exec_()
+            ui.show_problems(problems.problems)
             return
         except Exception as e:
-            QMessageBox.warning(self, "Cannot start", str(e))
+            ui.cannot_start(str(e))
             return
 
         imaging_steps = sum(1 for s in resolved.steps if s.kind == "imaging")
@@ -271,12 +318,12 @@ class FluidicsProtocolWidget(QFrame):
             f"est. {_hms(resolved.total_estimate_s)} (imaging priced at a rough 1 s/FOV)",
             f"run folder: {os.path.join(save_to, run_name)}_<start time>",
         ]
-        if PreflightDialog([], summary, self).exec_() != QDialog.Accepted:
+        if not ui.confirm(summary):
             return
         try:
             run_dir = manifest_io.create_run_dir(save_to, run_name)
         except (ValueError, FileExistsError, OSError) as e:
-            QMessageBox.warning(self, "Cannot start", str(e))
+            ui.cannot_start(str(e))
             return
         state.save_ui_state(save_to=save_to, run_name=run_name)
         self._launch(
@@ -290,6 +337,61 @@ class FluidicsProtocolWidget(QFrame):
             ),
             resolved,
         )
+
+    @Slot(str)
+    def start_run_from_server(self, request_json: str) -> None:
+        """The control server's start command, run on the GUI thread (a blocking queued call): start like the
+        Start run… button, with no dialog. `request_json`: confirm, and optional protocol_path, save_to and
+        run_name. Qt drops a slot's return value and exceptions here, so the outcome is left in
+        last_server_start. A refused start leaves the tab as it was."""
+        request = json.loads(request_json)
+        ui = ServerStart(confirmed=request.get("confirm") is True)
+        before = (self.protocol_tab.protocol, self.protocol_tab.protocol_path)
+        fields = (self.save_to_edit.text(), self.run_name_edit.text())
+        runner = self.runner
+        loaded = False
+        try:
+            if QApplication.activeModalWidget() is not None:
+                ui.cannot_start("a dialog is open in the GUI; close it first")
+            elif self.is_run_active():
+                ui.cannot_start("a protocol run is already in progress")
+            elif request.get("protocol_path") and self.protocol_tab.has_unsaved_changes:
+                ui.cannot_start("the open protocol has unsaved changes: save or discard them in the GUI first")
+            else:
+                path = request.get("protocol_path")
+                if path:
+                    try:
+                        protocol = load_protocol(path)
+                    except Exception as e:
+                        raise RuntimeError(f"could not open the protocol {path}: {e}") from e
+                    self.protocol_tab.set_protocol(protocol, path)
+                    loaded = True
+                if request.get("save_to"):
+                    self.save_to_edit.setText(request["save_to"])
+                if request.get("run_name"):
+                    self.run_name_edit.setText(request["run_name"])
+                self.start_run(ui=ui)
+        except Exception as e:
+            self._log.exception("Start from the control server failed")
+            ui.cannot_start(f"{type(e).__name__}: {e}")
+        started = ui.error is None and self.runner is not None and self.runner is not runner
+        if started:
+            if loaded:
+                state.save_ui_state(protocol_path=request["protocol_path"])
+        else:
+            if loaded:
+                self.protocol_tab.set_protocol(*before)
+            self.save_to_edit.setText(fields[0])
+            self.run_name_edit.setText(fields[1])
+        self.last_server_start = {
+            "started": started,
+            "error": None if started else (ui.error or "the run did not start"),
+            "problems": ui.problems,
+            "summary": ui.summary,
+            "run_dir": str(self.runner.run_dir) if started else None,
+            "run_name": self.runner.manifest.run_name if started else None,
+            "protocol_name": self.protocol_tab.protocol.name if started else None,
+        }
 
     def _save_to_changed(self) -> None:
         save_to = self.save_to_edit.text().strip()

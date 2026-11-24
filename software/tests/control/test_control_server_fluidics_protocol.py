@@ -15,11 +15,13 @@ from tests.control.core.fluidics_protocol.fakes import FakeFluidicsPort, FakeIma
 from tests.control.core.fluidics_protocol.test_runner import _held, _runner
 
 
-def _server(runner=None, has_tab=True):
+def _server(runner=None, has_tab=True, control=True):
     microscope = MagicMock()
     microscope.stage_homing_in_progress = False
     gui = SimpleNamespace(fluidicsProtocolWidget=SimpleNamespace(runner=runner) if has_tab else None)
-    return MicroscopeControlServer(microscope=microscope, port=0, gui=gui)
+    server = MicroscopeControlServer(microscope=microscope, port=0, gui=gui)
+    server.set_fluidics_protocol_control_enabled(control)  # Settings → Enable MCP Fluidics Protocol Control
+    return server
 
 
 def _ok(server, command, **params):
@@ -58,10 +60,34 @@ def test_commands_are_listed_in_the_schemas():
         "pause_fluidics_protocol",
         "resume_fluidics_protocol",
         "abort_fluidics_protocol",
+        "start_fluidics_protocol",
     ):
         assert name in schemas
     assert schemas["fluidics_protocol_hold_action"]["required"] == ["action"]
     assert schemas["fluidics_protocol_hold_action"]["parameters"]["restore_tec"]["default"] is False
+
+
+def test_the_commands_that_act_on_a_run_are_off_until_enabled_in_the_gui(tmp_path, runners):
+    # the control socket has no authentication: like python_exec, acting on a run needs the Settings toggle
+    runner, *_ = _start(runners, tmp_path, fluidics=FakeFluidicsPort(script=[("failed", 0, "boom"), ("finished",)]))
+    assert _held(runner)
+    server = MicroscopeControlServer(microscope=MagicMock(stage_homing_in_progress=False), port=0, gui=None)
+    server.gui = SimpleNamespace(fluidicsProtocolWidget=SimpleNamespace(runner=runner))
+    for command, params in (
+        ("fluidics_protocol_hold_action", {"action": "restart"}),
+        ("pause_fluidics_protocol", {}),
+        ("resume_fluidics_protocol", {}),
+        ("abort_fluidics_protocol", {}),
+        ("start_fluidics_protocol", {"confirm": True}),
+    ):
+        assert "Enable MCP Fluidics Protocol Control" in _refused(server, command, **params), command
+    status = _ok(server, "get_fluidics_protocol_status")  # reading stays open
+    assert status["state"] == "HELD" and status["control_enabled"] is False
+    assert runner.state is RunnerState.HELD and len(runner.manifest.steps[0].attempts) == 1
+
+    server.set_fluidics_protocol_control_enabled(True)
+    _ok(server, "fluidics_protocol_hold_action", action="restart")
+    assert runner.wait(10) and runner.outcome == "finished"
 
 
 def test_without_a_fluidics_tab_the_commands_say_so():
@@ -72,7 +98,7 @@ def test_without_a_fluidics_tab_the_commands_say_so():
 
 def test_before_any_run_the_status_has_no_run_and_actions_are_refused():
     server = _server(runner=None)
-    assert _ok(server, "get_fluidics_protocol_status") == {"has_run": False, "state": None}
+    assert _ok(server, "get_fluidics_protocol_status") == {"has_run": False, "state": None, "control_enabled": True}
     assert "No fluidics protocol run" in _refused(server, "fluidics_protocol_hold_action", action="restart")
     assert "No fluidics protocol run" in _refused(server, "pause_fluidics_protocol")
 
