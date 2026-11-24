@@ -1271,6 +1271,43 @@ def test_initial_offer_asks_once_and_imports_on_yes(qtbot, tmp_path, saving_root
     other.shutdown()
 
 
+def test_initial_offer_asked_for_again_while_pending_checks_and_asks_once(
+    qtbot, tmp_path, saving_root, marker, monkeypatch
+):
+    """The Gallery tab hidden and shown again (a viewer lost and found in Preferences) asks for the offer again:
+    no second folder check while the first is running, and no second question while the first is open."""
+    write_acquisition(saving_root, "first", start_time=T0 + 10)
+    widget = _new_gallery(qtbot, tmp_path, saving_root)
+    asked = []
+
+    def question(parent, title, text, *args):
+        asked.append(title)
+        widget.offer_initial_import()  # asked for again while the question is open
+        return control.widgets_gallery.QMessageBox.No
+
+    monkeypatch.setattr(control.widgets_gallery.QMessageBox, "question", question)
+    release = threading.Event()
+    checks = []
+    real_check = widget._holds_acquisitions
+
+    def slow_check(root):
+        checks.append(root)
+        release.wait(10)
+        return real_check(root)
+
+    monkeypatch.setattr(widget, "_holds_acquisitions", slow_check)
+
+    widget.offer_initial_import()
+    widget.offer_initial_import()  # asked for again while the folder is being checked
+    release.set()
+    qtbot.waitUntil(lambda: not widget._offer_pending, timeout=10000)
+    qtbot.wait(300)  # a second check or question would come now
+
+    assert checks == [str(saving_root)] and asked == ["Add existing acquisitions?"]
+    assert marker.exists()
+    widget.shutdown()
+
+
 def test_initial_offer_writes_the_marker_on_no_and_imports_nothing(qtbot, tmp_path, saving_root, marker, monkeypatch):
     write_acquisition(saving_root, "first", start_time=T0 + 10)
     monkeypatch.setattr(
