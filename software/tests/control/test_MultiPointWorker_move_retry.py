@@ -2,6 +2,9 @@
 (MULTIPOINT_FOV_MOVE_RETRIES, off by default) before the error ends the acquisition. A stage that is still busy is
 never moved again."""
 
+import logging
+import time
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -9,9 +12,12 @@ import pytest
 import control._def
 import control.microscope
 import squid.abc
+import squid.stage.prior
+from control.core.multi_point_worker import MultiPointWorker
 from squid.exceptions import SquidReplyTimeout
 
 import tests.control.test_stubs as ts
+from tests.squid.test_prior_stage import FakeProScan
 from tests.control.test_MultiPointController import TestAcquisitionTracker as AcquisitionTracker, select_some_configs
 
 N_FOVS = 3
@@ -140,3 +146,105 @@ def test_other_errors_end_the_acquisition_at_once_even_with_retries_on(retries_o
     assert moves == 1
     assert mpc.last_end_reason == "error"
     assert tt.image_count == _images_per_fov(mpc)
+
+
+# --- The real PriorStage, against a ProScan whose moves take time ---
+
+MOVE_S = 0.8  # how long each fake move runs
+SILENT_FROM_S, SILENT_UNTIL_S = 0.05, 0.5  # '$,S' gets no reply this far into the first move
+STATUS_REPLY_TIMEOUT_S = 0.2  # so wait_for_stop gives up on the silent status inside the silent window
+
+
+class TimedProScan(FakeProScan):
+    """A ProScan whose moves run MOVE_S. During the first move its '$,S' status replies go missing from SILENT_FROM_S
+    to `silent_until_s` into it: wait_for_stop raises SquidReplyTimeout with the stage still moving."""
+
+    silent_until_s = SILENT_UNTIL_S
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.move_start = None
+        self.move_end = 0.0
+        self.moves = 0
+        self.motion_log = []  # (command, sent while the stage was still moving)
+
+    def _reply(self, cmd):
+        now = time.monotonic()
+        if cmd.startswith(("GX ", "GY ")):
+            moving = now < self.move_end
+            self.motion_log.append((cmd, moving))
+            if not moving:
+                self.move_start, self.move_end = now, now + MOVE_S
+                self.moves += 1
+            return super()._reply(cmd)
+        if cmd == "$,S":
+            if self.moves == 1 and SILENT_FROM_S < now - self.move_start < self.silent_until_s:
+                return b""
+            return b"3\r" if now < self.move_end else b"0\r"
+        return super()._reply(cmd)
+
+
+@pytest.fixture
+def prior_stage(monkeypatch):
+    monkeypatch.setattr(squid.stage.prior.PriorStage, "STATUS_REPLY_TIMEOUT_S", STATUS_REPLY_TIMEOUT_S)
+    made = {}
+
+    def make_serial(*args, **kwargs):
+        made["serial"] = TimedProScan(*args, **kwargs)
+        return made["serial"]
+
+    monkeypatch.setattr(squid.stage.prior.serial, "Serial", make_serial)
+    monkeypatch.setattr(
+        squid.stage.prior.serial.tools.list_ports,
+        "comports",
+        lambda: [SimpleNamespace(device="COM_FAKE", serial_number="FAKE_SN")],
+    )
+    stage = squid.stage.prior.PriorStage(sn="FAKE_SN")
+    stage.serial.timeout = 0.01  # an unanswered read costs 10 ms, not 100
+    yield stage, made["serial"]
+    stage.close()
+
+
+def _worker_on(stage):
+    """Just enough of a MultiPointWorker for move_to_coordinate, with its real methods."""
+    worker = MultiPointWorker.__new__(MultiPointWorker)
+    worker.stage = stage
+    worker._log = logging.getLogger("test_move_retry")
+    worker.abort_requested_fn = lambda: False
+    worker._alignment_widget = None
+    worker.do_reflection_af = False
+    worker.do_autofocus = False
+    worker.time_point = 0
+    return worker
+
+
+def test_a_retry_waits_for_the_stage_to_report_stopped_before_moving_it_again(retries_on, prior_stage, monkeypatch):
+    """The status went silent mid-move: the move is made again only once a fresh '$,S' says the stage stopped."""
+    monkeypatch.setattr(control._def, "MULTIPOINT_FOV_MOVE_RETRY_STOP_WAIT_S", 5.0)
+    stage, ser = prior_stage
+
+    _worker_on(stage).move_to_coordinate((1.0, 1.0), "A1", 0)
+
+    commands = [cmd.split()[0] for cmd, _ in ser.motion_log]
+    assert commands == ["GX", "GX", "GY"]  # the lost-reply move made again, then on to Y
+    assert not [cmd for cmd, moving in ser.motion_log if moving], "a motion command went to a stage still moving"
+
+
+@pytest.mark.parametrize(
+    "silent_until_s",
+    [
+        pytest.param(SILENT_UNTIL_S, id="still-moving"),  # the status comes back, but says it is still moving
+        pytest.param(float("inf"), id="status-stays-silent"),  # the stage's state cannot be read at all
+    ],
+)
+def test_a_retry_ends_the_move_when_the_stage_does_not_report_stopped_in_time(
+    retries_on, prior_stage, monkeypatch, silent_until_s
+):
+    monkeypatch.setattr(control._def, "MULTIPOINT_FOV_MOVE_RETRY_STOP_WAIT_S", 0.1)  # shorter than the move
+    monkeypatch.setattr(TimedProScan, "silent_until_s", silent_until_s)
+    stage, ser = prior_stage
+
+    with pytest.raises(SquidReplyTimeout):
+        _worker_on(stage).move_to_coordinate((1.0, 1.0), "A1", 0)
+
+    assert [cmd.split()[0] for cmd, _ in ser.motion_log] == ["GX"]  # never commanded again
