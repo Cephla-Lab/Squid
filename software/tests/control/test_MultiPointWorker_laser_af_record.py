@@ -78,12 +78,13 @@ def test_no_record_by_default_on_a_bare_worker(tmp_path):
     assert w._laser_af_record is None
 
 
-@pytest.mark.parametrize("save_record", [True, False])
+@pytest.mark.parametrize("save_record", [True, False, None])  # None: the defaults
 def test_simulated_acquisition_writes_the_record_and_its_summary(monkeypatch, save_record):
     monkeypatch.setattr(control._def, "MERGE_CHANNELS", False)
     monkeypatch.setattr(control._def, "SUPPORT_LASER_AUTOFOCUS", True)
-    monkeypatch.setattr(control._def, "LASER_AF_SAVE_RECORD", save_record)
-    monkeypatch.setattr(control._def, "LASER_AF_SAVE_FRAMES", save_record)
+    if save_record is not None:
+        monkeypatch.setattr(control._def, "LASER_AF_SAVE_RECORD", save_record)
+        monkeypatch.setattr(control._def, "LASER_AF_SAVE_FRAMES", save_record)
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = CountingTracker()
     mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
@@ -99,7 +100,7 @@ def test_simulated_acquisition_writes_the_record_and_its_summary(monkeypatch, sa
     experiment_path = os.path.join(mpc.base_path, mpc.experiment_ID)
     n_fovs = sum(len(c) for c in mpc.scanCoordinates.region_fov_coordinates.values())
 
-    if not save_record:
+    if not save_record:  # off, and off by default (opt-in)
         assert not os.path.exists(os.path.join(experiment_path, "laser_af.csv"))
         assert not os.path.exists(os.path.join(experiment_path, "laser_af_frames"))
     else:

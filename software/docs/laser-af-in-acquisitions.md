@@ -2,9 +2,9 @@
 
 ## The laser AF record of an acquisition
 
-An acquisition with laser AF writes `laser_af.csv` in its experiment folder: one row per laser AF call, written as it
-happens, so a run that ends early keeps its rows. The per-FOV laser AF has an empty `channel`; a Z First "AF per stack"
-row names the channel.
+With `laser_af_save_record` on (it is off by default), an acquisition with laser AF writes `laser_af.csv` in its
+experiment folder: one row per laser AF call, written as it happens, so a run that ends early keeps its rows. The
+per-FOV laser AF has an empty `channel`; a Z First "AF per stack" row names the channel.
 
 | Column | |
 |---|---|
@@ -33,8 +33,8 @@ Comparing `centre_z_um` and `dome_um` between the rounds of a fluidics protocol 
 
 ```ini
 [GENERAL]
-laser_af_save_record = true    # laser_af.csv and laser_af_summary.json (default on)
-laser_af_save_frames = false   # also every call's focus-camera frame (default off)
+laser_af_save_record = true    # laser_af.csv and laser_af_summary.json (default off)
+laser_af_save_frames = true    # also every call's focus-camera frame (default off; needs laser_af_save_record)
 ```
 
 With `laser_af_save_frames` each call also saves the focus-camera frame it ended on (the alignment check's frame
