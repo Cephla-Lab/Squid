@@ -24,7 +24,10 @@ The tools are in `software/tools/coverslip_flow/`.
 | `af_map_analyze.py` | Maps, differences and a bowl fit from `af_map_flow.py` output |
 
 Run them from the `software/` directory with the Python that runs Squid (they need numpy, tifffile and matplotlib).
-Each prints its own `--help`. Ctrl-C stops any of them cleanly: the pump is halted and what was recorded is saved.
+Each prints its own `--help`. Ctrl-C stops any of them cleanly: the sequence stops (no further pump or valve job is
+started), a pump or valve job still running is stopped, the AF laser goes off, and what was recorded is saved. A run
+that did not complete (Ctrl-C, an error, the time cap) makes the script exit non-zero. Each creates its output folder
+before it starts.
 
 ### How they reach the GUI
 
@@ -36,7 +39,7 @@ time the pump exactly, but it means:
   arbitrary code in the GUI with the microscope's objects; turn it off again when you are done.
 - They use GUI internals (`gui.fluidics`, `gui.laserAutofocusController` and its `_get_laser_spot_centroid()`), so a
   Squid change to those can break them. They set `gui._flow_displacement_abort` / `gui._af_map_abort` to stop a
-  recording.
+  recording; a displacement recording sets `gui._flow_displacement_running` while it runs.
 - The `python_exec` sandbox has no `open`/`eval`/`exec` and allows imports of numpy, math, time, datetime, json and
   os.path only; functions defined in the sent code can't see its local names. The scripts already work within this.
 
@@ -161,7 +164,14 @@ python3 tools/coverslip_flow/port_hold_check.py --ports 1 2 3 4 --release-port 5
 
 Per port: empty the syringe, turn the valve to the port, 30 s baseline, pull 50 µL at 500 µL/min, record 45 s; then
 turn the valve to the release port and hold 30 s. The release port can't be in `--ports`: check it in a separate run
-with another release port. Re-analyse a folder with `--analyze-only --out-dir …`.
+with another release port. Re-analyse a folder with `--analyze-only --out-dir …`. Each step's output is kept in
+`NN_…_log.txt`.
+
+After every pull the valve goes to the release port, whatever happened: when the pull failed, when the recorded release
+failed (the valve is then moved without recording), and on Ctrl-C, which stops the pull, waits for it to save, moves
+the valve, then stops the check (a Ctrl-C during the release move waits for it). If even that move fails, the check
+stops with **RELEASE FAILED**: turn the valve to the release port by hand in the Fluidics tab. With `--sensor-only` the
+GUI side makes the same move itself after a failed or stopped pull.
 
 The summary (`port_hold_summary.csv` and the printed table):
 

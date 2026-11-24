@@ -35,15 +35,22 @@ also lets liquid in. Writes NN_sensor_port<P>_to<R>_flow.csv / _meta.json and
         --out-dir ~/flowtest/sensor_hold
 
 Both talk to the GUI's control server and need its python_exec enabled.
+
+After every pull the valve goes to the release port, whatever happened: a failed pull, a release
+recording that failed, or Ctrl-C (which stops the pull, waits for the release move, then stops the
+suite). If even that move fails, the check stops with RELEASE FAILED: turn the valve to the release
+port by hand.
 """
 
 import argparse
+import contextlib
 import csv
 import glob
 import json
 import os
 import random
 import re
+import signal
 import subprocess
 import sys
 
@@ -51,7 +58,12 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOFTWARE_DIR = os.path.dirname(os.path.dirname(HERE))  # this file is software/tools/coverslip_flow/
+sys.path.insert(0, HERE)
+import flow_displacement_experiment as fde  # noqa: E402
+
 PY = sys.executable or "python3"
+CHILD_STOP_S = 180  # how long a stopped pull recording gets to clean up and save before it is killed
+RELEASE_TIMEOUT_S = 90
 HOLD_FLAG_UM = 5.0
 SENSOR_HOLD_UL = 1.0  # inflow in the 15 s after the release move
 SENSOR_BORDERLINE_UL = 0.6
@@ -319,8 +331,7 @@ if not sensors:
 manual = system.manual
 xp = svc.config.syringe_pump.extract_port
 setattr(gui, "_flow_displacement_abort", False)
-events = []; flow = []; errors = []
-def _err(m, _e=errors): _e.append(m)
+events = []; flow = []
 def h(f, ts, _b=flow): _b.append([ts, f])
 sensor = sensors[0]
 sensor.subscribe(h)
@@ -329,15 +340,19 @@ def wait(seconds, _t=time.time, _sl=time.sleep, _g=gui):
     while _t() < t_end:
         if getattr(_g, "_flow_displacement_abort", False): raise RuntimeError("aborted")
         _sl(0.05)
-def job(fn, label, _s=system, _ev=events, _t=time.time, _sl=time.sleep, _e=errors, _cb=_err, _g=gui):
+def job(fn, label, abortable=True, timeout=None, _s=system, _ev=events, _t=time.time, _sl=time.sleep, _g=gui):
+    errs = []; stopped = []
     _ev.append([_t(), label + "_start", None])
-    _s.run_manual(fn, callbacks={"on_error": _cb})
+    _s.run_manual(fn, callbacks={"on_error": errs.append, "on_stopped": lambda _x=stopped: _x.append(1)})
     _sl(0.2)
+    t_end = None if timeout is None else _t() + timeout
     while _s.busy:
-        if getattr(_g, "_flow_displacement_abort", False): raise RuntimeError("aborted")
+        if abortable and getattr(_g, "_flow_displacement_abort", False): raise RuntimeError("aborted")
+        if t_end is not None and _t() > t_end: raise RuntimeError("%s did not finish in %g s" % (label, timeout))
         _sl(0.05)
     _ev.append([_t(), label + "_end", None])
-    if _e: raise RuntimeError("; ".join(_e))
+    if errs: raise RuntimeError("; ".join(errs))
+    if stopped: raise RuntimeError(label + " was stopped")
 def prep(_m=manual, _P=P, _ev=events, _t=time.time):
     _m.empty_to_waste()
     _ev.append([_t(), "valve_start", _P["port"]])
@@ -348,30 +363,96 @@ def release(_m=manual, _P=P, _ev=events, _t=time.time):
     _ev.append([_t(), "release_valve_start", _P["release_port"]])
     _m.open_port(_P["release_port"])
 t0 = time.time(); end_reason = "completed"
+valve_moved = False; released = False; release_error = ""
 try:
     wait(P["pre"])
+    valve_moved = True  # from the preparation on the valve may be off the release port: the release is owed
     job(prep, "prep")
     wait(P["baseline"])
     job(pump, "pump")
     events.append([time.time(), "pump_idle", None])
     wait(P["post"])
     job(release, "release")
+    released = True
     wait(P["hold"])
 except Exception as e:
-    end_reason = "error: " + str(e)
-    if system.busy:
-        system.abort(); system.wait(30)
+    end_reason = "aborted" if getattr(gui, "_flow_displacement_abort", False) else "error: " + str(e)
 finally:
+    # However the run ended: a job of this run still running is stopped, then the valve goes to the release port
+    # (not stoppable by the abort flag). Each step runs even if the one before fails.
+    try:
+        if valve_moved and system.busy:
+            system.abort(); system.wait(30)
+    except Exception as e:
+        end_reason += "; stopping the running job failed: " + str(e)
+    try:
+        if valve_moved and not released:
+            job(release, "release", abortable=False, timeout=60)
+            released = True
+    except Exception as e:
+        release_error = str(e)
     sensor.unsubscribe(h)
 events.append([time.time(), "end", end_reason])
+try:
+    held_after = manual.held_volume_ul(refresh=True)
+except Exception as e:
+    held_after = "error: " + str(e)
 result = {"t0": t0, "events": events, "flow": flow, "end_reason": end_reason, "sensor": sensor.name,
-          "held_after_ul": manual.held_volume_ul(refresh=True)}
+          "held_after_ul": held_after, "valve_moved": valve_moved, "released": released,
+          "release_error": release_error}
+"""
+
+# Ctrl-C in the sensor-only client: only the flag. The run stops its own pump job and then moves the valve to the
+# release port; aborting the fluidics from here as well could stop that release move.
+SENSOR_ABORT = 'setattr(gui, "_flow_displacement_abort", True)\nresult = "abort requested"'
+
+# The valve move to the release port with nothing recorded: after a pull that failed or was stopped, or when the
+# recorded release (valve_sequence.py) failed.
+RELEASE_REMOTE = r"""
+import time
+P = __PARAMS__
+svc = getattr(gui, "fluidics", None)
+system = getattr(svc, "system", None) if svc is not None else None
+if system is None or not svc.initialized:
+    raise RuntimeError("fluidics is not initialized")
+manual = system.manual
+# A pull recording whose client was stopped may still be running: stop it, and let it finish its own cleanup (it
+# stops its own pump) before the valve moves, so the two never drive the fluidics at once. A job that is not this
+# check's is never aborted from here: if the fluidics stays busy, the release fails and says so.
+setattr(gui, "_flow_displacement_abort", True)
+t_end = time.time() + P["timeout"]
+while (getattr(gui, "_flow_displacement_running", False) or system.busy) and time.time() < t_end:
+    time.sleep(0.05)
+if getattr(gui, "_flow_displacement_running", False) or system.busy:
+    raise RuntimeError("the fluidics is still busy after %g s; the valve was not moved" % P["timeout"])
+errors = []; stopped = []
+system.run_manual(lambda _m=manual, _p=P["port"]: _m.open_port(_p),
+                  callbacks={"on_error": errors.append, "on_stopped": lambda _s=stopped: _s.append(1)})
+time.sleep(0.2)
+t_end = time.time() + P["timeout"]
+while system.busy and time.time() < t_end:
+    time.sleep(0.05)
+if system.busy:
+    errors.append("the valve move did not finish in %g s" % P["timeout"])
+if stopped:
+    errors.append("the valve move was stopped")
+result = {"released": not errors, "error": "; ".join(errors)}
 """
 
 
-def run_sensor_port(a, port, base):
-    import flow_displacement_experiment as fde
+def _report_release_failed(port, release_port, why):
+    print(
+        "\n!!! RELEASE FAILED after port %d: %s\n!!! The valve may still be on port %d, with the flow cell under "
+        "suction if the pull ran. Turn it to port %d in the Fluidics tab now.\n"
+        % (port, why or "unknown", port, release_port),
+        file=sys.stderr,
+        flush=True,
+    )
 
+
+def run_sensor_port(a, port, base):
+    """One sensor-only pull and release in the GUI. Saves its files (also after Ctrl-C, with what was recorded) and
+    returns {"end_reason", "released", "release_error", "interrupted"}."""
     fde.PORT = a.server_port
     params = {
         "port": port,
@@ -390,10 +471,13 @@ def run_sensor_port(a, port, base):
         sys.exit(
             "Cannot reach the GUI's control server on port %d (Settings -> Enable MCP Control Server)." % a.server_port
         )
-    reply = fde._receive(sock)
+    reply, interrupted = fde.receive_or_abort(
+        sock, SENSOR_ABORT, "the pull (the GUI then moves the valve to port %d)" % a.release_port
+    )
     if not reply.get("success"):
         sys.exit("The GUI refused the run on port %d: %s" % (port, reply.get("error")))
     res = (reply.get("result") or {}).get("result")
+    released = res["released"] or not res["valve_moved"]
     t0 = res["t0"]
     with open(base + "_flow.csv", "w", newline="") as fh:
         w = csv.writer(fh)
@@ -409,11 +493,19 @@ def run_sensor_port(a, port, base):
             "release_port": a.release_port,
             "volume_ul": a.volume,
             "rate_ul_min": a.rate,
+            "released": released,
+            "release_error": res["release_error"],
+            "interrupted": interrupted,
         },
         open(base + "_meta.json", "w"),
         indent=1,
     )
-    return res["end_reason"]
+    return {
+        "end_reason": res["end_reason"],
+        "released": released,
+        "release_error": res["release_error"],
+        "interrupted": interrupted,
+    }
 
 
 def analyze_sensor_run(base):
@@ -509,12 +601,107 @@ def run_sensor_suite(a, out_dir, ports):
         n += 1
         base = os.path.join(out_dir, "%02d_sensor_port%d_to%d" % (n, p, a.release_port))
         print("===== %02d port %d =====" % (n, p), flush=True)
-        end = run_sensor_port(a, p, base)
-        print("  End: " + end, flush=True)
-        if end != "completed":
+        outcome = run_sensor_port(a, p, base)
+        print("  End: " + outcome["end_reason"], flush=True)
+        if not outcome["released"]:
+            _report_release_failed(p, a.release_port, outcome["release_error"])
+            sys.exit("RELEASE FAILED after port %d; stopping." % p)
+        if outcome["interrupted"] or outcome["end_reason"] != "completed":
+            stop = "port %d: %s; stopping." % (
+                p,
+                "stopped with Ctrl-C" if outcome["interrupted"] else outcome["end_reason"],
+            )
+            print(stop, flush=True)
             analyze_sensor_dir(out_dir)
-            sys.exit("port %d: %s; stopping." % (p, end))
+            sys.exit(stop)
     analyze_sensor_dir(out_dir)
+
+
+@contextlib.contextmanager
+def _ctrl_c_deferred(note):
+    """While the block runs, Ctrl-C only prints `note` and is remembered; yields the list of presses."""
+    presses = []
+
+    def handler(signum, frame):
+        presses.append(signum)
+        print("\nCtrl-C: " + note, file=sys.stderr, flush=True)
+
+    previous = signal.signal(signal.SIGINT, handler)
+    try:
+        yield presses
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def _run_child(cmd, log_path, shield=False):
+    """(returncode, output) of one of the recording scripts; its output is also kept in log_path.
+
+    Ctrl-C reaches the child as well (same terminal): it stops its run in the GUI and saves what it recorded. This
+    waits for that, up to CHILD_STOP_S, then raises the KeyboardInterrupt. shield=True starts the child in its own
+    session, so Ctrl-C does not reach it."""
+    with open(log_path, "w") as log:
+        proc = subprocess.Popen(cmd, cwd=SOFTWARE_DIR, stdout=log, stderr=subprocess.STDOUT, start_new_session=shield)
+        try:
+            rc = proc.wait()
+        except KeyboardInterrupt:
+            with _ctrl_c_deferred("still waiting for the pull to stop and save its data"):
+                try:
+                    proc.wait(timeout=CHILD_STOP_S)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            raise
+    with open(log_path) as fh:
+        return rc, fh.read()
+
+
+def _print_status(output):
+    tail = [l for l in output.splitlines() if re.search(r"End:|refused|rror|Cannot", l)]
+    print("  " + ("\n  ".join(tail) if tail else "(no status line)"), flush=True)
+
+
+def _bare_release(a):
+    """(released, why): turn the valve to the release port, nothing recorded."""
+    code = RELEASE_REMOTE.replace("__PARAMS__", repr({"port": a.release_port, "timeout": RELEASE_TIMEOUT_S}))
+    try:
+        reply = fde._receive(fde._send("python_exec", {"code": code}, timeout=3 * RELEASE_TIMEOUT_S + 60))
+    except Exception as e:  # the release is reported, whatever stopped it
+        return False, "%s: %s" % (type(e).__name__, e)
+    if not reply.get("success"):
+        return False, str(reply.get("error"))
+    res = (reply.get("result") or {}).get("result") or {}
+    return res.get("released") is True, res.get("error", "")
+
+
+def release_after_pull(a, port, rel_base, record):
+    """Turn the valve to the release port after a pull on `port`; returns (released, ctrl_c_pressed).
+
+    record (the pull completed): the move is recorded with valve_sequence.py, which gives the release data.
+    Otherwise, or when that fails, the valve is moved with nothing recorded. Ctrl-C does not stop the release: it is
+    remembered and honoured by the caller once the valve has moved."""
+    note = "finishing the move to the release port %d first, then stopping" % a.release_port
+    with _ctrl_c_deferred(note) as presses:
+        released = False
+        if record:
+            print("===== port %d: release to port %d =====" % (port, a.release_port), flush=True)
+            cmd = [
+                PY,
+                os.path.join(HERE, "valve_sequence.py"),
+                "--pre",
+                "5",
+                "--steps",
+                "%d:%g" % (a.release_port, a.hold),
+            ]
+            cmd += ["--server-port", str(a.server_port), "--out", rel_base]
+            rc, output = _run_child(cmd, rel_base + "_log.txt", shield=True)
+            _print_status(output)
+            released = rc == 0
+        if not released:
+            print("  moving the valve to the release port %d (not recorded)..." % a.release_port, flush=True)
+            released, why = _bare_release(a)
+            if not released:
+                _report_release_failed(port, a.release_port, why)
+    return released, bool(presses)
 
 
 def run_suite(a):
@@ -532,66 +719,50 @@ def run_suite(a):
     if a.sensor_only:
         return run_sensor_suite(a, out_dir, ports)
     vol_tag = "%g" % a.volume
+    fde.PORT = a.server_port
     print("Ports in order: %s; release port %d; %g uL at %g uL/min each" % (ports, a.release_port, a.volume, a.rate))
     for p in ports:
         n += 1
         nn = "%02d" % n
         pull = os.path.join(out_dir, "%s_pull%s_port%d" % (nn, vol_tag, p))
-        print("===== %s port %d: pull =====" % (nn, p), flush=True)
-        r = subprocess.run(
-            [
-                PY,
-                os.path.join(HERE, "flow_displacement_experiment.py"),
-                "--empty-first",
-                "--port",
-                str(p),
-                "--volume",
-                str(a.volume),
-                "--rate",
-                str(a.rate),
-                "--pre",
-                "5",
-                "--baseline",
-                "30",
-                "--post",
-                str(a.post),
-                "--no-plot",
-                "--server-port",
-                str(a.server_port),
-                "--out",
-                pull,
-            ],
-            cwd=SOFTWARE_DIR,
-            capture_output=True,
-            text=True,
-        )
-        tail = [l for l in (r.stdout + r.stderr).splitlines() if re.search(r"End:|refused|rror|Cannot", l)]
-        print("  " + ("\n  ".join(tail) if tail else "(no status line)"))
-        if r.returncode != 0:
-            sys.exit("pull on port %d failed; stopping. Output:\n%s" % (p, (r.stdout + r.stderr)[-2000:]))
         rel = os.path.join(out_dir, "%s_release_port%d_to%d" % (nn, p, a.release_port))
-        print("===== %s port %d: release to port %d =====" % (nn, p, a.release_port), flush=True)
-        r = subprocess.run(
-            [
-                PY,
-                os.path.join(HERE, "valve_sequence.py"),
-                "--pre",
-                "5",
-                "--steps",
-                "%d:%g" % (a.release_port, a.hold),
-                "--server-port",
-                str(a.server_port),
-                "--out",
-                rel,
-            ],
-            cwd=SOFTWARE_DIR,
-            capture_output=True,
-            text=True,
-        )
-        tail = [l for l in (r.stdout + r.stderr).splitlines() if re.search(r"End:|refused|rror|Cannot", l)]
-        print("  " + ("\n  ".join(tail) if tail else "(no status line)"))
-        if r.returncode != 0:
-            sys.exit("release move after port %d failed; stopping. Output:\n%s" % (p, (r.stdout + r.stderr)[-2000:]))
+        print("===== %s port %d: pull =====" % (nn, p), flush=True)
+        cmd = [
+            PY,
+            os.path.join(HERE, "flow_displacement_experiment.py"),
+            "--empty-first",
+            "--port",
+            str(p),
+            "--volume",
+            str(a.volume),
+            "--rate",
+            str(a.rate),
+            "--pre",
+            "5",
+            "--baseline",
+            "30",
+            "--post",
+            str(a.post),
+            "--no-plot",
+            "--server-port",
+            str(a.server_port),
+            "--out",
+            pull,
+        ]
+        try:
+            rc, output = _run_child(cmd, pull + "_log.txt")
+        except BaseException:
+            # Ctrl-C (or anything else) during the pull: the valve still goes to the release port first
+            release_after_pull(a, p, rel, record=False)
+            raise
+        _print_status(output)
+        released, ctrl_c = release_after_pull(a, p, rel, record=rc == 0)
+        if not released:
+            sys.exit("RELEASE FAILED after port %d; stopping." % p)
+        if rc != 0:
+            sys.exit("pull on port %d failed; stopping. Output:\n%s" % (p, output[-2000:]))
+        if ctrl_c:
+            raise KeyboardInterrupt
     analyze_dir(out_dir)
 
 
@@ -622,7 +793,10 @@ def main():
         return
     if not a.ports or a.release_port is None:
         p.error("--ports and --release-port are required unless --analyze-only")
-    run_suite(a)
+    try:
+        run_suite(a)
+    except KeyboardInterrupt:
+        sys.exit("Stopped with Ctrl-C.")
 
 
 if __name__ == "__main__":
