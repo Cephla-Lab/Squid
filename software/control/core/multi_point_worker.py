@@ -1627,20 +1627,26 @@ class MultiPointWorker:
                         job = self._create_job(job_class, info, image)
                         if job is None:
                             continue  # Skip if job creation returns None (e.g., downsampled views disabled for this image)
-                        if job_runner is not None:
-                            if not job_runner.dispatch(job):
-                                self._log.error("Failed to dispatch multiprocessing job!")
-                                self._abort_due_to_error()
-                                return
-                        else:
-                            try:
+                        try:
+                            if job_runner is not None:
+                                # dispatch() mostly fails by raising (the queue put), rarely by returning False.
+                                handed_off = job_runner.dispatch(job)
+                            else:
                                 # NOTE(imo): We don't have any way of people using results, so for now just
                                 # grab and ignore it.
-                                result = job.run()
-                            except Exception:
-                                self._log.exception("Failed to execute job, abandoning acquisition!")
-                                self._abort_due_to_error()
-                                return
+                                job.run()
+                                handed_off = True
+                        except Exception:
+                            self._log.exception(f"{job_class.__name__} raised for this frame.")
+                            handed_off = False
+                        if not handed_off:
+                            # This frame's job never ran or never reached its runner: the image is lost.
+                            self._log.error(
+                                f"{job_class.__name__} did not take this frame; its image is lost, aborting acquisition!"
+                            )
+                            self._acquisition_error_count += 1
+                            self._abort_due_to_error()
+                            return
 
                 height, width = image.shape[:2]
                 # with self._timing.get_timer("crop_image"):
