@@ -72,20 +72,24 @@ def _assert_ended_as_error_with_lost_image(w):
 def test_dispatch_that_raises_aborts_and_counts_the_lost_image():
     runner = MagicMock()
     runner.dispatch.side_effect = RuntimeError("queue full")
-    w = _worker(runner)
+    job = _Job()
+    w = _worker(runner, job=job)
 
     w._image_callback(_frame())  # must not raise out of the camera callback
 
+    runner.dispatch.assert_called_once_with(job)
     _assert_ended_as_error_with_lost_image(w)
 
 
 def test_dispatch_that_returns_false_aborts_and_counts_the_lost_image():
     runner = MagicMock()
     runner.dispatch.return_value = False
-    w = _worker(runner)
+    job = _Job()
+    w = _worker(runner, job=job)
 
     w._image_callback(_frame())
 
+    runner.dispatch.assert_called_once_with(job)
     _assert_ended_as_error_with_lost_image(w)
 
 
@@ -100,10 +104,12 @@ def test_synchronous_job_run_that_raises_aborts_and_counts_the_lost_image():
 def test_successful_dispatch_does_not_abort_or_count():
     runner = MagicMock()
     runner.dispatch.return_value = True
-    w = _worker(runner)
+    job = _Job()
+    w = _worker(runner, job=job)
 
     w._image_callback(_frame())
 
+    runner.dispatch.assert_called_once_with(job)
     assert not w.abort_requested_fn()
     assert w._acquisition_error_count == 0
     assert w.image_count == 1
@@ -118,10 +124,12 @@ def test_later_runners_are_not_dispatched_after_a_failure(dispatch_raises):
     else:
         first.dispatch.return_value = False
     second = MagicMock()
-    w = _worker(first)
+    job = _Job()
+    w = _worker(first, job=job)
     w._job_runners = [(_Job, first), (_Job, second)]
 
     w._image_callback(_frame())
 
+    first.dispatch.assert_called_once_with(job)
     second.dispatch.assert_not_called()
     assert w._acquisition_error_count == 1
