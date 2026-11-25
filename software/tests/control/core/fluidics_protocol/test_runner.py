@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 from types import SimpleNamespace
@@ -68,10 +69,13 @@ def _protocol(rounds=1):
     return p
 
 
-def _runner(tmp_path, fluidics=None, imaging=None, rounds=1, events=None):
+def _runner(tmp_path, fluidics=None, imaging=None, rounds=1, events=None, focus_log=False):
     fluidics = fluidics or FakeFluidicsPort()
     imaging = imaging or FakeImagingPort()
-    resolved = resolve_protocol(_protocol(rounds), tmp_path, fluidics=fluidics)
+    protocol = _protocol(rounds)
+    if focus_log:
+        protocol.imaging.focus_log = True
+    resolved = resolve_protocol(protocol, tmp_path, fluidics=fluidics)
     run_dir = manifest_io.create_run_dir(tmp_path, "liver")
     listener = events.append if events is not None else None
     runner = ProtocolRunner(resolved, run_dir, imaging, fluidics, run_name="liver", listener=listener, poll_s=0.01)
@@ -407,3 +411,152 @@ def test_recovery_refuses_a_missing_or_different_protocol_copy(tmp_path):
     (run_dir / "protocol.yaml").unlink()
     with pytest.raises(ValueError, match="missing"):
         ProtocolRunner(same, run_dir, FakeImagingPort(), FakeFluidicsPort(), run_name="liver", manifest=crashed)
+
+
+# ---- imaging.focus_log: a laser AF reading before each fluidics step and after each sequence ----
+
+
+def _focus_rows(run_dir):
+    with open(run_dir / manifest_io.FOCUS_LOG_NAME, newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def test_focus_log_is_off_by_default(tmp_path):
+    imaging = FakeImagingPort(focus=lambda: 1.0)
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging)
+    runner.start()
+    assert runner.wait(10) and runner.outcome == "finished"
+    assert not (run_dir / manifest_io.FOCUS_LOG_NAME).exists()
+    assert imaging.focus_reads == 0
+    assert all(start["after_sequence"] is None for start in fluidics.starts)
+
+
+def test_focus_log_reads_before_each_fluidics_step_and_after_each_sequence(tmp_path):
+    heights = iter(range(100))  # every reading a new height: 3 readings per row
+    position = {"x_mm": 12.5, "y_mm": 30.25, "z_um": 4321.0, "piezo_um": 150.0}
+    imaging = FakeImagingPort(focus=lambda: float(next(heights)), position=position)
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging, focus_log=True)
+    runner.start()
+    assert runner.wait(10) and runner.outcome == "finished"
+
+    rows = _focus_rows(run_dir)
+    assert [(r["step"], r["round"], r["point"], r["sequence"], r["name"]) for r in rows] == [
+        ("0", "setup", "before", "", ""),
+        ("0", "setup", "after", "1/1", "prime"),
+        ("1", "R01", "before", "", ""),
+        ("1", "R01", "after", "1/2", "probe"),
+        ("1", "R01", "after", "2/2", "wash"),
+        ("3", "R01", "before", "", ""),
+        ("3", "R01", "after", "1/1", "cleave"),
+    ]
+    probe = rows[3]
+    assert (probe["type"], probe["port"], probe["volume_ul"], probe["flow_rate_ul_min"]) == (
+        "flow_reagent",
+        "1",
+        "500",
+        "2000",
+    )
+    assert [float(r["displacement_um"]) for r in rows] == [1.0 + 3 * i for i in range(7)]  # mean of 3 readings
+    assert all(r["spread_um"] == "2.000" and r["readings_ok"] == "3" and r["ok"] == "true" for r in rows)
+    assert (probe["x_mm"], probe["y_mm"], probe["z_um"], probe["piezo_um"]) == (
+        "12.5000",
+        "30.2500",
+        "4321.00",
+        "150.00",
+    )
+    assert all(r["attempt"] == "1" and r["time"] and float(r["elapsed_s"]) >= 0 for r in rows)
+    # every reading was taken on the runner thread, the engine's thread only waited for it
+    assert imaging.focus_reads == 21 and set(imaging.focus_threads) == {"fluidics-protocol"}
+    assert all(start["after_sequence"] is not None for start in fluidics.starts)
+    assert "Focus log: step 1 (R01) after 2/2 wash: 13.000 um" in (run_dir / "run.log").read_text()
+    # measurement only: the same runs started as without the log
+    assert [len(start["plan"]) for start in fluidics.starts] == [1, 2, 1]
+
+
+@pytest.mark.parametrize(
+    "focus, message",
+    [
+        (None, "laser AF not available"),
+        (lambda: float("nan"), "no laser AF spot"),
+        (lambda: (_ for _ in ()).throw(TimeoutError("focus camera")), "reading failed: focus camera"),
+    ],
+)
+def test_focus_log_never_changes_the_run_when_there_is_no_reading(tmp_path, focus, message):
+    def no_position():
+        raise RuntimeError("stage busy")
+
+    imaging = FakeImagingPort(focus=focus, position=no_position)
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging, focus_log=True)
+    runner.start()
+    assert runner.wait(10) and runner.outcome == "finished"
+    rows = _focus_rows(run_dir)
+    assert len(rows) == 7
+    assert all(r["ok"] == "false" and message in r["message"] and r["displacement_um"] == "" for r in rows)
+    assert all(r["x_mm"] == "" for r in rows)
+    if focus is None:
+        assert imaging.focus_reads == 0  # laser AF not usable: not asked again within a row
+    man = manifest_io.read_manifest(run_dir)
+    assert [s.attempts[0].outcome for s in man.steps] == ["finished", "finished", "completed", "finished"]
+
+
+def test_focus_log_names_the_sequences_of_a_resumed_plan_tail(tmp_path):
+    fluidics = FakeFluidicsPort(script=[("finished",), ("failed", 1, "Flow fault on syringe_draw"), ("finished",)])
+    imaging = FakeImagingPort(focus=lambda: 2.0)
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, fluidics=fluidics, imaging=imaging, focus_log=True)
+    runner.start()
+    assert _held(runner) and runner.hold.resume_position == 1
+    runner.hold_action(HoldAction.RESUME)
+    assert runner.wait(10) and runner.outcome == "finished"
+
+    rows = [r for r in _focus_rows(run_dir) if r["step"] == "1"]
+    assert [(r["attempt"], r["point"], r["sequence"], r["name"]) for r in rows] == [
+        ("1", "before", "", ""),
+        ("1", "after", "1/2", "probe"),  # completed before the fault in the 2nd sequence
+        ("2", "before", "", ""),
+        ("2", "after", "2/2", "wash"),  # the tail's 1st entry is the step's 2nd sequence
+    ]
+
+
+def test_an_abort_during_a_focus_log_reading_stops_the_readings(tmp_path):
+    box = {}
+
+    def reading():
+        box["runner"].abort_run()  # the operator presses Abort run while the first reading is being taken
+        return 1.0
+
+    imaging = FakeImagingPort(focus=reading)
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging, focus_log=True)
+    box["runner"] = runner
+    runner.start()
+    assert runner.wait(10)
+    assert imaging.focus_reads == 1  # the other readings of that row and of later rows never started
+    rows = _focus_rows(run_dir)
+    assert "stopped after 1 of 3 readings: abort requested" in rows[0]["message"]
+    assert fluidics.starts == []  # the abort came before the launch: no pump or valve moved
+    assert runner.outcome == "stopped" and runner.hold is None
+    assert manifest_io.read_manifest(run_dir).steps[0].attempts[0].outcome == "stopped"
+
+
+def test_a_step_abort_during_the_before_step_reading_holds_without_launching_the_fluidics(tmp_path):
+    box = {"aborted": False}
+
+    def reading():
+        if not box["aborted"]:
+            box["aborted"] = True
+            box["runner"].abort_step()  # the operator presses Abort step while the before-step reading is taken
+        return 1.0
+
+    imaging = FakeImagingPort(focus=reading)
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging, focus_log=True)
+    box["runner"] = runner
+    runner.start()
+    assert _held(runner)
+    assert fluidics.starts == []  # held like an abort during the fluidics, but nothing was launched
+    hold = runner.hold
+    assert hold.kind == "fluidics" and hold.reason == "stopped" and hold.resume_position == 0 and hold.can_resume
+    attempt = manifest_io.read_manifest(run_dir).steps[0].attempts[0]
+    assert attempt.outcome == "stopped" and attempt.ended_position == 0
+
+    runner.hold_action(HoldAction.RESUME)
+    assert runner.wait(10) and runner.outcome == "finished"
+    assert len(fluidics.starts[0]["plan"]) == len(fluidics.plan(fluidics.starts[0]["rows"]))  # the whole step

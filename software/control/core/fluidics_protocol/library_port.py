@@ -1,9 +1,9 @@
 """FluidicsPort over the Squid-Fluidics library's FluidicsSystem (one per initialized service)."""
 
 import threading
-from typing import List, Optional
+from typing import Callable, List, Optional
 
-from fluidics.events import RunEnded, RunStarted, SequenceStarted
+from fluidics.events import RunEnded, RunStarted, SequenceCompleted, SequenceStarted
 from fluidics.sequences import SequenceListAdapter, validate_sequences
 from pydantic import ValidationError
 
@@ -18,8 +18,9 @@ class LibraryTicket:
     """One library run. RunEnded is copied on the library's job thread (fields + usage rows) and an Event
     is set; wait() runs on the runner thread and also waits for the session to be free again."""
 
-    def __init__(self, system):
+    def __init__(self, system, after_sequence: Optional[Callable[[int], None]] = None):
         self._system = system
+        self._after_sequence = after_sequence  # on the job thread, between sequences (the next one waits)
         self.run_id: Optional[str] = None
         self.position: Optional[int] = None  # plan index of the sequence in flight (relative to the plan handed in)
         self._outcome: Optional[FluidicsOutcome] = None
@@ -30,6 +31,12 @@ class LibraryTicket:
             self.run_id = event.run_id
         elif isinstance(event, SequenceStarted) and (self.run_id is None or event.run_id == self.run_id):
             self.position = event.position
+        elif isinstance(event, SequenceCompleted) and (self.run_id is None or event.run_id == self.run_id):
+            if self._after_sequence is not None:
+                try:
+                    self._after_sequence(int(event.position))
+                except Exception as e:  # a hook must never change the run
+                    _log.warning(f"After-sequence hook failed: {e}")
         elif isinstance(event, RunEnded) and (self.run_id is None or event.run_id == self.run_id):
             try:
                 usage = {int(port): float(ul) for port, _name, ul in self._system.usage.rows()}
@@ -95,8 +102,10 @@ class LibraryFluidicsPort:
     def plan(self, rows: List[dict]) -> tuple:
         return tuple(self._system.plan(rows))
 
-    def start(self, rows: List[dict], plan: Optional[tuple] = None) -> LibraryTicket:
-        ticket = LibraryTicket(self._system)
+    def start(
+        self, rows: List[dict], plan: Optional[tuple] = None, after_sequence: Optional[Callable[[int], None]] = None
+    ) -> LibraryTicket:
+        ticket = LibraryTicket(self._system, after_sequence)
         with self._lock:
             if self._current is not None:
                 raise RuntimeError("a fluidics run is already in flight on this port")

@@ -4,6 +4,7 @@
 |-- protocol.yaml                      exactly what ran (blocks inlined)
 |-- run_manifest.json                  status, cursor, attempts - atomic rewrite at every transition
 |-- run.log                            protocol + fluidics log for the run
+|-- focus_log.csv                      laser AF reading around each fluidics sequence (imaging.focus_log only)
 `-- R01_image/ ...                     one Squid experiment folder per imaging attempt (never renamed)
 """
 
@@ -23,6 +24,7 @@ PROTOCOL_COPY_NAME = "protocol.yaml"
 RUN_LOG_NAME = "run.log"
 ABORTED_MARKER = "aborted.json"
 STEP_INFO_NAME = "protocol_step.json"
+FOCUS_LOG_NAME = "focus_log.csv"
 
 PathLike = Union[str, os.PathLike]
 

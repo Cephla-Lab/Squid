@@ -30,6 +30,32 @@ sequences:
   - {type: flow_reagent, round: R01,   name: rinse, fluidic_port: 25, flow_rate: 10000, volume: 2000, repeat: 2}
 ```
 
+### Focus log around each fluidics sequence (optional)
+
+To see which fluidics sequence moves the coverslip (its height is otherwise seen only at imaging), add to the
+`imaging:` header:
+
+```yaml
+imaging:
+  focus_log: true   # default false
+```
+
+The runner then takes a laser AF displacement reading where the stage is — before each fluidics step starts,
+and after each of its sequences has completed (incubation included, before the next sequence starts) — and
+appends a row to `focus_log.csv` in the run folder: time, elapsed s, step, round, attempt, `point`
+(`before` / `after`), sequence (`k/n` in the step's plan, repeats counted), name, type, port, volume µL, flow
+rate µL/min, repeat, stage x/y mm, z µm, piezo µm, displacement µm (the mean of 3 readings), spread µm,
+readings ok, `ok`, message. The flow sensor's volume is not recorded. One line per reading also goes to `run.log`.
+
+It only measures: z, the stage and the valves are not moved, and nothing about the run changes except a short
+wait between two sequences while the readings are taken. Rows are comparable within a step (the stage does not
+move during fluidics); across steps compare z (+ piezo) − displacement, the z at which laser AF would read 0,
+since imaging leaves the stage elsewhere. When laser AF is not initialized or has no reference, or there is no
+spot or the reading fails, the row says so (`ok = false`) and the run goes on. A row takes at most 30 s plus
+the one reading in flight: no new reading starts after that or after an abort (the message says how many were
+taken). When a sequence boundary stopped waiting before its readings were done, the next sequence was already
+running while they were taken, so that row is marked late (`ok = false`, no displacement).
+
 Models: `control/models/fluidics_protocol.py` (`ProtocolFile`, `SettingsBlock`, `CoordinatesBlock`,
 `split_into_steps`, `expand_rounds` for "Add rounds…") and `control/models/fluidics_run.py` (`RunManifest`).
 
@@ -43,7 +69,8 @@ Models: `control/models/fluidics_protocol.py` (`ProtocolFile`, `SettingsBlock`, 
   `runner.py` (`ProtocolRunner`: IDLE → RUNNING ⇄ PAUSED → HELD → … → ENDED; one library run per contiguous
   block of fluidics rows with the same round; one acquisition per imaging row; HELD actions resume-from-
   sequence / restart / skip / accept / end), `ports.py` (the two engines as `typing.Protocol`s),
-  `library_port.py` (`LibraryFluidicsPort` over `FluidicsSystem`), `manifest.py` (run folder, atomic
+  `library_port.py` (`LibraryFluidicsPort` over `FluidicsSystem`), `focus_log.py` (`imaging.focus_log`),
+  `manifest.py` (run folder, atomic
   `run_manifest.json`, `find_unfinished_runs` for crash recovery).
 - `control/core/acquisition_settings.py` — Qt-free `apply_acquisition_settings` shared by the TCP command and
   the imaging port; rebuilds Load-Coordinates regions from FOV lists
@@ -105,6 +132,7 @@ Slack when the notifier is configured.
 ├── protocol.yaml         exactly what ran (file-based blocks inlined)
 ├── run_manifest.json     status, cursor, per-step attempts, TEC state, pid + heartbeat
 ├── run.log               protocol + fluidics log for the whole run
+├── focus_log.csv         laser AF reading around each fluidics sequence (imaging.focus_log: true only)
 ├── R01_image/            a standard Squid experiment folder (+ protocol_step.json)
 ├── R02_image/            attempt 1 — aborted, kept, never renamed (aborted.json inside)
 └── R02_image_attempt2/   attempt 2 — completed

@@ -1,7 +1,7 @@
 """The two engines as the runner sees them. typing.Protocols so tests script fakes and phase 2 adds Qt adapters."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, Sequence
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence
 
 from control.models.fluidics_protocol import CoordinatesBlock, SettingsBlock
 from control.models.fluidics_run import TecState
@@ -37,7 +37,12 @@ class FluidicsPort(Protocol):
 
     def plan(self, rows: List[dict]) -> tuple: ...  # entries expose .duration_seconds
 
-    def start(self, rows: List[dict], plan: Optional[tuple] = None) -> FluidicsTicket: ...
+    def start(
+        self, rows: List[dict], plan: Optional[tuple] = None, after_sequence: Optional[Callable[[int], None]] = None
+    ) -> FluidicsTicket:
+        """after_sequence(position): called on the engine's thread each time a plan entry (relative to the plan
+        handed in) has completed, before the next one starts - the next one waits for it to return. The runner
+        passes it only for imaging.focus_log."""
 
     def make_safe(self) -> List[Exception]: ...
 
@@ -76,6 +81,14 @@ class ImagingHandle(Protocol):
 
 class ImagingPort(Protocol):
     def start(self, request: ImagingRequest) -> ImagingHandle: ...  # raises ImagingStartError
+
+    def measure_focus_um(self, should_stop: Optional[Callable[[], bool]] = None) -> Optional[float]:
+        """One laser AF displacement reading where the stage is, without moving z: None when laser AF cannot be
+        used at all, nan when this reading found no spot, or when `should_stop()` turned true while the port got
+        ready for the reading (the reading then never starts)."""
+
+    def stage_position(self) -> Optional[Dict[str, float]]:
+        """Where the stage is, read only: x_mm, y_mm, z_um (and piezo_um with a piezo); None when unknown."""
 
 
 def plan_seconds(plan: Sequence[Any]) -> float:
