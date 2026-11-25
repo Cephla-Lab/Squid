@@ -308,3 +308,48 @@ def test_a_server_start_handled_ahead_of_the_last_runs_queued_end_is_refused(qtb
     reply = _from_another_thread(qtbot, _server(w), "start_fluidics_protocol", confirm=True, run_name="second")
     assert reply["success"], reply
     assert w.runner is not first and w.runner.wait(15)
+
+
+class _HeldGate:
+    """Stands in for the runner's hold event: a decision is recorded but the runner thread does not take it until
+    the test releases it, so the window between a server decision and the runner acting on it stays open."""
+
+    def __init__(self):
+        self.released = threading.Event()
+
+    def set(self):
+        pass
+
+    def clear(self):
+        pass
+
+    def wait(self, timeout=None):
+        return self.released.wait(timeout)
+
+
+def test_the_held_panel_cannot_overwrite_a_decision_the_server_made(qtbot, widget, no_dialogs):
+    from qtpy.QtWidgets import QPushButton
+
+    from tests.control.core.fluidics_protocol.fakes import FakeFluidicsPort
+
+    w, _fluidics, _imaging, _save_to = widget
+    _opened, warnings = no_dialogs
+    w.set_fluidics_port(FakeFluidicsPort(script=[("failed", 0, "Flow fault on syringe_draw"), ("finished",)]))
+    w.start_run(ui=protocol_widget_module.ServerStart(confirmed=True))  # the dialogs here refuse
+    qtbot.waitUntil(lambda: not w.held_box.isHidden(), timeout=15000)
+    runner = w.runner
+    gate = _HeldGate()
+    runner._hold_event = gate
+
+    try:
+        reply = _server(w)._execute("fluidics_protocol_hold_action", {"action": "skip"})
+        assert reply["success"], reply  # the server replied OK: its decision is recorded
+        restart = next(b for b in w.held_box.findChildren(QPushButton) if b.text() == "Restart step")
+        restart.click()  # the operator, a moment later, on the panel still showing that hold
+        assert runner._hold_decision[0] is protocol_widget_module.HoldAction.SKIP
+        assert warnings and warnings[-1][0] == "Hold action refused" and "already being acted on" in warnings[-1][1]
+    finally:
+        gate.released.set()
+    assert runner.wait(15) and runner.outcome == "finished"
+    assert manifest_io.read_manifest(runner.run_dir).steps[0].skipped  # the server's skip, not a restart
+    assert len(w.fluidics_port.starts) == 2  # the failed attempt, then the last step: step 1 never re-ran

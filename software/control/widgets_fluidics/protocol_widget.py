@@ -576,9 +576,12 @@ class FluidicsProtocolWidget(QFrame):
         def act(action: HoldAction):
             restore = tec_checkbox.isChecked() if tec_checkbox is not None else False
             try:
-                self.runner.hold_action(action, restore_tec=restore)
+                # bound to the hold this panel shows: refused once the run has moved on or another client (the
+                # control server) has decided it, rather than overwriting a decision already acknowledged
+                self.runner.hold_action(action, restore_tec=restore, hold=hold)
             except RuntimeError as e:
-                self._log.warning(f"Hold action refused: {e}")
+                self._log.warning(f"Hold action '{action.value}' refused: {e}")
+                QMessageBox.warning(self, "Hold action refused", f"'{action.value}' was not applied: {e}")
 
         buttons = QHBoxLayout()
         if hold.can_resume and hold.resume_position is not None:
