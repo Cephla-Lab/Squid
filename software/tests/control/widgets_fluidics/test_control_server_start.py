@@ -286,3 +286,25 @@ def test_a_recovered_run_selects_the_protocol_tab_before_it_starts(qtbot, widget
     qtbot.waitUntil(lambda: w.runner.state == RunnerState.HELD, timeout=15000)
     w.runner.hold_action(protocol_widget_module.HoldAction.END)
     assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)
+
+
+def test_a_server_start_handled_ahead_of_the_last_runs_queued_end_is_refused(qtbot, widget, no_dialogs):
+    """The start command's blocking queued call can reach the GUI thread before the ended run's queued RunFinished;
+    the new run would then be closed by the old run's end."""
+    import json
+
+    w, _fluidics, _imaging, _save_to = widget
+    finished = []
+    w.signal_run_finished.connect(lambda run_dir, outcome: finished.append((run_dir, outcome)))
+    w.start_run(ui=protocol_widget_module.ServerStart(confirmed=True))  # the dialogs here refuse
+    first = w.runner
+    assert first.wait(15) and first.state is RunnerState.ENDED  # its end events are still queued
+    w.start_run_from_server(json.dumps({"confirm": True, "run_name": "second"}))  # as the queued call runs it
+    assert not w.last_server_start["started"] and "already in progress" in w.last_server_start["error"]
+    assert w.runner is first
+    qtbot.waitUntil(lambda: bool(finished), timeout=5000)
+    assert finished == [(str(first.run_dir), "finished")]
+
+    reply = _from_another_thread(qtbot, _server(w), "start_fluidics_protocol", confirm=True, run_name="second")
+    assert reply["success"], reply
+    assert w.runner is not first and w.runner.wait(15)

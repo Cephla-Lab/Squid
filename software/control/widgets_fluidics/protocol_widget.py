@@ -127,6 +127,7 @@ class FluidicsProtocolWidget(QFrame):
         self._recovery_checked_dir: Optional[str] = None
         self.fluidics_port = None
         self.runner: Optional[ProtocolRunner] = None
+        self._run_open = False  # a launched run this tab has not yet finished: see is_run_active
         self._resolved = None
         self._bridge = RunnerEventBridge(self)
         self._bridge.event_received.connect(self._on_runner_event)
@@ -254,9 +255,10 @@ class FluidicsProtocolWidget(QFrame):
         self._refresh_idle()
 
     def is_run_active(self) -> bool:
-        """True from the moment a run is launched until it has ended: a launched runner is IDLE until its thread
-        has opened the run folder, and that window counts as active (see _launch)."""
-        return self.runner is not None and self.runner.state is not RunnerState.ENDED
+        """True from the moment a run is launched until this tab has handled its RunFinished. Not the runner's own
+        state: it is IDLE while its thread opens the run folder, and ENDED before its queued StateChanged and
+        RunFinished reach this thread, so a start handled in that gap would be closed by the old run's end."""
+        return self._run_open
 
     def _refresh_idle(self) -> None:
         protocol = self.protocol_tab.protocol
@@ -455,14 +457,16 @@ class FluidicsProtocolWidget(QFrame):
         # tab's Start live and this tab (Pause, Abort, the HELD panel) disabled; recovery had this flaw before the
         # server start existed. So this tab is made current before the run is announced.
         self.signal_select_record_tab.emit()
-        # Holding the runner reserves the run: is_run_active() counts it from here, while its thread is still
-        # opening the run folder (IDLE), so a second start is refused. A thread that cannot start gives it back.
+        # The run is reserved from here (is_run_active), while its thread is still opening the run folder (IDLE),
+        # so a second start is refused until _finish. A thread that cannot start gives it back.
         previous = self.runner
         self.runner = runner
+        self._run_open = True
         try:
             runner.start()
         except Exception:
             self.runner = previous
+            self._run_open = False
             raise
         self._resolved = resolved
         self._current_step_kind = None
@@ -637,19 +641,24 @@ class FluidicsProtocolWidget(QFrame):
             return None
 
     def _finish(self, outcome: str) -> None:
-        if self.runner is not None:
-            totals, _last = reagent_totals(self.runner.manifest)
-            for port, ul in totals.items():
-                self._since_init_ul[port] = self._since_init_ul.get(port, 0.0) + ul
-        self.protocol_tab.set_run_locked(False)
-        self.protocol_tab.highlight_row(None)
-        self.state_label.setText(f"Run {outcome}")
-        self.signal_acquisition_started.emit(False)
-        if self.runner is not None:
-            self.signal_run_finished.emit(str(self.runner.run_dir), outcome)
-        self.signal_run_notification.emit(f"Fluidics protocol run {outcome} ({self.folder_label.text()})")
-        self._set_run_visible(False)
-        self._refresh_idle()
+        """The run's RunFinished, its last event: only now can another run start (is_run_active), so every event
+        this tab handles belongs to self.runner."""
+        try:
+            if self.runner is not None:
+                totals, _last = reagent_totals(self.runner.manifest)
+                for port, ul in totals.items():
+                    self._since_init_ul[port] = self._since_init_ul.get(port, 0.0) + ul
+            self.protocol_tab.set_run_locked(False)
+            self.protocol_tab.highlight_row(None)
+            self.state_label.setText(f"Run {outcome}")
+            self.signal_acquisition_started.emit(False)
+            if self.runner is not None:
+                self.signal_run_finished.emit(str(self.runner.run_dir), outcome)
+            self.signal_run_notification.emit(f"Fluidics protocol run {outcome} ({self.folder_label.text()})")
+            self._set_run_visible(False)
+        finally:
+            self._run_open = False  # a failure above must not leave the tab refusing every later start
+            self._refresh_idle()
 
     # ---------- buttons / timer ----------
 
