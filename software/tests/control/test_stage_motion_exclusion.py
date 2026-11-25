@@ -332,6 +332,25 @@ def test_a_start_that_fails_after_moving_keeps_the_stage_until_it_reports_stoppe
         assert _until_released(scope)
 
 
+def test_a_start_whose_focus_map_move_times_out_keeps_the_stage_until_it_reports_stopped(scope):
+    """A stage timeout during the focus-map setup ends the start with False rather than an exception, but the move
+    may still be running: the stage stays held until it reports stopped, as when the start raised."""
+    import squid.exceptions
+
+    mpc, _ = _acquisition(scope)
+    mpc.set_gen_focus_map_flag(True)
+    stopped = threading.Event()
+    with patch.object(scope, "_stage_reports_stopped", side_effect=stopped.is_set):
+        with patch.object(mpc.autofocusController, "gen_focus_map"):
+            with patch.object(scope.stage, "move_y_to", side_effect=squid.exceptions.SquidReplyTimeout("unreadable")):
+                assert mpc.run_acquisition() is False
+
+        assert scope.stage_motion.holder == UNSETTLED
+
+        stopped.set()
+        assert _until_released(scope)
+
+
 def test_a_start_refused_before_moving_gives_the_stage_back_at_once(scope):
     """The microcontroller stayed busy (live triggers): nothing was moved, and the way out is to home, which must not
     be refused."""

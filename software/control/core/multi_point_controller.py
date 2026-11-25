@@ -35,6 +35,7 @@ from control.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
 from squid.stage.reservation import StageMotionHold, StageMotionRefused
 import squid.acquisition_state
+from squid.exceptions import SquidTimeout
 import squid.logging
 from control.acquisition_history_recorder import NullAcquisitionHistoryRecorder
 
@@ -842,7 +843,7 @@ class MultiPointController:
             raise
 
         thread_started = False
-        start_raised = False  # the start ended in an exception: a move of its may have left the stage moving
+        stage_may_be_moving = False  # the start ended in an exception or a stage timeout: a move may still run
         hardware_prepared = False
         own_history_entry_id: Optional[str] = None  # the history entry this call records as started, once it does
         expected_image_count = 0
@@ -1011,6 +1012,12 @@ class MultiPointController:
                 except ValueError:
                     self._log.exception("Invalid coordinates for autofocus plane, aborting.")
                     return False
+                except SquidTimeout:
+                    # The stage did not report stopped, or its position stayed unreadable after a move (Prior). A
+                    # failed start, as above, rather than an exception for the callers; the move may still be running.
+                    self._log.exception("The stage timed out while making the autofocus plane, aborting.")
+                    stage_may_be_moving = True
+                    return False
 
             def finish_fn():
                 try:
@@ -1139,13 +1146,13 @@ class MultiPointController:
             self.thread.start()
             thread_started = True
         except BaseException:
-            start_raised = True
+            stage_may_be_moving = True
             raise
         finally:
             if starting_here:
                 self._starting = False
             if not thread_started:
-                self._release_stage_after_run(after_failed_move=start_raised)
+                self._release_stage_after_run(after_failed_move=stage_may_be_moving)
                 # Acquisition never launched a worker — close out the breadcrumb so the
                 # watchdog doesn't later misread the lingering "running" state as a hang.
                 self._run_state_writer.end("error", None)

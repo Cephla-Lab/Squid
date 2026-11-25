@@ -635,6 +635,36 @@ def test_focus_map_without_scan_bounds_reports_failed_to_start_and_restores_the_
     assert not mpc.acquisition_in_progress()
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        "SquidReplyTimeout",  # the position stayed unreadable after the move (was a ValueError before)
+        "SquidTimeout",  # the stage never reported it stopped
+    ],
+)
+def test_a_stage_timeout_while_making_the_focus_map_fails_the_start_without_raising(error):
+    """The callers (GUI buttons, the control server, the fluidics runner) get False and acquisition_finished, as
+    for the invalid-coordinates ValueError, not an exception out of run_acquisition."""
+    import squid.exceptions
+
+    scope, tt, mpc = _controller_with_tracker()
+    try:
+        mpc.set_gen_focus_map_flag(True)
+        callbacks_before = scope.camera.get_callbacks_enabled()
+        with patch.object(mpc.autofocusController, "gen_focus_map"):
+            with patch.object(
+                scope.stage, "move_x_to", side_effect=getattr(squid.exceptions, error)("x position unreadable")
+            ):
+                assert mpc.run_acquisition() is False
+
+        assert tt.finished_count == 1
+        assert mpc.last_end_reason == "failed_to_start"
+        assert scope.camera.get_callbacks_enabled() == callbacks_before
+        assert not mpc.acquisition_in_progress()
+    finally:
+        scope.close()
+
+
 def test_worker_construction_failure_reports_failed_to_start_once_and_reraises(monkeypatch):
     import control.core.multi_point_controller as mpc_module
 
