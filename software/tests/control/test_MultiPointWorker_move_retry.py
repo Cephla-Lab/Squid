@@ -48,9 +48,10 @@ def _stage_still_busy(stage):
         stage.wait_for_idle(0.01)
 
 
-def _run_with_failing_second_fov(fail, failures):
+def _run_with_failing_second_fov(fail, failures, setup=None):
     """Run a 3-FOV acquisition whose stage fails (`fail(stage)` raises) `failures` times on its move to the second
-    FOV. Returns the controller, the tracker and the number of moves made to the second FOV."""
+    FOV. `setup(mpc, fovs)`, if given, runs before the stage is made to fail. Returns the controller, the tracker and
+    the number of moves made to the second FOV."""
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = AcquisitionTracker()
     mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
@@ -62,6 +63,9 @@ def _run_with_failing_second_fov(fail, failures):
     mpc.scanCoordinates.region_fov_coordinates = {"A1": fovs}
     mpc.scanCoordinates.region_centers = {"A1": [fovs[1][0], y0]}
     select_some_configs(mpc, scope.objective_store.current_objective)
+
+    if setup is not None:
+        setup(mpc, fovs)
 
     stage = scope.stage
     real_move_x_to = stage.move_x_to
@@ -148,6 +152,69 @@ def test_other_errors_end_the_acquisition_at_once_even_with_retries_on(retries_o
     assert tt.image_count == _images_per_fov(mpc)
 
 
+RETRY_DELAY_S = 0.0123  # a delay no other sleep of the worker uses, so the test can tell the retry delay apart
+
+
+def _abort_at_the_failure(mpc, monkeypatch):
+    def fail(stage):
+        mpc.request_abort_aquisition()
+        raise SquidReplyTimeout("Prior stage gave no status reply to '$,S' for 5 s")
+
+    return fail
+
+
+def _abort_during_the_retry_delay(mpc, monkeypatch):
+    real_sleep = MultiPointWorker._sleep
+
+    def sleep(worker, sec):
+        if sec == RETRY_DELAY_S:
+            mpc.request_abort_aquisition()
+        real_sleep(worker, sec)
+
+    monkeypatch.setattr(MultiPointWorker, "_sleep", sleep)
+    return _raise(SquidReplyTimeout("Prior stage gave no status reply to '$,S' for 5 s"))
+
+
+def _abort_during_the_stop_wait(mpc, monkeypatch):
+    def reports_stopped():
+        mpc.request_abort_aquisition()
+        return False  # still moving when the user aborts
+
+    monkeypatch.setattr(mpc.stage, "reports_stopped", reports_stopped)
+    return _raise(ValueError("not enough values to unpack (expected 3, got 1)"))
+
+
+@pytest.mark.parametrize(
+    "abort_and_fail", [_abort_at_the_failure, _abort_during_the_retry_delay, _abort_during_the_stop_wait]
+)
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_a_user_abort_during_a_retry_ends_the_acquisition_as_a_user_abort(monkeypatch, abort_and_fail):
+    """The user aborted while a failed FOV move waited to be made again: the run ends as the user's abort, with no
+    images at that FOV and no further move, not as a stage error."""
+    monkeypatch.setattr(control._def, "MULTIPOINT_FOV_MOVE_RETRIES", 1)
+    monkeypatch.setattr(control._def, "MULTIPOINT_FOV_MOVE_RETRY_DELAY_S", RETRY_DELAY_S)
+    moves_to_third_fov = []
+    failing = {}
+
+    def setup(mpc, fovs):
+        failing["fail"] = abort_and_fail(mpc, monkeypatch)
+        real_move_x_to = mpc.stage.move_x_to
+
+        def move_x_to(x_mm, *args, **kwargs):
+            if x_mm == pytest.approx(fovs[2][0]):
+                moves_to_third_fov.append(x_mm)
+            return real_move_x_to(x_mm, *args, **kwargs)
+
+        mpc.stage.move_x_to = move_x_to
+
+    mpc, tt, moves = _run_with_failing_second_fov(lambda stage: failing["fail"](stage), failures=10, setup=setup)
+
+    assert mpc.last_end_reason == "user_abort"
+    assert moves == 1  # not made again
+    assert moves_to_third_fov == []
+    assert tt.image_count == _images_per_fov(mpc)  # only the first FOV: nothing acquired at the failed one
+
+
 # --- The real PriorStage, against a ProScan whose moves take time ---
 
 MOVE_S = 0.8  # how long each fake move runs
@@ -223,7 +290,7 @@ def test_a_retry_waits_for_the_stage_to_report_stopped_before_moving_it_again(re
     monkeypatch.setattr(control._def, "MULTIPOINT_FOV_MOVE_RETRY_STOP_WAIT_S", 5.0)
     stage, ser = prior_stage
 
-    _worker_on(stage).move_to_coordinate((1.0, 1.0), "A1", 0)
+    assert _worker_on(stage).move_to_coordinate((1.0, 1.0), "A1", 0) is True
 
     commands = [cmd.split()[0] for cmd, _ in ser.motion_log]
     assert commands == ["GX", "GX", "GY"]  # the lost-reply move made again, then on to Y
