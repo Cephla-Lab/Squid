@@ -253,6 +253,32 @@ def test_measure_focus_restores_focus_live_when_the_reading_raises(qtbot, laser_
         laf.liveController.stop_live()
 
 
+def test_measure_focus_takes_no_reading_when_stopped_while_live_is_paused(qtbot, laser_af_controller, monkeypatch):
+    scope, controller = laser_af_controller
+    port = QtImagingPort(controller, controller.scanCoordinates, scope)
+    laf = controller.laserAutoFocusController
+    _with_reference(laf)
+    _focus_live_on(laf)
+    seen = _spy_focus_live(monkeypatch, laf)
+    stop = threading.Event()
+    live = laf.liveController
+    spy_stop = live.stop_live
+
+    def stop_live_then_abort():
+        spy_stop()
+        stop.set()  # abort or the row's time limit while the runner thread waited for the pause
+
+    monkeypatch.setattr(live, "stop_live", stop_live_then_abort)
+    try:
+        value = port.measure_focus_um(should_stop=stop.is_set)
+        assert value != value  # nan: no reading this time
+        assert seen["live_during_reading"] == []  # measure_displacement never started
+        assert len(seen["stop"]) == 1 and len(seen["start"]) == 1
+        assert laf.liveController.is_live and laf.camera.get_callbacks_enabled()  # live restored all the same
+    finally:
+        laf.liveController.stop_live()
+
+
 def test_measure_focus_leaves_focus_live_off_when_it_was_off(qtbot, laser_af_controller, monkeypatch):
     scope, controller = laser_af_controller
     port = QtImagingPort(controller, controller.scanCoordinates, scope)

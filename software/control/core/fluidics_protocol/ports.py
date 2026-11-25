@@ -82,9 +82,10 @@ class ImagingHandle(Protocol):
 class ImagingPort(Protocol):
     def start(self, request: ImagingRequest) -> ImagingHandle: ...  # raises ImagingStartError
 
-    def measure_focus_um(self) -> Optional[float]:
+    def measure_focus_um(self, should_stop: Optional[Callable[[], bool]] = None) -> Optional[float]:
         """One laser AF displacement reading where the stage is, without moving z: None when laser AF cannot be
-        used at all, nan when this reading found no spot."""
+        used at all, nan when this reading found no spot, or when `should_stop()` turned true while the port got
+        ready for the reading (the reading then never starts)."""
 
     def stage_position(self) -> Optional[Dict[str, float]]:
         """Where the stage is, read only: x_mm, y_mm, z_um (and piezo_um with a piezo); None when unknown."""

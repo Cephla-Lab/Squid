@@ -183,9 +183,10 @@ class FakeHandle:
 class FakeImagingPort:
     """Creates the session folder like start_new_experiment(add_timestamp=False) would (FileExistsError ->
     ImagingStartError). `script`: one entry per start(): "completed" | "completed_with_errors" | "user_abort" |
-    "error" | "raise" (start fails) | "hold" (blocks until release()/abort()). `focus`: the laser AF reading."""
+    "error" | "raise" (start fails) | "hold" (blocks until release()/abort()). `focus`: the laser AF reading.
+    `pause`: runs where the real port pauses the focus-camera live view, before `should_stop` is checked again."""
 
-    def __init__(self, script: Optional[List[str]] = None, focus=None, position=None):
+    def __init__(self, script: Optional[List[str]] = None, focus=None, position=None, pause=None):
         self.script = list(script or [])
         self.requests: List[ImagingRequest] = []
         self.handles: List[FakeHandle] = []
@@ -193,10 +194,15 @@ class FakeImagingPort:
         self.focus_reads = 0
         self.focus_threads: List[str] = []
         self.position = position  # stage_position(); a callable raises/returns
+        self.pause = pause
 
-    def measure_focus_um(self):
+    def measure_focus_um(self, should_stop=None):
         if self.focus is None:
             return None
+        if self.pause is not None:
+            self.pause()
+        if should_stop is not None and should_stop():
+            return float("nan")
         self.focus_reads += 1
         self.focus_threads.append(threading.current_thread().name)
         return float(self.focus())

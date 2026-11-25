@@ -140,6 +140,22 @@ def test_an_abort_stops_the_reading_between_two_readings(tmp_path):
     assert _rows(tmp_path / "focus_log.csv")[-1]["ok"] == "false"
 
 
+def test_an_abort_while_the_port_prepares_a_reading_stops_it_before_it_starts():
+    stop = threading.Event()
+    pauses = []
+
+    def pause():  # where the real port waits for the GUI thread to pause the focus-camera live view
+        pauses.append(1)
+        if len(pauses) == 2:
+            stop.set()  # the operator presses abort during that wait, after the stop check before the reading
+
+    imaging = FakeImagingPort(focus=lambda: 1.0, pause=pause)
+    reading = read_focus(imaging, readings=3, stop_reason=lambda: "abort requested" if stop.is_set() else "")
+    assert imaging.focus_reads == 1  # the second reading never started
+    assert reading.ok and reading.readings_ok == 1
+    assert reading.message == "stopped after 1 of 3 readings: abort requested"
+
+
 def test_the_before_step_reading_is_bounded_too(tmp_path):
     imaging = _slow_readings(0.2)
     log = FocusLog(tmp_path / "focus_log.csv", imaging, started_at=time.time(), wait_s=0.3)

@@ -68,18 +68,26 @@ class FocusReading:
 def read_focus(imaging, readings: int = READINGS, stop_reason: Optional[Callable[[], str]] = None) -> FocusReading:
     """`readings` laser AF displacement readings where the stage is, averaged. Stops at the first None (laser AF
     cannot be used: not initialized, no reference) without asking again, and before a reading when
-    `stop_reason()` gives a reason (abort, time limit); the readings taken until then still count."""
+    `stop_reason()` gives a reason (abort, time limit); the readings taken until then still count. The port checks
+    the stop again once it is ready to read (after pausing the focus-camera live view) and then gives nan without
+    reading."""
+    reason_now = stop_reason if stop_reason is not None else (lambda: "")
     values: List[float] = []
     note = ""
     for taken in range(readings):
-        reason = stop_reason() if stop_reason is not None else ""
+        reason = reason_now()
         if reason:
             note = f"stopped after {taken} of {readings} readings: {reason}"
             break
-        value = imaging.measure_focus_um()
+        value = imaging.measure_focus_um(should_stop=lambda: bool(reason_now()))
         if value is None:
             return FocusReading(None, None, 0, False, "laser AF not available (not initialized or no reference)")
-        if not math.isnan(value):
+        if math.isnan(value):
+            reason = reason_now()  # stopped while the port got ready: this reading never started
+            if reason:
+                note = f"stopped after {taken} of {readings} readings: {reason}"
+                break
+        else:
             values.append(float(value))
     if not values:
         return FocusReading(None, None, 0, False, note or "no laser AF spot")

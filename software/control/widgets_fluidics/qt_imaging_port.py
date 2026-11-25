@@ -7,7 +7,7 @@ payload-less acquisition_finished signal plus last_end_reason/last_image_count, 
 experiment_ID == the requested folder (a GUI-started acquisition never matches)."""
 
 import threading
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 from qtpy.QtCore import QMetaObject, QObject, Qt, QThread, Signal, Slot
 
@@ -73,10 +73,11 @@ class QtImagingPort(QObject):
             raise error
         return self._current
 
-    def measure_focus_um(self) -> Optional[float]:
+    def measure_focus_um(self, should_stop: Optional[Callable[[], bool]] = None) -> Optional[float]:
         """One laser AF displacement reading at the current position, z untouched (the runner's focus log;
         runner thread, like the acquisition worker's AF). None: no laser AF controller, not initialized,
-        no reference, or an acquisition is running; nan: no spot this time."""
+        no reference, or an acquisition is running; nan: no spot this time, or `should_stop()` turned true while
+        the focus-camera live view was being paused (abort, time limit): no reading is started then."""
         laf = getattr(self._controller, "laserAutoFocusController", None)
         if laf is None or not laf.is_initialized or not laf.laser_af_properties.has_reference:
             return None
@@ -88,6 +89,8 @@ class QtImagingPort(QObject):
         # on the GUI thread, which owns it; the reading itself stays on this thread.
         self._on_gui_thread("_pause_focus_live")
         try:
+            if should_stop is not None and should_stop():
+                return float("nan")
             return float(laf.measure_displacement())
         except Exception as e:
             self._log.warning(f"Laser AF displacement reading failed: {e}")
