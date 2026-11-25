@@ -331,6 +331,11 @@ def receive_or_abort(sock, abort_code, what="the recording"):
         return _receive(sock), True
 
 
+def existing_output(out, suffixes):
+    """The first of the files out + suffix that already exists, or None."""
+    return next((out + s for s in suffixes if os.path.exists(out + s)), None)
+
+
 def prepare_out(out):
     """Create the folder `out` (a path without extension) goes into and check that it is writable, before anything
     reaches the GUI: the GUI writes the AF frames there during the run."""
@@ -640,9 +645,9 @@ def main():
     if not args.dry_run and None in (args.port, args.volume, args.rate):
         p.error("--port, --volume and --rate are required (or use --dry-run)")
     out = os.path.expanduser(args.out)
-    for ext in (".csv", "_meta.json", "_af.tif", "_af_raw.npy"):
-        if os.path.exists(out + ext):
-            p.error("%s already exists; pick another --out" % (out + ext))
+    taken = existing_output(out, (".csv", "_meta.json", "_af.tif", "_af_raw.npy"))
+    if taken:
+        p.error("%s already exists; pick another --out" % taken)
     prepare_out(out)
     pump_s = 0 if args.dry_run else 60 * args.volume / args.rate
     params = {

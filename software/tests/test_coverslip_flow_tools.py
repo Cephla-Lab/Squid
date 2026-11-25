@@ -906,6 +906,8 @@ def _sequence_result(end_reason="completed"):
         "flow": [],
         "end_reason": end_reason,
         "af_frames": 0,
+        "flow_sensor": "s1",
+        "flow_sensors": ["s1"],
         "laser_af": {"x_reference": 0.0, "pixel_to_um": 0.4, "detection": {}},
     }
 
@@ -1036,3 +1038,95 @@ def test_a_noisy_bowl_still_has_its_centre(analyze):
 
     assert bowl["centre_x_mm"] == pytest.approx(1.0, abs=0.2)
     assert bowl["centre_y_mm"] == pytest.approx(-2.0, abs=0.2)
+
+
+class ReadingSensor(FakeSensor):
+    """A flow sensor that delivers one reading, `value`, as soon as it is subscribed."""
+
+    def __init__(self, name, value):
+        self.name, self.value, self.subscribed = name, value, []
+
+    def subscribe(self, h):
+        self.subscribed.append(h)
+        h(self.value, 1.0)
+
+    def unsubscribe(self, h):
+        self.subscribed.remove(h)
+
+
+def _two_sensors(system):
+    sensors = [ReadingSensor("s1", 10.0), ReadingSensor("s2", 99.0)]
+    system.devices.flow_sensors = sensors
+    return sensors
+
+
+def test_the_map_records_the_first_flow_sensor_only(amf):
+    gui, system = _fake_gui()
+    sensors = _two_sensors(system)
+    ns = _exec_remote(amf.REMOTE.replace("__PARAMS__", repr(_map_params(settle=0.05, post=0.05))), gui)
+    result = ns["result"]
+    assert result["end_reason"] == "completed"
+    assert [f for _t, f in result["flow"]] == [10.0]
+    assert (result["flow_sensor"], result["flow_sensors"]) == ("s1", ["s1", "s2"])
+    assert [s.subscribed for s in sensors] == [[], []]  # unsubscribed again
+
+
+def test_the_valve_sequence_records_the_first_flow_sensor_only(valves):
+    gui, system = _fake_gui()
+    sensors = _two_sensors(system)
+    params = dict(steps=[[1, 0.05]], pre=0.05, af_path=None, max_frames=10)
+    result = _exec_remote(valves.REMOTE.replace("__PARAMS__", repr(params)), gui)["result"]
+    assert result["end_reason"] == "completed"
+    assert [f for _t, f in result["flow"]] == [10.0]
+    assert (result["flow_sensor"], result["flow_sensors"]) == ("s1", ["s1", "s2"])
+    assert [s.subscribed for s in sensors] == [[], []]
+
+
+def test_the_valve_sequence_runs_without_a_flow_sensor(valves):
+    gui, system = _fake_gui()
+    system.devices.flow_sensors = []
+    params = dict(steps=[[1, 0.05]], pre=0.05, af_path=None, max_frames=10)
+    result = _exec_remote(valves.REMOTE.replace("__PARAMS__", repr(params)), gui)["result"]
+    assert result["end_reason"] == "completed"
+    assert (result["flow"], result["flow_sensor"], result["flow_sensors"]) == ([], None, [])
+
+
+def test_the_map_and_valve_sequence_name_the_recorded_sensor(amf, valves, tmp_path, monkeypatch, capsys):
+    positions = tmp_path / "coordinates.csv"
+    positions.write_text("x (mm),y (mm)\n1,1\n2,2\n")
+    two = dict(_sequence_result(), flow=[[0.5, 10.0]], flow_sensor="s1", flow_sensors=["s1", "s2"])
+    for module in (amf, valves.amf):  # valve_sequence.py imports its own af_map_flow
+        monkeypatch.setattr(module, "run", lambda params, timeout, remote=None: two)
+
+    monkeypatch.setattr(sys, "argv", ["x", "--map-only", "--positions", str(positions), "--out", str(tmp_path / "m")])
+    amf.main()
+    monkeypatch.setattr(sys, "argv", ["x", "--steps", "5:1", "--out", str(tmp_path / "v")])
+    valves.main()
+
+    for base in ("m", "v"):
+        assert json.load(open(tmp_path / f"{base}_meta.json"))["flow_sensor"] == "s1"
+        rows = list(csv.DictReader(open(tmp_path / f"{base}_flow.csv")))
+        assert [(r["t_s"], r["flow_ul_min"]) for r in rows] == [("0.5000", "10.0")]
+    assert capsys.readouterr().out.count("flow sensor s1 only (s2 not recorded)") == 2
+
+
+@pytest.mark.parametrize("taken", ["_samples.csv", "_af_raw.npy"])
+def test_the_map_refuses_an_output_whose_files_exist(amf, tmp_path, monkeypatch, taken):
+    positions = tmp_path / "coordinates.csv"
+    positions.write_text("x (mm),y (mm)\n1,1\n")
+    (tmp_path / f"m1{taken}").write_text("an earlier run")
+    monkeypatch.setattr(amf, "run", lambda *a, **k: pytest.fail("reached the GUI"))
+    monkeypatch.setattr(sys, "argv", ["x", "--map-only", "--positions", str(positions), "--out", str(tmp_path / "m1")])
+    with pytest.raises(SystemExit):
+        amf.main()
+    assert (tmp_path / f"m1{taken}").read_text() == "an earlier run"
+
+
+@pytest.mark.parametrize("taken", ["_samples.csv", "_af_raw.npy"])
+def test_the_valve_sequence_refuses_an_output_whose_files_exist(valves, tmp_path, monkeypatch, taken):
+    (tmp_path / f"v{taken}").write_text("an earlier run")
+    monkeypatch.setattr(valves.amf, "run", lambda *a, **k: pytest.fail("reached the GUI"))
+    monkeypatch.setattr(sys, "argv", ["x", "--steps", "5:1", "--out", str(tmp_path / "v")])
+    with pytest.raises(SystemExit):
+        valves.main()
+    assert (tmp_path / f"v{taken}").read_text() == "an earlier run"

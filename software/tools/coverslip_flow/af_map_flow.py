@@ -20,7 +20,9 @@ server with python_exec enabled.
         --port 1 --volume 500 --rate 500 --out ~/flowtest/map/m1
 
 Afterwards the bright reflection is re-detected in every saved frame (as in
-flow_displacement_experiment.py) and the maps are plotted.
+flow_displacement_experiment.py) and the maps are plotted. <out>_flow.csv has the readings of the
+first flow sensor in the fluidics config (the one port_hold_check.py reads); any others are not
+recorded.
 """
 
 import argparse
@@ -60,7 +62,8 @@ st = {"af": None, "n": 0}
 def _err(m, _e=errors): _e.append(m)
 def h(f, ts, _b=flow): _b.append([ts, f])
 sensors = list(system.devices.flow_sensors)
-for s in sensors: s.subscribe(h)
+recorded = sensors[:1]  # the first flow sensor only: <out>_flow.csv is one sensor's readings
+for s in recorded: s.subscribe(h)
 
 def sample(phase, idx, x, y, _l=laf, _st=st, _s=samples, _P=P, _xr=x_ref, _u=um_per_px, _np=np, _t=time.time):
     ta = _t(); c = _l._get_laser_spot_centroid(); tb = _t()
@@ -154,16 +157,19 @@ finally:
         finally:
             if st["af"] is not None:
                 st["af"].flush(); del st["af"]; st["af"] = None
-            for s in sensors: s.unsubscribe(h)
+            for s in recorded: s.unsubscribe(h)
 events.append([time.time(), "end", end_reason])
 det = {}
 for k in ("y_window", "x_window", "min_peak_width", "min_peak_distance", "min_peak_prominence", "spot_spacing", "filter_sigma"):
     det[k] = getattr(laf.laser_af_properties, k, None)
 result = {"t0": t0, "samples": samples, "events": events, "flow": flow, "end_reason": end_reason, "af_frames": st["n"],
+          "flow_sensor": recorded[0].name if recorded else None, "flow_sensors": [s.name for s in sensors],
           "laser_af": {"x_reference": x_ref, "pixel_to_um": um_per_px, "detection": det}}
 """
 
 ABORT = 'setattr(gui, "_af_map_abort", True)\nresult = "abort requested"'
+# what a recording writes; an --out with any of them is refused (the GUI would overwrite the AF frames)
+OUTPUT_FILES = ("_samples.csv", "_flow.csv", "_meta.json", "_af_raw.npy")
 
 
 def run(params, timeout, remote=None):
@@ -176,6 +182,25 @@ def run(params, timeout, remote=None):
     if not reply.get("success"):
         sys.exit("GUI refused: %s" % reply.get("error"))
     return reply["result"]["result"]
+
+
+def refuse_existing_output(parser, out):
+    taken = fde.existing_output(out, OUTPUT_FILES)
+    if taken:
+        parser.error("%s already exists; pick another --out" % taken)
+
+
+def write_flow(out, result):
+    """<out>_flow.csv: the readings of the one flow sensor recorded (the first), saying when others were left out."""
+    others = [n for n in result["flow_sensors"] if n != result["flow_sensor"]]
+    if others:
+        print("Flow: flow sensor %s only (%s not recorded)" % (result["flow_sensor"], ", ".join(others)))
+    t0 = result["t0"]
+    with open(out + "_flow.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["t_s", "flow_ul_min"])
+        for t, v in result["flow"]:
+            w.writerow(["%.4f" % (t - t0), "" if v is None else v])
 
 
 def bright_spot(out, result):
@@ -234,8 +259,7 @@ def main():
     if a.port is None and not a.map_only:
         p.error("--port is required unless --map-only")
     out = os.path.expanduser(a.out)
-    if os.path.exists(out + "_samples.csv"):
-        sys.exit(out + "_samples.csv exists")
+    refuse_existing_output(p, out)
     fde.prepare_out(out)
     rows = list(csv.DictReader(open(os.path.expanduser(a.positions))))
     pos = [(float(r["x (mm)"]), float(r["y (mm)"])) for r in rows]
@@ -289,16 +313,13 @@ def main():
                     "" if fi is None else fi,
                 ]
             )
-    with open(out + "_flow.csv", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["t_s", "flow_ul_min"])
-        for t, v in res["flow"]:
-            w.writerow(["%.4f" % (t - t0), "" if v is None else v])
+    write_flow(out, res)
     json.dump(
         {
             "events_s": [[e[0] - t0, e[1], e[2]] for e in res["events"]],
             "end_reason": res["end_reason"],
             "laser_af": res["laser_af"],
+            "flow_sensor": res["flow_sensor"],
             "args": vars(a),
             "center": center,
             "af_frames": res["af_frames"],

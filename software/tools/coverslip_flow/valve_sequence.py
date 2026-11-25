@@ -5,7 +5,8 @@ a sequence of ports, with no pumping (valve-only test).
     python3 tools/coverslip_flow/valve_sequence.py --steps 1:30 5:60 1:60 --out ~/flowtest/x/valve
 
 Each step is PORT:SECONDS (turn the valve to PORT, then hold). Frames are saved and the bright
-reflection re-detected afterwards, as in af_map_flow.py. Needs the GUI's control server with
+reflection re-detected afterwards, as in af_map_flow.py; <out>_flow.csv has the first flow
+sensor's readings, as there. Needs the GUI's control server with
 python_exec enabled. Ctrl-C stops the sequence (no further valve moves) and saves what was
 recorded; the script exits non-zero when the sequence did not complete.
 """
@@ -29,7 +30,8 @@ samples = []; events = []; flow = []; errors = []; st = {"af": None, "n": 0}
 def _err(m, _e=errors): _e.append(m)
 def h(f, ts, _b=flow): _b.append([ts, f])
 sensors = list(system.devices.flow_sensors)
-for s in sensors: s.subscribe(h)
+recorded = sensors[:1]  # the first flow sensor only: <out>_flow.csv is one sensor's readings
+for s in recorded: s.subscribe(h)
 def sample(phase, _l=laf, _st=st, _s=samples, _P=P, _xr=x_ref, _u=um_per_px, _np=np, _t=time.time):
     ta = _t(); c = _l._get_laser_spot_centroid(); tb = _t(); fi = None; img = _l.image
     if img is not None:
@@ -70,12 +72,13 @@ finally:
         finally:
             if st["af"] is not None:
                 st["af"].flush(); del st["af"]; st["af"] = None
-            for s in sensors: s.unsubscribe(h)
+            for s in recorded: s.unsubscribe(h)
 events.append([time.time(), "end", end_reason])
 det = {}
 for k in ("y_window", "x_window", "min_peak_width", "min_peak_distance", "min_peak_prominence", "spot_spacing", "filter_sigma"):
     det[k] = getattr(laf.laser_af_properties, k, None)
 result = {"t0": t0, "samples": samples, "events": events, "flow": flow, "end_reason": end_reason, "af_frames": st["n"],
+          "flow_sensor": recorded[0].name if recorded else None, "flow_sensors": [s.name for s in sensors],
           "laser_af": {"x_reference": x_ref, "pixel_to_um": um_per_px, "detection": det}}
 """
 
@@ -88,8 +91,7 @@ def main():
     p.add_argument("--server-port", type=int, default=fde.PORT)
     a = p.parse_args()
     out = os.path.expanduser(a.out)
-    if os.path.exists(out + "_samples.csv"):
-        sys.exit(out + "_samples.csv exists")
+    amf.refuse_existing_output(p, out)
     fde.prepare_out(out)
     steps = [[int(s.split(":")[0]), float(s.split(":")[1])] for s in a.steps]
     total = a.pre + sum(s for _, s in steps) + 5 * len(steps)
@@ -118,16 +120,13 @@ def main():
                     "" if fi is None else fi,
                 ]
             )
-    with open(out + "_flow.csv", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["t_s", "flow_ul_min"])
-        for t, v in res["flow"]:
-            w.writerow(["%.4f" % (t - t0), "" if v is None else v])
+    amf.write_flow(out, res)
     json.dump(
         {
             "events_s": [[e[0] - t0, e[1], e[2]] for e in res["events"]],
             "end_reason": res["end_reason"],
             "laser_af": res["laser_af"],
+            "flow_sensor": res["flow_sensor"],
             "steps": steps,
         },
         open(out + "_meta.json", "w"),
