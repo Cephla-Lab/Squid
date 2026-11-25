@@ -511,6 +511,9 @@ class SaveZarrJob(Job):
     # Track HCS metadata that has been written (plate path -> True, well path -> True)
     _hcs_plate_written: ClassVar[Set[str]] = set()
     _hcs_wells_written: ClassVar[Set[str]] = set()
+    # Fields (writer keys) listed in their well's metadata. Registration runs before every write until it has
+    # succeeded once, so a failed registration is retried by the next frame instead of being lost.
+    _hcs_registered: ClassVar[Set[str]] = set()
 
     @classmethod
     def clear_writers(cls) -> None:
@@ -531,6 +534,7 @@ class SaveZarrJob(Job):
             cls._zarr_writers.clear()
             cls._hcs_plate_written.clear()
             cls._hcs_wells_written.clear()
+            cls._hcs_registered.clear()
 
     @classmethod
     def finalize_all_writers(cls) -> bool:
@@ -551,6 +555,7 @@ class SaveZarrJob(Job):
                     cls._log.error(f"Error finalizing writer {path}: {e}")
                     failed_paths.append(path)
         cls._zarr_writers.clear()
+        cls._hcs_registered.clear()
         if failed_paths:
             cls._log.error(f"Failed to finalize {len(failed_paths)} zarr writers: {failed_paths}")
             return False
@@ -566,27 +571,31 @@ class SaveZarrJob(Job):
             region_id: Well ID (e.g., "A1", "B12")
             fov: Field of view index
         """
-        from control.core.zarr_writer import write_plate_metadata, write_well_metadata
+        from control.core.zarr_writer import add_plate_well, add_well_image, write_plate_metadata, write_well_metadata
 
         info = self.zarr_writer_info
 
-        # Write plate metadata (once per acquisition)
+        # Plate metadata (once per acquisition): the planned rows and columns, with an empty well list
         plate_path = info.get_plate_path()
         if plate_path not in self._hcs_plate_written:
             rows, cols, wells = info.get_hcs_structure()
-            write_plate_metadata(plate_path, rows, cols, wells, plate_name="plate")
+            write_plate_metadata(plate_path, rows, cols, plate_name="plate")
             self._hcs_plate_written.add(plate_path)
-            self._log.info(f"Wrote HCS plate metadata: {len(wells)} wells")
+            self._log.info(
+                f"Wrote HCS plate metadata: {len(rows)} rows x {len(cols)} columns, {len(wells)} wells planned"
+            )
 
-        # Write well metadata (once per well)
+        # Well metadata (once per well): an empty image list, and the well listed in the plate
         well_path = info.get_well_path(region_id)
         if well_path not in self._hcs_wells_written:
-            # Get FOV count for this well
-            fov_count = info.get_fov_count(region_id)
-            fields = list(range(fov_count))
-            write_well_metadata(well_path, fields)
+            write_well_metadata(well_path)
+            row_letter, col_num = utils.parse_well_id(region_id)
+            add_plate_well(plate_path, row_letter, col_num)
             self._hcs_wells_written.add(well_path)
-            self._log.debug(f"Wrote HCS well metadata for {region_id}: {fov_count} fields")
+            self._log.debug(f"Wrote HCS well metadata for {region_id}")
+
+        # The field, listed in its well now that it has an image (idempotent)
+        add_well_image(well_path, fov)
 
     def run(self) -> ZarrWriteResult:
         if self.zarr_writer_info is None:
@@ -731,8 +740,6 @@ class SaveZarrJob(Job):
             self._zarr_writers[writer_key] = writer
             if is_hcs:
                 mode_str = "HCS 5D"
-                # Write HCS plate and well metadata
-                self._write_hcs_metadata_if_needed(region_id, fov)
             elif is_6d:
                 mode_str = f"non-HCS 6D (fov_count={fov_count})"
             else:
@@ -740,6 +747,11 @@ class SaveZarrJob(Job):
             self._log.info(f"Initialized zarr writer ({mode_str}): {output_path}")
 
         writer = self._zarr_writers[writer_key]
+        # List the field in the plate/well metadata before its first successful write; a failure here raises
+        # (the frame is not written) and the next frame for this field tries again.
+        if is_hcs and writer_key not in self._hcs_registered:
+            self._write_hcs_metadata_if_needed(region_id, fov)
+            self._hcs_registered.add(writer_key)
 
         # Write frame
         t = info.time_point or 0

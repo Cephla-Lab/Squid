@@ -42,6 +42,10 @@ When acquiring from wellplate positions (region names match pattern `[A-Z]+\d+`)
         └── ...
 ```
 
+`plate.wells` and each well's `images` list only the fields that received at least one
+image (they grow as the acquisition runs), so an aborted run's plate lists exactly what is
+on disk. The plate's `rows` and `columns` are the planned set.
+
 ### Per-FOV Mode (Default)
 
 For non-wellplate acquisitions:
@@ -116,15 +120,22 @@ Shape: `(FOV, T, C, Z, Y, X)` where:
     "structure": "5D-TCZYX",
     "pixel_size_um": 0.5,
     "compression": "fast",
-    "acquisition_complete": true
+    "acquisition_complete": true,
+    "planes_written": 6,
+    "planes_expected": 6,
+    "aborted": false
   }
 }
 ```
 
+`acquisition_complete` is true only when every planned plane of that array was written
+(`planes_written == planes_expected`), whatever ended the run; an aborted or interrupted run
+leaves it false, with the counts saying how far it got.
+
 Each array's own `zarr.json` carries `dimension_names` matching the axes
 (`["t", "c", "z", "y", "x"]`, or `["fov", "t", "c", "z", "y", "x"]` in 6D mode), as OME-NGFF 0.5 requires.
 
-CI writes a small HCS plate and a per-FOV image and opens them with
+CI writes a small HCS plate, a per-FOV image and an aborted plate and opens them with
 [ngff-zarr](https://github.com/thewtex/ngff-zarr) (with validation) and
 [iohub](https://github.com/czbiohub-sf/iohub); see `tests/ngff_readers/`.
 
