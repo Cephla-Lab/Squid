@@ -344,18 +344,26 @@ class ProtocolRunner:
             tail = plan[offset:] if offset else plan
             self._set_cursor_sequence(offset)
             hooks = {}
+            aborted_while_reading = False
             if self._focus_log is not None:
                 self._focus_log.record({**self._focus_step(step, attempt), "point": "before"})
                 hooks["after_sequence"] = self._focus_after_sequence(step, attempt, rows, plan, offset)
-            ticket = self._fluidics.start(rows, plan=tail, **hooks)
+                aborted_while_reading = self._abort_step_requested.is_set() or self._abort_run_requested.is_set()
+            ticket = None if aborted_while_reading else self._fluidics.start(rows, plan=tail, **hooks)
         except Exception as e:  # a refused/failed launch holds like everything else
             self._log.error(f"Fluidics step {step.label} could not start: {e}")
             self._end_attempt(step, attempt, "failed_to_start", str(e))
             return _StepResult(ok=False, outcome="failed_to_start", message=str(e))
-        # _active stays set if the drive raises, so _run's crash handler can abort it; cleared on a clean return.
-        self._active = ticket
-        outcome = self._drive_fluidics(ticket, step, offset, len(plan))
-        self._active = None
+        if ticket is None:
+            # Aborted during the before-step reading: end the attempt like an abort at the first poll of the
+            # fluidics, stopped at the start of the tail, without launching it (no pump or valve moves).
+            self._abort_step_requested.clear()
+            outcome = FluidicsOutcome("stopped", "aborted before the fluidics started", 0.0, 0, None)
+        else:
+            # _active stays set if the drive raises, so _run's crash handler can abort it; cleared on a clean return.
+            self._active = ticket
+            outcome = self._drive_fluidics(ticket, step, offset, len(plan))
+            self._active = None
         position = None if outcome.position is None else offset + int(outcome.position)
         self._end_attempt(
             step,

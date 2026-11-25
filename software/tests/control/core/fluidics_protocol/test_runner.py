@@ -532,3 +532,31 @@ def test_an_abort_during_a_focus_log_reading_stops_the_readings(tmp_path):
     assert imaging.focus_reads == 1  # the other readings of that row and of later rows never started
     rows = _focus_rows(run_dir)
     assert "stopped after 1 of 3 readings: abort requested" in rows[0]["message"]
+    assert fluidics.starts == []  # the abort came before the launch: no pump or valve moved
+    assert runner.outcome == "stopped" and runner.hold is None
+    assert manifest_io.read_manifest(run_dir).steps[0].attempts[0].outcome == "stopped"
+
+
+def test_a_step_abort_during_the_before_step_reading_holds_without_launching_the_fluidics(tmp_path):
+    box = {"aborted": False}
+
+    def reading():
+        if not box["aborted"]:
+            box["aborted"] = True
+            box["runner"].abort_step()  # the operator presses Abort step while the before-step reading is taken
+        return 1.0
+
+    imaging = FakeImagingPort(focus=reading)
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging, focus_log=True)
+    box["runner"] = runner
+    runner.start()
+    assert _held(runner)
+    assert fluidics.starts == []  # held like an abort during the fluidics, but nothing was launched
+    hold = runner.hold
+    assert hold.kind == "fluidics" and hold.reason == "stopped" and hold.resume_position == 0 and hold.can_resume
+    attempt = manifest_io.read_manifest(run_dir).steps[0].attempts[0]
+    assert attempt.outcome == "stopped" and attempt.ended_position == 0
+
+    runner.hold_action(HoldAction.RESUME)
+    assert runner.wait(10) and runner.outcome == "finished"
+    assert len(fluidics.starts[0]["plan"]) == len(fluidics.plan(fluidics.starts[0]["rows"]))  # the whole step
