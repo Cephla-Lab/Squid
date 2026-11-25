@@ -8,7 +8,7 @@ from control.startup_homing import require_objective_lowered
 import squid.ftdi
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
-from squid.exceptions import SquidError, SquidTimeout
+from squid.exceptions import SquidError, SquidReplyTimeout, SquidTimeout
 
 
 class PriorStage(AbstractStage):
@@ -499,8 +499,7 @@ class PriorStage(AbstractStage):
             status = self._send_command("$,S")
             if status.isdigit():
                 if int(status) == 0:
-                    self._get_pos_poll_stage()
-                    # print("xy position: ", self.x_pos, self.y_pos)
+                    self._read_pos_after_stop()
                     self.is_busy = False
                     break
                 last_status_time = time.monotonic()
@@ -513,6 +512,30 @@ class PriorStage(AbstractStage):
                 self._log.error(message)
                 raise SquidTimeout(message)
             time.sleep(PriorStage.MOVE_POLLING_PERIOD)
+
+    def _read_pos_after_stop(self):
+        """The position once a move has stopped. An unreadable reply ("" when none came within the read timeout, or a
+        stray line) is asked again, as an unreadable status is; this long without a position, it is gone. One such
+        reply used to end the move with a ValueError, and with it the acquisition that made the move."""
+        deadline = time.monotonic() + PriorStage.STATUS_REPLY_TIMEOUT_S
+        unreadable = 0
+        while True:
+            try:
+                self._get_pos_poll_stage()
+            except ValueError as e:
+                unreadable += 1
+                if time.monotonic() > deadline:
+                    message = (
+                        f"Prior stage gave no readable reply to 'P' for {PriorStage.STATUS_REPLY_TIMEOUT_S} s "
+                        f"after a move ({unreadable} unreadable, last: {e})"
+                    )
+                    self._log.error(message)
+                    raise SquidReplyTimeout(message) from e
+                time.sleep(PriorStage.MOVE_POLLING_PERIOD)
+                continue
+            if unreadable:
+                self._log.warning(f"Position after a move read on try {unreadable + 1} ({unreadable} unreadable)")
+            return
 
     def set_limits(
         self,
