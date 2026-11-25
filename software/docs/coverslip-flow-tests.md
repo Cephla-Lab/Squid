@@ -246,7 +246,8 @@ python3 tools/coverslip_flow/valve_sequence.py --pre 10 --steps 1:30 5:60 1:60 -
 ```
 
 `PORT:SECONDS` steps; the valve moves, nothing is pumped. `<out>_samples.csv` has `bright_spot_um` (absolute, from the
-AF reference), `<out>_flow.csv` the sensor readings. Moves between ports of the same valve typically shift the
+AF reference), `<out>_flow.csv` the readings of the first flow sensor in the fluidics config (with more than one, the
+others are not recorded; the script says so). Moves between ports of the same valve typically shift the
 coverslip by well under 1 µm; moves between valves, or into a bottle at a different height, can shift it several µm
 with a few µL of flow; a move from a port holding suction to a free port releases it.
 
@@ -261,10 +262,13 @@ python3 tools/coverslip_flow/af_map_flow.py --positions /path/to/acquisition/0/c
 python3 tools/coverslip_flow/af_map_analyze.py ~/flowtest/map/m1
 ```
 
-Maps twice before the pull (their difference is the map noise), pulls at the centre, waits `--post` s after the pump
-finishes, maps again. `af_map_analyze.py` reports each map's range, the difference maps and a paraboloid fit (bowl
+Maps `--n-before` times before the pull (`before1`, `before2`, ...; the second minus the first is the map noise), pulls
+at the centre, waits `--post` s after the pump finishes, maps again (`after`). `af_map_analyze.py` reports each map's
+range, the difference maps (`after - before` is against the last map before the pull) and a paraboloid fit (bowl
 centre, height at the centre, depth at `--radius` mm), and saves `<base>_maps.png`, `<base>_centre.png` and
-`<base>_map_summary.json`. `--map-only` maps without emptying, moving the valve or pulling.
+`<base>_map_summary.json`. The bowl centre is `null` when the map does not define it: positions on a single line, or a
+map with no curvature above its noise. `--map-only` maps without emptying, moving the valve or pulling; its maps are
+`map1`, `map2`, ... and the noise is `map2 - map1`. `<out>_flow.csv` has the first flow sensor's readings, as in 5.
 
 Run one more cycle with `--n-before 1` (the noise is already known). If it agrees with the first within about 1 µm,
 stop.
