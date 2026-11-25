@@ -938,3 +938,101 @@ def test_map_makes_the_output_folder_before_the_run(amf, tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["x", "--map-only", "--positions", str(positions), "--out", str(out)])
     amf.main()
     assert (tmp_path / "new" / "m1_meta.json").exists()
+
+
+# ---------------------------------------------------------------- CodeRabbit follow-up
+# The map analysis finds the passes a run recorded; the bowl centre is only reported when the map defines it; the map
+# and valve recordings keep one named flow sensor; and no recording overwrites the AF frames of an earlier one.
+
+
+@pytest.fixture(scope="module")
+def analyze():
+    return _load("af_map_analyze")
+
+
+_GRID = [(x, y) for x in np.linspace(-5, 5, 6) for y in np.linspace(-5, 5, 6)]
+
+
+def _bowl(x, y):
+    return 0.5 * ((x - 1) ** 2 + (y + 2) ** 2)
+
+
+def _write_map_run(base, phases, grid=_GRID):
+    """A recorded map run: each (phase, offset_um) is a pass over `grid` with a centre revisit after it, after a hold
+    at the centre ("settle"); the heights are a bowl plus the pass's offset."""
+    with open(f"{base}_samples.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["t_s", "phase", "pos_index", "x_mm", "y_mm", "gui_spot_um", "bright_spot_um", "af_frame"])
+        t = 0
+        w.writerow([t, "settle", -1, 0, 0, "", 0.0, ""])
+        for phase, offset in phases:
+            for i, (x, y) in enumerate(grid):
+                t += 1
+                w.writerow([t, phase, i, x, y, "", _bowl(x, y) + offset, ""])
+            t += 1
+            w.writerow([t, phase + "_center", -1, 0, 0, "", offset, ""])
+    json.dump({"events_s": [[0, "end", "completed"]]}, open(f"{base}_meta.json", "w"))
+
+
+def _analyze_run(analyze, base, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["af_map_analyze.py", str(base)])
+    analyze.main()
+    return json.load(open(f"{base}_map_summary.json"))
+
+
+def test_a_map_only_run_is_analysed_and_its_noise_is_map2_minus_map1(analyze, tmp_path, monkeypatch):
+    base = tmp_path / "maponly"
+    _write_map_run(base, [("map1", 0.0), ("map2", 0.3)])
+
+    summary = _analyze_run(analyze, base, monkeypatch)
+
+    assert list(summary) == ["map1", "map2", "noise: map2 - map1"]
+    assert summary["noise: map2 - map1"]["median"] == pytest.approx(0.3)
+    assert summary["noise: map2 - map1"]["passes"] == ["map2", "map1"]
+    assert (tmp_path / "maponly_maps.png").exists()
+
+
+def test_after_is_compared_with_the_last_before_pass(analyze, tmp_path, monkeypatch):
+    base = tmp_path / "b3"
+    _write_map_run(base, [("before1", 0.0), ("before2", 0.2), ("before3", 5.0), ("after", 5.0)])
+
+    summary = _analyze_run(analyze, base, monkeypatch)
+
+    assert list(summary) == ["before1", "before2", "before3", "after", "noise: before2 - before1", "after - before"]
+    assert summary["after - before"]["passes"] == ["after", "before3"]
+    assert summary["after - before"]["median"] == pytest.approx(0.0)
+    assert summary["noise: before2 - before1"]["median"] == pytest.approx(0.2)
+
+
+def test_a_one_line_map_has_no_bowl_centre(analyze):
+    x = np.linspace(-5, 5, 12)
+    y = np.full_like(x, 3.0)
+
+    bowl = analyze.fit_bowl(x, y, _bowl(x, y), radius=7.0)
+
+    assert (bowl["centre_x_mm"], bowl["centre_y_mm"], bowl["z_at_centre_um"]) == (None, None, None)
+    assert bowl["k_um_per_mm2"] == pytest.approx(0.5)  # the curvature along the line is still measured
+    assert bowl["depth_at_radius_um"] == pytest.approx(24.5)
+
+
+@pytest.mark.parametrize("noise_um", [0.0, 0.05, 1.0])
+def test_a_flat_map_has_no_bowl_centre(analyze, noise_um):
+    x = np.array([p[0] for p in _GRID])
+    y = np.array([p[1] for p in _GRID])
+    z = 10.0 + noise_um * np.random.default_rng(0).standard_normal(len(x))
+
+    bowl = analyze.fit_bowl(x, y, z, radius=7.0)
+
+    assert (bowl["centre_x_mm"], bowl["centre_y_mm"], bowl["z_at_centre_um"]) == (None, None, None)
+    assert abs(bowl["depth_at_radius_um"]) < 3 * noise_um + 0.1
+
+
+def test_a_noisy_bowl_still_has_its_centre(analyze):
+    x = np.array([p[0] for p in _GRID])
+    y = np.array([p[1] for p in _GRID])
+    z = _bowl(x, y) + 0.2 * np.random.default_rng(1).standard_normal(len(x))
+
+    bowl = analyze.fit_bowl(x, y, z, radius=7.0)
+
+    assert bowl["centre_x_mm"] == pytest.approx(1.0, abs=0.2)
+    assert bowl["centre_y_mm"] == pytest.approx(-2.0, abs=0.2)

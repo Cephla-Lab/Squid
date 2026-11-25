@@ -3,10 +3,13 @@
 
     python3 tools/coverslip_flow/af_map_analyze.py ~/flowtest/map/m1
 
-Reads <base>_samples.csv and <base>_meta.json. For each map pass (before1, before2, after)
-reports the bright-spot height range; before2 - before1 (map-to-map noise); after - before
-(the change 30 s after the pull); and fits a paraboloid z = a + b x + c y + k (x^2 + y^2) to
-each map, giving the bowl centre, the height at the centre and the depth at --radius mm.
+Reads <base>_samples.csv and <base>_meta.json. For each map pass the run recorded (before1,
+before2, ... and after; map1, map2, ... with --map-only) reports the bright-spot height range;
+the second pass minus the first (map-to-map noise); after - before, against the last pass
+before the pull (the change 30 s after the pull); and fits a paraboloid
+z = a + b x + c y + k (x^2 + y^2) to each map, giving the bowl centre, the height at the centre
+and the depth at --radius mm. The centre is null when the map does not define it (a single
+line of positions, or no curvature above the noise).
 Saves <base>_maps.png, <base>_centre.png and <base>_map_summary.json.
 
 Heights are the bright laser AF reflection in um from the AF reference; lower = further into
@@ -16,6 +19,7 @@ the channel (the direction a pull moves it).
 import argparse
 import csv
 import json
+import re
 
 import numpy as np
 import matplotlib
@@ -28,19 +32,53 @@ def fval(v):
     return float(v) if v not in ("", None) else np.nan
 
 
+PASS_NAME = re.compile(r"^(before\d+|map\d+|after)$")  # not the holds or the <pass>_center revisits
+MIN_DEPTH_UM = 0.05  # a bowl shallower than this at --radius has no centre (the depth is reported to 0.1 um)
+
+
+def map_passes(phases):
+    """The map passes among the recorded phases, in the order they were recorded."""
+    passes = []
+    for ph in phases:
+        if PASS_NAME.match(ph) and ph not in passes:
+            passes.append(ph)
+    return passes
+
+
+def difference_pairs(passes):
+    """(minuend, subtrahend, label): the noise (the second pass before the pull minus the first, or map2 - map1 in a
+    map-only run) and after minus the last pass before the pull."""
+    before = [p_ for p_ in passes if p_.startswith("before")]
+    first = before or [p_ for p_ in passes if p_.startswith("map")]
+    pairs = []
+    if len(first) >= 2:
+        pairs.append((first[1], first[0], "noise: %s - %s" % (first[1], first[0])))
+    if "after" in passes and before:
+        pairs.append(("after", before[-1], "after - before"))
+    return pairs
+
+
 def fit_bowl(X, Y, z, radius):
+    """Paraboloid fit. The centre (and the height there) is None unless the map defines it: the fit has full rank,
+    more points than parameters, and a curvature clearly above both its standard error and MIN_DEPTH_UM."""
     ok = np.isfinite(z)
-    G = np.c_[np.ones_like(X), X, Y, X**2 + Y**2]
-    c, *_ = np.linalg.lstsq(G[ok], z[ok], rcond=None)
+    G = np.c_[np.ones_like(X), X, Y, X**2 + Y**2][ok]
+    c, _rss, rank, _sv = np.linalg.lstsq(G, z[ok], rcond=None)
     k = c[3]
-    x0, y0 = -c[1] / (2 * k), -c[2] / (2 * k)
+    resid = z[ok] - G @ c
+    centre = None
+    n = len(resid)
+    if rank == G.shape[1] and n > rank:
+        se_k = np.sqrt(resid @ resid / (n - rank) * np.linalg.inv(G.T @ G)[3, 3])
+        if abs(k) > 3 * se_k and abs(k) * radius**2 >= MIN_DEPTH_UM:
+            centre = (-c[1] / (2 * k), -c[2] / (2 * k))
     return {
-        "centre_x_mm": round(float(x0), 2),
-        "centre_y_mm": round(float(y0), 2),
-        "z_at_centre_um": round(float(c[0] - k * (x0**2 + y0**2)), 1),
+        "centre_x_mm": None if centre is None else round(float(centre[0]), 2),
+        "centre_y_mm": None if centre is None else round(float(centre[1]), 2),
+        "z_at_centre_um": None if centre is None else round(float(c[0] - k * (centre[0] ** 2 + centre[1] ** 2)), 1),
         "k_um_per_mm2": round(float(k), 3),
         "depth_at_radius_um": round(float(k * radius**2), 1),
-        "rms_residual_um": round(float((z[ok] - G[ok] @ c).std()), 2),
+        "rms_residual_um": round(float(resid.std()), 2),
     }
 
 
@@ -62,7 +100,7 @@ def main():
             if r["phase"] == name
         }
 
-    passes = [p_ for p_ in ("before1", "before2", "after") if any(r["phase"] == p_ for r in rows)]
+    passes = map_passes(r["phase"] for r in rows)
     if not passes:
         raise SystemExit("no map passes found")
     M = {p_: pass_map(p_) for p_ in passes}
@@ -86,14 +124,11 @@ def main():
             centre_revisits=[round(v, 1) for v in revis[p_] if np.isfinite(v)],
             bowl=fit_bowl(X, Y, z, a.radius),
         )
-    pairs = []
-    if "before2" in Z:
-        pairs.append(("before2", "before1", "noise: before2 - before1"))
-    if "after" in Z:
-        pairs.append(("after", "before2" if "before2" in Z else "before1", "after - before"))
+    pairs = difference_pairs(passes)
     for x_, y_, lab in pairs:
         d = Z[x_] - Z[y_]
         summary[lab] = dict(
+            passes=[x_, y_],
             median=round(float(np.nanmedian(d)), 2),
             sd=round(float(np.nanstd(d)), 2),
             p5=round(float(np.nanpercentile(d, 5)), 2),
@@ -117,7 +152,7 @@ def main():
         d = Z[x_] - Z[y_]
         m = max(abs(np.nanpercentile(d, 2)), abs(np.nanpercentile(d, 98)), 1)
         sc = ax[len(passes) + j].scatter(X, Y, c=d, s=60, marker="s", cmap="RdBu_r", vmin=-m, vmax=m)
-        ax[len(passes) + j].set_title(lab + " (um)")
+        ax[len(passes) + j].set_title((lab if x_ != "after" else "after - %s" % y_) + " (um)")
         fig.colorbar(sc, ax=ax[len(passes) + j], shrink=0.8)
     for a_ in ax:
         a_.set_aspect("equal")
