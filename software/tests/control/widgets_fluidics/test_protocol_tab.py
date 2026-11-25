@@ -472,3 +472,26 @@ def test_move_a_whole_round_up_and_down(tab):
     assert tab.tree.topLevelItem(1).text(0) == "R02"
     tab._move_row(+1)
     assert round_order() == ["setup", "R01", "R02"]
+
+
+def test_a_field_edit_is_unsaved_before_its_deferred_re_render(tab, qtbot):
+    """The control server's start reads has_unsaved_changes on the GUI thread; a start queued behind an edit (it can
+    run before the edit's deferred re-render) must still see the edit as unsaved, or set_protocol drops it."""
+    from qtpy.QtWidgets import QSpinBox
+
+    assert not tab.has_unsaved_changes
+    spin = QSpinBox()
+    spin.setRange(0, 100000)
+    spin.setValue(7)
+    tab._field_edited(1, "fluidic_port", spin)
+    assert tab.has_unsaved_changes  # before any event is processed
+    qtbot.wait(20)  # the queued re-render still runs
+    assert tab.has_unsaved_changes and tab.name_label.text().endswith(" *")
+
+
+def test_a_round_edit_is_unsaved_before_its_deferred_re_render(tab, qtbot):
+    assert not tab.has_unsaved_changes
+    tab._apply_round_to_group((1, 2), "R09")
+    assert tab.has_unsaved_changes  # before any event is processed
+    qtbot.wait(20)
+    assert tab.has_unsaved_changes and tab.protocol.sequences[1]["round"] == "R09"
