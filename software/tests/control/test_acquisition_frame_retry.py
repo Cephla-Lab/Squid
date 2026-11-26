@@ -61,6 +61,9 @@ class Camera:
 
     def send_trigger(self, *args, **kwargs):
         self.steps.append("trigger")
+        if self.hang_in == "trigger again" and self.steps.count("trigger") == 2:
+            self.unhang.wait(30)  # the driver does not return (bench: cap_firetrigger, 15 hours)
+            raise RuntimeError("NOTRIGGER")
         if self.steps.count("trigger") > self.lost:
             self.real_send_trigger(*args, **kwargs)
 
@@ -150,4 +153,15 @@ def test_a_stream_restart_that_hangs_aborts_in_its_time_limit_with_the_light_off
     assert mpc.last_end_reason == "error"
     assert "Camera recovery (restart streaming) did not finish in 0.5 s" in caplog.text
     assert "_recovery" in caplog.text  # where it is stuck
+    assert mpc.liveController.illumination_on is False
+
+
+def test_a_trigger_again_that_hangs_aborts_in_its_time_limit_with_the_light_off(scope, caplog):
+    with patch.object(MultiPointWorker, "CAMERA_CALL_TIMEOUT_S", 0.5):
+        mpc, cam = _run(scope, caplog, lost=99, hang_in="trigger again")
+
+    assert cam.steps == ["trigger", "trigger"]  # nothing more is sent to a camera that stopped answering
+    assert mpc.last_end_reason == "error"
+    assert "Triggering again did not finish in" in caplog.text and "Restart Squid" in caplog.text
+    assert "send_trigger" in caplog.text  # where it is stuck
     assert mpc.liveController.illumination_on is False
