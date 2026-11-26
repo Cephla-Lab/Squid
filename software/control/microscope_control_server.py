@@ -939,10 +939,10 @@ class MicroscopeControlServer:
             return
 
         try:
-            if not QMetaObject.invokeMethod(
+            # invokeMethod returns None when the call is made (PyQt5 and PyQt6) and raises when it cannot be.
+            QMetaObject.invokeMethod(
                 widget, "load_acquisition_yaml_slot", Qt.BlockingQueuedConnection, Q_ARG(str, yaml_path)
-            ):
-                self._log.warning(f"Could not run the acquisition YAML load on {type(widget).__name__}")
+            )
         except Exception as e:
             self._log.error(f"Failed to update GUI from YAML: {e}")
 
@@ -973,7 +973,8 @@ class MicroscopeControlServer:
         # Use BlockingQueuedConnection to call method on main thread and wait for completion
         # This ensures GUI is fully updated before run_acquisition() is called
         try:
-            success = QMetaObject.invokeMethod(
+            # invokeMethod returns None when the call is made (PyQt5 and PyQt6) and raises when it cannot be.
+            QMetaObject.invokeMethod(
                 widget,
                 "set_acquisition_running_state",
                 Qt.BlockingQueuedConnection,
@@ -981,13 +982,8 @@ class MicroscopeControlServer:
                 Q_ARG(int, yaml_data.nz),
                 Q_ARG(float, yaml_data.delta_z_um),
             )
-            if not success:
-                self._log.error(
-                    f"QMetaObject.invokeMethod failed to invoke set_acquisition_running_state "
-                    f"on {type(widget).__name__}"
-                )
         except Exception as e:
-            self._log.error(f"Failed to update GUI acquisition state: {e}")
+            self._log.error(f"Failed to update GUI acquisition state on {type(widget).__name__}: {e}")
 
     def _validate_channels(self, channel_names: List[str], current_objective: str) -> List[str]:
         """Validate that requested channels exist for the current objective.
