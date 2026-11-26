@@ -1750,12 +1750,13 @@ class MultiPointWorker:
                 # frame is on from before the trigger until after we get the frame (which guarantees it will be on
                 # for the full exposure).
                 #
-                # If we wait for longer than 5x the exposure + 2 seconds, abort the acquisition because something is
-                # wrong.
+                # If we wait for longer than 5x the exposure + 2 seconds, trigger again (FRAME_RETRIES times), then
+                # abort the acquisition because something is wrong.
                 non_hw_frame_timeout = 5 * self.camera.get_total_frame_time() / 1e3 + 2
-                if not self._ready_for_next_trigger.wait(non_hw_frame_timeout):
+                if not self._wait_for_frame_retrying(non_hw_frame_timeout, camera_illumination_time):
                     self._log.error(
-                        f"Timed out waiting {non_hw_frame_timeout:g} [s] for a frame, aborting acquisition."
+                        f"No frame after {1 + self.FRAME_RETRIES} trigger(s), {non_hw_frame_timeout:g} [s] each, "
+                        "aborting acquisition."
                     )
                     self._abort_due_to_error()
                     # Let this fall through so we still turn off illumination.  Let the caller actually break out
@@ -1764,6 +1765,42 @@ class MultiPointWorker:
         # turn off the illumination if using software trigger
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_off_illumination()
+
+    # Software trigger: how many times a trigger whose frame never came is sent again before the acquisition aborts.
+    FRAME_RETRIES = 1
+
+    def _wait_for_frame_retrying(self, timeout_s: float, illumination_time: Optional[float]) -> bool:
+        """Wait for the frame of the trigger just sent; when it does not come in timeout_s, trigger again, up to
+        FRAME_RETRIES times. True once a frame came. The capture info stays set across the retries, so whichever frame
+        comes first is this image; the illumination stays on throughout (software trigger turns it off after).
+
+        A frame of the other trigger that comes later finds _ready_for_next_trigger set and is ignored by the image
+        callback. After a retry this waits one more frame time so that such a frame lands now, not after the next
+        image's trigger, where it would be taken for that image."""
+        for attempt in range(self.FRAME_RETRIES + 1):
+            if self._ready_for_next_trigger.wait(timeout_s):
+                if attempt:
+                    self._log.warning(f"The frame came after {attempt} re-trigger(s).")
+                    self._sleep(self.camera.get_total_frame_time() / 1e3)
+                return True
+            if attempt == self.FRAME_RETRIES:
+                return False
+            self._log.warning(
+                f"Timed out waiting {timeout_s:g} [s] for a frame; triggering again ({attempt + 1}/{self.FRAME_RETRIES})."
+            )
+            ready_by = time.time() + timeout_s
+            while not self.camera.get_ready_for_trigger():
+                if self._ready_for_next_trigger.is_set() or time.time() > ready_by:
+                    break
+                self._sleep(0.001)
+            if self._ready_for_next_trigger.is_set():  # the frame came while waiting for the camera to be ready
+                continue
+            try:
+                self.camera.send_trigger(illumination_time=illumination_time)
+            except Exception:
+                self._log.exception("Triggering again failed")
+                return self._ready_for_next_trigger.is_set()
+        return False
 
     def _sleep(self, sec):
         time_to_sleep = max(sec, 1e-6)
