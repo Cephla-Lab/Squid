@@ -1128,6 +1128,23 @@ ENABLE_SPINNING_DISK_CONFOCAL = False
 USE_LDI_SERIAL_CONTROL = False
 LDI_INTENSITY_MODE = "PC"
 LDI_SHUTTER_MODE = "PC"
+# The LDI line (nm) that each channel wavelength (nm) uses. An LDI has a 470 or a 488 nm line; for one with 488, set
+# in the .ini: ldi_channel_mappings = {"405": 405, "470": 488, "488": 488, "545": 555, "550": 555, "555": 555,
+# "561": 555, "638": 640, "640": 640, "730": 730, "735": 730, "750": 730}. The keys are read as numbers.
+LDI_CHANNEL_MAPPINGS = {
+    405: 405,
+    470: 470,
+    488: 470,
+    545: 555,
+    550: 555,
+    555: 555,
+    561: 555,
+    638: 640,
+    640: 640,
+    730: 730,
+    735: 730,
+    750: 730,
+}
 USE_CELESTA_ETHERNET_CONTROL = False
 USE_ANDOR_LASER_CONTROL = False
 ANDOR_LASER_VID = 0x1BDB
