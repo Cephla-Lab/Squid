@@ -3,14 +3,12 @@ import json
 import math
 import os
 import pathlib
-import sys
 import tempfile
 import time
-import traceback
 import yaml
 from datetime import datetime
 from enum import Enum
-from threading import Event, Thread
+from threading import Thread
 from typing import Any, Callable, Optional, Tuple
 
 import numpy as np
@@ -1268,28 +1266,21 @@ class MultiPointController:
         it returned without raising. A device that stops answering in the middle of a call (no timeout, no exception)
         would otherwise keep the acquisition from ever reporting its end: the GUI stays in "acquiring", Live greyed out
         and every new start refused, with nothing left to abort and nothing in the log."""
-        restored = []
-        done = Event()
-
-        def restore():
-            try:
-                self._restore_hardware_after_acquisition()
-                restored.append(True)
-            except Exception:
-                self._log.exception("Restoring after the acquisition failed in _restore_hardware_after_acquisition")
-            finally:
-                done.set()
-
-        thread = Thread(target=restore, name="restore after acquisition", daemon=True)
-        thread.start()
-        if done.wait(self.RESTORE_HARDWARE_TIMEOUT_S):
-            return bool(restored)
+        finished, result, thread = utils.call_with_deadline(
+            self._restore_hardware_after_acquisition, self.RESTORE_HARDWARE_TIMEOUT_S, "restore after acquisition"
+        )
+        if finished:
+            if isinstance(result, Exception):
+                self._log.error(
+                    "Restoring after the acquisition failed in _restore_hardware_after_acquisition", exc_info=result
+                )
+                return False
+            return True
         self._hung_restore = thread
-        frame = sys._current_frames().get(thread.ident)
-        stack = "".join(traceback.format_stack(frame)) if frame is not None else "(no stack)\n"
         self._log.error(
             f"Restoring the microscope after the acquisition did not finish in {self.RESTORE_HARDWARE_TIMEOUT_S:g} s: "
-            f"a device stopped answering. Restart Squid before the next acquisition. Stuck in:\n{stack}"
+            f"a device stopped answering. Restart Squid before the next acquisition. Stuck in:\n"
+            f"{utils.thread_stack(thread)}"
         )
         return False
 

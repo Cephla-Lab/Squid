@@ -1750,13 +1750,13 @@ class MultiPointWorker:
                 # frame is on from before the trigger until after we get the frame (which guarantees it will be on
                 # for the full exposure).
                 #
-                # If we wait for longer than 5x the exposure + 2 seconds, trigger again (FRAME_RETRIES times), then
+                # If we wait for longer than 5x the exposure + 2 seconds, go through FRAME_RECOVERY, then
                 # abort the acquisition because something is wrong.
                 non_hw_frame_timeout = 5 * self.camera.get_total_frame_time() / 1e3 + 2
                 if not self._wait_for_frame_retrying(non_hw_frame_timeout, camera_illumination_time):
                     self._log.error(
-                        f"No frame after {1 + self.FRAME_RETRIES} trigger(s), {non_hw_frame_timeout:g} [s] each, "
-                        "aborting acquisition."
+                        f"No frame after {1 + len(self.FRAME_RECOVERY)} trigger(s), {non_hw_frame_timeout:g} [s] "
+                        "each, and the camera recovery between them: aborting acquisition."
                     )
                     self._abort_due_to_error()
                     # Let this fall through so we still turn off illumination.  Let the caller actually break out
@@ -1766,41 +1766,86 @@ class MultiPointWorker:
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_off_illumination()
 
-    # Software trigger: how many times a trigger whose frame never came is sent again before the acquisition aborts.
-    FRAME_RETRIES = 1
+    # Software trigger: what is tried, in order, when a trigger's frame does not come. Each step ends with a new
+    # trigger, and the acquisition aborts when the frame of the last one does not come either.
+    FRAME_RECOVERY = ("trigger again", "restart streaming", "reopen the camera")
+    # A stream restart or a reopen that takes longer is taken as a camera that stopped answering: the acquisition
+    # aborts, and the call is left running on its own thread.
+    CAMERA_RECOVERY_TIMEOUT_S = 30.0
 
     def _wait_for_frame_retrying(self, timeout_s: float, illumination_time: Optional[float]) -> bool:
-        """Wait for the frame of the trigger just sent; when it does not come in timeout_s, trigger again, up to
-        FRAME_RETRIES times. True once a frame came. The capture info stays set across the retries, so whichever frame
-        comes first is this image; the illumination stays on throughout (software trigger turns it off after).
+        """Wait for the frame of the trigger just sent; when it does not come in timeout_s, go through FRAME_RECOVERY.
+        True once a frame came. The capture info stays set throughout, so whichever frame comes first is this image.
 
-        A frame of the other trigger that comes later finds _ready_for_next_trigger set and is ignored by the image
-        callback. After a retry this waits one more frame time so that such a frame lands now, not after the next
+        A frame of an earlier trigger that comes later finds _ready_for_next_trigger set and is ignored by the image
+        callback. After a recovery this waits one more frame time so that such a frame lands now, not after the next
         image's trigger, where it would be taken for that image."""
-        for attempt in range(self.FRAME_RETRIES + 1):
+        for attempt, step in enumerate((None,) + self.FRAME_RECOVERY):
+            if step is not None:
+                self._log.warning(
+                    f"Timed out waiting {timeout_s:g} [s] for a frame; {step} "
+                    f"({attempt}/{len(self.FRAME_RECOVERY)})."
+                )
+                if step != "trigger again" and not self._recover_camera(step):
+                    return self._ready_for_next_trigger.is_set()
+                if not self._trigger_again(timeout_s, illumination_time):
+                    return self._ready_for_next_trigger.is_set()
             if self._ready_for_next_trigger.wait(timeout_s):
                 if attempt:
-                    self._log.warning(f"The frame came after {attempt} re-trigger(s).")
+                    self._log.warning(f"The frame came after: {', '.join(self.FRAME_RECOVERY[:attempt])}.")
                     self._sleep(self.camera.get_total_frame_time() / 1e3)
                 return True
-            if attempt == self.FRAME_RETRIES:
-                return False
-            self._log.warning(
-                f"Timed out waiting {timeout_s:g} [s] for a frame; triggering again ({attempt + 1}/{self.FRAME_RETRIES})."
-            )
-            ready_by = time.time() + timeout_s
-            while not self.camera.get_ready_for_trigger():
-                if self._ready_for_next_trigger.is_set() or time.time() > ready_by:
-                    break
-                self._sleep(0.001)
-            if self._ready_for_next_trigger.is_set():  # the frame came while waiting for the camera to be ready
-                continue
-            try:
-                self.camera.send_trigger(illumination_time=illumination_time)
-            except Exception:
-                self._log.exception("Triggering again failed")
-                return self._ready_for_next_trigger.is_set()
         return False
+
+    def _recover_camera(self, step: str) -> bool:
+        """Restart streaming or reopen the camera, with the light off meanwhile and within CAMERA_RECOVERY_TIMEOUT_S.
+        True when the camera is ready for a new trigger (or the frame came meanwhile)."""
+        if step == "reopen the camera" and not self.camera.can_reopen():
+            self._log.warning(f"{type(self.camera).__name__} cannot reopen the camera; triggering again instead.")
+            return True
+        recover = self.camera.restart_streaming if step == "restart streaming" else self.camera.reopen
+        software_trigger = self.liveController.trigger_mode == TriggerMode.SOFTWARE
+        if software_trigger:
+            self.liveController.turn_off_illumination()
+        finished, result, thread = utils.call_with_deadline(
+            recover, self.CAMERA_RECOVERY_TIMEOUT_S, f"camera recovery: {step}"
+        )
+        if not finished:
+            self._log.error(
+                f"Camera recovery ({step}) did not finish in {self.CAMERA_RECOVERY_TIMEOUT_S:g} s: the camera stopped "
+                f"answering. Restart Squid. Stuck in:\n{utils.thread_stack(thread)}"
+            )
+            return False
+        if isinstance(result, Exception) or result is False:
+            self._log.error(
+                f"Camera recovery ({step}) failed", exc_info=result if isinstance(result, Exception) else None
+            )
+            return False
+        if self._ready_for_next_trigger.is_set():  # the frame came meanwhile
+            return True
+        if software_trigger:
+            self.liveController.turn_on_illumination()
+            self.wait_till_operation_is_completed()
+        return True
+
+    def _trigger_again(self, timeout_s: float, illumination_time: Optional[float]) -> bool:
+        """Send the trigger again once the camera is ready for it. False when it could not be sent."""
+        ready_by = time.time() + timeout_s
+        while not self.camera.get_ready_for_trigger():
+            if self._ready_for_next_trigger.is_set():  # the frame came while waiting for the camera
+                return True
+            if time.time() > ready_by:
+                self._log.error(f"The camera was not ready for a new trigger in {timeout_s:g} [s].")
+                return False
+            self._sleep(0.001)
+        if self._ready_for_next_trigger.is_set():
+            return True
+        try:
+            self.camera.send_trigger(illumination_time=illumination_time)
+        except Exception:
+            self._log.exception("Triggering again failed")
+            return False
+        return True
 
     def _sleep(self, sec):
         time_to_sleep = max(sec, 1e-6)
