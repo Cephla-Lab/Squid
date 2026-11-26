@@ -1,40 +1,44 @@
 ## Setting up the environments
-Run the following script in terminal to clone the repo and set up the environment
+Run the setup script for your Ubuntu release in a terminal to clone the repo and set up the environment.
+
+Ubuntu 22.04:
 ```
 wget https://raw.githubusercontent.com/Cephla-Lab/Squid/master/software/setup_22.04.sh
 chmod +x setup_22.04.sh
 ./setup_22.04.sh
 ```
 
+Ubuntu 24.04:
+```
+wget https://raw.githubusercontent.com/Cephla-Lab/Squid/master/software/setup_24.04.sh
+chmod +x setup_24.04.sh
+./setup_24.04.sh
+```
+The two scripts install the same packages; the 24.04 one only adds what Python 3.12 requires (pip's `--break-system-packages`, apt setuptools). If you pip-install extras by hand on 24.04, add `--break-system-packages` to the pip command.
+
 Reboot the computer to finish the installation.
 
+The scripts also create `machine_configs/illumination_channel_config.yaml` from its example if it is missing, and put a **Squid** shortcut on the Desktop.
+
+### Windows
+Windows 10 and 11. In PowerShell (no administrator rights needed):
+```
+Invoke-WebRequest https://raw.githubusercontent.com/Cephla-Lab/Squid/master/software/setup_windows.ps1 -OutFile setup_windows.ps1
+powershell -ExecutionPolicy Bypass -File .\setup_windows.ps1
+```
+The script:
+- installs Git and Python 3.12 with `winget` if they are missing;
+- clones the repo to `Desktop\Squid` (or uses the checkout it is run from);
+- installs the same Python packages as the Ubuntu scripts, into Python 3.12;
+- creates `machine_configs\illumination_channel_config.yaml` from its example if it is missing;
+- puts a **Squid** shortcut on the Desktop.
+
+The script is meant for a fresh computer. Squid uses Python 3.12; if another Python is already installed, it is left alone. If 3.12 is the newest Python on the machine, `py` runs it; otherwise use `py -3.12`. The script says which at the end.
+
+For a Toupcam camera, run the script from an administrator PowerShell to also install the Toupcam USB driver, or run the `pnputil` command it prints. For other cameras, install the driver from the camera maker (the steps in the next section are for Linux only), then restart the computer.
+
 ## Optional or Hardware-specific dependencies
-
-<details>
-<summary>image stitching dependencies (optional)</summary>
-For optional image stitching using ImageJ, additionally run the following:
-
-```
-sudo apt-get update
-sudo apt-get install openjdk-11-jdk
-sudo apt-get install maven
-pip3 install pyimagej
-pip3 instlal scyjava
-pip3 install tifffile
-pip3 install imagecodecs
-```
-
-Then, add the following line to the top of `/etc/environment` (needs to be edited with `sudo [your text editor]`):
-```
-JAVA_HOME=/usr/lib/jvm/default-java
-```
-Then, add the following lines to the top of `~/.bashrc` (or whichever file your terminal sources upon startup):
-```
-source /etc/environment
-export JAVA_HOME = $JAVA_HOME
-export PATH=$JAVA_HOME/bin:$PATH
-```
-</details>
+The camera driver and udev steps below are for Linux only. The fluidics module works on Windows too.
 
 <details>
 <summary>Installing drivers and libraries for FLIR camera support</summary>
@@ -144,19 +148,20 @@ Follow the instructions during the installation.
 
 Link to the fluidics software repo: https://github.com/Cephla-Lab/Squid-Fluidics (vendored as the `software/fluidics_v2` submodule).
 
-In the Squid repo, run
+The setup scripts leave it out. In the Squid repo, run
 ```
 git submodule update --init software/fluidics_v2
 cd software && pip3 install --no-deps -e fluidics_v2/software
 ```
-Then set `RUN_FLUIDICS = True` and `FLUIDICS_CONFIG_PATH` in your `configuration*.ini` (see `machine_configs/fluidics_config.yaml.example`).
+(on Windows, `py -3.12 -m pip` in place of `pip3`). Then set `RUN_FLUIDICS = True` and `FLUIDICS_CONFIG_PATH` (the default is `machine_configs/fluidics_config.yaml`) under `[GENERAL]` in your `configuration*.ini`. Start the config from one of the samples in `fluidics_v2/software/sample_config/` (`flow_cell_config.yaml`, `open_chamber_config.yaml`).
 
 </details>
 
 ## Configuring the software
-Copy the .ini file associated with the microscope configuration to the software folder. Make modifications as needed (e.g. `camera_type`, `support_laser_autofocus`,`focus_camera_exposure_time_ms`)
+Copy the `.ini` file for your microscope from `software/configurations/` into the `software` folder itself; Squid reads the `configuration*.ini` it finds there. Make modifications as needed (e.g. `camera_type`, `support_laser_autofocus`,`focus_camera_exposure_time_ms`)
 
 ## Using the software
+Start Squid from the **Squid** shortcut on the Desktop, or from the `software` folder:
 ```
 python3 main_hcs.py
 ```
@@ -164,6 +169,7 @@ To start the program when no hardware is connected, use
 ```
 python3 main_hcs.py --simulation
 ```
+On Windows, use `py -3.12` (or `py`, if the setup script said it runs Python 3.12) in place of `python3`.
 
 ### Appearance
 **Settings > Appearance** offers two looks: **Classic** (the default) and **Dark**. Switching between them takes effect after a restart. The choice is saved in the machine `.ini` as `ui_theme` under `[GENERAL]` (`classic` or `dark`). Developers adding GUI code should read [docs/ui-theme.md](docs/ui-theme.md) for the colour rules every theme relies on.

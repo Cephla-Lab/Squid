@@ -362,13 +362,22 @@ PLATFORMIO_BUILD_FLAGS="-DTMC_PROBE_REPORT" pio run -e teensy41 -t upload
 ```
 
 > **WARNING: never ship an image built with this flag.** The report is ASCII on
-> the same USB link that carries the 24-byte status packets. The host accepts
-> any 24-byte window whose last byte is zero; the packets contain zero bytes and
+> the same USB link that carries the 24-byte status packets, and nothing in the
+> stream marks where a packet starts. Host software up to v0.7.0 accepts any
+> 24-byte window whose last byte is zero; the packets contain zero bytes and
 > this text contains none, so a misaligned window is reliably accepted and the
 > host reports a **garbage stage position as if it were real** — a wild position
 > jump in the GUI and the logs, plus an ack for a command nobody sent. That
 > holds mid-session and at boot alike: a host reconnecting while the controller
 > starts reads the boot lines ahead of the first status packet.
+>
+> Later host software finds the packets again (`Microcontroller._next_status_packet`
+> in `software/control/microcontroller.py`): it uses nothing before the answer
+> to its first command, and then, once that answer has shown that the firmware
+> sends checksums (every build that has this flag does), takes a window as a
+> packet only if its CRC and firmware-version byte are right. It still loses the
+> packets the text overlaps and logs a warning each time, and a controller in
+> the field may be driven by older host software.
 >
 > Build it only to capture the probe words for the bench gate above; the warm
 > filter-wheel path is only reachable at runtime.

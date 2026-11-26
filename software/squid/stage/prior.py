@@ -87,7 +87,8 @@ class PriorStage(AbstractStage):
 
         self.set_baudrate(baudrate)
 
-        self._pos_polling_thread: Optional[threading.Timer] = None
+        self._pos_polling_thread: Optional[threading.Thread] = None
+        self._stop_polling = threading.Event()  # set by close(); the polling thread ends at its next wait
         self._unreadable_pos_polls = 0  # in a row, by the polling thread
 
         self._initialize()
@@ -95,13 +96,13 @@ class PriorStage(AbstractStage):
     def _pos_polling_thread_fn(self):
         last_poll = time.time()
         self._poll_pos()
-        # We launch this as a Daemon, and have a mechanism for restarting it if needed.  So, just do a while True
-        # and do not worry about exceptions (an unreadable reply is not one: _poll_pos skips it).
-        while True:
+        # A daemon that _ensure_pos_polling_thread() restarts if it ever dies, so no exception handling here
+        # (an unreadable reply is not one: _poll_pos skips it). It runs until close() asks it to stop.
+        while not self._stop_polling.is_set():
             time_since_last = time.time() - last_poll
             time_left = PriorStage.POS_POLLING_PERIOD - time_since_last
-            if time_left > 0:
-                time.sleep(time_left)
+            if time_left > 0 and self._stop_polling.wait(time_left):
+                return
 
             self._poll_pos()
             last_poll = time.time()
@@ -123,6 +124,8 @@ class PriorStage(AbstractStage):
             self._unreadable_pos_polls = 0
 
     def _ensure_pos_polling_thread(self):
+        if self._stop_polling.is_set():
+            return  # closed: nothing restarts the polling
         if self._pos_polling_thread and self._pos_polling_thread.is_alive():
             return
         self._log.info("Starting position polling thread.")
@@ -130,6 +133,20 @@ class PriorStage(AbstractStage):
             target=self._pos_polling_thread_fn, daemon=True, name="prior-pos-polling"
         )
         self._pos_polling_thread.start()
+
+    def close(self):
+        """Stop the position-polling thread and release the serial handle.
+
+        Without this the daemon kept polling for the life of the process: every stage a test built left one
+        behind, and the forty of them in one pytest process slowed every later test in the shard.
+        """
+        self._stop_polling.set()
+        thread = self._pos_polling_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                self._log.warning("The position polling thread did not stop within 2 s")
+        self.serial.close()
 
     def set_baudrate(self, baud: int):
         allowed_baudrates = {9600: "96", 19200: "19", 38400: "38", 115200: "115"}

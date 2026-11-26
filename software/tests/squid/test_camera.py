@@ -5,7 +5,7 @@ import pytest
 
 import squid.camera.utils
 import squid.config
-from squid.abc import AbstractCamera, CameraFrame
+from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrame
 from squid.camera.utils import SimulatedCamera
 from squid.config import CameraConfig
 
@@ -190,3 +190,43 @@ def test_not_ready_for_trigger_while_settings_change_in_flight():
     with sim_cam._trigger_lock:
         assert sim_cam.get_ready_for_trigger()
     sim_cam.stop_streaming()
+
+
+def test_simulated_camera_close_stops_streaming_thread():
+    """close() must stop a running streaming thread. Owners (Microscope.close, the GUI
+    shutdown path) rely on close() as the final stop; a stream thread that survives it keeps
+    pushing frames into callbacks whose Qt receivers are gone, which segfaulted later Qt
+    tests in the same pytest process."""
+    sim_cam = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+    sim_cam.start_streaming()
+    assert sim_cam.get_is_streaming()
+
+    sim_cam.close()
+
+    assert not sim_cam.get_is_streaming()
+    assert not any("stream_fn" in t.name for t in threading.enumerate())
+
+
+def test_simulated_camera_close_from_a_frame_callback_does_not_join_its_own_thread():
+    """A frame callback runs on the streaming thread; if it calls close(), stop_streaming() must not
+    join that thread (Python raises RuntimeError on joining the current thread, which would end the
+    stream with an unhandled exception and skip the frame's other callbacks)."""
+    sim_cam = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+    errors = []
+    closed = threading.Event()
+
+    def close_from_callback(frame):
+        try:
+            sim_cam.close()
+        except Exception as e:  # noqa: BLE001 - the test reports whatever close() raised
+            errors.append(e)
+        closed.set()
+
+    sim_cam.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)  # frames arrive on the streaming thread
+    sim_cam.add_frame_callback(close_from_callback)
+    sim_cam.start_streaming()
+    assert closed.wait(5.0)
+    sim_cam._streaming_thread.join(2.0)
+
+    assert errors == []
+    assert not sim_cam.get_is_streaming()

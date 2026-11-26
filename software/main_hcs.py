@@ -5,13 +5,11 @@ import os
 import signal
 import sys
 
-from squid.qt_binding import SUPPORTED_QT_APIS, select_qt_api
-
-# Before the first qtpy import, which fixes the binding: --qt-api, then SQUID_QT_API, then [GENERAL] qt_api in the
-# configuration ini, then PyQt5.
-QT_API, QT_API_SOURCE = select_qt_api(sys.argv)
+# Squid runs on PyQt6 only. Set before the first qtpy import, which fixes the binding.
+os.environ["QT_API"] = "pyqt6"
 
 # qt libraries
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import *
 from qtpy.QtGui import *
 
@@ -60,13 +58,15 @@ if __name__ == "__main__":
         help="Skip hardware initialization and homing (for restart after settings change)",
         action="store_true",
     )
-    parser.add_argument(
-        "--qt-api",
-        choices=SUPPORTED_QT_APIS,
-        help="Qt binding to run on (default: the SQUID_QT_API environment variable, else [GENERAL] qt_api in the "
-        "configuration ini, else pyqt5)",
-    )
     args = parser.parse_args()
+
+    # This GUI embeds several napari viewers (Live, Multichannel, Mosaic), each
+    # backed by its own vispy/OpenGL canvas, in a single process. Multiple vispy
+    # canvases must share one OpenGL context or vispy misroutes GLIR draw commands
+    # between them and rendering fails with "Cannot SIZE object N because it does
+    # not exist" (the mosaic image never appears). This attribute MUST be set
+    # before the QApplication is constructed. See napari's multiple-viewer example.
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
 
     # Construct QApplication first so the single-instance check can show a
     # QMessageBox before any other startup side effects (logging, migration).
@@ -122,7 +122,7 @@ if __name__ == "__main__":
     log.info(f"Squid Repository State: {control.utils.get_squid_repo_state_description()}")
     import qtpy
 
-    log.info(f"Qt binding: {qtpy.API_NAME}, Qt {qtpy.QT_VERSION} (from {QT_API_SOURCE})")
+    log.info(f"Qt binding: {qtpy.API_NAME}, Qt {qtpy.QT_VERSION}")
 
     # Auto-migrate legacy acquisition configurations if present
     run_auto_migration()

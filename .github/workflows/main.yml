@@ -15,16 +15,22 @@ jobs:
   install-and-test:
     permissions:
       contents: read
-    runs-on: ubuntu-22.04
+    name: Ubuntu ${{ matrix.ubuntu }} (${{ matrix.part }})
+    # Each supported release installs with its own setup script on its own runner.
+    runs-on: ubuntu-${{ matrix.ubuntu }}
     strategy:
       # Let every shard finish, so one run lists all the failures.
       fail-fast: false
       matrix:
+        ubuntu: ["22.04", "24.04"]
         # The main suite split three ways by whole test file (tests/sharding.py), plus the GUI tests
         # that need their own processes.
         part: ["1/3", "2/3", "3/3", "gui"]
     env:
         DISPLAY: ":99.0"
+        # 24.04's Python is externally managed (PEP 668): the pip calls in the steps below need this, as
+        # setup_24.04.sh's do. 22.04's pip ignores it.
+        PIP_BREAK_SYSTEM_PACKAGES: "1"
     steps:
       - name: Checkout the Squid repo
         uses: actions/checkout@v4
@@ -32,13 +38,8 @@ jobs:
         # Only this one: control/ndviewer_light stays uninitialized (its own tests do not collect
         # standalone). The setup script pip-installs it --no-deps.
         run: git submodule update --init software/fluidics_v2
-      - name: Install the CPU-only PyTorch build
-        # basicpy needs torch. Installed first, the CPU build satisfies it, so the setup script does not
-        # pull the CUDA build and its ~3 GB of nvidia wheels. No test uses a GPU, so setup_cuda_22.04.sh
-        # (CUDA toolkit, cupy) is not run in CI either.
-        run: python3 -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - name: Run the setup script for Ubuntu 22.04
-        run: ./setup_22.04.sh -r=${{ github.workspace }}
+      - name: Run the setup script for Ubuntu ${{ matrix.ubuntu }}
+        run: ./setup_${{ matrix.ubuntu }}.sh -r=${{ github.workspace }}
         working-directory: ./software
       - name: "Copy a valid config into the repo software root"
         run: |
@@ -55,13 +56,15 @@ jobs:
         working-directory: ./software
       # For more on the headless qt prep, see here: https://pytest-qt.readthedocs.io/en/latest/troubleshooting.html#github-actions-azure-pipelines-travis-ci-and-gitlab-ci-cd
       - name: "Prep for headless qt tests."
+        # libegl1: PyQt6's QtGui needs it. A desktop has it; the runner image (no desktop) does not, so it is
+        # installed here, not by the setup script. libxcb-cursor0 is left to the setup script on purpose.
         run: |
-          sudo apt install libxkbcommon-x11-0 xvfb libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0 x11-utils
+          sudo apt install libxkbcommon-x11-0 xvfb libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0 libegl1 x11-utils
           /sbin/start-stop-daemon --start --quiet --pidfile /tmp/custom_xvfb_99.pid --make-pidfile --background --exec /usr/bin/Xvfb -- :99 -screen 0 1920x1200x24 -ac +extension GLX
-      - name: Install TensorStore for the Zarr v3 writer
-        # The setup script does not install it. Without it test_zarr_writer.py is skipped and the
-        # NGFF reader check below cannot write its samples. numpy stays below 2, as the setup script pins it.
-        run: python3 -m pip install "tensorstore==0.1.78" "numpy<2"
+      - name: Pin TensorStore for the Zarr v3 writer
+        # The setup script installs the latest tensorstore; CI keeps master's pinned version.
+        # No numpy pin: this branch's stack (napari 0.7, opencv 5) needs NumPy 2.
+        run: python3 -m pip install "tensorstore==0.1.78"
       - name: Run the tests
         # SQUID_PYTEST_HARD_EXIT: belt-and-braces against segfaults during
         # interpreter shutdown AFTER all tests pass (Qt destructor order vs
@@ -78,15 +81,19 @@ jobs:
         if: matrix.part == 'gui'
         # Own invocation: the full-application GUI test leaves Qt/thread state
         # behind that deterministically segfaults later Qt tests (e.g.
-        # test_channel_sequence) when run in the same pytest process.
-        # Step-scoped pyqt5 pin: without it, pytest-qt picks PySide6 for qtbot
-        # while the app code (qtpy) uses PyQt5, and the mixed bindings fail
-        # with a QObject double-init error.
+        # test_channel_sequence) when run in the same pytest process: pytest-qt
+        # deleteLater()s each window at teardown, and destroying the full GUI
+        # crashes once a later test's event loop flushes that delete, so this
+        # file must be the last thing its process does (and hard-exit).
+        # Step-scoped pyqt6 pin: keeps pytest-qt's qtbot on the same binding as
+        # the app code (qtpy, QT_API=pyqt6). Mixed bindings fail with a QObject
+        # double-init error, and pointing this at a binding that is not installed
+        # (e.g. pyqt5, removed by setup_22.04.sh) aborts pytest at startup.
         run: python3 -m pytest tests/control/test_HighContentScreeningGui.py
         working-directory: ./software
         env:
-          QT_API: pyqt5
-          PYTEST_QT_API: pyqt5
+          QT_API: pyqt6
+          PYTEST_QT_API: pyqt6
           SQUID_PYTEST_HARD_EXIT: "1"
       - name: Run the objective-swap GUI test in its own process
         if: matrix.part == 'gui'
@@ -95,8 +102,8 @@ jobs:
         run: python3 -m pytest tests/control/test_objective_swap_gui.py
         working-directory: ./software
         env:
-          QT_API: pyqt5
-          PYTEST_QT_API: pyqt5
+          QT_API: pyqt6
+          PYTEST_QT_API: pyqt6
           SQUID_PYTEST_HARD_EXIT: "1"
       - name: Open the Zarr output with ngff-zarr and iohub
         if: matrix.part == 'gui'

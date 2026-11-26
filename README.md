@@ -24,17 +24,15 @@ See related work and applications on: www.cephla.com, www.squid-imaging.org
 ## How to Start
 ### Software
 #### Setting up and run Squid software on Linux
-Ubuntu 22.04 is the most tested platform. Other Linux systems should work but performance is not guaranteed.
+Ubuntu 22.04 is the most tested platform; Ubuntu 24.04 is supported with its own setup script (`software/setup_24.04.sh`). Other Linux systems should work but performance is not guaranteed.
 
-See [README](https://github.com/Cephla-Lab/Squid/blob/master/software/README.md) in `/software` directory for instructions. Toupcam and laser auto-focus camera dependencies will be installed automatically when you run the setup script.
-
-After installation, you can run `python3 /software/tools/script_create_desktop_shortcut.py` to create a shortcut on Desktop.
+See [README](https://github.com/Cephla-Lab/Squid/blob/master/software/README.md) in `/software` directory for instructions. Toupcam and laser auto-focus camera dependencies will be installed automatically when you run the setup script, and a **Squid** shortcut is put on the Desktop.
 #### Setting up and run Squid software on Windows
-See this [post](https://forum.squid-imaging.org/t/setting-up-the-software-on-a-windows-computer/77) on Cephla forum for Windows instructions.
+Windows 10 and 11 are supported with `software/setup_windows.ps1`, which installs Git and Python 3.12 if they are missing, the Python packages, and a **Squid** shortcut on the Desktop. See the [Windows section](https://github.com/Cephla-Lab/Squid/blob/master/software/README.md#windows) of the software README.
 
 If your Squid has a laser auto-focus module, you will need to install the [driver](https://drive.google.com/drive/folders/1wq0QocIqeD-ZyYgHUPIJ1efOPiPq-fom?usp=sharing) for the laser auto-focus camera and **reboot** the computer. You may also need to install the driver for the main camera you use.
 
-After installation, you can follow this [post](https://forum.squid-imaging.org/t/setting-up-desktop-shortcut-on-a-windows-computer/94) to create a shortcut on Desktop.
+The older [forum guide](https://forum.squid-imaging.org/t/setting-up-the-software-on-a-windows-computer/77) (Python 3.10, PyQt5) is for software versions before the move to PyQt6.
 #### Setting up Cephla image stitcher
 See the [image-stitcher repo](https://github.com/Cephla-Lab/image-stitcher)
 
@@ -49,21 +47,22 @@ New version coming soon!
 Usually firmware should be already uploaded to the controller. If you do need to re-upload firmware, see the [firmware README](firmware/README.md) for instructions.
 
 ### Git Submodules
-This repository uses git submodules for external dependencies. After cloning, initialize submodules:
+Two optional features live in git submodules: the NDViewer tab and fluidics. Squid runs without them, and the setup scripts do not check them out. To get them:
 
 ```bash
-# Clone with submodules (recommended)
+# Clone with submodules
 git clone --recursive https://github.com/Cephla-Lab/Squid.git
 
 # Or initialize after clone
 git submodule update --init --recursive
 ```
+Then turn the NDViewer tab on with **Settings > Settings...** > "Enable NDViewer" (applies after a restart), or with `enable_ndviewer = true` under `[VIEWS]` in the machine `.ini`. Fluidics also needs its library installed and `RUN_FLUIDICS` set; see the fluidics section of the [software README](software/README.md).
 
 **Submodules:**
 | Path | Repository | Description |
 |------|------------|-------------|
 | `software/control/ndviewer_light` | [ndviewer_light](https://github.com/Cephla-Lab/ndviewer_light) | Lightweight NDV-based image viewer |
-| `software/fluidics_v2` | [fluidics_v2](https://github.com/Alpaca233/fluidics_v2) | Fluidics control |
+| `software/fluidics_v2` | [Squid-Fluidics](https://github.com/Cephla-Lab/Squid-Fluidics) | Fluidics control |
 
 **Updating submodules:**
 ```bash

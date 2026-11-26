@@ -1660,3 +1660,33 @@ def test_close_with_an_agent_session_removes_the_shield_and_unlocks_the_panel(qt
     qtbot.wait(200)
     assert not gui._agent_shield.is_active() and not gui._agent_stop_sequence.is_running()
     assert gui.run_agent_session_transition("begin") == "Squid is closing"
+
+
+def test_performance_mode_keeps_mosaic_fed_and_shows_it_at_completion(qtbot, monkeypatch, confirm_exit_yes):
+    """Performance mode keeps the mosaic's data feed connected (its canvas builds during the
+    run) and defers only the rendering: the tab is disabled for the run, then re-enabled and
+    shown at completion, which flushes the deferred redraw (UnifiedMosaicWidget.showEvent)."""
+    # gui_hcs star-imports _def; force the mosaic view on so the widget exists regardless
+    # of this machine's cached [VIEWS] config.
+    monkeypatch.setattr(control.gui_hcs, "USE_NAPARI_FOR_MOSAIC_DISPLAY", True)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    mosaic = win.unifiedMosaicWidget
+    assert mosaic is not None, "mosaic widget should be created when USE_NAPARI_FOR_MOSAIC_DISPLAY is on"
+    mosaic_idx = win.imageDisplayTabs.indexOf(mosaic)
+    controller = win.multipointController
+    assert controller.receivers(controller.mosaic_tile_update) == 1
+
+    win.performanceModeToggle.click()
+    assert win.performance_mode is True
+    assert controller.receivers(controller.mosaic_tile_update) == 1, "mosaic feed must stay connected"
+
+    win.toggleAcquisitionStart(True)
+    assert not win.imageDisplayTabs.isTabEnabled(mosaic_idx)
+
+    win.toggleAcquisitionStart(False)
+    assert win.imageDisplayTabs.isTabEnabled(mosaic_idx)
+    assert win.imageDisplayTabs.currentWidget() is mosaic

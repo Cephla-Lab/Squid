@@ -58,6 +58,7 @@ from control.core.plate_transform import has_well_grid, plate_transform_for, Pla
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
 from squid.stage.prior import PriorStage
+from squid.stage.reservation import StageMotionHold, StageMotionRefused, StageMotionReservation
 from squid.stage.utils import (
     move_to_loading_position,
     move_to_scanning_position,
@@ -68,7 +69,17 @@ from squid.config import CameraPixelFormat
 from squid.intensity_calibration import CALIBRATIONS_DIR_NAME, calibration_status, intensity_tooltip
 
 # set QT_API environment variable
-os.environ["QT_API"] = "pyqt5"
+os.environ["QT_API"] = "pyqt6"
+
+
+def checkbox_state_is_checked(state) -> bool:
+    """True when a QCheckBox.stateChanged value means Checked, under PyQt5 and PyQt6.
+
+    The signal carries an int on both bindings, but on PyQt6 Qt.Checked is a plain Enum
+    member, so ``state == Qt.Checked`` is always False there.
+    """
+    return getattr(state, "value", state) == getattr(Qt.Checked, "value", Qt.Checked)
+
 
 # qt libraries
 import qtpy
@@ -2208,11 +2219,7 @@ class PreferencesDialog(QDialog):
 
     def _toggle_dev_tab_visibility(self, state):
         """Show or hide the Dev tab based on checkbox state."""
-        # Handle both PyQt5 (int) and PyQt6 (CheckState enum) signal types
-        # PyQt6 enums have .value property, integers don't - use getattr for compatibility
-        state_value = getattr(state, "value", state)
-        checked_value = getattr(Qt.Checked, "value", Qt.Checked)
-        self.tab_widget.setTabVisible(self._dev_tab_index, state_value == checked_value)
+        self.tab_widget.setTabVisible(self._dev_tab_index, checkbox_state_is_checked(state))
 
     # The four readers below go through control._def.conf_attribute_reader, the function the running software reads
     # the same ini with. It strips an inline comment ("30.0  # mm/s"), which ConfigParser keeps as part of the value.
@@ -3300,13 +3307,31 @@ class StageUtils(QDialog):
     signal_scanning_position_reached = Signal()
     signal_home_stage_requested = Signal()  # the Home Stage button: the main window runs it (Microscope.home_stage)
 
-    def __init__(self, stage: AbstractStage, live_controller: LiveController, is_wellplate: bool, parent=None):
+    # What the loading position holds the stage-motion reservation as, from leaving the scanning position until back
+    # at it: the move there, the stay there while a sample is loaded, the move back.
+    MOVING_TO_LOADING = "a move to the loading position is running"
+    AT_LOADING = "the stage is at the loading position (return from it first)"
+    MOVING_BACK_FROM_LOADING = "a move back from the loading position is running"
+
+    def __init__(
+        self,
+        stage: AbstractStage,
+        live_controller: LiveController,
+        is_wellplate: bool,
+        stage_motion: StageMotionReservation,
+        parent=None,
+    ):
         super().__init__(parent)
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.stage = stage
         self.live_controller = live_controller
         self.is_wellplate = is_wellplate
         self.slide_position = None
+        # The Microscope's stage-motion reservation (Microscope.stage_motion), held from leaving the scanning position
+        # until back at it, so nothing else (an acquisition, a control-server move, a home) drives the stage meanwhile
+        self._stage_motion = stage_motion
+        self._loading_hold: Optional[StageMotionHold] = None
+        self._loading_hold_reason = self.MOVING_TO_LOADING
         # On a Z lift system, the lift's LiftMotionGuard (control/widgets_z_lift.py): the loading toggle is refused,
         # and its button disabled, while a lift move or an objective swap holds it. See set_lift_motion_guard().
         self.lift_motion_guard = None
@@ -3506,33 +3531,77 @@ class StageUtils(QDialog):
         if self.lift_motion_guard is not None and self.lift_motion_guard.busy:
             self.log.info("Loading / scanning position refused: the Z lift is moving or an objective swap is running")
             return
+        at_loading = self.slide_position == "loading"
         restore_z = True
-        if self.slide_position == "loading" and self.ask_objective_return:
+        if at_loading and self.ask_objective_return:
             restore_z = self._ask_objective_return()
             if restore_z is None:
                 return  # cancelled: nothing moves
-        if not (self.keep_live_off_at_loading and self.slide_position == "loading"):
-            # (leaving a loading position where live was kept off: _was_live still holds what it was before)
-            self._was_live = self.live_controller.is_live
-        if self.live_controller.is_live:
-            self.live_controller.stop_live()
+        # First, before live stops: an acquisition starting meanwhile (from the control server, say) is refused
+        self._loading_hold_reason = self.MOVING_BACK_FROM_LOADING if at_loading else self.MOVING_TO_LOADING
+        try:
+            self._hold_stage_for_loading()
+        except StageMotionRefused as e:
+            self.log.info(f"Loading / scanning position refused: {e.reason}")
+            QMessageBox.information(self, "Loading Position", f"{e}.")
+            return
+        try:
+            if not (self.keep_live_off_at_loading and at_loading):
+                # (leaving a loading position where live was kept off: _was_live still holds what it was before)
+                self._was_live = self.live_controller.is_live
+            if self.live_controller.is_live:
+                self.live_controller.stop_live()
+        except BaseException:
+            # Nothing has moved: the stage is still where it was, and held only if that is the loading position
+            if at_loading:
+                self._loading_hold_reason = self.AT_LOADING
+            else:
+                self._release_loading_hold()
+            raise
         self.signal_threaded_stage_move_started.emit()
-        if self.slide_position != "loading":
-            move_to_loading_position(
-                self.stage,
-                blocking=False,
-                callback=_queued_slot(self, "_callback_loading_position_reached"),
-                is_wellplate=self.is_wellplate,
-            )
-        else:
-            move_to_scanning_position(
-                self.stage,
-                blocking=False,
-                callback=_queued_slot(self, "_callback_scanning_position_reached"),
-                is_wellplate=self.is_wellplate,
-                restore_z=restore_z,
-            )
         self.btn_load_slide.setEnabled(False)
+        if at_loading:
+            move, reached = move_to_scanning_position, self._callback_scanning_position_reached
+            kwargs = {"restore_z": restore_z}
+        else:
+            move, reached, kwargs = move_to_loading_position, self._callback_loading_position_reached, {}
+        try:
+            move(
+                self.stage,
+                blocking=False,
+                callback=_queued_slot(self, reached.__name__),
+                is_wellplate=self.is_wellplate,
+                **kwargs,
+            )
+        except Exception as e:
+            # The move's thread did not start: reported as a move that failed in it (the stage is treated as at the
+            # loading position, still held, and the move back is offered), which also releases the Z lift guard and
+            # the GUI's stage lock taken by the started signal
+            self.log.exception("Could not start the loading position move")
+            reached(False, f"Could not start the move: {e}")
+
+    def enter_restored_loading_position(self):
+        """Squid was closed at the loading position and starts there again: the stay holds the stage as it does after a
+        move there. A startup home still holding the stage (it does until the stage reports stopped) leaves the stay
+        unheld, which is logged; the move back takes it then."""
+        self._loading_hold_reason = self.AT_LOADING
+        try:
+            self._hold_stage_for_loading()
+        except StageMotionRefused as e:
+            self.log.error(f"Restarted at the loading position while the stage is held ({e.reason}): not held there")
+        self._was_live = False
+        self._callback_loading_position_reached(True, None)
+
+    def _hold_stage_for_loading(self):
+        """Hold the stage-motion reservation, if not held already (it is from leaving the scanning position until
+        back at it). Raises StageMotionRefused, with nothing held, while something else holds it."""
+        if self._loading_hold is None:
+            self._loading_hold = self._stage_motion.take(lambda: self._loading_hold_reason)
+
+    def _release_loading_hold(self):
+        hold, self._loading_hold = self._loading_hold, None
+        if hold is not None:
+            hold.release()
 
     def _ask_objective_return(self) -> Optional[bool]:
         """Leaving the loading position: True to lower the objective back to its Z after the lift rises, False to
@@ -3555,6 +3624,7 @@ class StageUtils(QDialog):
     def _callback_loading_position_reached(self, success: bool, error_message: str):
         """The move to the loading position ended (on the GUI thread, from _queued_slot)."""
         self.slide_position = "loading"
+        self._loading_hold_reason = self.AT_LOADING  # held until the stage is back at the scanning position
         theme.set_role(self.btn_load_slide, "action", on=True)
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
@@ -3575,6 +3645,7 @@ class StageUtils(QDialog):
             )
             return
         self.slide_position = "scanning"
+        self._release_loading_hold()
         theme.set_role(self.btn_load_slide, "action")
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
@@ -13332,7 +13403,7 @@ class WellplateCalibration(QDialog):
         self.stage.move_y(dy)
 
     def toggleClickToMove(self, state):
-        if state == Qt.Checked:
+        if checkbox_state_is_checked(state):
             self.live_viewer.signal_calibration_viewer_click.connect(self.viewerClicked)
         else:
             self.live_viewer.signal_calibration_viewer_click.disconnect(self.viewerClicked)
@@ -14993,7 +15064,7 @@ class SampleSettingsWidget(QFrame):
             json.dump(data, f)
 
 
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import proj3d
 from scipy.interpolate import griddata
@@ -15239,7 +15310,7 @@ class WavelengthWidget(QWidget):
             self.na_label.setVisible(True)
 
     def _on_checkbox_changed(self, state):
-        checked = state == Qt.Checked
+        checked = checkbox_state_is_checked(state)
         self.spinbox.setVisible(checked)
         self.na_label.setVisible(not checked)
 
@@ -15907,7 +15978,7 @@ class SourceCodeWidget(QWidget):
             self.na_label.setVisible(True)
 
     def _on_checkbox_changed(self, state):
-        checked = state == Qt.Checked
+        checked = checkbox_state_is_checked(state)
         self.spinbox.setVisible(checked)
         self.na_label.setVisible(not checked)
 

@@ -115,6 +115,12 @@ The `python_exec` command is disabled by default for security. To enable it:
 | `move_relative` | `dx_mm`, `dy_mm`, `dz_mm`, `blocking` | Move by relative amount |
 | `home` | - | Home all axes (X, Y, Z) |
 
+One thing drives the stage at a time. These commands, and the acquisition commands below, are refused while an
+acquisition is running, while a move to or from the loading position is running, while the stage is at the loading
+position, or while the stage is homing. The error says what holds the stage, e.g.
+`Refused: the stage is at the loading position (return from it first)`. A move sent with `blocking: false` holds the
+stage until the stage reports it stopped.
+
 ### Imaging
 
 | Command | Parameters | Description |
