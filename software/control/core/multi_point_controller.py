@@ -3,12 +3,14 @@ import json
 import math
 import os
 import pathlib
+import sys
 import tempfile
 import time
+import traceback
 import yaml
 from datetime import datetime
 from enum import Enum
-from threading import Thread
+from threading import Event, Thread
 from typing import Any, Callable, Optional, Tuple
 
 import numpy as np
@@ -285,6 +287,13 @@ class MultiPointController:
         self.z_stack_order = control._def.Z_STACK_ORDER
 
         self._start_position: Optional[squid.abc.Pos] = None
+        # The thread of a restore after an acquisition that did not return in RESTORE_HARDWARE_TIMEOUT_S: a device
+        # stopped answering in the middle of a call (seen with the Hamamatsu camera after a lost frame). While it is
+        # stuck no acquisition starts, since its first call to that device would hang the same way.
+        self._hung_restore: Optional[Thread] = None
+
+    # The restore sets the channel, may start live and moves the stage back to the start position.
+    RESTORE_HARDWARE_TIMEOUT_S = 60.0
 
     @property
     def history_entry_id(self) -> Optional[str]:
@@ -816,7 +825,7 @@ class MultiPointController:
         if not self.validate_acquisition_settings():
             self._end_refused_start(acquire_current_fov, run_protocol_info)  # tells the callers, to re-enable the UI
             return False
-        refusal = self._hold_stage_for_run()
+        refusal = self._hung_restore_refusal() or self._hold_stage_for_run()
         if refusal:
             self._log.error(f"Acquisition not started: {refusal}")
             self.last_start_refusal = refusal
@@ -1247,17 +1256,48 @@ class MultiPointController:
             self._restore_software_state_after_acquisition()
         except Exception:
             self._log.exception("Restoring after the acquisition failed in _restore_software_state_after_acquisition")
-        try:
-            self._restore_hardware_after_acquisition()
-            hardware_restored = True
-        except Exception:
-            self._log.exception("Restoring after the acquisition failed in _restore_hardware_after_acquisition")
-            hardware_restored = False
+        hardware_restored = self._restore_hardware_within_deadline()
         # The stage is done with (the move back to the start position included): the next owner may take it. A move
         # back that raised may have left it moving: then not before the stage reports it stopped.
         self._release_stage_after_run(after_failed_move=not hardware_restored)
         # emit the acquisition finished signal to enable the UI
         self.callbacks.signal_acquisition_finished()
+
+    def _restore_hardware_within_deadline(self) -> bool:
+        """_restore_hardware_after_acquisition on its own thread, waited for at most RESTORE_HARDWARE_TIMEOUT_S. True when
+        it returned without raising. A device that stops answering in the middle of a call (no timeout, no exception)
+        would otherwise keep the acquisition from ever reporting its end: the GUI stays in "acquiring", Live greyed out
+        and every new start refused, with nothing left to abort and nothing in the log."""
+        restored = []
+        done = Event()
+
+        def restore():
+            try:
+                self._restore_hardware_after_acquisition()
+                restored.append(True)
+            except Exception:
+                self._log.exception("Restoring after the acquisition failed in _restore_hardware_after_acquisition")
+            finally:
+                done.set()
+
+        thread = Thread(target=restore, name="restore after acquisition", daemon=True)
+        thread.start()
+        if done.wait(self.RESTORE_HARDWARE_TIMEOUT_S):
+            return bool(restored)
+        self._hung_restore = thread
+        frame = sys._current_frames().get(thread.ident)
+        stack = "".join(traceback.format_stack(frame)) if frame is not None else "(no stack)\n"
+        self._log.error(
+            f"Restoring the microscope after the acquisition did not finish in {self.RESTORE_HARDWARE_TIMEOUT_S:g} s: "
+            f"a device stopped answering. Restart Squid before the next acquisition. Stuck in:\n{stack}"
+        )
+        return False
+
+    def _hung_restore_refusal(self) -> Optional[str]:
+        if self._hung_restore is not None and self._hung_restore.is_alive():
+            return "a device stopped answering after the last acquisition (see the log); restart Squid"
+        self._hung_restore = None
+        return None
 
     def _run_worker(self, worker: MultiPointWorker, hold: StageMotionHold) -> None:
         """The acquisition thread. A worker whose teardown raised never reported its end, so _on_acquisition_completed
