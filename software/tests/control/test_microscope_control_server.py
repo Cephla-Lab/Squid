@@ -4,7 +4,10 @@ Unit tests for control/microscope_control_server.py
 Tests for the _cmd_run_acquisition_from_yaml command.
 """
 
+import threading
+
 import pytest
+from qtpy.QtCore import QObject, Slot
 from unittest.mock import MagicMock, patch
 
 from squid.stage.reservation import StageMotionReservation
@@ -515,3 +518,66 @@ def test_relative_z_goes_through_the_microscope():
     server._cmd_move_relative(dx_mm=0, dy_mm=0, dz_mm=0.1, blocking=True)
     server.microscope.move_z.assert_called_once_with(0.1, blocking=True)
     server.microscope.stage.move_z.assert_not_called()
+
+
+class _AcquisitionWidget(QObject):
+    """The two slots that the server calls on the acquisition widget of the GUI, recording their calls."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    @Slot(bool, int, float)
+    def set_acquisition_running_state(self, is_running, nz=1, delta_z_um=1.0):
+        self.calls.append(("running", is_running, nz, delta_z_um))
+
+    @Slot(str)
+    def load_acquisition_yaml_slot(self, yaml_path):
+        self.calls.append(("yaml", yaml_path))
+
+
+def _from_server_thread(qtbot, fn):
+    """Runs fn on a thread of its own, as the server does, while the GUI thread runs its event loop."""
+    done = threading.Event()
+    threading.Thread(target=lambda: (fn(), done.set())).start()
+    qtbot.waitUntil(done.is_set, timeout=5000)
+
+
+def test_gui_updates_from_the_server_thread_are_made_and_log_no_failure(qtbot):
+    """invokeMethod returns None when it makes the call (PyQt5 and PyQt6): that is not a failure. Before, each
+    acquisition started from YAML logged "QMetaObject.invokeMethod failed to invoke set_acquisition_running_state"
+    under PyQt6, although the widget had been updated."""
+    server = create_mock_server()
+    widget = _AcquisitionWidget()
+    server._get_widget_for_type = lambda widget_type: widget
+    yaml_data = MagicMock(widget_type="wellplate", nz=13, delta_z_um=0.75)
+
+    _from_server_thread(qtbot, lambda: server._update_gui_from_yaml(yaml_data, "/runs/acquisition.yaml"))
+    _from_server_thread(qtbot, lambda: server._set_gui_acquisition_state(yaml_data, is_running=True))
+
+    assert widget.calls == [("yaml", "/runs/acquisition.yaml"), ("running", True, 13, 0.75)]
+    server._log.error.assert_not_called()
+    server._log.warning.assert_not_called()
+
+
+class _WidgetWithoutSlot(QObject):
+    """Has the method, but not as a Qt slot: invokeMethod cannot call it."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def set_acquisition_running_state(self, is_running, nz=1, delta_z_um=1.0):
+        self.calls.append(("running", is_running, nz, delta_z_um))
+
+
+def test_a_gui_update_that_cannot_be_made_is_logged(qtbot):
+    server = create_mock_server()
+    widget = _WidgetWithoutSlot()
+    server._get_widget_for_type = lambda widget_type: widget
+    yaml_data = MagicMock(widget_type="wellplate", nz=13, delta_z_um=0.75)
+
+    _from_server_thread(qtbot, lambda: server._set_gui_acquisition_state(yaml_data, is_running=True))
+
+    assert widget.calls == []
+    assert "Failed to update GUI acquisition state on _WidgetWithoutSlot" in server._log.error.call_args[0][0]
