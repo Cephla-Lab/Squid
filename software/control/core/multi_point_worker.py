@@ -1772,6 +1772,8 @@ class MultiPointWorker:
     # A stream restart or a reopen that takes longer is taken as a camera that stopped answering: the acquisition
     # aborts, and the call is left running on its own thread.
     CAMERA_RECOVERY_TIMEOUT_S = 30.0
+    # The most a single camera call of the recovery (the trigger) may take; the camera answers these in milliseconds.
+    CAMERA_CALL_TIMEOUT_S = 10.0
 
     def _wait_for_frame_retrying(self, timeout_s: float, illumination_time: Optional[float]) -> bool:
         """Wait for the frame of the trigger just sent; when it does not come in timeout_s, go through FRAME_RECOVERY.
@@ -1829,7 +1831,27 @@ class MultiPointWorker:
         return True
 
     def _trigger_again(self, timeout_s: float, illumination_time: Optional[float]) -> bool:
-        """Send the trigger again once the camera is ready for it. False when it could not be sent."""
+        """Send the trigger again once the camera is ready for it, within timeout_s + CAMERA_CALL_TIMEOUT_S. False when
+        it could not be sent, or when a camera call did not return in that time (the light is then turned off).
+
+        A camera that stopped sending frames can also stop returning from the driver: on the bench (2026-11-26, ORCA,
+        DCAM over USB) cap_firetrigger of this second trigger blocked for 15 hours, and the acquisition with it."""
+        finished, result, thread = utils.call_with_deadline(
+            lambda: self._trigger_again_now(timeout_s, illumination_time),
+            timeout_s + self.CAMERA_CALL_TIMEOUT_S,
+            "trigger again",
+        )
+        if finished:
+            return result is True
+        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+            self.liveController.turn_off_illumination()
+        self._log.error(
+            f"Triggering again did not finish in {timeout_s + self.CAMERA_CALL_TIMEOUT_S:g} s: the camera stopped "
+            f"answering. Restart Squid. Stuck in:\n{utils.thread_stack(thread)}"
+        )
+        return False
+
+    def _trigger_again_now(self, timeout_s: float, illumination_time: Optional[float]) -> bool:
         ready_by = time.time() + timeout_s
         while not self.camera.get_ready_for_trigger():
             if self._ready_for_next_trigger.is_set():  # the frame came while waiting for the camera
