@@ -752,6 +752,25 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     def get_is_streaming(self):
         pass
 
+    def restart_streaming(self) -> bool:
+        """Stop streaming and start it again, for a camera that stopped delivering frames. Triggers are dropped
+        meanwhile (the trigger lock is held). True when the camera is streaming afterwards. It can block for as long
+        as the driver does: a caller that must not hang runs it with a time limit."""
+        with self._trigger_lock:
+            self.stop_streaming()
+            self.start_streaming()
+            return bool(self.get_is_streaming())
+
+    def can_reopen(self) -> bool:
+        """True when reopen() is implemented for this camera."""
+        return False
+
+    def reopen(self):
+        """Close the connection to the camera and open it again with the settings it had, streaming again if it
+        was: for a camera that stopped delivering frames and that restart_streaming() did not bring back. Frame
+        callbacks stay registered. It can block for as long as the driver does."""
+        raise NotImplementedError(f"{type(self).__name__} cannot reopen the camera.")
+
     def _process_raw_frame(self, raw_frame: np.array) -> np.array:
         """
         Takes a raw nd array from a camera, and processes it such that it can be used directly in a
