@@ -7,12 +7,18 @@ import threading
 import time
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode
 from control._def import *
+import control._def
 from squid.abc import LightSource
 
 import squid.ftdi
 import squid.logging
 
 log = squid.logging.get_logger(__name__)
+
+
+def ldi_channel_mappings() -> dict:
+    """Channel wavelength (nm) -> LDI line (nm), from LDI_CHANNEL_MAPPINGS (an .ini gives the keys as strings)."""
+    return {int(wavelength): int(line) for wavelength, line in control._def.LDI_CHANNEL_MAPPINGS.items()}
 
 
 class SerialDevice:
@@ -1090,20 +1096,7 @@ class LDI(LightSource):
         elif LDI_SHUTTER_MODE == "EXT":
             self.shutter_mode = ShutterControlMode.TTL
 
-        self.channel_mappings = {
-            405: 405,
-            470: 470,
-            488: 470,
-            545: 555,
-            550: 555,
-            555: 555,
-            561: 555,
-            638: 640,
-            640: 640,
-            730: 730,
-            735: 730,
-            750: 730,
-        }
+        self.channel_mappings = ldi_channel_mappings()
         self.active_channel = None
 
     def initialize(self):
@@ -1188,20 +1181,7 @@ class LDI_Simulation(LightSource):
         self.intensity_mode = IntensityControlMode.Software
         self.shutter_mode = ShutterControlMode.Software
 
-        self.channel_mappings = {
-            405: 405,
-            470: 470,
-            488: 470,
-            545: 555,
-            550: 555,
-            555: 555,
-            561: 555,
-            638: 640,
-            640: 640,
-            730: 730,
-            735: 730,
-            750: 730,
-        }
+        self.channel_mappings = ldi_channel_mappings()
         self.active_channel = None
 
     def initialize(self):
