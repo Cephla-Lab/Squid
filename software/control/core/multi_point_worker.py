@@ -378,6 +378,16 @@ class MultiPointWorker:
                     # Subprocess starts warming up in background - don't block here
 
             self._job_runners.append((job_class, job_runner))
+        if can_use_prewarmed and not used_prewarmed:
+            # No job took it (skip_saving: no jobs at all). The controller warms a new runner for every acquisition,
+            # so one left running is a subprocess that nothing ever shuts down: on the bench, one more per run.
+            self._log.info("The pre-warmed job runner is not needed for this acquisition; shutting it down.")
+            threading.Thread(
+                target=prewarmed_job_runner.shutdown,
+                kwargs={"timeout_s": 1.0},
+                name="unused runner shutdown",
+                daemon=True,
+            ).start()
         self._abort_on_failed_job = abort_on_failed_jobs
         self._first_job_dispatched = False  # Track if we've waited for subprocess warmup
 
