@@ -140,9 +140,10 @@ INCONCLUSIVE = "INCONCLUSIVE - repeat"
 _REAL_IMPORT = builtins.__import__
 
 
-def _exec_remote(code, gui):
+def _exec_remote(code, gui, modules=None):
     """Run remote code as python_exec does: restricted builtins and imports, the exec's names in a separate locals
-    dict (functions defined in the code see them only through default arguments). Returns those locals."""
+    dict (functions defined in the code see them only through default arguments). Returns those locals.
+    modules: stand-ins for allowed modules the code imports (e.g. {"time": JumpClock()})."""
     safe = {
         k: v
         for k, v in vars(builtins).items()
@@ -152,6 +153,8 @@ def _exec_remote(code, gui):
     def _import(name, *args, **kwargs):
         if name not in ("numpy", "math", "time", "datetime", "json", "os.path"):
             raise ImportError(f"Import of '{name}' not allowed")
+        if modules and name in modules:
+            return modules[name]
         return _REAL_IMPORT(name, *args, **kwargs)
 
     safe["__import__"] = _import
@@ -1223,3 +1226,126 @@ def test_a_ctrl_c_during_the_release_with_a_broken_output_still_finishes_it(hold
     with pytest.raises(KeyboardInterrupt):
         hold.run_suite(_suite_args(tmp_path, ports=[3, 4]))
     assert calls == ["flow_displacement_experiment.py", "valve_sequence.py"]  # the recorded release, not a fallback
+
+
+class JumpClock:
+    """`time` for remote code, on a clock the test can move forward: a hold's deadline then passes at once."""
+
+    def __init__(self):
+        self.offset = 0.0
+
+    def time(self):
+        return time.time() + self.offset
+
+    def sleep(self, seconds):
+        time.sleep(seconds)
+
+
+def _run_map(amf, gui, on_move=None, on_sample=None, clock=None, **params):
+    """Run the map recording. on_move(n) runs after the n-th stage move, on_sample(n) at each spot reading (n: the
+    moves so far). Returns (result, the x of each move). With _map_params: move 1 is the first centre move, 2-3 the
+    first pass, 4 its return to the centre, 5 the move to the centre before the baseline (map-only: the final hold)."""
+    moves = []
+
+    def move_x_to(x):
+        moves.append(x)
+        if on_move:
+            on_move(len(moves))
+
+    def centroid():
+        if on_sample:
+            on_sample(len(moves))
+        return (1.0, 0.0)
+
+    laf = gui.laserAutofocusController
+    laf.stage = SimpleNamespace(move_x_to=move_x_to, move_y_to=lambda y: None)
+    laf._centroid = centroid
+    code = amf.REMOTE.replace("__PARAMS__", repr(_map_params(**params)))
+    return _exec_remote(code, gui, {"time": clock} if clock else None)["result"], moves
+
+
+def _abort_at_first_sample_after_move(gui, n_moves, clock):
+    """Ctrl-C during the first reading of the hold after move n_moves, which is also that hold's last one."""
+
+    def on_sample(n):
+        if n == n_moves and not getattr(gui, "_af_map_abort", False):
+            clock.offset += 60.0
+            setattr(gui, "_af_map_abort", True)
+
+    return on_sample
+
+
+def test_map_abort_during_the_first_centre_move_dispatches_no_fluidics_job(amf):
+    gui, system = _fake_gui()
+    res, moves = _run_map(amf, gui, on_move=lambda n: n == 1 and setattr(gui, "_af_map_abort", True))
+    assert system.log == [] and moves == [0]
+    assert res["end_reason"] == "aborted"
+
+
+def test_map_abort_in_the_last_baseline_reading_launches_no_pull(amf):
+    gui, system = _fake_gui()
+    clock = JumpClock()
+    res, _moves = _run_map(amf, gui, on_sample=_abort_at_first_sample_after_move(gui, 5, clock), clock=clock)
+    assert system.log == ["empty", "valve 3"]
+    assert res["end_reason"] == "aborted"
+
+
+def test_map_abort_after_the_last_reading_of_a_pass_does_not_return_to_the_centre(amf):
+    gui, system = _fake_gui()
+    res, moves = _run_map(amf, gui, on_sample=lambda n: n == 3 and setattr(gui, "_af_map_abort", True), map_only=True)
+    assert moves == [0, 1, 2]
+    assert res["end_reason"] == "aborted"
+
+
+def test_map_only_abort_in_the_last_final_reading_is_not_completed(amf):
+    gui, system = _fake_gui()
+    clock = JumpClock()
+    on_sample = _abort_at_first_sample_after_move(gui, 5, clock)
+    res, moves = _run_map(amf, gui, on_sample=on_sample, clock=clock, map_only=True)
+    assert moves == [0, 1, 2, 0, 0]
+    assert res["end_reason"] == "aborted"
+
+
+@pytest.mark.parametrize("busy_from_move, ours_before", [(1, []), (2, ["empty", "valve 3"])])
+def test_map_never_aborts_a_fluidics_job_it_did_not_launch(amf, busy_from_move, ours_before):
+    # a job started from the GUI after the map's idle check: the map's next dispatch (prep, or the pull) is refused
+    gui, system = _fake_gui(stuck=(9,))
+    clock = JumpClock()
+
+    def on_move(n):
+        if n == busy_from_move:
+            system.run_manual(lambda: system.open_port(9))
+
+    def on_sample(n):  # no 10 s baseline in a test
+        if n == 5 and clock.offset == 0:
+            clock.offset += 60.0
+
+    res, _moves = _run_map(amf, gui, on_move=on_move, on_sample=on_sample, clock=clock)
+    assert system.log == ours_before + ["valve 9"] and system.aborts == 0 and system.busy
+    assert res["end_reason"] == "error: another job holds the session"
+
+
+@pytest.mark.parametrize("steps", [[[5, 0], [1, 0]], [[5, 0]]])
+def test_valve_sequence_abort_during_a_move_held_0_s_stops_there(valves, steps):
+    gui, system = _fake_gui()
+    system.on_verb = {5: _ctrl_c(gui, "_af_map_abort")}  # Ctrl-C while the valve turns to 5
+    params = dict(steps=steps, pre=0.05, af_path=None, max_frames=10)
+    res = _exec_remote(valves.REMOTE.replace("__PARAMS__", repr(params)), gui)["result"]
+    assert system.log == ["valve 5"]
+    assert res["end_reason"] == "aborted"
+
+
+@pytest.mark.parametrize("busy_once, ours_before", [([], []), (["valve 1"], ["valve 1"])])
+def test_valve_sequence_never_aborts_a_fluidics_job_it_did_not_launch(valves, busy_once, ours_before):
+    gui, system = _fake_gui(stuck=(9,))
+
+    def centroid():  # a job started from the GUI while the sequence holds: its next valve move is refused
+        if system.log == busy_once and not system.busy:
+            system.run_manual(lambda: system.open_port(9))
+        return (1.0, 0.0)
+
+    gui.laserAutofocusController._centroid = centroid
+    params = dict(steps=[[1, 0.05], [5, 0.05]], pre=0.05, af_path=None, max_frames=10)
+    res = _exec_remote(valves.REMOTE.replace("__PARAMS__", repr(params)), gui)["result"]
+    assert system.log == ours_before + ["valve 9"] and system.aborts == 0 and system.busy
+    assert res["end_reason"] == "error: another job holds the session"

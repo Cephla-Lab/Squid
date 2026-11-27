@@ -88,6 +88,7 @@ def hold(phase, seconds, _P=P, _t=time.time, _sample=sample, _check=check_abort)
     while _t() < t_end:
         _check()
         _sample(phase, -1, _P["center"][0], _P["center"][1])
+    _check()  # never returns with a Ctrl-C pending: what follows a hold (a pull, a move, the end) does not start
 
 def map_pass(name, _P=P, _goto=goto, _sample=sample, _check=check_abort, _ev=events, _t=time.time):
     _ev.append([_t(), name + "_start", None])
@@ -96,6 +97,7 @@ def map_pass(name, _P=P, _goto=goto, _sample=sample, _check=check_abort, _ev=eve
         if _P["revisit"] and i and i % _P["revisit"] == 0:
             _goto(*_P["center"]); _sample(name + "_center", -1, _P["center"][0], _P["center"][1])
         _goto(x, y); _sample(name, i, x, y)
+    _check()
     _goto(*_P["center"]); _sample(name + "_center", -1, _P["center"][0], _P["center"][1])
     _ev.append([_t(), name + "_end", None])
 
@@ -112,6 +114,8 @@ def pump(_m=manual, _P=P, _ev=events, _t=time.time, _xp=xp):
 
 t0 = time.time()
 end_reason = "completed"
+# True while a job this run dispatched may be running: set once run_manual accepts it (one refused because the fluidics
+# is busy with another job is not this run's), cleared once it has finished. Only then does the cleanup stop the fluidics.
 launched = False
 try:
     mc.turn_on_AF_laser(); mc.wait_till_operation_is_completed()
@@ -122,10 +126,12 @@ try:
             map_pass("map%d" % (k + 1))
         goto(*P["center"]); hold("final", 5)
         raise StopIteration("map_only")
+    check_abort()
     events.append([time.time(), "prep_start", None])
-    launched = True
     system.run_manual(prep, callbacks={"on_error": _err})
+    launched = True
     wait_fluidics("prep")
+    launched = False
     events.append([time.time(), "prep_end", None])
     if errors: raise RuntimeError("prep failed: " + "; ".join(errors))
     hold("settle", P["settle"])
@@ -133,9 +139,12 @@ try:
         map_pass("before%d" % (k + 1))
     goto(*P["center"])
     hold("baseline", 10)
+    check_abort()
     events.append([time.time(), "pump_launch", None])
     system.run_manual(pump, callbacks={"on_error": _err})
+    launched = True
     wait_fluidics("pull")
+    launched = False
     events.append([time.time(), "pump_idle", None])
     if errors: raise RuntimeError("pump failed: " + "; ".join(errors))
     hold("post", P["post"])

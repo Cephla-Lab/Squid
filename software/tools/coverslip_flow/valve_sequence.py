@@ -40,26 +40,33 @@ def sample(phase, _l=laf, _st=st, _s=samples, _P=P, _xr=x_ref, _u=um_per_px, _np
         if _st["n"] < _P["max_frames"]:
             _st["af"][_st["n"]] = img; fi = _st["n"]; _st["n"] += 1
     _s.append([(ta + tb) / 2, phase, -1, 0.0, 0.0, None if c is None else (c[0] - _xr) * _u, fi])
-def hold(phase, seconds, _t=time.time, _sample=sample, _g=gui):
+def check_abort(_g=gui):
     # Ctrl-C in the client sets the flag: raising ends the sequence (no further valve moves)
+    if getattr(_g, "_af_map_abort", False): raise RuntimeError("aborted")
+def hold(phase, seconds, _t=time.time, _sample=sample, _check=check_abort):
     t_end = _t() + seconds
     while _t() < t_end:
-        if getattr(_g, "_af_map_abort", False): raise RuntimeError("aborted")
+        _check()
         _sample(phase)
 def valve(port, _m=manual): _m.open_port(port)
+# launched: a move this run dispatched may be running (set once run_manual accepts it, cleared once it has finished);
+# only then does the cleanup stop the fluidics, never a job of someone else's that made run_manual refuse ours
 t0 = time.time(); end_reason = "completed"; launched = False
 try:
     mc.turn_on_AF_laser(); mc.wait_till_operation_is_completed()
     hold("start", P["pre"])
     for port, secs in P["steps"]:
+        check_abort()
         events.append([time.time(), "valve_start", port])
-        launched = True
         system.run_manual(lambda _p=port, _v=valve: _v(_p), callbacks={"on_error": _err})
+        launched = True
         time.sleep(0.2)
         while system.busy: hold("port%d" % port, 0.2)
+        launched = False
         events.append([time.time(), "valve_end", port])
         if errors: raise RuntimeError("; ".join(errors))
         hold("port%d" % port, secs)
+    check_abort()  # a Ctrl-C during the last move or hold: the sequence did not complete
 except Exception as e:
     end_reason = "aborted" if getattr(gui, "_af_map_abort", False) else "error: " + str(e)
 finally:
