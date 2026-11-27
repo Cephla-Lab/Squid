@@ -1593,3 +1593,41 @@ def test_a_ctrl_c_during_the_pull_stops_the_pump_from_the_abort_request(experime
     assert seen["aborts"] == 1  # by the request itself, not only by the recording's cleanup after it
     assert system.log == ["valve 3", "pull 50", "ABORT"] and not system.busy
     assert ns["result"]["end_reason"] == "aborted"
+
+
+# ---- a script's own fluidics job ends with its on_finished, not when the rig is idle
+# The job has finished and an operator starts one from the GUI before the script looks at the rig again. Taking "the
+# rig is idle" for "our job finished", the script would wait on that job as its own, and its cleanup would stop it on
+# a Ctrl-C. Each script's own job is still stopped on a Ctrl-C while it runs: test_valve_sequence_abort_during_a_move_
+# stops_it, test_map_abort_during_a_fluidics_job_stops_it_and_the_sequence, test_sensor_run_releases_after_a_ctrl_c_
+# during_the_pull.
+
+
+def _operator_job_after(system, log):
+    """An operator starts a job from the GUI (a valve move to port 9 that keeps running: the fake needs stuck=(9,)) right
+    after the script's job that leaves system.log == log has finished, before the script looks at the rig again."""
+    run_manual = system.run_manual
+
+    def run_then_operator(fn, callbacks=None):
+        run_manual(fn, callbacks)
+        if system.log == log:
+            run_manual(lambda: system.open_port(9))
+
+    system.run_manual = run_then_operator
+
+
+def test_valve_sequence_never_waits_on_or_aborts_a_job_started_just_after_its_move(valves):
+    gui, system = _fake_gui(stuck=(9,))
+    _operator_job_after(system, ["valve 1"])
+
+    def centroid():  # Ctrl-C at the sequence's next reading
+        if system.log == ["valve 1", "valve 9"]:
+            setattr(gui, "_af_map_abort", True)
+        return (1.0, 0.0)
+
+    gui.laserAutofocusController._centroid = centroid
+    params = dict(steps=[[1, 0.05], [5, 0.05]], pre=0.05, af_path=None, max_frames=10)
+    res = _exec_remote(valves.REMOTE.replace("__PARAMS__", repr(params)), gui)["result"]
+    assert system.log == ["valve 1", "valve 9"] and system.aborts == 0 and system.busy
+    assert res["end_reason"] == "aborted"
+    assert [e[1:] for e in res["events"] if e[1] == "valve_end"] == [["valve_end", 1]]  # the move ended; not waited on
