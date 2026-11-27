@@ -1,6 +1,8 @@
+import errno
 import json
 import os
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,6 +36,71 @@ def test_manifest_write_is_atomic_and_readable(tmp_path):
     assert path.name == m.MANIFEST_NAME
     assert not [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
     assert m.read_manifest(tmp_path).cursor.sequence == 3
+
+
+def _locked_replace(monkeypatch, failures, error=None):
+    """os.replace as Windows runs it while another process (a copier, a file watcher) holds the target open:
+    PermissionError (WinError 5) for the first `failures` calls, then the real replace."""
+    real_replace = os.replace
+    calls = []
+
+    def replace(src, dst):
+        calls.append(dst)
+        if len(calls) <= failures:
+            raise error if error is not None else PermissionError(13, "Access is denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(m.os, "replace", replace)
+    return calls
+
+
+def _no_sleep(monkeypatch):
+    slept = []
+    monkeypatch.setattr(m, "time", SimpleNamespace(sleep=slept.append))
+    return slept
+
+
+def _tmp_files(folder):
+    return [p for p in folder.iterdir() if p.suffix == ".tmp"]
+
+
+def test_atomic_write_retries_a_replace_refused_while_another_process_reads_the_file(tmp_path, monkeypatch):
+    slept = _no_sleep(monkeypatch)
+    path = tmp_path / m.MANIFEST_NAME
+    m.atomic_write_json(path, {"v": 1})
+    calls = _locked_replace(monkeypatch, failures=3)
+
+    m.atomic_write_json(path, {"v": 2})
+
+    assert json.loads(path.read_text()) == {"v": 2}
+    assert len(calls) == 4 and len(slept) == 3 and sum(slept) <= m.REPLACE_RETRY_S
+    assert not _tmp_files(tmp_path)
+
+
+def test_atomic_write_gives_up_after_its_retry_budget_and_leaves_no_tmp_file(tmp_path, monkeypatch):
+    slept = _no_sleep(monkeypatch)
+    path = tmp_path / m.MANIFEST_NAME
+    m.atomic_write_json(path, {"v": 1})
+    calls = _locked_replace(monkeypatch, failures=10**6)
+
+    with pytest.raises(PermissionError):
+        m.atomic_write_json(path, {"v": 2})
+
+    assert json.loads(path.read_text()) == {"v": 1}  # the previous content is untouched
+    assert not _tmp_files(tmp_path)
+    assert len(calls) == len(slept) + 1 and 0 < sum(slept) <= m.REPLACE_RETRY_S
+
+
+def test_atomic_write_does_not_retry_other_os_errors(tmp_path, monkeypatch):
+    slept = _no_sleep(monkeypatch)
+    calls = _locked_replace(monkeypatch, failures=1, error=OSError(errno.EXDEV, "Invalid cross-device link"))
+
+    with pytest.raises(OSError) as raised:
+        m.atomic_write_json(tmp_path / m.MANIFEST_NAME, {"v": 1})
+
+    assert not isinstance(raised.value, PermissionError)
+    assert len(calls) == 1 and slept == []
+    assert not _tmp_files(tmp_path)
 
 
 def test_markers_and_sha(tmp_path):

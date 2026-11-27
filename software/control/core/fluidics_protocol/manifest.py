@@ -12,6 +12,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Union
@@ -25,6 +26,14 @@ ABORTED_MARKER = "aborted.json"
 STEP_INFO_NAME = "protocol_step.json"
 
 PathLike = Union[str, os.PathLike]
+
+# Windows refuses os.replace with PermissionError (WinError 5) while another process holds the target open
+# without FILE_SHARE_DELETE: a copier or a file watcher reading the manifest. Such a reader holds a few-KB
+# file for milliseconds, so the replace is retried with a backoff (20 ms doubling to 200 ms) for up to this
+# long. The bound matters: the runner writes while holding the lock its GUI status refresh also takes.
+REPLACE_RETRY_S = 1.0
+_REPLACE_FIRST_WAIT_S = 0.02
+_REPLACE_MAX_WAIT_S = 0.2
 
 
 _RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -45,8 +54,11 @@ def create_run_dir(base_dir: PathLike, run_name: str, when: Optional[datetime] =
     return run_dir
 
 
-def atomic_write_json(path: PathLike, data: dict) -> None:
-    """tmp file in the same directory + fsync + os.replace (the squid.acquisition_state pattern)."""
+def atomic_write_json(path: PathLike, data: dict, *, retry_s: float = REPLACE_RETRY_S) -> None:
+    """tmp file in the same directory + fsync + os.replace (the squid.acquisition_state pattern).
+
+    A replace refused with PermissionError is retried for up to `retry_s` seconds of waiting (see
+    REPLACE_RETRY_S); any other error, or the last refusal, removes the tmp file and is raised."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".manifest-", suffix=".tmp")
@@ -55,7 +67,7 @@ def atomic_write_json(path: PathLike, data: dict) -> None:
             json.dump(data, f, indent=2, sort_keys=False)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        _replace_retrying_permission_errors(tmp, path, retry_s)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -64,9 +76,24 @@ def atomic_write_json(path: PathLike, data: dict) -> None:
         raise
 
 
-def write_manifest(run_dir: PathLike, manifest: RunManifest) -> Path:
+def _replace_retrying_permission_errors(tmp: str, path: Path, retry_s: float) -> None:
+    waited = 0.0
+    wait = _REPLACE_FIRST_WAIT_S
+    while True:
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if waited + wait > retry_s:
+                raise
+        time.sleep(wait)
+        waited += wait
+        wait = min(2 * wait, _REPLACE_MAX_WAIT_S)
+
+
+def write_manifest(run_dir: PathLike, manifest: RunManifest, *, retry_s: float = REPLACE_RETRY_S) -> Path:
     path = Path(run_dir) / MANIFEST_NAME
-    atomic_write_json(path, manifest.model_dump(mode="json"))
+    atomic_write_json(path, manifest.model_dump(mode="json"), retry_s=retry_s)
     return path
 
 
