@@ -612,7 +612,10 @@ class ProtocolTab(QWidget):
 
     def _open_clicked(self) -> None:
         def open_file():
-            start = self.protocol_path or state.load_ui_state().get("protocol_path") or ""
+            # The last protocol's folder, with no file pre-selected: Open means choosing a
+            # protocol, never reopening the last one by accident.
+            last = self.protocol_path or state.load_ui_state().get("protocol_path") or ""
+            start = os.path.dirname(last)
             path, _ = QFileDialog.getOpenFileName(self, "Open protocol", start, "YAML (*.yaml *.yml)")
             if path:
                 self.load(path)
