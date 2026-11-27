@@ -1303,6 +1303,32 @@ def test_map_abort_after_the_last_reading_of_a_pass_does_not_return_to_the_centr
     assert res["end_reason"] == "aborted"
 
 
+def test_map_abort_in_a_centre_revisit_reading_does_not_move_to_the_next_position(amf):
+    # revisit=1: position 1 is preceded by a centre reading (move 3); Ctrl-C during it, so no move to (2, 2)
+    gui, system = _fake_gui()
+    res, moves = _run_map(
+        amf, gui, on_sample=lambda n: n == 3 and setattr(gui, "_af_map_abort", True), map_only=True, revisit=1
+    )
+    assert moves == [0, 1, 0]
+    assert [s[1] for s in res["samples"] if s[1] != "settle"] == ["map1", "map1_center"]
+    assert res["end_reason"] == "aborted"
+
+
+def test_map_without_a_ctrl_c_records_the_revisit_and_the_next_position(amf):
+    gui, system = _fake_gui()
+    clock = JumpClock()
+
+    def on_sample(n):  # no 5 s final hold in a test
+        if n == 6 and clock.offset == 0:
+            clock.offset += 60.0
+
+    res, moves = _run_map(amf, gui, on_sample=on_sample, clock=clock, map_only=True, revisit=1)
+    assert moves == [0, 1, 0, 2, 0, 0]
+    phases = [s[1] for s in res["samples"] if s[1] not in ("settle", "final")]
+    assert phases == ["map1", "map1_center", "map1", "map1_center"]
+    assert res["end_reason"] == "completed"
+
+
 def test_map_only_abort_in_the_last_final_reading_is_not_completed(amf):
     gui, system = _fake_gui()
     clock = JumpClock()

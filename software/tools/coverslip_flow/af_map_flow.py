@@ -91,14 +91,13 @@ def hold(phase, seconds, _P=P, _t=time.time, _sample=sample, _check=check_abort)
     _check()  # never returns with a Ctrl-C pending: what follows a hold (a pull, a move, the end) does not start
 
 def map_pass(name, _P=P, _goto=goto, _sample=sample, _check=check_abort, _ev=events, _t=time.time):
+    # a check before every move: a Ctrl-C during any reading (a centre revisit's included) moves nothing further
     _ev.append([_t(), name + "_start", None])
     for i, (x, y) in enumerate(_P["positions"]):
-        _check()
         if _P["revisit"] and i and i % _P["revisit"] == 0:
-            _goto(*_P["center"]); _sample(name + "_center", -1, _P["center"][0], _P["center"][1])
-        _goto(x, y); _sample(name, i, x, y)
-    _check()
-    _goto(*_P["center"]); _sample(name + "_center", -1, _P["center"][0], _P["center"][1])
+            _check(); _goto(*_P["center"]); _sample(name + "_center", -1, _P["center"][0], _P["center"][1])
+        _check(); _goto(x, y); _sample(name, i, x, y)
+    _check(); _goto(*_P["center"]); _sample(name + "_center", -1, _P["center"][0], _P["center"][1])
     _ev.append([_t(), name + "_end", None])
 
 def wait_fluidics(phase, _s=system, _hold=hold, _sl=time.sleep):
