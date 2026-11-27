@@ -737,7 +737,8 @@ def release_after_pull(a, port, rel_base, record):
 
 def run_suite(a):
     out_dir = os.path.abspath(os.path.expanduser(a.out_dir))
-    os.makedirs(out_dir, exist_ok=True)
+    # before anything moves: every run saves its files (and the pull its log) here once the pull and release are done
+    fde.prepare_folder(out_dir)
     ports = list(a.ports)
     if a.order == "shuffle":
         random.Random(a.seed).shuffle(ports)

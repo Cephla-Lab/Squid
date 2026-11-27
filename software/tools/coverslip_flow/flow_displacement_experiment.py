@@ -342,7 +342,11 @@ def existing_output(out, suffixes):
 def prepare_out(out):
     """Create the folder `out` (a path without extension) goes into and check that it is writable, before anything
     reaches the GUI: the GUI writes the AF frames there during the run."""
-    folder = os.path.dirname(os.path.abspath(out))
+    prepare_folder(os.path.dirname(os.path.abspath(out)))
+
+
+def prepare_folder(folder):
+    """Create `folder` and check that it is writable; exits with the reason if not."""
     try:
         os.makedirs(folder, exist_ok=True)
     except OSError as e:

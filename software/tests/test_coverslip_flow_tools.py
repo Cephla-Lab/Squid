@@ -1461,6 +1461,27 @@ def test_a_post_pull_recording_shorter_than_the_held_window_is_refused(
         assert len(ran) == 1
 
 
+@pytest.mark.parametrize("sensor_only", [False, True])
+def test_the_hold_check_refuses_an_output_folder_it_cannot_write_before_anything_moves(
+    hold, tmp_path, monkeypatch, sensor_only
+):
+    # an existing folder, readable but not writable: the pull and the release must not run before a file save fails
+    out = tmp_path / "read_only"
+    out.mkdir()
+    out.chmod(0o500)
+    try:
+        if os.access(out, os.W_OK):
+            pytest.skip("a folder without write permission is still writable here (e.g. running as root)")
+        calls = _fake_children(monkeypatch, hold, lambda: (0, "End: completed"))
+        monkeypatch.setattr(hold, "run_sensor_port", lambda a, p, base: calls.append("sensor run"))
+        with pytest.raises(SystemExit) as stopped:
+            hold.run_suite(_suite_args(tmp_path, out_dir=str(out), sensor_only=sensor_only))
+        assert "not writable" in str(stopped.value.code)
+        assert calls == []
+    finally:
+        out.chmod(0o700)
+
+
 def _sensor_run_on(hold, gui, clock):
     """The sensor-only run on `clock` (its on_sleep sees each sleep: 0.05 s in a wait, 0.2 s just after a dispatch)."""
     code = hold.SENSOR_REMOTE.replace("__PARAMS__", repr(_sensor_params()))
