@@ -273,6 +273,8 @@ class MultiPointWorker:
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
         self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
+        # The threads _finish_jobs shuts the runners down on; see wait_for_job_runner_shutdown.
+        self._job_runner_shutdown_threads: List[threading.Thread] = []
         self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
 
         # Get the current log file path to share with subprocess workers
@@ -735,6 +737,7 @@ class MultiPointWorker:
         for job_class, job_runner in active_runners:
             t = threading.Thread(target=shutdown_runner, args=(job_runner, remaining_time), daemon=True)
             t.start()
+            self._job_runner_shutdown_threads.append(t)
 
         # Final drain of all output queues (should be empty, but check anyway)
         self._summarize_runner_outputs(drain_all=True)
@@ -744,6 +747,15 @@ class MultiPointWorker:
             self._backpressure.close()
         except Exception as e:
             self._log.error(f"Error closing backpressure controller: {e}")
+
+    def wait_for_job_runner_shutdown(self, timeout_s: float) -> bool:
+        """Wait for the job runner shutdown _finish_jobs started on background threads. True once all of it ended.
+        Whoever tears down after the run (MultiPointController.close) waits here rather than join the same
+        processes from a second thread."""
+        deadline = time.monotonic() + timeout_s
+        for t in self._job_runner_shutdown_threads:
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
+        return not any(t.is_alive() for t in self._job_runner_shutdown_threads)
 
     def wait_till_operation_is_completed(self):
         self.microcontroller.wait_till_operation_is_completed()
@@ -1694,8 +1706,14 @@ class MultiPointWorker:
                     )
 
         with self._timing.get_timer("get_ready_for_trigger re-check"):
-            # This should be a noop - we have the frame already.  Still, check!
+            # This should be a noop - we have the frame already.  Still, check! A camera that never gets ready ends the
+            # run like a frame that never arrives, so neither an abort nor close() waits on this loop for ever.
+            ready_deadline = time.monotonic() + self._frame_wait_timeout_s()
             while not self.camera.get_ready_for_trigger():
+                if time.monotonic() > ready_deadline:
+                    self._log.error("The camera never got ready for the next trigger! Aborting acquisition.")
+                    self._abort_due_to_error()
+                    return
                 self._sleep(0.001)
 
             self._ready_for_next_trigger.clear()

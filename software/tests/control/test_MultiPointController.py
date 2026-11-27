@@ -1,6 +1,8 @@
 import copy
 import dataclasses
+import logging
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -926,3 +928,117 @@ def test_set_z_stacking_config_rejects_an_unknown_name():
     with pytest.raises(ValueError, match="z_stacking_config"):
         MultiPointController.set_z_stacking_config(fake, "FROM NOWHERE")
     assert fake.z_stacking_config == "FROM BOTTOM"
+
+
+def _record_job_runner_terminates(monkeypatch):
+    from control.core.job_processing import JobRunner
+
+    terminated = []
+    real_terminate = JobRunner.terminate
+
+    def terminate(self):
+        terminated.append(self)
+        return real_terminate(self)
+
+    monkeypatch.setattr(JobRunner, "terminate", terminate)
+    return terminated
+
+
+def _run_job_runners(worker):
+    return [job_runner for _, job_runner in worker._job_runners if job_runner is not None]
+
+
+def test_close_during_a_run_waits_for_the_run_to_end_with_its_saves(monkeypatch):
+    # Closing Squid mid-run aborts the run, and the run then waits for its queued saves (up to 10 s) before it
+    # ends. close() used to give it 5 s, then kill the saving processes and close the hardware under the run.
+    from control.core.multi_point_worker import MultiPointWorker
+
+    terminated = _record_job_runner_terminates(monkeypatch)
+    saves_done = threading.Event()
+    real_finish_jobs = MultiPointWorker._finish_jobs
+
+    def slow_finish_jobs(self, *args, **kwargs):
+        saves_done.wait(30)
+        return real_finish_jobs(self, *args, **kwargs)
+
+    monkeypatch.setattr(MultiPointWorker, "_finish_jobs", slow_finish_jobs)
+    scope, tt, mpc = _controller_with_tracker()
+    real_abort = mpc.request_abort_aquisition
+
+    def abort_with_saves_that_take_longer_than_close_used_to_wait():
+        real_abort()
+        # close() used to wait 5 s, then took about 2 s more to tear down under the run
+        threading.Timer(7.0, saves_done.set).start()
+
+    mpc.request_abort_aquisition = abort_with_saves_that_take_longer_than_close_used_to_wait
+    mpc.run_acquisition()
+    assert tt.started_event.wait(10)
+    worker, thread = mpc.multiPointWorker, mpc.thread
+    try:
+        mpc.close()
+
+        assert not thread.is_alive(), "close() returned while the run was still going"
+        assert tt.finished_count == 1 and mpc.last_end_reason == "user_abort"
+        run_runners = _run_job_runners(worker)
+        assert run_runners
+        assert not [r for r in terminated if r in run_runners], "close() killed the run's saving processes"
+        assert not any(r.is_alive() for r in run_runners)
+    finally:
+        saves_done.set()
+        thread.join(30)
+        scope.close()
+
+
+def test_close_after_a_run_waits_for_the_shutdown_of_its_saving_processes(monkeypatch):
+    # A run that ends shuts its saving processes down on background threads. close() right after the end used to
+    # find them still alive, call that an abnormal shutdown and terminate them: a second thread joining the same
+    # processes. It now waits for the run's own shutdown.
+    from control.core.job_processing import JobRunner
+
+    terminated = _record_job_runner_terminates(monkeypatch)
+    real_shutdown = JobRunner.shutdown
+
+    def slow_background_shutdown(self, *args, **kwargs):
+        if threading.current_thread() is not threading.main_thread():
+            time.sleep(2.0)  # the run's shutdown threads, still at it when close() runs
+        return real_shutdown(self, *args, **kwargs)
+
+    monkeypatch.setattr(JobRunner, "shutdown", slow_background_shutdown)
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(30)
+    worker, thread = mpc.multiPointWorker, mpc.thread
+    try:
+        mpc.close()
+
+        run_runners = _run_job_runners(worker)
+        assert run_runners
+        assert not [r for r in terminated if r in run_runners], "close() terminated processes the run was shutting down"
+        assert not any(r.is_alive() for r in run_runners)
+    finally:
+        thread.join(30)
+        scope.close()
+
+
+def test_a_camera_that_never_gets_ready_for_the_next_trigger_ends_the_run(monkeypatch, caplog):
+    # The worker checks the camera is ready before each trigger. That loop had no limit and did not look at the
+    # abort flag, so a camera that never got ready kept the run (and an abort, and close()) waiting for ever.
+    from control.core.multi_point_worker import MultiPointWorker
+
+    monkeypatch.setattr(MultiPointWorker, "_frame_wait_timeout_s", lambda self: 1.0)
+    scope, tt, mpc = _controller_with_tracker()
+    real_get_ready = scope.camera.get_ready_for_trigger
+    scope.camera.get_ready_for_trigger = lambda: False
+    caplog.set_level(logging.ERROR)
+    try:
+        mpc.run_acquisition()
+        assert tt.finished_event.wait(20), "the run never ended"
+    finally:
+        scope.camera.get_ready_for_trigger = real_get_ready  # lets a run stuck in that loop go on
+        mpc.request_abort_aquisition()
+        if mpc.thread is not None:
+            mpc.thread.join(30)
+        scope.close()
+
+    assert mpc.last_end_reason == "error"
+    assert "never got ready for the next trigger" in caplog.text

@@ -1407,19 +1407,22 @@ class MultiPointController:
         return None
 
     _PROCESS_TERMINATE_TIMEOUT_S = 1.0
+    # How long close() waits for a running acquisition to end after aborting it. A run ends well within this: its waits
+    # all have limits (the frame in flight: frame time + 10 s; a backpressure wait: ACQUISITION_THROTTLE_TIMEOUT_S,
+    # 30 s by default; its queued saves: 10 s), then it moves back to its start position. Only a run stuck somewhere
+    # else reaches it.
+    _RUN_END_TIMEOUT_S = 60.0
 
-    def close(self, timeout_s: float = 5.0) -> None:
+    def close(self, timeout_s: float = _RUN_END_TIMEOUT_S) -> None:
         """Clean up resources on application shutdown.
 
-        Aborts any running acquisition and waits for cleanup to complete.
-        If job runner processes do not terminate gracefully, they are forcefully
-        terminated (SIGTERM) then killed (SIGKILL). This may result in incomplete
-        well images or unsaved data.
+        Aborts any running acquisition and waits for it to end, its queued saves and the shutdown of its job runner
+        processes included, before anything is torn down: until then the run still uses the camera, the stage and
+        those processes. Only job runners still alive after that are terminated (SIGTERM) then killed (SIGKILL),
+        which may lose queued images.
 
         Args:
-            timeout_s: Maximum time to wait for acquisition thread to finish.
-                      Job runner processes have a separate timeout defined by
-                      _PROCESS_TERMINATE_TIMEOUT_S.
+            timeout_s: The most close() waits for the acquisition and its job runners to end.
         """
         # Clean up pre-warmed job runner if it exists
         if self._prewarmed_job_runner is not None:
@@ -1432,16 +1435,34 @@ class MultiPointController:
         self._prewarmed_job_runner = None
         self._prewarmed_bp_values = None
 
-        # Abort any running acquisition
+        deadline = time.monotonic() + timeout_s
+
+        def time_left() -> float:
+            return max(0.0, deadline - time.monotonic())
+
+        # Abort any running acquisition and wait for it to end
         try:
             if self.acquisition_in_progress():
+                self._log.info("Closing during an acquisition: aborting it and waiting for it to end (saves included)")
                 self.request_abort_aquisition()
                 if self.thread is not None:
-                    self.thread.join(timeout=timeout_s)
+                    self.thread.join(timeout=time_left())
                     if self.thread.is_alive():
-                        self._log.warning(f"Acquisition thread did not stop within {timeout_s}s")
+                        self._log.error(
+                            f"The acquisition did not end within {timeout_s} s of the abort: closing under it"
+                        )
         except Exception:
             self._log.exception("Error aborting acquisition during close")
+
+        # The run shuts its job runners down on background threads as it ends: wait for that, rather than join the same
+        # processes from this thread too.
+        try:
+            if self.multiPointWorker is not None and not self.multiPointWorker.wait_for_job_runner_shutdown(
+                time_left()
+            ):
+                self._log.error("The acquisition's job runners were still shutting down when close() stopped waiting")
+        except Exception:
+            self._log.exception("Error waiting for the acquisition's job runners to shut down during close")
 
         # Stop memory monitor if running
         try:
