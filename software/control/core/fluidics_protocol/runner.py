@@ -231,8 +231,13 @@ class ProtocolRunner:
     def _open_run(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         try:
+            # run.log is the run's own readable record, so INFO and above. The handler sits on the squid root
+            # logger, and at DEBUG it copied all of Squid's DEBUG traffic (Timer, MCU) for the whole run; that
+            # detail is still in main_hcs.log and each round's acquisition.log.
             self._log_handler = squid.logging.add_file_handler(
-                str(self.run_dir / manifest_io.RUN_LOG_NAME), replace_existing=True
+                str(self.run_dir / manifest_io.RUN_LOG_NAME),
+                replace_existing=True,
+                level=squid.logging.py_logging.INFO,
             )
         except Exception:
             self._log.exception("Could not open run.log")
