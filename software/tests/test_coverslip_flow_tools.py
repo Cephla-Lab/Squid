@@ -1382,3 +1382,38 @@ def test_the_release_sensor_verdict_needs_a_rest_reading_of_its_own(
 
     assert row["sensor_verdict"] == sensor_verdict
     assert row["verdict"] == "ok"  # the coverslip verdict does not depend on it
+
+
+def test_held_is_taken_after_the_pump_stopped_only(hold, tmp_path):
+    # A 4 s post-pull recording (pump_idle at 42 s) with the coverslip still 8 um in: the last 10 s would reach back
+    # before the pump stopped and read the baseline (held 0, "ok").
+    _write_pull_run(tmp_path, 1, 3, lambda t: -8.0 if t >= 42 else 0.0, end=46.0)
+    [row] = hold.analyze_dir(str(tmp_path))
+    assert row["held_um"] == pytest.approx(-8.0)
+    assert row["verdict"] == "HOLDS PRESSURE"
+
+
+def test_held_from_too_few_readings_after_the_pump_stopped_is_inconclusive(hold, tmp_path):
+    _write_pull_run(tmp_path, 1, 3, lambda t: 0.0, end=42.1)  # 3 readings after pump_idle
+    assert [r["verdict"] for r in hold.analyze_dir(str(tmp_path))] == [INCONCLUSIVE]
+
+
+@pytest.mark.parametrize(
+    "extra, refused",
+    [(["--post", "4"], True), (["--post", "10"], False), (["--sensor-only", "--post", "4"], False)],
+)
+def test_a_post_pull_recording_shorter_than_the_held_window_is_refused(
+    hold, tmp_path, monkeypatch, capsys, extra, refused
+):
+    ran = []
+    monkeypatch.setattr(hold, "run_suite", ran.append)
+    argv = ["port_hold_check.py", "--out-dir", str(tmp_path), "--ports", "3", "--release-port", "5"] + extra
+    monkeypatch.setattr(sys, "argv", argv)
+    if refused:
+        with pytest.raises(SystemExit) as stopped:
+            hold.main()
+        assert stopped.value.code == 2 and "--post" in capsys.readouterr().err
+        assert ran == []
+    else:
+        hold.main()
+        assert len(ran) == 1

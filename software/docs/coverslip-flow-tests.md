@@ -162,7 +162,8 @@ python3 tools/coverslip_flow/port_hold_check.py --ports 1 2 3 4 --release-port 5
     --order shuffle --seed 1 --out-dir ~/flowtest/port_hold
 ```
 
-Per port: empty the syringe, turn the valve to the port, 30 s baseline, pull 50 µL at 500 µL/min, record 45 s; then
+Per port: empty the syringe, turn the valve to the port, 30 s baseline, pull 50 µL at 500 µL/min, record 45 s
+(`--post`, at least 10 s: `held_um` is the last 10 s); then
 turn the valve to the release port and hold 30 s. The release port can't be in `--ports`: check it in a separate run
 with another release port. Re-analyse a folder with `--analyze-only --out-dir …`. Each step's output is kept in
 `NN_…_log.txt`.
