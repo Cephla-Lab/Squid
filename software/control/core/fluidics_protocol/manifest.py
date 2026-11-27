@@ -16,7 +16,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Union
 
+import psutil
+
+import squid.logging
 from control.models.fluidics_run import RunManifest
+
+_log = squid.logging.get_logger(__name__)
 
 MANIFEST_NAME = "run_manifest.json"
 PROTOCOL_COPY_NAME = "protocol.yaml"
@@ -25,6 +30,10 @@ ABORTED_MARKER = "aborted.json"
 STEP_INFO_NAME = "protocol_step.json"
 
 PathLike = Union[str, os.PathLike]
+
+# How much later than the manifest's last write a live pid's process may have been created and still be its writer:
+# slack for coarse process creation times (Linux counts them from a boot time rounded to the second).
+_PID_START_TOLERANCE_S = 2.0
 
 
 _RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -91,20 +100,29 @@ def sha256_of_file(path: PathLike) -> str:
     return digest.hexdigest()
 
 
-def pid_alive(pid: int) -> bool:
-    if pid <= 0:
+def pid_alive(pid: int, written_at: Optional[float] = None) -> bool:
+    """Whether process pid may still be the manifest's writer. Never os.kill(pid, 0): on Windows signal 0 is
+    CTRL_C_EVENT, so os.kill sends a console Ctrl+C instead of checking that pid exists.
+
+    written_at is a time the writer was alive (the manifest's heartbeat_at, stamped by the writer at every write): a
+    process created after it reuses a dead writer's pid. A process that cannot be inspected counts as the writer, so a
+    run is never offered for resume while its writer may still be running it."""
+    if pid <= 0 or not psutil.pid_exists(pid):
         return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
+    if written_at is None:
         return True
-    return True
+    try:
+        created = psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.AccessDenied:
+        return True
+    return created <= written_at + _PID_START_TOLERANCE_S
 
 
 def find_unfinished_runs(base_dir: PathLike) -> List[RunManifest]:
-    """Runs under base_dir whose manifest is non-terminal and whose writer process is gone, newest first."""
+    """Runs under base_dir whose manifest is non-terminal and whose writer process is gone, newest first. A manifest
+    that cannot be read, or whose writer cannot be checked, is logged and left out."""
     base = Path(base_dir)
     if not base.is_dir():
         return []
@@ -115,9 +133,19 @@ def find_unfinished_runs(base_dir: PathLike) -> List[RunManifest]:
             continue
         try:
             manifest = read_manifest(child)
-        except Exception:
+        except (OSError, ValueError):
+            _log.warning(f"Skipping the unreadable run manifest {manifest_path}", exc_info=True)
             continue
-        if manifest.is_terminal or pid_alive(manifest.pid):
+        if manifest.is_terminal:
+            continue
+        try:
+            alive = pid_alive(manifest.pid, written_at=manifest.heartbeat_at)
+        except (OSError, OverflowError):
+            _log.warning(
+                f"Skipping {child}: could not check whether its writer (pid {manifest.pid}) runs", exc_info=True
+            )
+            continue
+        if alive:
             continue
         found.append(manifest)
     return sorted(found, key=lambda man: man.started_at, reverse=True)
