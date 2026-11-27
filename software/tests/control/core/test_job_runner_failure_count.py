@@ -9,6 +9,7 @@ _finish_jobs() counts every failure whose result never arrived.
 """
 
 import collections
+import logging
 import queue
 import time
 from dataclasses import dataclass
@@ -17,7 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import squid.logging
-from control.core.job_processing import Job, JobResult, JobRunner
+from control.core.job_processing import Job, JobResult, JobRunner, ZarrWriteResult
 from control.core.multi_point_worker import MultiPointWorker
 from tests.control.core.test_job_runner_pending import (
     make_failing_job,
@@ -99,6 +100,7 @@ def _worker(job_runners):
     w._job_runners = job_runners
     w._job_failures_received = collections.Counter()
     w._acquisition_error_count = 0
+    w.callbacks = MagicMock()
     w._slack_notifier = None
     w._backpressure = MagicMock()
     w._run_state_fatal = False
@@ -160,6 +162,23 @@ def test_a_run_with_no_failures_still_ends_completed():
 
     assert w._acquisition_error_count == 0
     assert w._compute_end_reason() == "completed"
+
+
+def test_every_result_in_one_drain_is_summarized(caplog):
+    """Two failures and then a success come off the queue in the same drain. Each is summarized: both failures are
+    counted and logged (the second one too, although the drain already saw a failure), and the success still tells the
+    viewer its frame is written."""
+    frame = ZarrWriteResult(fov=3, time_point=0, z_index=1, channel_name="BF", region_idx=2)
+    results = [_failure("save-a"), _failure("save-b"), JobResult(job_id="save-c", result=frame, exception=None)]
+    w = _worker([(Job, _FakeRunner(failed=2, results=results))])
+
+    with caplog.at_level(logging.ERROR):
+        w._finish_jobs(timeout_s=5)
+
+    assert w._acquisition_error_count == 2
+    assert w._compute_end_reason() == "completed_with_errors"
+    assert "save-a" in caplog.text and "save-b" in caplog.text
+    w.callbacks.signal_zarr_frame_written.assert_called_once_with(3, 0, 1, "BF", 2)
 
 
 # --- a real JobRunner subprocess --------------------------------------------------------------------------------------

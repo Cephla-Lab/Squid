@@ -920,7 +920,10 @@ class MultiPointWorker:
                     job_result: JobResult = out_queue.get_nowait()
                     if job_result.exception is not None:
                         self._job_failures_received[job_runner] += 1
-                    none_failed = none_failed and self._summarize_job_result(job_result)
+                    # Summarize every result, also after a failure (no short-circuit): each failure is counted,
+                    # logged and notified, and each success still signals its frame.
+                    succeeded = self._summarize_job_result(job_result)
+                    none_failed = none_failed and succeeded
                     had_results = True
                     if not drain_all:
                         break  # Only process one result per queue if not draining
