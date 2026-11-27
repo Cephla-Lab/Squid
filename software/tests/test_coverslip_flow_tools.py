@@ -1130,3 +1130,24 @@ def test_the_valve_sequence_refuses_an_output_whose_files_exist(valves, tmp_path
     with pytest.raises(SystemExit):
         valves.main()
     assert (tmp_path / f"v{taken}").read_text() == "an earlier run"
+
+
+# ---------------------------------------------------------------- CodeRabbit round 2
+# The valve still goes to the release port when the release recorder cannot start or the output is gone; a Ctrl-C is
+# honoured before a fluidics job is dispatched; and a verdict without its data is INCONCLUSIVE.
+
+
+def test_the_bare_release_runs_when_the_release_recorder_cannot_start(hold, tmp_path, monkeypatch, capsys):
+    # e.g. the pull filled the disk and the release recording cannot open its log; the valve move needs no disk
+    calls = _fake_children(monkeypatch, hold, lambda: (0, "End: completed"))
+
+    def run_child(cmd, log_path, shield=False):
+        calls.append(os.path.basename(cmd[1]))
+        if "valve_sequence.py" in cmd[1]:
+            raise OSError(28, "No space left on device")
+        return 0, "End: completed"
+
+    monkeypatch.setattr(hold, "_run_child", run_child)
+    hold.run_suite(_suite_args(tmp_path))
+    assert calls == ["flow_displacement_experiment.py", "valve_sequence.py", "bare release"]
+    assert "No space left on device" in capsys.readouterr().err

@@ -678,25 +678,29 @@ def release_after_pull(a, port, rel_base, record):
     """Turn the valve to the release port after a pull on `port`; returns (released, ctrl_c_pressed).
 
     record (the pull completed): the move is recorded with valve_sequence.py, which gives the release data.
-    Otherwise, or when that fails, the valve is moved with nothing recorded. Ctrl-C does not stop the release: it is
-    remembered and honoured by the caller once the valve has moved."""
+    Otherwise, or when that fails (also when it cannot start, e.g. no space for its log), the valve is moved with
+    nothing recorded. Ctrl-C does not stop the release: it is remembered and honoured by the caller once the valve
+    has moved."""
     note = "finishing the move to the release port %d first, then stopping" % a.release_port
     with _ctrl_c_deferred(note) as presses:
         released = False
         if record:
-            print("===== port %d: release to port %d =====" % (port, a.release_port), flush=True)
-            cmd = [
-                PY,
-                os.path.join(HERE, "valve_sequence.py"),
-                "--pre",
-                "5",
-                "--steps",
-                "%d:%g" % (a.release_port, a.hold),
-            ]
-            cmd += ["--server-port", str(a.server_port), "--out", rel_base]
-            rc, output = _run_child(cmd, rel_base + "_log.txt", shield=True)
-            _print_status(output)
-            released = rc == 0
+            try:
+                print("===== port %d: release to port %d =====" % (port, a.release_port), flush=True)
+                cmd = [
+                    PY,
+                    os.path.join(HERE, "valve_sequence.py"),
+                    "--pre",
+                    "5",
+                    "--steps",
+                    "%d:%g" % (a.release_port, a.hold),
+                ]
+                cmd += ["--server-port", str(a.server_port), "--out", rel_base]
+                rc, output = _run_child(cmd, rel_base + "_log.txt", shield=True)
+                _print_status(output)
+                released = rc == 0
+            except Exception as e:  # the move is still owed: it is made below, unrecorded
+                print("  the recorded release failed: %s: %s" % (type(e).__name__, e), file=sys.stderr, flush=True)
         if not released:
             print("  moving the valve to the release port %d (not recorded)..." % a.release_port, flush=True)
             released, why = _bare_release(a)
