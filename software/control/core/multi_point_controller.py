@@ -1407,10 +1407,10 @@ class MultiPointController:
         return None
 
     _PROCESS_TERMINATE_TIMEOUT_S = 1.0
-    # How long close() waits for a running acquisition to end after aborting it. A run ends well within this: its waits
-    # all have limits (the frame in flight: frame time + 10 s; a backpressure wait: ACQUISITION_THROTTLE_TIMEOUT_S,
-    # 30 s by default; its queued saves: 10 s), then it moves back to its start position. Only a run stuck somewhere
-    # else reaches it.
+    # How long close() waits for a running acquisition to end after aborting it. Each of the run's waits has a limit
+    # (the frame in flight: frame time + 10 s; a backpressure wait: ACQUISITION_THROTTLE_TIMEOUT_S, 30 s by default;
+    # its queued saves: 10 s), then it moves back to its start position, so a run normally ends well within this. A run
+    # that hits several of those limits in a row, or is stuck somewhere else, can reach it.
     _RUN_END_TIMEOUT_S = 60.0
 
     def close(self, timeout_s: float = _RUN_END_TIMEOUT_S) -> None:

@@ -1023,6 +1023,7 @@ def test_close_after_a_run_waits_for_the_shutdown_of_its_saving_processes(monkey
 def test_a_camera_that_never_gets_ready_for_the_next_trigger_ends_the_run(monkeypatch, caplog):
     # The worker checks the camera is ready before each trigger. That loop had no limit and did not look at the
     # abort flag, so a camera that never got ready kept the run (and an abort, and close()) waiting for ever.
+    # Ending the run there must not leave the light on (the simulation runs in software trigger mode).
     from control.core.multi_point_worker import MultiPointWorker
 
     monkeypatch.setattr(MultiPointWorker, "_frame_wait_timeout_s", lambda self: 1.0)
@@ -1033,12 +1034,38 @@ def test_a_camera_that_never_gets_ready_for_the_next_trigger_ends_the_run(monkey
     try:
         mpc.run_acquisition()
         assert tt.finished_event.wait(20), "the run never ended"
+        assert mpc.liveController.illumination_on is False
     finally:
         scope.camera.get_ready_for_trigger = real_get_ready  # lets a run stuck in that loop go on
-        mpc.request_abort_aquisition()
-        if mpc.thread is not None:
-            mpc.thread.join(30)
+        mpc.close()
         scope.close()
 
     assert mpc.last_end_reason == "error"
     assert "never got ready for the next trigger" in caplog.text
+
+
+def test_an_abort_while_the_camera_is_not_ready_ends_the_run_at_once_as_a_user_abort(monkeypatch):
+    from control.core.multi_point_worker import MultiPointWorker
+
+    monkeypatch.setattr(MultiPointWorker, "_frame_wait_timeout_s", lambda self: 60.0)
+    scope, tt, mpc = _controller_with_tracker()
+    real_get_ready = scope.camera.get_ready_for_trigger
+    asked = threading.Event()
+
+    def never_ready():
+        asked.set()
+        return False
+
+    scope.camera.get_ready_for_trigger = never_ready
+    try:
+        mpc.run_acquisition()
+        assert asked.wait(20)
+        mpc.request_abort_aquisition()
+        assert tt.finished_event.wait(10), "the abort waited for the camera"
+        assert mpc.liveController.illumination_on is False
+    finally:
+        scope.camera.get_ready_for_trigger = real_get_ready
+        mpc.close()
+        scope.close()
+
+    assert mpc.last_end_reason == "user_abort"
