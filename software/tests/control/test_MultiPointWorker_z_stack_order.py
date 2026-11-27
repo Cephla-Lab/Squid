@@ -665,3 +665,43 @@ def test_failed_af_diagnostics_are_named_per_fov_and_channel(tmp_path):
 
     names = sorted(p.name for p in (tmp_path / "exp" / "0").glob("*.bmp"))
     assert names == ["A1_7_B_focus_camera.bmp", "A1_7_focus_camera.bmp"]
+
+
+# --- The per-FOV AF failure log states the z the FOV is imaged at ----------------------------------------------------
+
+
+def _af_failed_message(w):
+    (message,) = [c.args[0] for c in w._log.error.call_args_list if c.args[0].startswith("Autofocus failed")]
+    return message
+
+
+@pytest.mark.parametrize("use_piezo", [True, False])
+def test_a_failed_af_logs_the_piezo_z_when_the_scope_has_a_piezo(tmp_path, use_piezo):
+    """The laser AF focuses with the piezo whenever the scope has one (Piezo Z-Stack checked or not), so the stage z
+    alone (0 on a stage with no z) does not say where the FOV is imaged: the log gives the piezo z, and the stage z
+    labelled as such. The AF moved the piezo before it failed, so the value is the piezo's, not a cached one."""
+    piezo = _FakePiezo(position=280.0, range_um=300.0)
+    af = _FakeLaserAF(piezo, references=[292.0])  # reaches 292, then the +10 region offset raises
+    w = _worker("CHANNEL FIRST", nz=1, use_piezo=use_piezo, region_offsets={"A1": 10.0}, laser_af=af, tmp_path=tmp_path)
+    w.piezo = piezo
+    w.stage.z_mm = 0.0
+
+    w.acquire_at_position("A1", "/tmp", 0)
+
+    assert w._laser_af_failures == 1
+    assert "(piezo z=292.00 [um], stage z=0.0 [mm])" in _af_failed_message(w)
+
+
+def test_a_failed_af_without_a_piezo_logs_the_stage_z_as_before(tmp_path):
+    w = _worker("CHANNEL FIRST", nz=1, tmp_path=tmp_path)
+    w.laser_auto_focus_controller = _FakeLaserAF(w.stage, references=[1.0], fail_calls=(1,))  # mm, on the stage
+    w.do_reflection_af = True
+    del w.perform_autofocus
+
+    w.acquire_at_position("A1", "/tmp", 0)
+
+    assert w._laser_af_failures == 1
+    assert _af_failed_message(w) == (
+        "Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position "
+        "(z=1.0 [mm])"
+    )

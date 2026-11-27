@@ -1131,8 +1131,16 @@ class MultiPointWorker:
         self._applied_config = None
         af_succeeded = self.perform_autofocus(region_id, fov)
         if not af_succeeded:
+            stage_z_mm = self.stage.get_pos().z_mm
+            if self.piezo is None:
+                current_z = f"z={stage_z_mm} [mm]"
+            else:
+                # The laser AF focuses with the piezo whenever the scope has one, so the stage z alone (0 on a
+                # stage with no z) does not say where this FOV is imaged. piezo.position is the tracked value,
+                # not a hardware read; the worker's z_piezo_um is stale here (re-read below) or not yet set.
+                current_z = f"piezo z={self.piezo.position:.2f} [um], stage z={stage_z_mm} [mm]"
             self._log.error(
-                f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={self.stage.get_pos().z_mm} [mm])"
+                f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position ({current_z})"
             )
 
         if self.use_piezo:
