@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 
 import pytest
@@ -413,4 +414,112 @@ def test_status_packet_with_encoder_reporting_is_decoded():
         state = micro.get_encoder_state()
         assert (state["encoder_pos"], state["deviation"]) == (-12345, -7)
     finally:
+        micro.close()
+
+
+class _FastLinkSimSerial(control.microcontroller.SimSerial):
+    """While reply_before_returning is set, write() returns only after the reader thread has handled the command's
+    reply: the reply to a command can be parsed before the host's write() returns (SimSerial answers inside
+    write(), and a fast link can do the same). The reply carries reply_status. While fail_writes is set, write()
+    raises as a link that is gone does."""
+
+    def __init__(self):
+        super().__init__()
+        self.reply_before_returning = False
+        self.reply_status = control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+        self.fail_writes = False
+        self._handled_ids = []
+        self._handled = threading.Condition()
+
+    def packet_handled(self, micro):
+        """The Microcontroller's packet callback: the reader calls it once it has handled a packet."""
+        with self._handled:
+            self._handled_ids.append(micro._cmd_id_mcu)
+            self._handled.notify_all()
+
+    def _queue_status_packet(self):
+        if not self.reply_before_returning:
+            return super()._queue_status_packet()
+        self.response_buffer.extend(
+            control.microcontroller.SimSerial.response_bytes_for(
+                self._last_command_id,
+                self.reply_status,
+                self.x,
+                self.y,
+                self.z,
+                self.theta,
+                self.joystick_button,
+                self.switch,
+                firmware_version=(self.FIRMWARE_VERSION_MAJOR, self.FIRMWARE_VERSION_MINOR),
+            )
+        )
+
+    def write(self, data, reconnect_tries=0):
+        if self.fail_writes:
+            raise IOError("the link is gone")
+        if not self.reply_before_returning:
+            return super().write(data, reconnect_tries)
+        with self._handled:
+            self._handled_ids.clear()
+        written = super().write(data, reconnect_tries)
+        with self._handled:
+            assert self._handled.wait_for(lambda: data[0] in self._handled_ids, timeout=2.0), "reply not handled"
+        return written
+
+
+def _micro_on(serial) -> Microcontroller:
+    micro = Microcontroller(serial_device=serial)
+    micro.wait_till_operation_is_completed()
+    micro.set_callback(serial.packet_handled)
+    return micro
+
+
+def test_a_reply_handled_before_write_returns_completes_the_command():
+    """The reader handles the reply before send_command's write() returns. The command must be complete when
+    send_command returns: no later packet comes to complete it (SimSerial sends none unasked; on hardware, the next
+    status packet)."""
+    serial = _FastLinkSimSerial()
+    micro = _micro_on(serial)
+    try:
+        serial.reply_before_returning = True
+        micro.move_x_usteps(100)
+        micro.wait_till_operation_is_completed(timeout_limit_s=0.5)
+        assert not micro.is_busy()
+        assert micro.get_pos()[0] == 100
+    finally:
+        micro.close()
+
+
+def test_an_execution_error_handled_before_write_returns_fails_the_command():
+    """A CMD_EXECUTION_ERROR reply handled before write() returns aborts the command; send_command must not wipe
+    that out, so the wait raises it at once instead of timing out."""
+    serial = _FastLinkSimSerial()
+    micro = _micro_on(serial)
+    try:
+        serial.reply_before_returning = True
+        serial.reply_status = control._def.CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
+        micro.move_x_usteps(100)
+        with pytest.raises(control.microcontroller.CommandAborted, match="CMD_EXECUTION_ERROR"):
+            micro.wait_till_operation_is_completed(timeout_limit_s=0.5)
+        assert not micro.is_busy()
+    finally:
+        micro.close()
+
+
+def test_a_failed_write_leaves_no_command_pending():
+    """A command whose write raised was not sent: nothing waits for it, and a resend cannot send it."""
+    serial = _FastLinkSimSerial()
+    micro = _micro_on(serial)
+    try:
+        micro.move_x_usteps(100)
+        micro.wait_till_operation_is_completed()
+        sent = bytes(micro.last_command)
+        serial.fail_writes = True
+        with pytest.raises(IOError, match="the link is gone"):
+            micro.move_y_usteps(200)
+        assert not micro.is_busy()
+        micro.wait_till_operation_is_completed(timeout_limit_s=0.1)
+        assert bytes(micro.last_command) == sent
+    finally:
+        serial.fail_writes = False
         micro.close()
