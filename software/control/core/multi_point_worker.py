@@ -771,49 +771,72 @@ class MultiPointWorker:
             # create a dataframe to save coordinates
             self.initialize_coordinates_dataframe()
 
-            # init z parameters, z range
-            self.initialize_z_stack()
-
-            with self._timing.get_timer("run_coordinate_acquisition"):
-                self.run_coordinate_acquisition(current_path)
-
-            # finished region scan
-            self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
-
-            # Send Slack timepoint notification via callback (allows main thread to capture screenshot)
-            if self._slack_notifier is not None:
-                try:
-                    elapsed = time.time() - self.timestamp_acquisition_started
-                    timepoint_duration = time.time() - self._timepoint_start_time
-                    self._slack_notifier.record_timepoint_duration(timepoint_duration)
-                    estimated_remaining = self._slack_notifier.estimate_remaining_time(self.time_point + 1, self.Nt)
-                    stats = TimepointStats(
-                        timepoint=self.time_point + 1,
-                        total_timepoints=self.Nt,
-                        elapsed_seconds=elapsed,
-                        estimated_remaining_seconds=estimated_remaining,
-                        images_captured=self._timepoint_image_count,
-                        fovs_captured=self._timepoint_fov_count,
-                        laser_af_successes=self._laser_af_successes,
-                        laser_af_failures=self._laser_af_failures,
-                        laser_af_failure_reasons=[],
-                        laser_af_per_stack_successes=self._laser_af_per_stack_successes,
-                        laser_af_per_stack_failures=self._laser_af_per_stack_failures,
-                    )
-                    # Use callback to allow main thread to capture screenshot before sending
-                    self.callbacks.signal_slack_timepoint_notification(stats)
-                except Exception as e:
-                    self._log.warning(f"Failed to send Slack timepoint notification: {e}")
-
             try:
-                self.callbacks.signal_timepoint_finished(self.time_point)
-            except Exception:
-                self._log.exception("signal_timepoint_finished callback failed")
+                # init z parameters, z range
+                self.initialize_z_stack()
 
-            utils.create_done_file(current_path)
+                with self._timing.get_timer("run_coordinate_acquisition"):
+                    self.run_coordinate_acquisition(current_path)
+
+                # finished region scan
+                self._save_coordinates(current_path)
+
+                # Send Slack timepoint notification via callback (allows main thread to capture screenshot)
+                if self._slack_notifier is not None:
+                    try:
+                        elapsed = time.time() - self.timestamp_acquisition_started
+                        timepoint_duration = time.time() - self._timepoint_start_time
+                        self._slack_notifier.record_timepoint_duration(timepoint_duration)
+                        estimated_remaining = self._slack_notifier.estimate_remaining_time(self.time_point + 1, self.Nt)
+                        stats = TimepointStats(
+                            timepoint=self.time_point + 1,
+                            total_timepoints=self.Nt,
+                            elapsed_seconds=elapsed,
+                            estimated_remaining_seconds=estimated_remaining,
+                            images_captured=self._timepoint_image_count,
+                            fovs_captured=self._timepoint_fov_count,
+                            laser_af_successes=self._laser_af_successes,
+                            laser_af_failures=self._laser_af_failures,
+                            laser_af_failure_reasons=[],
+                            laser_af_per_stack_successes=self._laser_af_per_stack_successes,
+                            laser_af_per_stack_failures=self._laser_af_per_stack_failures,
+                        )
+                        # Use callback to allow main thread to capture screenshot before sending
+                        self.callbacks.signal_slack_timepoint_notification(stats)
+                    except Exception as e:
+                        self._log.warning(f"Failed to send Slack timepoint notification: {e}")
+
+                try:
+                    self.callbacks.signal_timepoint_finished(self.time_point)
+                except Exception:
+                    self._log.exception("signal_timepoint_finished callback failed")
+
+                utils.create_done_file(current_path)
+            except BaseException:
+                self._close_time_point_folder_after_error(current_path)
+                raise
             self._log.debug(f"Single time point took: {time.time() - start} [s]")
         finally:
             self.microcontroller.enable_joystick(True)
+
+    def _save_coordinates(self, current_path):
+        self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
+
+    def _close_time_point_folder_after_error(self, current_path):
+        """An exception is ending the time point, maybe part way (a stage reply error at one FOV): still save the
+        coordinates of the FOVs imaged so far and mark the folder done, as the normal end does. The success
+        notifications stay with the normal end.
+
+        Runs while that exception propagates, so a failed write is logged, never raised: it must not replace it.
+        """
+        try:
+            self._save_coordinates(current_path)
+        except Exception:
+            self._log.exception(f"Could not save coordinates.csv in {current_path} after the time point failed")
+        try:
+            utils.create_done_file(current_path)
+        except Exception:
+            self._log.exception(f"Could not create the .done file in {current_path} after the time point failed")
 
     def initialize_z_stack(self):
         # z stacking config
