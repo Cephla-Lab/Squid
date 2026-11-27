@@ -2,9 +2,14 @@ import threading
 
 import pytest
 
+from control.core.fluidics_protocol import manifest as manifest_io
+from control.core.fluidics_protocol.events import HoldAction, RunnerState
 from control.core.fluidics_protocol.ports import ImagingRequest, ImagingStartError
-from control.models.fluidics_protocol import CoordinatesBlock, SettingsBlock
+from control.core.fluidics_protocol.resolve import resolve_protocol
+from control.core.fluidics_protocol.runner import ProtocolRunner
+from control.models.fluidics_protocol import CoordinatesBlock, ProtocolFile, SettingsBlock
 from control.widgets_fluidics.qt_imaging_port import QtImagingPort
+from tests.control.core.fluidics_protocol.fakes import FakeFluidicsPort, FakeImagingPort
 
 
 def _request(scope, controller, run_dir, folder="R01_image"):
@@ -57,6 +62,63 @@ def test_start_runs_a_named_acquisition_to_completion(qtbot, qt_controller, tmp_
     assert data["protocol"]["round"] == "R01"
 
 
+def test_a_resumed_request_images_from_its_start_fov_and_reports_the_end_fov(qtbot, qt_controller, tmp_path):
+    scope, controller = qt_controller
+    port = QtImagingPort(controller, controller.scanCoordinates, scope)
+    request = _request(scope, controller, tmp_path, folder="R01_image_attempt2")
+    x, y, z = request.coordinates.regions[0].fovs[0]
+    request.coordinates.regions[0].fovs = [[x + 0.5 * i, y, z] for i in range(3)]
+    request.start_fov = 2
+
+    handle = port.start(request)
+    result = _wait_result(qtbot, handle)
+
+    assert result.end_reason == "completed"
+    assert result.end_fov == 3
+    assert result.image_count == 1  # one channel, one plane, the last FOV only
+    assert controller.start_fov == 0
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_wait_never_reports_the_end_of_a_later_run_as_its_own(qtbot, qt_controller, tmp_path):
+    """The protocol's run A ends in an error at FOV 1. A control-server start can land once A's worker thread is gone
+    and before the runner reads A's result: that run B ends in an error at FOV 2. wait() must not hand B's end to the
+    runner as A's: a resume from B's end FOV would skip FOVs A never imaged."""
+    scope, controller = qt_controller
+    controller.set_base_path(str(tmp_path / "manual"))
+    port = QtImagingPort(controller, controller.scanCoordinates, scope)
+    request = _request(scope, controller, tmp_path)
+    x, y, z = request.coordinates.regions[0].fovs[0]
+    request.coordinates.regions[0].fovs = [[x + 0.5 * i, y, z] for i in range(3)]
+    stage = scope.stage
+    real_move_x_to = stage.move_x_to
+    fail_at = {"x": x + 0.5}  # run A: the move to FOV 1 fails
+
+    def failing_move_x_to(x_mm, *args, **kwargs):
+        if abs(x_mm - fail_at["x"]) < 0.01:
+            raise RuntimeError("stage gone")
+        return real_move_x_to(x_mm, *args, **kwargs)
+
+    stage.move_x_to = failing_move_x_to
+    try:
+        handle = port.start(request)
+        qtbot.waitUntil(lambda: handle._finished.is_set() and not controller.acquisition_in_progress(), timeout=30000)
+        assert (controller.last_end_reason, controller.last_end_fov) == ("error", 1)
+
+        fail_at["x"] = x + 1.0  # run B, started the way the control server starts one: the move to FOV 2 fails
+        controller.start_new_experiment("tcp run")
+        assert controller.run_acquisition()
+        qtbot.waitUntil(lambda: not controller.acquisition_in_progress(), timeout=30000)
+        assert (controller.last_end_reason, controller.last_end_fov) == ("error", 2)
+    finally:
+        stage.move_x_to = real_move_x_to
+
+    result = handle.wait(0)
+    assert result.folder == "R01_image"
+    # A's own end, or an error with no resume point (the step is then retried from its start); never B's FOV 2.
+    assert (result.end_reason, result.end_fov) in {("error", 1), ("error", None)}
+
+
 def test_start_from_a_worker_thread_like_the_runner(qtbot, qt_controller, tmp_path):
     scope, controller = qt_controller
     port = QtImagingPort(controller, controller.scanCoordinates, scope)
@@ -105,3 +167,78 @@ def test_start_refusals_raise_imaging_start_error(qtbot, qt_controller, tmp_path
     with pytest.raises(ImagingStartError, match="Invalid channels"):
         port.start(bad)
     assert not (tmp_path / "R05_image").exists()
+
+
+def test_a_refused_start_of_a_resumed_attempt_keeps_its_resume_point(qtbot, qt_controller, tmp_path):
+    """The runner resumes a failed imaging step at FOV 2 through the real controller, whose start is refused (the
+    microcontroller still busy): run_acquisition() returns False, so the attempt ends failed_to_start with nothing
+    imaged. The next hold must still offer Resume from FOV 2, and that resume images the rest."""
+    scope, controller = qt_controller
+    qt_port = QtImagingPort(controller, controller.scanCoordinates, scope)
+    first_attempt = FakeImagingPort(script=[("error", 2)])  # FOVs 0-1 done, then a fault
+
+    class Imaging:  # attempt 1 from the fake, every later attempt through the Qt port
+        def start(self, request):
+            return (first_attempt if request.attempt == 1 else qt_port).start(request)
+
+    base = _request(scope, controller, tmp_path)
+    x, y, z = base.coordinates.regions[0].fovs[0]
+    protocol = ProtocolFile(
+        name="demo",
+        imaging={
+            "settings": {"cur": base.settings.model_dump()},
+            "coordinates": {"cur": {"regions": [{"name": "A1", "fovs": [[x + 0.5 * i, y, z] for i in range(3)]}]}},
+        },
+        sequences=[
+            {
+                "type": "imaging",
+                "round": "R01",
+                "name": "image",
+                "folder": "image",
+                "settings": "cur",
+                "coordinates": "cur",
+            }
+        ],
+    )
+    fluidics = FakeFluidicsPort()
+    resolved = resolve_protocol(protocol, tmp_path, fluidics=fluidics)
+    run_dir = manifest_io.create_run_dir(tmp_path, "resume")
+    runner = ProtocolRunner(resolved, run_dir, Imaging(), fluidics, run_name="resume", poll_s=0.01)
+
+    def held(attempt):
+        hold = runner.hold
+        return runner.state == RunnerState.HELD and hold is not None and hold.attempt == attempt
+
+    microcontroller = controller.microcontroller
+    real_wait = microcontroller.wait_till_operation_is_completed
+
+    def still_busy(*args, **kwargs):
+        if kwargs.get("timeout_limit_s") == controller._MCU_IDLE_WAIT_S:
+            raise TimeoutError("still busy")
+        return real_wait(*args, **kwargs)
+
+    microcontroller.wait_till_operation_is_completed = still_busy
+    try:
+        runner.start()
+        qtbot.waitUntil(lambda: held(1), timeout=10000)
+        assert runner.hold.resume_position == 2
+        runner.hold_action(HoldAction.RESUME)
+        qtbot.waitUntil(lambda: held(2), timeout=30000)
+    finally:
+        microcontroller.wait_till_operation_is_completed = real_wait
+
+    hold = runner.hold
+    assert hold.reason == "failed_to_start"
+    assert hold.can_resume and hold.resume_position == 2
+    attempt = manifest_io.read_manifest(run_dir).steps[0].attempts[1]
+    assert (attempt.folder, attempt.start_fov, attempt.end_fov) == ("R01_image_attempt2", 2, 2)
+
+    runner.hold_action(HoldAction.RESUME)
+    qtbot.waitUntil(lambda: runner.state == RunnerState.ENDED, timeout=30000)
+    assert runner.outcome == "finished"
+    attempts = manifest_io.read_manifest(run_dir).steps[0].attempts
+    assert [(a.start_fov, a.end_fov, a.outcome) for a in attempts] == [
+        (0, 2, "error"),
+        (2, 2, "failed_to_start"),
+        (2, 3, "completed"),
+    ]

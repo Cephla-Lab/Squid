@@ -163,7 +163,7 @@ class FakeHandle:
 class FakeImagingPort:
     """Creates the session folder like start_new_experiment(add_timestamp=False) would (FileExistsError ->
     ImagingStartError). `script`: one entry per start(): "completed" | "completed_with_errors" | "user_abort" |
-    "error" | "raise" (start fails) | "hold" (blocks until release()/abort())."""
+    "error" | "raise" (start fails) | "hold" (blocks until release()/abort()), or (end reason, end_fov)."""
 
     def __init__(self, script: Optional[List[str]] = None):
         self.script = list(script or [])
@@ -172,6 +172,9 @@ class FakeImagingPort:
 
     def start(self, request: ImagingRequest) -> FakeHandle:
         entry = self.script.pop(0) if self.script else "completed"
+        end_fov = None
+        if isinstance(entry, tuple):
+            entry, end_fov = entry
         if entry == "raise":
             self.requests.append(request)
             raise ImagingStartError("Laser AF reference not set")
@@ -181,7 +184,7 @@ class FakeImagingPort:
             raise ImagingStartError(f"folder exists: {folder}")
         os.makedirs(folder)
         hold = entry == "hold"
-        handle = FakeHandle(ImagingResult("completed" if hold else entry, 7, request.folder), hold=hold)
+        handle = FakeHandle(ImagingResult("completed" if hold else entry, 7, request.folder, end_fov), hold=hold)
         # Publish the handle before the request: a test that waits on requests then drives
         # handles[0] must never see the request recorded ahead of its handle.
         self.handles.append(handle)

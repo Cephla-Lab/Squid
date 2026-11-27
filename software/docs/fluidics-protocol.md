@@ -93,7 +93,10 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
 progress, elapsed, open-folder) with **Pause** (finishes the current step first; during imaging it reads
 "Pause after imaging"), **Abort step**, and **Abort run…**. A failed step raises the orange HELD panel —
 resume from the failed sequence / restart the step / skip / accept (imaging `completed_with_errors`) /
-end run, with an optional TEC-restore checkbox. A run in progress locks the protocol structure, keeps the
+end run, with an optional TEC-restore checkbox. An imaging step that ended with an `error` (a stage or camera
+fault) offers **Resume from FOV n** when every FOV before n was imaged and saved: a new attempt folder images only
+FOVs n onward, under their original FOV numbers. A resumed attempt that could not start (for example the
+microcontroller still busy) imaged nothing, so its hold offers the same Resume again. A run in progress locks the protocol structure, keeps the
 display on the Fluidics tab, and asks before exit; after Initialize (and when the Save to folder changes) unfinished
 run folders offer crash recovery — reopening the run HELD at the interrupted step. Run notifications go to
 Slack when the notifier is configured.
@@ -109,6 +112,14 @@ Slack when the notifier is configured.
 ├── R02_image/            attempt 1 — aborted, kept, never renamed (aborted.json inside)
 └── R02_image_attempt2/   attempt 2 — completed
 ```
+
+Each imaging attempt in `run_manifest.json` records `start_fov` and `end_fov`: it imaged FOVs
+[`start_fov`, `end_fov`) in scan order (regions in order, FOVs in order within each region, counted from 0).
+A restarted attempt starts at 0; a resumed one at the `end_fov` of the attempt before it, so the step's FOVs
+are split between the attempt folders. `start_fov` is also in the attempt's `protocol_step.json` and in
+the `protocol:` section of its `acquisition.yaml`, and `aborted.json` gives both values. The FOV that was being
+imaged when an attempt ended (`end_fov`) may have some images in that attempt's folder; the next attempt images it
+again in full.
 
 ## Testing
 

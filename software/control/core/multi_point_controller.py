@@ -9,7 +9,7 @@ import yaml
 from datetime import datetime
 from enum import Enum
 from threading import Thread
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, NamedTuple, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -40,6 +40,16 @@ from control.acquisition_history_recorder import NullAcquisitionHistoryRecorder
 
 # What a running acquisition holds the stage-motion reservation as (Microscope.stage_motion)
 ACQUISITION_RUNNING = "an acquisition is running"
+
+
+class RunEnd(NamedTuple):
+    """How one run_acquisition() call ended, with the experiment it ran for (MultiPointController.last_run_end)."""
+
+    experiment_ID: Optional[str]
+    end_reason: str
+    image_count: int
+    end_fov: Optional[int]
+
 
 NoOpCallbacks = MultiPointControllerFunctions(
     signal_acquisition_start=lambda *a, **kw: None,
@@ -250,6 +260,14 @@ class MultiPointController:
         self.last_end_reason: Optional[str] = None
         self.last_image_count: int = 0
         self.protocol_info: Optional[dict] = None  # fluidics protocol context for the next run's acquisition.yaml
+        # The next run starts at this scan-order FOV index (a resumed protocol imaging step); used by one run only.
+        self.start_fov: int = 0
+        # Where the last run could be resumed: the scan-order index of the first FOV it did not finish, or None.
+        self.last_end_fov: Optional[int] = None
+        # The same end, with the experiment it ran for. Written in one assignment before acquisition_finished and never
+        # cleared, so a reader on another thread sees a whole result and can check it is its own run's: a later start
+        # (the control server's, once this run's worker thread is gone) clears the last_* fields above.
+        self.last_run_end: Optional[RunEnd] = None
         # Acquisition history (the Gallery): the GUI installs a real recorder; the id is the running run's entry.
         self.history_recorder = NullAcquisitionHistoryRecorder()
         self._history_entry_id: Optional[str] = None
@@ -347,11 +365,22 @@ class MultiPointController:
         except Exception:
             self._log.exception("acquisition_finished callback failed after a failed acquisition start")
 
+    def _start_fov_problem(self, start_fov: int, acquire_current_fov: bool) -> Optional[str]:
+        """Why a run cannot start at scan-order FOV index start_fov, or None."""
+        fov_count = sum(len(coords) for coords in self.scanCoordinates.region_fov_coordinates.values())
+        if acquire_current_fov:
+            return "a start FOV does not apply to a single-FOV snap"
+        if self.Nt != 1:
+            return f"a start FOV needs a single time point, not {self.Nt}"
+        if not 0 <= start_fov < fov_count:
+            return f"start FOV {start_fov + 1} is outside the {fov_count} FOVs of this acquisition"
+        return None
+
     def _end_refused_start(
         self, acquire_current_fov: bool, run_protocol_info: Optional[dict], another_run_holds_the_stage: bool = False
     ) -> None:
         """Close out a start refused before anything was prepared: record it and tell the callers."""
-        self.last_end_reason = "failed_to_start"
+        self._set_run_end(self.experiment_ID, "failed_to_start")
         self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry_id=None)
         self._signal_failed_start(another_run_holds_the_stage)
 
@@ -560,6 +589,11 @@ class MultiPointController:
 
     def set_skip_saving(self, skip_saving):
         self.skip_saving = skip_saving
+
+    def set_start_fov(self, start_fov: int) -> None:
+        """Start the next run at this scan-order FOV index (across regions), skipping the FOVs before it. Applies to
+        that run only; run_acquisition refuses it with more than one time point or past the last FOV."""
+        self.start_fov = int(start_fov)
 
     def set_xy_mode(self, xy_mode):
         self.xy_mode = xy_mode
@@ -810,12 +844,22 @@ class MultiPointController:
         # Same one-run consumption for the protocol context: an early return must not leak it into a later run.
         run_protocol_info = self.protocol_info
         self.protocol_info = None
+        run_start_fov = self.start_fov
+        self.start_fov = 0
         self.last_end_reason = None
         self.last_image_count = 0
+        self.last_end_fov = None
         self.last_start_refusal = None
         if not self.validate_acquisition_settings():
             self._end_refused_start(acquire_current_fov, run_protocol_info)  # tells the callers, to re-enable the UI
             return False
+        if run_start_fov:
+            start_fov_problem = self._start_fov_problem(run_start_fov, acquire_current_fov)
+            if start_fov_problem:
+                self._log.error(f"Acquisition not started: {start_fov_problem}")
+                self.last_start_refusal = start_fov_problem
+                self._end_refused_start(acquire_current_fov, run_protocol_info)
+                return False
         refusal = self._hold_stage_for_run()
         if refusal:
             self._log.error(f"Acquisition not started: {refusal}")
@@ -1024,6 +1068,7 @@ class MultiPointController:
             acquisition_params = self.build_params(
                 scan_position_information=scan_position_information,
                 region_laser_af_offsets=run_region_laser_af_offsets,
+                start_fov=run_start_fov,
             )
 
             # Gather objective and camera info for YAML
@@ -1064,7 +1109,8 @@ class MultiPointController:
                 expected = {
                     "timepoints": self.Nt,
                     "regions": len(scan_position_information.scan_region_coords_mm),
-                    "fovs": sum(len(c) for c in scan_position_information.scan_region_fov_coords_mm.values()),
+                    "fovs": sum(len(c) for c in scan_position_information.scan_region_fov_coords_mm.values())
+                    - run_start_fov,
                     "channels": len(self.selected_configurations),
                     "z": self.NZ,
                 }
@@ -1167,7 +1213,7 @@ class MultiPointController:
                             self.liveController.start_live()
                     except Exception:
                         self._log.exception("Failed to restore camera/live state after a failed acquisition start")
-                self.last_end_reason = "failed_to_start"
+                self._set_run_end(self.experiment_ID, "failed_to_start")
                 self._record_failed_start(
                     self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry_id=own_history_entry_id
                 )
@@ -1175,7 +1221,10 @@ class MultiPointController:
         return thread_started
 
     def build_params(
-        self, scan_position_information: ScanPositionInformation, region_laser_af_offsets: Optional[dict] = None
+        self,
+        scan_position_information: ScanPositionInformation,
+        region_laser_af_offsets: Optional[dict] = None,
+        start_fov: int = 0,
     ) -> AcquisitionParameters:
         # Determine plate dimensions from wellplate format if available
         plate_num_rows = 8  # Default for 96-well
@@ -1223,13 +1272,26 @@ class MultiPointController:
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,
             region_laser_af_offsets=region_laser_af_offsets if region_laser_af_offsets is not None else {},
+            start_fov=start_fov,
         )
+
+    def _set_run_end(
+        self, experiment_ID: Optional[str], end_reason: str, image_count: int = 0, end_fov: Optional[int] = None
+    ) -> None:
+        self.last_end_reason = end_reason
+        self.last_image_count = image_count
+        self.last_end_fov = end_fov
+        self.last_run_end = RunEnd(experiment_ID, end_reason, image_count, end_fov)
 
     def _on_acquisition_completed(self):
         self._log.debug("MultiPointController._on_acquisition_completed called")
         worker = self.multiPointWorker
-        self.last_end_reason = getattr(worker, "end_reason", None) or "completed"
-        self.last_image_count = int(getattr(worker, "image_count", 0) or 0)
+        self._set_run_end(
+            worker.experiment_ID,
+            getattr(worker, "end_reason", None) or "completed",
+            int(getattr(worker, "image_count", 0) or 0),
+            getattr(worker, "end_fov", None),
+        )
         try:
             self.history_recorder.finished(
                 self._history_entry_id,

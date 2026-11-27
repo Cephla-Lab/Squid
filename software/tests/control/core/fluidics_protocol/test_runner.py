@@ -16,10 +16,10 @@ SETTINGS = {"channels": ["A"], "z_stack": {"nz": 1}}
 COORDS = {"regions": [{"name": "A1", "fovs": [[1.0, 2.0, 3.0]]}]}
 
 
-def _protocol(rounds=1):
+def _protocol(rounds=1, coords=COORDS):
     p = ProtocolFile(
         name="demo",
-        imaging={"settings": {"cur": SETTINGS}, "coordinates": {"cur": COORDS}},
+        imaging={"settings": {"cur": SETTINGS}, "coordinates": {"cur": coords}},
         sequences=[
             {
                 "type": "priming",
@@ -68,10 +68,10 @@ def _protocol(rounds=1):
     return p
 
 
-def _runner(tmp_path, fluidics=None, imaging=None, rounds=1, events=None):
+def _runner(tmp_path, fluidics=None, imaging=None, rounds=1, events=None, coords=COORDS):
     fluidics = fluidics or FakeFluidicsPort()
     imaging = imaging or FakeImagingPort()
-    resolved = resolve_protocol(_protocol(rounds), tmp_path, fluidics=fluidics)
+    resolved = resolve_protocol(_protocol(rounds, coords), tmp_path, fluidics=fluidics)
     run_dir = manifest_io.create_run_dir(tmp_path, "liver")
     listener = events.append if events is not None else None
     runner = ProtocolRunner(resolved, run_dir, imaging, fluidics, run_name="liver", listener=listener, poll_s=0.01)
@@ -207,6 +207,86 @@ def test_imaging_abort_writes_the_marker_and_restart_uses_attempt2(tmp_path):
     man = manifest_io.read_manifest(run_dir)
     assert [a.folder for a in man.steps[2].attempts] == ["R01_image", "R01_image_attempt2"]
     assert [a.outcome for a in man.steps[2].attempts] == ["user_abort", "completed"]
+
+
+NINE_FOVS = {"regions": [{"name": n, "fovs": [[float(i), 2.0, 3.0] for i in range(3)]} for n in ("A1", "A2", "A3")]}
+
+
+def test_an_imaging_error_holds_resumable_and_resume_images_the_remaining_fovs(tmp_path):
+    imaging = FakeImagingPort(script=[("error", 4), ("completed", 9)])
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging, coords=NINE_FOVS)
+    runner.start()
+    assert _held(runner)
+    hold = runner.hold
+    assert hold.kind == "imaging" and hold.reason == "error"
+    assert hold.can_resume and hold.resume_position == 4
+    assert "FOVs 1-4 of 9 are done" in hold.message
+    marker = json.loads((run_dir / "R01_image" / "aborted.json").read_text())
+    assert marker["start_fov"] == 0 and marker["end_fov"] == 4
+
+    runner.hold_action(HoldAction.RESUME)
+    assert runner.wait(10) and runner.outcome == "finished"
+    assert [r.start_fov for r in imaging.requests] == [0, 4]
+    assert imaging.requests[1].folder == "R01_image_attempt2"
+    assert imaging.requests[1].protocol["start_fov"] == 4
+    attempts = manifest_io.read_manifest(run_dir).steps[2].attempts
+    assert [(a.folder, a.start_fov, a.end_fov) for a in attempts] == [
+        ("R01_image", 0, 4),
+        ("R01_image_attempt2", 4, 9),
+    ]
+
+
+def test_a_resumed_attempt_that_fails_again_resumes_from_where_it_stopped(tmp_path):
+    imaging = FakeImagingPort(script=[("error", 4), ("error", 6), "raise", ("completed", 9)])
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging, coords=NINE_FOVS)
+    runner.start()
+    assert _held(runner)
+    runner.hold_action(HoldAction.RESUME)
+    assert _held(runner, attempt=2)
+    assert runner.hold.resume_position == 6 and "FOVs 1-6 of 9" in runner.hold.message
+    runner.hold_action(HoldAction.RESUME)
+    # The third attempt could not start: it can still be resumed from the same FOV.
+    assert _held(runner, attempt=3)
+    assert runner.hold.reason == "failed_to_start" and runner.hold.can_resume and runner.hold.resume_position == 6
+    runner.hold_action(HoldAction.RESUME)
+    assert runner.wait(10) and runner.outcome == "finished"
+    assert [r.start_fov for r in imaging.requests] == [0, 4, 6, 6]
+
+
+def test_a_resumed_attempt_whose_start_is_refused_after_start_returned_keeps_its_resume_point(tmp_path):
+    # The acquisition itself refuses the start (start() returned a handle; it reports failed_to_start), as the
+    # controller does when the microcontroller is still busy: nothing was imaged, so resume from the same FOV.
+    imaging = FakeImagingPort(script=[("error", 4), "failed_to_start", ("completed", 9)])
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging, coords=NINE_FOVS)
+    runner.start()
+    assert _held(runner)
+    runner.hold_action(HoldAction.RESUME)
+    assert _held(runner, attempt=2)
+    assert runner.hold.reason == "failed_to_start" and runner.hold.can_resume and runner.hold.resume_position == 4
+    runner.hold_action(HoldAction.RESUME)
+    assert runner.wait(10) and runner.outcome == "finished"
+    assert [r.start_fov for r in imaging.requests] == [0, 4, 4]
+    attempts = manifest_io.read_manifest(run_dir).steps[2].attempts
+    assert [(a.start_fov, a.end_fov) for a in attempts] == [(0, 4), (4, 4), (4, 9)]
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        pytest.param(("error", None), id="error-fovs-unknown"),
+        pytest.param(("error", 0), id="error-no-fov-done"),
+        pytest.param(("user_abort", 4), id="user-abort"),
+    ],
+)
+def test_an_imaging_hold_without_a_known_resume_point_offers_restart_only(tmp_path, first):
+    imaging = FakeImagingPort(script=[first, "completed"])
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, imaging=imaging, coords=NINE_FOVS)
+    runner.start()
+    assert _held(runner)
+    assert not runner.hold.can_resume and runner.hold.resume_position is None
+    runner.hold_action(HoldAction.RESUME)  # falls back to a restart, as before
+    assert runner.wait(10) and runner.outcome == "finished"
+    assert [r.start_fov for r in imaging.requests] == [0, 0]
 
 
 def test_imaging_failed_to_start_holds(tmp_path):

@@ -2,8 +2,9 @@
 
 States: IDLE -> RUNNING <-> (PAUSE_REQUESTED ->) PAUSED; RUNNING/PAUSED -> HELD -> RUNNING | ENDED;
 RUNNING -> ENDED(finished | stopped | failed). Failure of any kind parks the run in HELD with four
-actions (resume from sequence k / restart step / skip / end run). The runner blocks only on Events, is the
-only writer of run_manifest.json, and never opens a dialog - the GUI adapts its events (phase 2).
+actions (resume from sequence k, or an imaging step from the first FOV not done / restart step / skip / end
+run). The runner blocks only on Events, is the only writer of run_manifest.json, and never opens a dialog - the
+GUI adapts its events (phase 2).
 """
 
 import os
@@ -280,7 +281,7 @@ class ProtocolRunner:
                 if isinstance(step, FluidicsStep):
                     result = self._run_fluidics_step(step, attempt, resume_position)
                 else:
-                    result = self._run_imaging_step(step, attempt)
+                    result = self._run_imaging_step(step, attempt, resume_position)
                 resume_position = None
                 if result.ok:
                     index += 1
@@ -296,7 +297,7 @@ class ProtocolRunner:
                     message=result.message,
                     resume_position=result.resume_position,
                     tec_before=self._tec_before,
-                    can_resume=isinstance(step, FluidicsStep) and result.resume_position is not None,
+                    can_resume=result.resume_position is not None,
                     can_accept=result.can_accept,
                 )
                 if isinstance(step, ImagingStep):
@@ -401,8 +402,12 @@ class ProtocolRunner:
                     self._resume_requested.clear()
                     pause_deferred = False
 
-    def _run_imaging_step(self, step: ImagingStep, attempt: int) -> _StepResult:
+    def _run_imaging_step(self, step: ImagingStep, attempt: int, start_fov: Optional[int] = None) -> _StepResult:
+        """Run the step's acquisition into this attempt's folder, from scan-order FOV start_fov (a resume) or the
+        first. An attempt images the FOVs [start_fov, end_fov) of the step; the manifest records both."""
         resolved = self._resolved.imaging[step.row_index]
+        start_fov = int(start_fov or 0)
+        fov_count = resolved.coordinates.fov_count
         # the output folder is {round}_{folder_name}; the folder_name field is a stable base
         base = imaging_folder(step.round, step.row.folder)
         folder = base if attempt == 1 else f"{base}_attempt{attempt}"
@@ -414,6 +419,7 @@ class ProtocolRunner:
             "row_index": step.row_index,
             "step_index": step.index,
             "attempt": attempt,
+            "start_fov": start_fov,
         }
         request = ImagingRequest(
             folder=folder,
@@ -423,23 +429,31 @@ class ProtocolRunner:
             step_index=step.index,
             attempt=attempt,
             protocol=info,
+            start_fov=start_fov,
         )
         with self._lock:
             self._manifest.steps[step.index].attempts[-1].folder = folder
+            self._manifest.steps[step.index].attempts[-1].start_fov = start_fov
             self._save()
         try:
             handle = self._imaging.start(request)
         except Exception as e:
             self._log.error(f"Imaging step {step.label} could not start: {e}")
-            self._end_attempt(step, attempt, "failed_to_start", str(e), folder=folder)
-            return _StepResult(ok=False, outcome="failed_to_start", message=str(e))
+            self._end_attempt(step, attempt, "failed_to_start", str(e), folder=folder, end_fov=start_fov)
+            # A resume that could not start can still be resumed from the same FOV.
+            return _StepResult(ok=False, outcome="failed_to_start", message=str(e), resume_position=start_fov or None)
         session_dir = self.run_dir / folder
         if session_dir.is_dir():
             self._safe(lambda: manifest_io.write_step_info(session_dir, info), "writing protocol_step.json")
         self._active = handle
         result = self._drive_imaging(handle)
         self._active = None
-        self._end_attempt(step, attempt, result.end_reason, None, folder=folder, images=result.image_count)
+        # A start refused after start() returned (the acquisition reports failed_to_start: no worker ran) imaged
+        # nothing, like one that raised: the attempt ends where it started.
+        end_fov = start_fov if result.end_reason == "failed_to_start" else result.end_fov
+        self._end_attempt(
+            step, attempt, result.end_reason, None, folder=folder, images=result.image_count, end_fov=end_fov
+        )
         if result.end_reason in _OK_IMAGING:
             return _StepResult(ok=True, outcome=result.end_reason)
         if result.end_reason == "completed_with_errors":
@@ -447,9 +461,24 @@ class ProtocolRunner:
                 ok=False, outcome=result.end_reason, message="Some images failed to save", can_accept=True
             )
         if session_dir.is_dir():
-            marker = {"reason": result.end_reason, "attempt": attempt, "ended_at": time.time(), **info}
+            marker = {
+                "reason": result.end_reason,
+                "attempt": attempt,
+                "ended_at": time.time(),
+                **info,
+                "end_fov": end_fov,
+            }
             self._safe(lambda: manifest_io.write_aborted_marker(session_dir, marker), "writing aborted.json")
-        return _StepResult(ok=False, outcome=result.end_reason, message=f"Acquisition ended with {result.end_reason}")
+        message = f"Acquisition ended with {result.end_reason}"
+        # After an error or a refused start, a new attempt can image only the FOVs not done yet, when they are known.
+        resumable = (
+            result.end_reason in ("error", "failed_to_start") and end_fov is not None and 0 < end_fov < fov_count
+        )
+        if resumable:
+            message += f"; FOVs 1-{end_fov} of {fov_count} are done"
+        return _StepResult(
+            ok=False, outcome=result.end_reason, message=message, resume_position=end_fov if resumable else None
+        )
 
     def _drive_imaging(self, handle) -> ImagingResult:
         aborted = False
