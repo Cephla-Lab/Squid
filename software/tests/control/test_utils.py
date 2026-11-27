@@ -1,5 +1,7 @@
 import errno
+import logging
 import os
+import re
 import sys
 from configparser import ConfigParser
 
@@ -197,6 +199,32 @@ def test_timing_manager():
     with tma.get_timer("t2"):
         pass
     assert len(tma.get_timer("t2").get_intervals()) == 1
+
+
+def test_timer_logs_one_debug_line_per_section_with_the_elapsed_time(caplog):
+    # Timers wrap every timed section of an acquisition, so each line is paid for many times per FOV. The stop
+    # line carries the elapsed time, so the start is its timestamp minus elapsed; a start line adds nothing.
+    timer = control.utils.TimingManager("log test").get_timer("section")
+    with caplog.at_level(logging.DEBUG, logger="squid"):
+        for _ in range(3):
+            with timer:
+                pass
+    timer_lines = [r for r in caplog.records if r.name.endswith(".Timer")]
+    assert len(timer_lines) == 3
+    assert all(r.levelno == logging.DEBUG for r in timer_lines)
+    assert all(re.fullmatch(r"Stopping name=section with elapsed=[\d.e-]+ \[s\]", r.getMessage()) for r in timer_lines)
+
+
+def test_timer_still_warns_on_a_double_start(caplog):
+    timer = control.utils.TimingManager("log test").get_timer("twice")
+    with caplog.at_level(logging.DEBUG, logger="squid"):
+        timer.start()
+        timer.start()
+        timer.stop()
+    messages = [(r.levelno, r.getMessage()) for r in caplog.records if r.name.endswith(".Timer")]
+    assert len(messages) == 2
+    assert messages[0] == (logging.WARNING, "Double start detected for Timer=twice")
+    assert messages[1][0] == logging.DEBUG and messages[1][1].startswith("Stopping name=twice with elapsed=")
 
 
 def test_threaded_operation_helper():

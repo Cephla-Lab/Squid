@@ -698,7 +698,7 @@ class TimingManager:
         def start(self):
             if self._last_start:
                 self._log.warning(f"Double start detected for Timer={self._name}")
-            self._log.debug(f"Starting name={self._name}")
+            # No start line: stop() logs the elapsed time, so the start is the stop line's timestamp minus elapsed.
             self._last_start = time.perf_counter()
 
         def stop(self):
