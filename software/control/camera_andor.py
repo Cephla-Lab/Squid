@@ -31,6 +31,61 @@ if os.path.isdir(_library_dir):
     pyAndorSDK3.utils.add_library_path(_library_dir)
 
 
+class _FrameReadErrorLog:
+    """Logs a run of identical frame read errors as its first one, then at most one count per interval.
+
+    An idle camera's reader fails every wait (SDK3's AT_ERR_TIMEDOUT, once a second), which logged a line per
+    second for as long as the camera sat idle. A different error is logged at once, and the next frame logs
+    how many errors came in a row. Read thread only.
+    """
+
+    def __init__(self, log, summary_interval_s: float, clock: Callable[[], float] = time.monotonic):
+        self._log = log
+        self._summary_interval_s = summary_interval_s
+        self._clock = clock
+        self._message: Optional[str] = None  # the error of the current run; None between runs
+        self._in_a_row = 0
+        self._unlogged = 0  # errors since the last line about this run
+        self._last_line_at = 0.0
+
+    def error(self, message: str) -> None:
+        now = self._clock()
+        if message != self._message:
+            self.close()
+            self._message = message
+            self._in_a_row = 1
+            self._last_line_at = now
+            self._log.debug(f"Frame read error: {message}")
+            return
+        self._in_a_row += 1
+        self._unlogged += 1
+        if now - self._last_line_at >= self._summary_interval_s:
+            self._log_count()
+            self._last_line_at = now
+
+    def frame(self) -> None:
+        """A frame came through: the run of errors, if any, has ended."""
+        if self._message is None:
+            return
+        plural = "s" if self._in_a_row != 1 else ""
+        self._log.debug(f"Frames resumed after {self._in_a_row} frame read error{plural} in a row: {self._message}")
+        self._message = None
+        self._unlogged = 0
+
+    def close(self) -> None:
+        """Log the errors not yet counted, so a run that ends without a frame still has its total."""
+        if self._unlogged:
+            self._log_count()
+        self._message = None
+
+    def _log_count(self) -> None:
+        times = "time" if self._unlogged == 1 else "times"
+        self._log.debug(
+            f"Frame read error repeated {self._unlogged} more {times} ({self._in_a_row} in a row): {self._message}"
+        )
+        self._unlogged = 0
+
+
 class AndorCapabilities(pydantic.BaseModel):
     binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
     pixel_size_um: float
@@ -39,6 +94,8 @@ class AndorCapabilities(pydantic.BaseModel):
 class AndorCamera(AbstractCamera):
     # The binning options SDK3 offers on the Zyla family; the resolution of each follows the sensor size.
     BINNING_FACTORS = (1, 2, 3, 4, 8)
+    # A run of identical frame read errors (an idle camera's timeouts) logs its count at most this often.
+    FRAME_READ_ERROR_SUMMARY_INTERVAL_S = 60.0
 
     @staticmethod
     def _open(index=None, sn=None) -> Tuple["pyAndorSDK3.Camera", AndorCapabilities]:
@@ -201,6 +258,7 @@ class AndorCamera(AbstractCamera):
     def _read_frames_when_available(self):
         self._log.info("Starting Andor read thread.")
         self._read_thread_running.set()
+        read_errors = _FrameReadErrorLog(self._log, self.FRAME_READ_ERROR_SUMMARY_INTERVAL_S)
 
         while self._read_thread_keep_running.is_set():
             try:
@@ -229,17 +287,20 @@ class AndorCamera(AbstractCamera):
 
                     # Send frame to callbacks
                     self._propogate_frame(camera_frame)
+                    read_errors.frame()
 
                 except Exception as e:
-                    # Timeout is normal, don't log
+                    # Timeout is normal, don't log. SDK3's AT_ERR_TIMEDOUT gets past this check; the
+                    # read-error log keeps an idle camera's run of them to a line per interval.
                     if "timeout" not in str(e).lower():
-                        self._log.debug(f"Frame read error: {e}")
+                        read_errors.error(str(e))
                     time.sleep(0.001)
 
             except Exception as e:
                 self._log.exception("Exception in read loop, ignoring and trying to continue.")
                 time.sleep(0.01)
 
+        read_errors.close()
         self._read_thread_running.clear()
 
     def set_exposure_time(self, exposure_time_ms: float):

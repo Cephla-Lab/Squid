@@ -10,7 +10,9 @@ import importlib
 import logging
 import os
 import queue
+import re
 import sys
+import time
 import types
 from types import SimpleNamespace
 
@@ -51,6 +53,7 @@ class FakeAndorCamera:
         self.scrub_requeued_buffers = False  # the SDK writing into a buffer as soon as it gets it back
         self._exposed = []  # frames whose trigger has fired, waiting for a buffer
         self._queued = []
+        self.empty_waits = 0  # wait_buffer() calls that found no frame
 
     # ---- AOI features, with SDK3's rule that the region must stay on the sensor
     def _set_aoi(self, name, value):
@@ -120,7 +123,10 @@ class FakeAndorCamera:
 
     def wait_buffer(self, timeout_ms):
         if not self._exposed or not self._queued:
-            raise TimeoutError("AT_WaitBuffer timeout")
+            # SDK3 reports a wait that found no frame as AT_ERR_TIMEDOUT; its text has no "timeout" in it. Unlike
+            # the SDK this returns at once instead of after timeout_ms, so an idle reader hits it every millisecond.
+            self.empty_waits += 1
+            raise RuntimeError("AT_ERR_TIMEDOUT")
         frame = self._exposed.pop(0)
         buf = self._queued.pop(0)
         assert frame.shape == (self.AOIHeight, self.AOIWidth), "the sensor delivers the AOI"
@@ -403,6 +409,121 @@ def test_close_stops_the_read_thread_promptly(camera, caplog):
 
     assert thread is not None and not thread.is_alive()
     assert not any("refused to exit" in record.getMessage() for record in caplog.records)
+
+
+# ------------------------------------------------------------------ frame read errors
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def _read_error_log(summary_interval_s=60.0):
+    clock = _Clock()
+    log = logging.getLogger("test_camera_andor.frame_read_errors")
+    return camera_andor._FrameReadErrorLog(log, summary_interval_s, clock=clock), clock, log.name
+
+
+def test_a_run_of_identical_frame_read_errors_logs_the_first_then_one_count_per_interval(caplog):
+    errors, clock, logger_name = _read_error_log(summary_interval_s=60.0)
+
+    with caplog.at_level(logging.DEBUG, logger=logger_name):
+        for _ in range(150):  # an idle camera: one AT_ERR_TIMEDOUT per one-second wait
+            errors.error("AT_ERR_TIMEDOUT")
+            clock.now += 1.0
+
+    assert [r.getMessage() for r in caplog.records] == [
+        "Frame read error: AT_ERR_TIMEDOUT",
+        "Frame read error repeated 60 more times (61 in a row): AT_ERR_TIMEDOUT",
+        "Frame read error repeated 60 more times (121 in a row): AT_ERR_TIMEDOUT",
+    ]
+    assert all(r.levelno == logging.DEBUG for r in caplog.records)
+
+
+def test_a_frame_after_a_run_of_read_errors_logs_the_total_once(caplog):
+    errors, clock, logger_name = _read_error_log()
+    for _ in range(150):
+        errors.error("AT_ERR_TIMEDOUT")
+        clock.now += 1.0
+
+    with caplog.at_level(logging.DEBUG, logger=logger_name):
+        errors.frame()
+        errors.frame()  # frames keep coming: nothing more to say
+        errors.error("AT_ERR_TIMEDOUT")  # the next run starts over
+
+    assert [r.getMessage() for r in caplog.records] == [
+        "Frames resumed after 150 frame read errors in a row: AT_ERR_TIMEDOUT",
+        "Frame read error: AT_ERR_TIMEDOUT",
+    ]
+    assert all(r.levelno == logging.DEBUG for r in caplog.records)
+
+
+def test_a_different_frame_read_error_is_logged_at_once(caplog):
+    errors, clock, logger_name = _read_error_log()
+
+    with caplog.at_level(logging.DEBUG, logger=logger_name):
+        for _ in range(10):
+            errors.error("AT_ERR_TIMEDOUT")
+            clock.now += 1.0
+        errors.error("AT_ERR_COMM")
+        errors.frame()
+
+    assert [r.getMessage() for r in caplog.records] == [
+        "Frame read error: AT_ERR_TIMEDOUT",
+        "Frame read error repeated 9 more times (10 in a row): AT_ERR_TIMEDOUT",
+        "Frame read error: AT_ERR_COMM",
+        "Frames resumed after 1 frame read error in a row: AT_ERR_COMM",
+    ]
+
+
+def test_a_read_thread_that_stops_mid_run_logs_the_uncounted_errors(caplog):
+    errors, clock, logger_name = _read_error_log()
+    for _ in range(5):
+        errors.error("AT_ERR_TIMEDOUT")
+        clock.now += 1.0
+
+    with caplog.at_level(logging.DEBUG, logger=logger_name):
+        errors.close()
+
+    assert [r.getMessage() for r in caplog.records] == [
+        "Frame read error repeated 4 more times (5 in a row): AT_ERR_TIMEDOUT"
+    ]
+
+
+def _frame_read_lines(caplog):
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith(("Frame read error", "Frames resumed after"))
+    ]
+
+
+def test_an_idle_camera_logs_its_frame_read_timeouts_once_not_on_every_read(camera, sdk_camera, caplog):
+    camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+    received = _frames_via_callback(camera)
+
+    with caplog.at_level(logging.DEBUG, logger="squid"):
+        camera.start_streaming()
+        deadline = time.monotonic() + 5
+        while sdk_camera.empty_waits < 200 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert sdk_camera.empty_waits >= 200
+        timeouts_before_the_frame = sdk_camera.empty_waits
+
+        _expose(camera, sdk_camera, received, 7)
+        deadline = time.monotonic() + 5
+        while len(_frame_read_lines(caplog)) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    lines = _frame_read_lines(caplog)
+    assert lines[0] == "Frame read error: AT_ERR_TIMEDOUT"
+    resumed = re.fullmatch(r"Frames resumed after (\d+) frame read errors in a row: AT_ERR_TIMEDOUT", lines[1])
+    assert resumed and int(resumed.group(1)) >= timeouts_before_the_frame
+    assert len(lines) <= 3  # at most the first line of the next idle run
 
 
 def test_close_stops_acquisition_even_after_a_failed_stop(camera, sdk_camera):
