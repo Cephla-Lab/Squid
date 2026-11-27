@@ -1177,10 +1177,12 @@ def test_a_broken_output_does_not_stop_the_release(hold, tmp_path, monkeypatch, 
         return pull_rc, "End: completed" if pull_rc == 0 else "End: error"
 
     calls = _fake_children(monkeypatch, hold, pull, release_rc=release_rc)
-    try:
+    if pull_rc != 0:  # a failed pull stops the check, after the release
+        with pytest.raises(SystemExit) as stopped:
+            hold.run_suite(_suite_args(tmp_path))
+        assert "pull on port 3 failed" in str(stopped.value.code)
+    else:
         hold.run_suite(_suite_args(tmp_path))
-    except SystemExit:  # a failed pull stops the check, after the release
-        assert pull_rc != 0
     assert calls == ["flow_displacement_experiment.py"] + after_pull
 
 
