@@ -4,7 +4,7 @@ import pytest
 from qtpy.QtCore import Qt
 
 import control.widgets_fluidics.protocol_tab as protocol_tab_module
-from control.models.fluidics_protocol import ProtocolFile, load_protocol
+from control.models.fluidics_protocol import ProtocolFile, load_protocol, save_protocol
 from control.widgets_fluidics.protocol_tab import ProtocolTab
 
 SETTINGS = {"channels": ["A"], "z_stack": {"nz": 3, "delta_z_um": 0.5}}
@@ -472,3 +472,29 @@ def test_move_a_whole_round_up_and_down(tab):
     assert tab.tree.topLevelItem(1).text(0) == "R02"
     tab._move_row(+1)
     assert round_order() == ["setup", "R01", "R02"]
+
+
+def test_open_dialog_starts_in_the_last_protocol_folder_without_preselecting_it(
+    qtbot, quiet_dialogs, fluidics_config_path, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)  # the saved UI state lives under the working directory
+    folder = tmp_path / "protocols"
+    last = folder / "resume_r07.yaml"
+    save_protocol(_protocol(), str(last))
+    starts = []
+    monkeypatch.setattr(
+        protocol_tab_module.QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda _parent, _caption, start, _filter: starts.append(start) or ("", "")),
+    )
+
+    def fresh_tab():
+        tab = ProtocolTab(SimpleNamespace(initialized=False, default_config_path=fluidics_config_path))
+        qtbot.addWidget(tab)
+        return tab
+
+    tab = fresh_tab()
+    tab.load(str(last))
+    tab.open_button.click()  # the open protocol's folder
+    fresh_tab().open_button.click()  # after a restart: the saved last protocol's folder
+    assert starts == [str(folder), str(folder)]

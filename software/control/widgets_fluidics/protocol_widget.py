@@ -2,8 +2,9 @@
 attention panel and crash recovery — a thin Qt face over the Qt-free ProtocolRunner."""
 
 import os
+import re
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 from qtpy.QtCore import QEventLoop, QTimer, QUrl, Signal
 from qtpy.QtGui import QDesktopServices
@@ -45,6 +46,33 @@ from control.widgets_fluidics.dialogs import PreflightDialog, RecoveryDialog
 from control.widgets_fluidics.runner_bridge import RunnerEventBridge
 
 _ACTIVE_STATES = (RunnerState.RUNNING, RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED, RunnerState.HELD)
+
+# The Start confirmation adds a line saying when the protocol file was last changed once it is older than this.
+OLD_PROTOCOL_FILE_DAYS = 7
+
+
+def run_name_for(protocol_name: str) -> str:
+    """A protocol name as a run name create_run_dir accepts: each stretch of characters other than
+    letters, digits and . _ - becomes one '_', and the name starts with a letter or digit
+    ('' when nothing usable is left)."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", protocol_name).strip("_")
+    return re.sub(r"^[^A-Za-z0-9]+", "", safe)
+
+
+def _protocol_file_lines(path: Optional[str]) -> List[str]:
+    """The Start confirmation's lines about the protocol file: its name and last change, and a
+    separate line when that change is more than OLD_PROTOCOL_FILE_DAYS old."""
+    if not path:
+        return ["protocol file: (not saved)"]
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError as e:
+        return [f"protocol file: {os.path.basename(path)} (cannot read its date: {e.strerror})"]
+    changed = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+    lines = [f"protocol file: {os.path.basename(path)}, last changed {changed}"]
+    if time.time() - mtime > OLD_PROTOCOL_FILE_DAYS * 24 * 3600:
+        lines.append(f"This protocol file was last changed on {changed}.")
+    return lines
 
 
 def _hms(seconds: Optional[float]) -> str:
@@ -92,6 +120,8 @@ class FluidicsProtocolWidget(QFrame):
         self._build_ui()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         protocol_tab.signal_protocol_changed.connect(self._refresh_idle)
+        protocol_tab.signal_protocol_loaded.connect(self._name_run_after_protocol)
+        self._name_run_after_protocol()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(self.REFRESH_MS)
@@ -122,7 +152,8 @@ class FluidicsProtocolWidget(QFrame):
         save_row.addWidget(self.save_to_edit, 1)
         save_row.addWidget(browse)
 
-        self.run_name_edit = QLineEdit(ui_state.get("run_name") or "")
+        # Named after the open protocol (see _name_run_after_protocol), never the last run's name.
+        self.run_name_edit = QLineEdit()
         run_row = QHBoxLayout()
         run_row.addWidget(QLabel("Run name:"))
         run_row.addWidget(self.run_name_edit, 1)
@@ -210,6 +241,14 @@ class FluidicsProtocolWidget(QFrame):
     def is_run_active(self) -> bool:
         return self.runner is not None and self.runner.state in _ACTIVE_STATES
 
+    def _name_run_after_protocol(self) -> None:
+        """Another protocol was loaded: the run name becomes its name (the file's stem when the
+        protocol has none), and is empty with no protocol. What the operator types afterwards
+        stays until the next load."""
+        path = self.protocol_tab.protocol_path
+        stem = os.path.splitext(os.path.basename(path))[0] if path else ""
+        self.run_name_edit.setText(run_name_for(self.protocol_tab.protocol.name or "") or run_name_for(stem))
+
     def _refresh_idle(self) -> None:
         protocol = self.protocol_tab.protocol
         self.protocol_label.setText(
@@ -266,8 +305,20 @@ class FluidicsProtocolWidget(QFrame):
             return
 
         imaging_steps = sum(1 for s in resolved.steps if s.kind == "imaging")
-        summary = [
-            f"{imaging_steps} imaging session(s)",
+        fovs = sum(ri.coordinates.fov_count for ri in resolved.imaging.values())
+        ports = sorted(
+            {
+                row["fluidic_port"]
+                for s in resolved.steps
+                if s.kind == "fluidics"
+                for row in s.rows
+                if row.get("fluidic_port") is not None
+            }
+        )
+        summary = _protocol_file_lines(self.protocol_tab.protocol_path) + [
+            f"{len(resolved.steps)} step(s)",
+            f"{imaging_steps} imaging session(s), {fovs} imaging FOV(s) in all",
+            f"ports used: {', '.join(str(p) for p in ports) or 'none'}",
             f"est. {_hms(resolved.total_estimate_s)} (imaging priced at a rough 1 s/FOV)",
             f"run folder: {os.path.join(save_to, run_name)}_<start time>",
         ]
@@ -278,7 +329,7 @@ class FluidicsProtocolWidget(QFrame):
         except (ValueError, FileExistsError, OSError) as e:
             QMessageBox.warning(self, "Cannot start", str(e))
             return
-        state.save_ui_state(save_to=save_to, run_name=run_name)
+        state.save_ui_state(save_to=save_to)
         self._launch(
             ProtocolRunner(
                 resolved,
