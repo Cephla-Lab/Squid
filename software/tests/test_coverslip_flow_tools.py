@@ -1486,7 +1486,7 @@ def test_the_hold_check_refuses_an_output_folder_it_cannot_write_before_anything
 
 
 def _sensor_run_on(hold, gui, clock):
-    """The sensor-only run on `clock` (its on_sleep sees each sleep: 0.05 s in a wait, 0.2 s just after a dispatch)."""
+    """The sensor-only run on `clock` (its on_sleep sees each sleep: 0.05 s in a wait or while a job of its own runs)."""
     code = hold.SENSOR_REMOTE.replace("__PARAMS__", repr(_sensor_params()))
     return _exec_remote(code, gui, {"time": clock})["result"]
 
@@ -1647,3 +1647,20 @@ def test_map_never_waits_on_or_aborts_a_job_started_just_after_its_preparation(a
     assert system.log == ["empty", "valve 3", "valve 9"] and system.aborts == 0 and system.busy
     assert res["end_reason"] == "aborted"
     assert "prep_end" in [e[1] for e in res["events"]]
+
+
+def test_sensor_run_never_waits_on_or_aborts_a_job_started_just_after_its_preparation(hold):
+    gui, system = _fake_gui(stuck=(9,))
+    _operator_job_after(system, ["empty", "valve 3"])
+
+    def on_sleep(seconds):  # Ctrl-C at the run's next sleep
+        if system.log == ["empty", "valve 3", "valve 9"]:
+            gui._flow_displacement_abort = True
+
+    res = _sensor_run_on(hold, gui, JumpClock(on_sleep))
+    assert system.log == ["empty", "valve 3", "valve 9"] and system.aborts == 0 and system.busy
+    assert res["end_reason"] == "aborted"
+    assert "prep_end" in [e[1] for e in res["events"]]
+    # the release it owes is refused while that job runs: reported, never forced
+    assert res["valve_moved"] is True and res["released"] is False
+    assert "another job holds the session" in res["release_error"]

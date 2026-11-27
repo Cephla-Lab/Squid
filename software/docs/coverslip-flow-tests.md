@@ -25,9 +25,9 @@ The tools are in `software/tools/coverslip_flow/`.
 
 Run them from the `software/` directory with the Python that runs Squid (they need numpy, tifffile and matplotlib).
 Each prints its own `--help`. Ctrl-C stops any of them cleanly: the sequence stops (no further pump or valve job is
-started), a pump or valve job still running is stopped, the AF laser goes off, and what was recorded is saved. A run
-that did not complete (Ctrl-C, an error, the time cap) makes the script exit non-zero. Each creates its output folder
-before it starts.
+started), a pump or valve job of its own still running is stopped (never one started from the GUI), the AF laser
+goes off, and what was recorded is saved. A run that did not complete (Ctrl-C, an error, the time cap) makes the
+script exit non-zero. Each creates its output folder before it starts.
 
 ### How they reach the GUI
 

@@ -351,23 +351,26 @@ def wait(seconds, _t=time.time, _sl=time.sleep, _check=check_abort):
         _check()
         _sl(0.05)
     _check()  # never returns with a Ctrl-C pending: the job after a wait is not dispatched
-# accepted: run_manual took a job of this run (from the preparation on, the valve may be off the release port: the
-# release is owed). running: that job may still be running (only then does the cleanup stop the fluidics, never a job
-# of someone else's that made run_manual refuse this run's).
-own = {"accepted": False, "running": False}
+# This run's own fluidics jobs, numbered in order: dispatched once run_manual accepted one (a job of someone else's that
+# made run_manual refuse it is not this run's), finished once its on_finished has run, which the session calls when the
+# rig is free of that job. From the first dispatch (the preparation) on, the valve may be off the release port: the
+# release is owed. Only a job dispatched and not finished is ever stopped, by the cleanup below.
+dispatched = []; finished = []
+def own_job_running(_d=dispatched, _f=finished): return any(j not in _f for j in _d)
 def job(fn, label, abortable=True, timeout=None, _s=system, _ev=events, _t=time.time, _sl=time.sleep, _check=check_abort,
-        _own=own):
-    errs = []; stopped = []
+        _d=dispatched, _f=finished):
+    errs = []; stopped = []; n = len(_d)
     _ev.append([_t(), label + "_start", None])
-    _s.run_manual(fn, callbacks={"on_error": errs.append, "on_stopped": lambda _x=stopped: _x.append(1)})
-    _own["accepted"] = _own["running"] = True
-    _sl(0.2)
+    _s.run_manual(fn, callbacks={"on_error": errs.append, "on_stopped": lambda _x=stopped: _x.append(1),
+                                 "on_finished": lambda _f=_f, _n=n: _f.append(_n)})
+    _d.append(n)
     t_end = None if timeout is None else _t() + timeout
-    while _s.busy:
+    # the job's end is its own on_finished, not "the rig is idle": a job someone else starts just after it is never
+    # waited on
+    while n not in _f:
         if abortable: _check()
         if t_end is not None and _t() > t_end: raise RuntimeError("%s did not finish in %g s" % (label, timeout))
         _sl(0.05)
-    _own["running"] = False
     _ev.append([_t(), label + "_end", None])
     if errs: raise RuntimeError("; ".join(errs))
     if stopped: raise RuntimeError(label + " was stopped")
@@ -397,9 +400,9 @@ except Exception as e:
 finally:
     # However the run ended: a job of this run still running is stopped, then the valve goes to the release port
     # (not stoppable by the abort flag). Each step runs even if the one before fails.
-    valve_moved = own["accepted"]
+    valve_moved = bool(dispatched)
     try:
-        if own["running"] and system.busy:
+        if own_job_running() and system.busy:
             system.abort(); system.wait(30)
     except Exception as e:
         end_reason += "; stopping the running job failed: " + str(e)
