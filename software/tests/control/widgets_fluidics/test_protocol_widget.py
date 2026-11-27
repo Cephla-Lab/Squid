@@ -1,15 +1,17 @@
 import threading
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
 from qtpy.QtCore import QTimer
 from qtpy.QtWidgets import QDialog
 
+import control.widgets_fluidics.protocol_tab as protocol_tab_module
 import control.widgets_fluidics.protocol_widget as protocol_widget_module
 from control.core.fluidics_protocol import manifest as manifest_io
 from control.core.fluidics_protocol.events import RunnerState
 from control.core.fluidics_protocol.ports import ImagingResult
-from control.models.fluidics_protocol import ProtocolFile
+from control.models.fluidics_protocol import ProtocolFile, save_protocol
 from control.widgets_fluidics.protocol_tab import ProtocolTab
 from control.widgets_fluidics.protocol_widget import FluidicsProtocolWidget
 from tests.control.core.fluidics_protocol.fakes import FakeFluidicsPort, FakeImagingPort, wait_until
@@ -380,3 +382,87 @@ def test_run_lifecycle_signals(qtbot, widget):
     assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)
     qtbot.waitUntil(lambda: finished == [(run_dir, "stopped")], timeout=5000)
     assert started == [(run_dir, "liver")]
+
+
+# ---------- the run name follows the open protocol ----------
+
+
+def _save_protocol(path, name):
+    protocol = _protocol()
+    protocol.name = name
+    save_protocol(protocol, str(path))
+    return str(path)
+
+
+def _open_from_dialog(monkeypatch, tab, path):
+    monkeypatch.setattr(protocol_tab_module.QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (path, "")))
+    tab.open_button.click()
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [("Liver panel A", "Liver_panel_A"), ("  R1: probes (v2)/", "R1_probes_v2"), ("_.draft", "draft"), ("§§", "")],
+)
+def test_run_name_for_gives_a_name_create_run_dir_accepts(name, expected):
+    assert protocol_widget_module.run_name_for(name) == expected
+    if expected:
+        manifest_io.run_folder_name(expected, datetime.now())  # raises ValueError on a name it refuses
+
+
+def test_opening_a_protocol_names_the_run_after_it(qtbot, widget, tmp_path, monkeypatch):
+    w, *_ = widget
+    a = _save_protocol(tmp_path / "panel_a.yaml", name="Liver panel A")
+    b = _save_protocol(tmp_path / "brain-b.yaml", name=None)
+
+    _open_from_dialog(monkeypatch, w.protocol_tab, a)
+    assert w.run_name_edit.text() == "Liver_panel_A"
+    _open_from_dialog(monkeypatch, w.protocol_tab, b)
+    assert w.run_name_edit.text() == "brain-b"  # no name inside the file: the file's stem
+
+    w.protocol_tab.new()
+    assert w.run_name_edit.text() == ""  # no protocol, no run name
+
+
+def test_a_typed_run_name_survives_until_the_next_protocol_load(qtbot, widget, tmp_path, monkeypatch):
+    w, _fluidics, _imaging, save_to = widget
+    a = _save_protocol(tmp_path / "panel_a.yaml", name="panel_a")
+    b = _save_protocol(tmp_path / "panel_b.yaml", name="panel_b")
+    _open_from_dialog(monkeypatch, w.protocol_tab, a)
+
+    w.run_name_edit.setText("liver_retry")
+    w.protocol_tab.signal_protocol_changed.emit()  # what every edit in the editor emits
+    assert w.run_name_edit.text() == "liver_retry"
+
+    w.start_run()
+    assert wait_until(lambda: w.runner.outcome is not None, timeout=15)
+    qtbot.waitUntil(lambda: not w.idle_box.isHidden(), timeout=5000)
+    assert next(save_to.glob("liver_retry_*"))
+    assert w.run_name_edit.text() == "liver_retry"  # a finished run leaves the name alone
+
+    _open_from_dialog(monkeypatch, w.protocol_tab, b)
+    assert w.run_name_edit.text() == "panel_b"
+
+
+def test_a_restart_does_not_bring_back_the_last_run_name(qtbot, widget, fluidics_config_path):
+    w, _fluidics, _imaging, save_to = widget
+    w.start_run()  # saves the UI state, as a real run does
+    assert wait_until(lambda: w.runner.outcome is not None, timeout=15)
+    qtbot.waitUntil(lambda: not w.idle_box.isHidden(), timeout=5000)
+
+    def restarted(protocol=None):
+        # a fresh GUI in the same working directory reads the same saved UI state
+        tab = ProtocolTab(SimpleNamespace(initialized=False, default_config_path=fluidics_config_path))
+        qtbot.addWidget(tab)
+        if protocol is not None:
+            tab.set_protocol(protocol)
+        again = FluidicsProtocolWidget(SimpleNamespace(initialized=True), tab, imaging_port=FakeImagingPort())
+        qtbot.addWidget(again)
+        return tab, again
+
+    tab, again = restarted()
+    assert tab.protocol_path is None  # a restart reopens no protocol...
+    assert again.run_name_edit.text() == ""  # ...so it brings back no run name
+    assert again.save_to_edit.text() == str(save_to)  # the Save to folder is still remembered
+
+    _tab, again = restarted(_protocol())
+    assert again.run_name_edit.text() == "demo"  # a protocol open before the widget is built names the run

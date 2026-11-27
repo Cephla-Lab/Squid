@@ -110,7 +110,8 @@ def _current_config(service):
 
 
 class ProtocolTab(QWidget):
-    signal_protocol_changed = Signal()
+    signal_protocol_changed = Signal()  # any change: an edit, or another protocol loaded
+    signal_protocol_loaded = Signal()  # another protocol replaced the open one (Open, New, a resumed run's)
 
     def __init__(
         self, service, current_source: Optional[Callable[[], Tuple[Optional[str], dict, dict]]] = None, parent=None
@@ -144,6 +145,7 @@ class ProtocolTab(QWidget):
         self._dirty = False
         self._render()
         self.signal_protocol_changed.emit()
+        self.signal_protocol_loaded.emit()
 
     def load(self, path: str) -> bool:
         try:

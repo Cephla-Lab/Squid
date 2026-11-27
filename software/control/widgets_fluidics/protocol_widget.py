@@ -2,6 +2,7 @@
 attention panel and crash recovery — a thin Qt face over the Qt-free ProtocolRunner."""
 
 import os
+import re
 import time
 from typing import Callable, Dict, Optional
 
@@ -45,6 +46,14 @@ from control.widgets_fluidics.dialogs import PreflightDialog, RecoveryDialog
 from control.widgets_fluidics.runner_bridge import RunnerEventBridge
 
 _ACTIVE_STATES = (RunnerState.RUNNING, RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED, RunnerState.HELD)
+
+
+def run_name_for(protocol_name: str) -> str:
+    """A protocol name as a run name create_run_dir accepts: each stretch of characters other than
+    letters, digits and . _ - becomes one '_', and the name starts with a letter or digit
+    ('' when nothing usable is left)."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", protocol_name).strip("_")
+    return re.sub(r"^[^A-Za-z0-9]+", "", safe)
 
 
 def _hms(seconds: Optional[float]) -> str:
@@ -92,6 +101,8 @@ class FluidicsProtocolWidget(QFrame):
         self._build_ui()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         protocol_tab.signal_protocol_changed.connect(self._refresh_idle)
+        protocol_tab.signal_protocol_loaded.connect(self._name_run_after_protocol)
+        self._name_run_after_protocol()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(self.REFRESH_MS)
@@ -122,7 +133,8 @@ class FluidicsProtocolWidget(QFrame):
         save_row.addWidget(self.save_to_edit, 1)
         save_row.addWidget(browse)
 
-        self.run_name_edit = QLineEdit(ui_state.get("run_name") or "")
+        # Named after the open protocol (see _name_run_after_protocol), never the last run's name.
+        self.run_name_edit = QLineEdit()
         run_row = QHBoxLayout()
         run_row.addWidget(QLabel("Run name:"))
         run_row.addWidget(self.run_name_edit, 1)
@@ -210,6 +222,14 @@ class FluidicsProtocolWidget(QFrame):
     def is_run_active(self) -> bool:
         return self.runner is not None and self.runner.state in _ACTIVE_STATES
 
+    def _name_run_after_protocol(self) -> None:
+        """Another protocol was loaded: the run name becomes its name (the file's stem when the
+        protocol has none), and is empty with no protocol. What the operator types afterwards
+        stays until the next load."""
+        path = self.protocol_tab.protocol_path
+        stem = os.path.splitext(os.path.basename(path))[0] if path else ""
+        self.run_name_edit.setText(run_name_for(self.protocol_tab.protocol.name or "") or run_name_for(stem))
+
     def _refresh_idle(self) -> None:
         protocol = self.protocol_tab.protocol
         self.protocol_label.setText(
@@ -278,7 +298,7 @@ class FluidicsProtocolWidget(QFrame):
         except (ValueError, FileExistsError, OSError) as e:
             QMessageBox.warning(self, "Cannot start", str(e))
             return
-        state.save_ui_state(save_to=save_to, run_name=run_name)
+        state.save_ui_state(save_to=save_to)
         self._launch(
             ProtocolRunner(
                 resolved,
