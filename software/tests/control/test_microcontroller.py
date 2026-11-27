@@ -4,6 +4,7 @@ import time
 import pytest
 import control._def
 import control.microcontroller
+from control.firmware_sim_serial import FirmwareSimSerial
 from control.microcontroller import Microcontroller
 
 
@@ -307,6 +308,51 @@ def test_mcu_state_reports_a_quiet_link_instead_of_a_stuck_command():
         assert "5.0 [s] since a valid packet" in state
         assert "gone quiet - check the serial connection" in state
         assert "Home the stage" not in state
+    finally:
+        micro.close()
+
+
+def _micro_after_a_round_trip_on_firmware_sim() -> Microcontroller:
+    """A micro whose last valid packet answered its last command. On FirmwareSimSerial, not SimSerial: the stale-read
+    warning is skipped on SimSerial. The sim answers only commands, so nothing moves the last-packet time after this."""
+    micro = Microcontroller(serial_device=FirmwareSimSerial(strict=True), reset_and_initialize=False)
+    micro.turn_off_all_ports()
+    micro.wait_till_operation_is_completed(timeout_limit_s=2)
+    return micro
+
+
+def _stale_read_warnings(caplog):
+    return [r for r in caplog.records if r.levelno == logging.WARNING and "Read thread is stale" in r.getMessage()]
+
+
+def test_a_gap_of_a_few_status_periods_is_not_reported_as_a_quiet_mcu(caplog):
+    # The controller sends a status packet every 10 ms. A 38 h run on Windows logged "gone quiet" 1,687 times with no
+    # real communication failure, 1,665 of them 0.1-0.2 s after a valid packet: USB and OS scheduling jitter.
+    micro = _micro_after_a_round_trip_on_firmware_sim()
+    try:
+        micro._last_successful_read_time = time.time() - 0.2
+
+        with caplog.at_level(logging.WARNING, logger="squid.Microcontroller"):
+            micro._warn_if_reads_stale()
+
+        assert not _stale_read_warnings(caplog)
+        assert "gone quiet" not in micro._mcu_state()
+    finally:
+        micro.close()
+
+
+def test_a_gap_above_the_quiet_threshold_is_still_reported(caplog):
+    micro = _micro_after_a_round_trip_on_firmware_sim()
+    try:
+        micro._last_successful_read_time = time.time() - 1.5
+
+        with caplog.at_level(logging.WARNING, logger="squid.Microcontroller"):
+            micro._warn_if_reads_stale()
+
+        warnings = _stale_read_warnings(caplog)
+        assert len(warnings) == 1
+        assert "gone quiet - check the serial connection" in warnings[0].getMessage()
+        assert "gone quiet - check the serial connection" in micro._mcu_state()
     finally:
         micro.close()
 

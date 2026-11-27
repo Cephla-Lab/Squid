@@ -675,9 +675,12 @@ class Microcontroller:
     LAST_COMMAND_ACK_TIMEOUT = 0.5
     MAX_RETRY_COUNT = 5
     MAX_RECONNECT_COUNT = 3
-    # The micro has an update time it tries to keep to.  This must be > that time.  As of 2025-04-28, it's 10ms
-    # on the micro.  So 0.1 is 10x that.
-    STALE_READ_TIMEOUT = 0.1
+    # How long after the last valid packet (during the connect handshake, the last byte) the host says the mcu has gone
+    # quiet: in the stale-read warning (_warn_if_reads_stale) and in the text of timeout errors (_mcu_state). It only
+    # changes words: nothing waits, resends, reconnects or fails on it. The micro sends a status packet every 10 ms,
+    # but USB and OS scheduling delay the host's reads by 0.1-0.2 s now and then with nothing wrong (a 38 h run on
+    # Windows warned 1,687 times at 0.1 s, with no communication failure). 1 s is 100 status periods.
+    STALE_READ_TIMEOUT = 1.0
     # How long _detect_firmware_version waits for the connect handshake to be answered before it gives up.
     HANDSHAKE_TIMEOUT_S = 5
     # How long _detect_firmware_version waits for the connect handshake to settle before it sends its command again
