@@ -104,7 +104,7 @@ Slack when the notifier is configured.
 {run_name}_{YYYY-MM-DD_HH-MM-SS}/
 ├── protocol.yaml         exactly what ran (file-based blocks inlined)
 ├── run_manifest.json     status, cursor, per-step attempts, TEC state, pid + heartbeat
-├── run.log               protocol + fluidics log for the whole run
+├── run.log               protocol + fluidics log for the whole run (fluidics at DEBUG, the rest of Squid at INFO and above; all of it is in main_hcs.log)
 ├── R01_image/            a standard Squid experiment folder (+ protocol_step.json)
 ├── R02_image/            attempt 1 — aborted, kept, never renamed (aborted.json inside)
 └── R02_image_attempt2/   attempt 2 — completed

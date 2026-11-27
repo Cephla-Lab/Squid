@@ -15,6 +15,7 @@ import threading
 from typing import List, Optional, Tuple
 
 import squid.logging
+from control.core.fluidics_protocol.logger_names import LIBRARY_LOGGER_NAMES
 
 try:
     from fluidics.control.config import load_config
@@ -29,8 +30,6 @@ except ImportError as e:  # pragma: no cover - environment problem, not logic
     ) from e
 
 _log = squid.logging.get_logger(__name__)
-
-LIBRARY_LOGGER_NAMES = ("fluidics", "XCaliburD")
 
 _REQUIRED_SYSTEM_API = (
     "build",

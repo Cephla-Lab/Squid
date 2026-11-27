@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
 )
 
 import squid.logging
+from control.core.fluidics_protocol.logger_names import fluidics_loggers
 
 _LEVELS = {"INFO": logging.INFO, "DEBUG": logging.DEBUG}
 
@@ -59,26 +60,13 @@ class FluidicsLogView(QWidget):
         layout.addWidget(self.text_edit)
         self.setLayout(layout)
 
-    def _fluidics_loggers(self) -> list:
-        """The loggers whose subtrees are fluidics — the library's (forwarded records keep
-        their own names) and Squid's fluidics packages. Records propagate up to a handler
-        here, so the pane catches fluidics only without touching the rest of Squid."""
-        # The two library names mirror control.fluidics_system.LIBRARY_LOGGER_NAMES; kept as
-        # literals on purpose so this pane (and its tests) stay importable when the fluidics
-        # library isn't installed. If that tuple gains a logger, add it here too.
-        return [
-            logging.getLogger("fluidics"),
-            logging.getLogger("XCaliburD"),
-            squid.logging.get_logger("control.widgets_fluidics"),
-            squid.logging.get_logger("control.core.fluidics_protocol"),
-            squid.logging.get_logger("control.fluidics_system"),
-        ]
-
     def connect_logging(self) -> None:
-        """Attach the buffering handler to the fluidics loggers and start polling. GUI thread only."""
+        """Attach the buffering handler to the fluidics loggers and start polling. GUI thread only.
+        Records propagate up to a handler there, so the pane catches fluidics only without touching
+        the rest of Squid."""
         self.disconnect_logging()
         self._handler = squid.logging.BufferingHandler(min_level=_LEVELS[self.level_combo.currentText()])
-        for logger in self._fluidics_loggers():
+        for logger in fluidics_loggers():
             logger.addHandler(self._handler)
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll)
@@ -89,7 +77,7 @@ class FluidicsLogView(QWidget):
             self._poll_timer.stop()
             self._poll_timer = None
         if self._handler is not None:
-            for logger in self._fluidics_loggers():
+            for logger in fluidics_loggers():
                 logger.removeHandler(self._handler)
             self._handler = None
 

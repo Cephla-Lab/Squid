@@ -1,11 +1,13 @@
 import json
+import logging
 import os
 from types import SimpleNamespace
 
 import pytest
 
+import squid.logging
 from control.core.fluidics_protocol import manifest as manifest_io
-from control.core.fluidics_protocol.events import HoldAction, RunnerState
+from control.core.fluidics_protocol.events import HoldAction, RunnerState, StepStarted
 from control.core.fluidics_protocol.resolve import resolve_protocol
 from control.core.fluidics_protocol.runner import ProtocolRunner
 from control.models.fluidics_protocol import ProtocolFile, expand_rounds
@@ -68,12 +70,13 @@ def _protocol(rounds=1):
     return p
 
 
-def _runner(tmp_path, fluidics=None, imaging=None, rounds=1, events=None):
+def _runner(tmp_path, fluidics=None, imaging=None, rounds=1, events=None, listener=None):
     fluidics = fluidics or FakeFluidicsPort()
     imaging = imaging or FakeImagingPort()
     resolved = resolve_protocol(_protocol(rounds), tmp_path, fluidics=fluidics)
     run_dir = manifest_io.create_run_dir(tmp_path, "liver")
-    listener = events.append if events is not None else None
+    if events is not None:
+        listener = events.append
     runner = ProtocolRunner(resolved, run_dir, imaging, fluidics, run_name="liver", listener=listener, poll_s=0.01)
     return runner, fluidics, imaging, run_dir
 
@@ -108,6 +111,37 @@ def test_happy_path_runs_every_step_and_leaves_the_documented_run_folder(tmp_pat
     assert imaging.requests[0].settings.channels == ["A"] and imaging.requests[0].coordinates.fov_count == 1
     kinds = [type(e).__name__ for e in events]
     assert kinds[0] == "StateChanged" and kinds[-1] == "RunFinished" and kinds.count("StepStarted") == 4
+
+
+def test_run_log_keeps_fluidics_debug_and_the_rest_of_squid_at_info_and_above(tmp_path):
+    # run.log is the run's record for debugging fluidics: every fluidics record, DEBUG included (valve routing,
+    # sequence contents), and the rest of Squid at INFO and above. The rest of Squid's DEBUG (Timer, MCU) stays
+    # out of it. Log while the run is going, the way Squid and the library do.
+    other = squid.logging.get_logger("control.microcontroller")
+    squid_fluidics = squid.logging.get_logger("control.core.fluidics_protocol.marker")
+
+    def listener(event):
+        if isinstance(event, StepStarted):
+            other.debug("OTHER-DEBUG-MARKER")
+            other.info("OTHER-INFO-MARKER")
+            squid_fluidics.debug("SQUID-FLUIDICS-DEBUG-MARKER")
+            # What control.fluidics_system's logging bridge does with a library record: hand it, under the
+            # library's logger name, to the squid root logger's handlers.
+            squid.logging.get_logger().handle(
+                logging.LogRecord(
+                    "fluidics.control.selector_valve", logging.DEBUG, __file__, 0, "LIBRARY-DEBUG-MARKER", None, None
+                )
+            )
+
+    runner, _fluidics, _imaging, run_dir = _runner(tmp_path, listener=listener)
+    runner.start()
+    assert runner.wait(10) and runner.outcome == "finished"
+
+    text = (run_dir / "run.log").read_text(encoding="utf-8")
+    assert "OTHER-INFO-MARKER" in text
+    assert "SQUID-FLUIDICS-DEBUG-MARKER" in text
+    assert "LIBRARY-DEBUG-MARKER" in text
+    assert "OTHER-DEBUG-MARKER" not in text
 
 
 def test_progress_fraction_prices_elapsed_over_the_estimate(tmp_path):

@@ -6,6 +6,7 @@ actions (resume from sequence k / restart step / skip / end run). The runner blo
 only writer of run_manifest.json, and never opens a dialog - the GUI adapts its events (phase 2).
 """
 
+import logging
 import os
 import threading
 import time
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import squid.logging
+from control.core.fluidics_protocol.logger_names import fluidics_loggers
 from control.core.fluidics_protocol import manifest as manifest_io
 from control.core.fluidics_protocol.events import (
     Hold,
@@ -67,6 +69,19 @@ class _StepResult:
     message: Optional[str] = None
     resume_position: Optional[int] = None
     can_accept: bool = False
+
+
+class _RunLogFilter(logging.Filter):
+    """What run.log keeps: every fluidics record, DEBUG included, and the rest of Squid at INFO and above."""
+
+    def __init__(self):
+        super().__init__()
+        self._fluidics_names = tuple(logger.name for logger in fluidics_loggers())
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.INFO:
+            return True
+        return any(record.name == name or record.name.startswith(name + ".") for name in self._fluidics_names)
 
 
 class ProtocolRunner:
@@ -231,8 +246,13 @@ class ProtocolRunner:
     def _open_run(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         try:
+            # run.log is the record for debugging the run's fluidics: all fluidics DEBUG, the rest of Squid at
+            # INFO and above. The handler sits on the squid root logger, and without the filter it copied all of
+            # Squid's DEBUG traffic (Timer, MCU) for the whole run; that is still in main_hcs.log.
             self._log_handler = squid.logging.add_file_handler(
-                str(self.run_dir / manifest_io.RUN_LOG_NAME), replace_existing=True
+                str(self.run_dir / manifest_io.RUN_LOG_NAME),
+                replace_existing=True,
+                record_filter=_RunLogFilter(),
             )
         except Exception:
             self._log.exception("Could not open run.log")
