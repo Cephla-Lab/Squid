@@ -100,9 +100,18 @@ def map_pass(name, _P=P, _goto=goto, _sample=sample, _check=check_abort, _ev=eve
     _check(); _goto(*_P["center"]); _sample(name + "_center", -1, _P["center"][0], _P["center"][1])
     _ev.append([_t(), name + "_end", None])
 
-def wait_fluidics(phase, _s=system, _hold=hold, _sl=time.sleep):
-    _sl(0.2)
-    while _s.busy: _hold(phase, 0.5)
+# This run's own fluidics jobs ("prep", "pull"): dispatched once run_manual accepted one (a job of someone else's that
+# made run_manual refuse it is not this run's), finished once its on_finished has run, which the session calls when the
+# rig is free of that job. Only a job dispatched and not finished is ever stopped, by the cleanup below.
+dispatched = []
+finished = []
+def own_job_running(_d=dispatched, _f=finished):
+    return any(j not in _f for j in _d)
+
+def wait_fluidics(job, _f=finished, _hold=hold):
+    # the job's end is its own on_finished, not "the rig is idle": a job someone else starts just after it is never
+    # waited on
+    while job not in _f: _hold(job, 0.5)
 
 def prep(_m=manual, _P=P):
     _m.empty_to_waste(); _m.open_port(_P["port"])
@@ -113,9 +122,6 @@ def pump(_m=manual, _P=P, _ev=events, _t=time.time, _xp=xp):
 
 t0 = time.time()
 end_reason = "completed"
-# True while a job this run dispatched may be running: set once run_manual accepts it (one refused because the fluidics
-# is busy with another job is not this run's), cleared once it has finished. Only then does the cleanup stop the fluidics.
-launched = False
 try:
     mc.turn_on_AF_laser(); mc.wait_till_operation_is_completed()
     goto(*P["center"])
@@ -127,10 +133,9 @@ try:
         raise StopIteration("map_only")
     check_abort()
     events.append([time.time(), "prep_start", None])
-    system.run_manual(prep, callbacks={"on_error": _err})
-    launched = True
+    system.run_manual(prep, callbacks={"on_error": _err, "on_finished": lambda _f=finished: _f.append("prep")})
+    dispatched.append("prep")
     wait_fluidics("prep")
-    launched = False
     events.append([time.time(), "prep_end", None])
     if errors: raise RuntimeError("prep failed: " + "; ".join(errors))
     hold("settle", P["settle"])
@@ -140,10 +145,9 @@ try:
     hold("baseline", 10)
     check_abort()
     events.append([time.time(), "pump_launch", None])
-    system.run_manual(pump, callbacks={"on_error": _err})
-    launched = True
+    system.run_manual(pump, callbacks={"on_error": _err, "on_finished": lambda _f=finished: _f.append("pull")})
+    dispatched.append("pull")
     wait_fluidics("pull")
-    launched = False
     events.append([time.time(), "pump_idle", None])
     if errors: raise RuntimeError("pump failed: " + "; ".join(errors))
     hold("post", P["post"])
@@ -155,9 +159,9 @@ except StopIteration:
 except Exception as e:
     end_reason = "aborted" if getattr(gui, "_af_map_abort", False) else "error: " + str(e)
 finally:
-    # however it ended: a job this run started that still runs is stopped, then the laser, then the frames
+    # however it ended: a job of this run's own that still runs is stopped, then the laser, then the frames
     try:
-        if launched and system.busy:
+        if own_job_running() and system.busy:
             system.abort(); system.wait(30)
     finally:
         try:

@@ -1631,3 +1631,19 @@ def test_valve_sequence_never_waits_on_or_aborts_a_job_started_just_after_its_mo
     assert system.log == ["valve 1", "valve 9"] and system.aborts == 0 and system.busy
     assert res["end_reason"] == "aborted"
     assert [e[1:] for e in res["events"] if e[1] == "valve_end"] == [["valve_end", 1]]  # the move ended; not waited on
+
+
+def test_map_never_waits_on_or_aborts_a_job_started_just_after_its_preparation(amf):
+    gui, system = _fake_gui(stuck=(9,))
+    _operator_job_after(system, ["empty", "valve 3"])
+
+    def centroid():  # Ctrl-C at the map's next reading
+        if system.log == ["empty", "valve 3", "valve 9"]:
+            setattr(gui, "_af_map_abort", True)
+        return (1.0, 0.0)
+
+    gui.laserAutofocusController._centroid = centroid
+    res = _exec_remote(amf.REMOTE.replace("__PARAMS__", repr(_map_params())), gui)["result"]
+    assert system.log == ["empty", "valve 3", "valve 9"] and system.aborts == 0 and system.busy
+    assert res["end_reason"] == "aborted"
+    assert "prep_end" in [e[1] for e in res["events"]]
