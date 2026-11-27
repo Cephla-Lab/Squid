@@ -3,8 +3,8 @@
 The ProtocolRunner calls start() on its own thread; the actual configure+start must run on the GUI
 thread (widget-adjacent state, Qt signals), so start() blocks on a BlockingQueuedConnection into
 _do_start and returns a handle whose wait() the runner polls. Completion is the controller's
-payload-less acquisition_finished signal plus last_end_reason/last_image_count, matched by
-experiment_ID == the requested folder (a GUI-started acquisition never matches)."""
+payload-less acquisition_finished signal, matched by experiment_ID == the requested folder (a GUI-started
+acquisition never matches); the result is the controller's last_run_end, used only when it is that folder's run."""
 
 import threading
 from typing import Optional
@@ -35,9 +35,16 @@ class QtImagingHandle:
             return None
         if self._controller.acquisition_in_progress():
             return None  # the worker thread is still unwinding; keep polling
-        reason = self._controller.last_end_reason or "error"
-        end_fov = getattr(self._controller, "last_end_fov", None)
-        return ImagingResult(reason, int(self._controller.last_image_count or 0), self.folder, end_fov)
+        # A start that landed after this run's worker thread ended (the control server's) has replaced the result:
+        # never report that run's end as this one's. An error with no end FOV makes the step start over, not resume.
+        run_end = self._controller.last_run_end
+        if run_end is None or run_end.experiment_ID != self.folder:
+            squid.logging.get_logger(__name__).warning(
+                f"Acquisition {self.folder} ended, but the controller now holds another run's end ({run_end}); "
+                "reporting the step as an error"
+            )
+            return ImagingResult("error", 0, self.folder, None)
+        return ImagingResult(run_end.end_reason, run_end.image_count, self.folder, run_end.end_fov)
 
     def abort(self) -> None:
         try:

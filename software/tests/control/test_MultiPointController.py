@@ -8,7 +8,7 @@ import pytest
 
 import control._def
 import control.microscope
-from control.core.multi_point_controller import MultiPointController
+from control.core.multi_point_controller import MultiPointController, RunEnd
 from control.core.multi_point_utils import MultiPointControllerFunctions, AcquisitionParameters
 
 import tests.control.test_stubs as ts
@@ -598,6 +598,33 @@ def test_validation_failure_reports_failed_to_start_exactly_once():
     assert tt.finished_count == 1
     assert mpc.last_end_reason == "failed_to_start"
     assert not mpc.acquisition_in_progress()
+
+
+@pytest.mark.parametrize(
+    "refuse",
+    [
+        pytest.param(lambda mpc: setattr(mpc, "validate_acquisition_settings", lambda: False), id="refused-up-front"),
+        pytest.param(
+            lambda mpc: (
+                mpc.set_gen_focus_map_flag(True),
+                setattr(mpc.scanCoordinates, "get_scan_bounds", lambda: None),
+            ),
+            id="failed-after-taking-the-stage",
+        ),
+    ],
+)
+def test_a_failed_start_records_its_end_for_its_own_experiment(tmp_path, refuse):
+    """The end of every run, a start that went nowhere included, is kept with the experiment it was started for, so a
+    reader on another thread can tell its own run's end from a later run's."""
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("refused run")
+    refuse(mpc)
+
+    assert mpc.run_acquisition() is False
+
+    assert mpc.last_run_end == RunEnd(mpc.experiment_ID, "failed_to_start", 0, None)
+    assert mpc.experiment_ID.startswith("refused_run_")
 
 
 def test_an_exception_before_the_protected_region_leaves_no_start_under_way(monkeypatch):

@@ -9,7 +9,7 @@ import yaml
 from datetime import datetime
 from enum import Enum
 from threading import Thread
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, NamedTuple, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -40,6 +40,16 @@ from control.acquisition_history_recorder import NullAcquisitionHistoryRecorder
 
 # What a running acquisition holds the stage-motion reservation as (Microscope.stage_motion)
 ACQUISITION_RUNNING = "an acquisition is running"
+
+
+class RunEnd(NamedTuple):
+    """How one run_acquisition() call ended, with the experiment it ran for (MultiPointController.last_run_end)."""
+
+    experiment_ID: Optional[str]
+    end_reason: str
+    image_count: int
+    end_fov: Optional[int]
+
 
 NoOpCallbacks = MultiPointControllerFunctions(
     signal_acquisition_start=lambda *a, **kw: None,
@@ -254,6 +264,10 @@ class MultiPointController:
         self.start_fov: int = 0
         # Where the last run could be resumed: the scan-order index of the first FOV it did not finish, or None.
         self.last_end_fov: Optional[int] = None
+        # The same end, with the experiment it ran for. Written in one assignment before acquisition_finished and never
+        # cleared, so a reader on another thread sees a whole result and can check it is its own run's: a later start
+        # (the control server's, once this run's worker thread is gone) clears the last_* fields above.
+        self.last_run_end: Optional[RunEnd] = None
         # Acquisition history (the Gallery): the GUI installs a real recorder; the id is the running run's entry.
         self.history_recorder = NullAcquisitionHistoryRecorder()
         self._history_entry_id: Optional[str] = None
@@ -366,7 +380,7 @@ class MultiPointController:
         self, acquire_current_fov: bool, run_protocol_info: Optional[dict], another_run_holds_the_stage: bool = False
     ) -> None:
         """Close out a start refused before anything was prepared: record it and tell the callers."""
-        self.last_end_reason = "failed_to_start"
+        self._set_run_end(self.experiment_ID, "failed_to_start")
         self._record_failed_start(self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry_id=None)
         self._signal_failed_start(another_run_holds_the_stage)
 
@@ -1199,7 +1213,7 @@ class MultiPointController:
                             self.liveController.start_live()
                     except Exception:
                         self._log.exception("Failed to restore camera/live state after a failed acquisition start")
-                self.last_end_reason = "failed_to_start"
+                self._set_run_end(self.experiment_ID, "failed_to_start")
                 self._record_failed_start(
                     self.last_end_reason, acquire_current_fov, run_protocol_info, own_entry_id=own_history_entry_id
                 )
@@ -1261,12 +1275,23 @@ class MultiPointController:
             start_fov=start_fov,
         )
 
+    def _set_run_end(
+        self, experiment_ID: Optional[str], end_reason: str, image_count: int = 0, end_fov: Optional[int] = None
+    ) -> None:
+        self.last_end_reason = end_reason
+        self.last_image_count = image_count
+        self.last_end_fov = end_fov
+        self.last_run_end = RunEnd(experiment_ID, end_reason, image_count, end_fov)
+
     def _on_acquisition_completed(self):
         self._log.debug("MultiPointController._on_acquisition_completed called")
         worker = self.multiPointWorker
-        self.last_end_reason = getattr(worker, "end_reason", None) or "completed"
-        self.last_image_count = int(getattr(worker, "image_count", 0) or 0)
-        self.last_end_fov = getattr(worker, "end_fov", None)
+        self._set_run_end(
+            worker.experiment_ID,
+            getattr(worker, "end_reason", None) or "completed",
+            int(getattr(worker, "image_count", 0) or 0),
+            getattr(worker, "end_fov", None),
+        )
         try:
             self.history_recorder.finished(
                 self._history_entry_id,

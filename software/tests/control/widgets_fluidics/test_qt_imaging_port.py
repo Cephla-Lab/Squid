@@ -79,6 +79,46 @@ def test_a_resumed_request_images_from_its_start_fov_and_reports_the_end_fov(qtb
     assert controller.start_fov == 0
 
 
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_wait_never_reports_the_end_of_a_later_run_as_its_own(qtbot, qt_controller, tmp_path):
+    """The protocol's run A ends in an error at FOV 1. A control-server start can land once A's worker thread is gone
+    and before the runner reads A's result: that run B ends in an error at FOV 2. wait() must not hand B's end to the
+    runner as A's: a resume from B's end FOV would skip FOVs A never imaged."""
+    scope, controller = qt_controller
+    controller.set_base_path(str(tmp_path / "manual"))
+    port = QtImagingPort(controller, controller.scanCoordinates, scope)
+    request = _request(scope, controller, tmp_path)
+    x, y, z = request.coordinates.regions[0].fovs[0]
+    request.coordinates.regions[0].fovs = [[x + 0.5 * i, y, z] for i in range(3)]
+    stage = scope.stage
+    real_move_x_to = stage.move_x_to
+    fail_at = {"x": x + 0.5}  # run A: the move to FOV 1 fails
+
+    def failing_move_x_to(x_mm, *args, **kwargs):
+        if abs(x_mm - fail_at["x"]) < 0.01:
+            raise RuntimeError("stage gone")
+        return real_move_x_to(x_mm, *args, **kwargs)
+
+    stage.move_x_to = failing_move_x_to
+    try:
+        handle = port.start(request)
+        qtbot.waitUntil(lambda: handle._finished.is_set() and not controller.acquisition_in_progress(), timeout=30000)
+        assert (controller.last_end_reason, controller.last_end_fov) == ("error", 1)
+
+        fail_at["x"] = x + 1.0  # run B, started the way the control server starts one: the move to FOV 2 fails
+        controller.start_new_experiment("tcp run")
+        assert controller.run_acquisition()
+        qtbot.waitUntil(lambda: not controller.acquisition_in_progress(), timeout=30000)
+        assert (controller.last_end_reason, controller.last_end_fov) == ("error", 2)
+    finally:
+        stage.move_x_to = real_move_x_to
+
+    result = handle.wait(0)
+    assert result.folder == "R01_image"
+    # A's own end, or an error with no resume point (the step is then retried from its start); never B's FOV 2.
+    assert (result.end_reason, result.end_fov) in {("error", 1), ("error", None)}
+
+
 def test_start_from_a_worker_thread_like_the_runner(qtbot, qt_controller, tmp_path):
     scope, controller = qt_controller
     port = QtImagingPort(controller, controller.scanCoordinates, scope)
