@@ -1,4 +1,6 @@
+import os
 import threading
+import time
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -384,7 +386,7 @@ def test_run_lifecycle_signals(qtbot, widget):
     assert started == [(run_dir, "liver")]
 
 
-# ---------- the run name follows the open protocol ----------
+# ---------- the run name follows the open protocol; the Start confirmation names the file ----------
 
 
 def _save_protocol(path, name):
@@ -466,3 +468,65 @@ def test_a_restart_does_not_bring_back_the_last_run_name(qtbot, widget, fluidics
 
     _tab, again = restarted(_protocol())
     assert again.run_name_edit.text() == "demo"  # a protocol open before the widget is built names the run
+
+
+@pytest.fixture
+def start_summaries(monkeypatch):
+    """Every Start confirmation's summary lines; the confirmation is cancelled, so no run starts."""
+    summaries = []
+
+    class CapturingPreflight:
+        def __init__(self, problems, summary_lines, parent=None):
+            assert problems == []
+            summaries.append(list(summary_lines))
+
+        def exec_(self):
+            return QDialog.Rejected
+
+    monkeypatch.setattr(protocol_widget_module, "PreflightDialog", CapturingPreflight)
+    return summaries
+
+
+def _age_file(path, days):
+    when = time.time() - days * 86400
+    os.utime(path, (when, when))
+    return time.strftime("%Y-%m-%d", time.localtime(when))
+
+
+def test_start_confirmation_names_the_file_and_what_the_run_uses(qtbot, widget, tmp_path, start_summaries):
+    w, *_ = widget
+    path = _save_protocol(tmp_path / "resume_r07.yaml", name="demo")
+    w.protocol_tab.load(path)
+    day = _age_file(path, 10)
+
+    w.start_run()
+    assert w.runner is None  # cancelled at the confirmation
+    text = "\n".join(start_summaries[-1])
+    assert "protocol file: resume_r07.yaml" in text and day in text
+    assert "3 step(s)" in text
+    assert "1 imaging session(s), 1 imaging FOV(s)" in text
+    assert "ports used: 1, 2" in text
+    assert f"This protocol file was last changed on {day}" in text
+
+
+def test_the_old_file_line_shows_only_past_the_age_limit(qtbot, widget, tmp_path, monkeypatch, start_summaries):
+    w, *_ = widget
+    path = _save_protocol(tmp_path / "fresh.yaml", name="demo")
+    w.protocol_tab.load(path)
+    day = _age_file(path, 3)
+    assert protocol_widget_module.OLD_PROTOCOL_FILE_DAYS == 7
+
+    w.start_run()
+    text = "\n".join(start_summaries[-1])
+    assert f"protocol file: fresh.yaml, last changed {day}" in text
+    assert "This protocol file was last changed" not in text
+
+    monkeypatch.setattr(protocol_widget_module, "OLD_PROTOCOL_FILE_DAYS", 2)
+    w.start_run()
+    assert f"This protocol file was last changed on {day}" in "\n".join(start_summaries[-1])
+
+
+def test_start_confirmation_says_when_the_protocol_was_never_saved(qtbot, widget, start_summaries):
+    w, *_ = widget  # the fixture's protocol was set in the editor, not opened from a file
+    w.start_run()
+    assert "protocol file: (not saved)" in start_summaries[-1]

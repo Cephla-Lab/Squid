@@ -4,7 +4,7 @@ attention panel and crash recovery — a thin Qt face over the Qt-free ProtocolR
 import os
 import re
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 from qtpy.QtCore import QEventLoop, QTimer, QUrl, Signal
 from qtpy.QtGui import QDesktopServices
@@ -47,6 +47,9 @@ from control.widgets_fluidics.runner_bridge import RunnerEventBridge
 
 _ACTIVE_STATES = (RunnerState.RUNNING, RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED, RunnerState.HELD)
 
+# The Start confirmation adds a line saying when the protocol file was last changed once it is older than this.
+OLD_PROTOCOL_FILE_DAYS = 7
+
 
 def run_name_for(protocol_name: str) -> str:
     """A protocol name as a run name create_run_dir accepts: each stretch of characters other than
@@ -54,6 +57,22 @@ def run_name_for(protocol_name: str) -> str:
     ('' when nothing usable is left)."""
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", protocol_name).strip("_")
     return re.sub(r"^[^A-Za-z0-9]+", "", safe)
+
+
+def _protocol_file_lines(path: Optional[str]) -> List[str]:
+    """The Start confirmation's lines about the protocol file: its name and last change, and a
+    separate line when that change is more than OLD_PROTOCOL_FILE_DAYS old."""
+    if not path:
+        return ["protocol file: (not saved)"]
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError as e:
+        return [f"protocol file: {os.path.basename(path)} (cannot read its date: {e.strerror})"]
+    changed = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+    lines = [f"protocol file: {os.path.basename(path)}, last changed {changed}"]
+    if time.time() - mtime > OLD_PROTOCOL_FILE_DAYS * 24 * 3600:
+        lines.append(f"This protocol file was last changed on {changed}.")
+    return lines
 
 
 def _hms(seconds: Optional[float]) -> str:
@@ -286,8 +305,20 @@ class FluidicsProtocolWidget(QFrame):
             return
 
         imaging_steps = sum(1 for s in resolved.steps if s.kind == "imaging")
-        summary = [
-            f"{imaging_steps} imaging session(s)",
+        fovs = sum(ri.coordinates.fov_count for ri in resolved.imaging.values())
+        ports = sorted(
+            {
+                row["fluidic_port"]
+                for s in resolved.steps
+                if s.kind == "fluidics"
+                for row in s.rows
+                if row.get("fluidic_port") is not None
+            }
+        )
+        summary = _protocol_file_lines(self.protocol_tab.protocol_path) + [
+            f"{len(resolved.steps)} step(s)",
+            f"{imaging_steps} imaging session(s), {fovs} imaging FOV(s) in all",
+            f"ports used: {', '.join(str(p) for p in ports) or 'none'}",
             f"est. {_hms(resolved.total_estimate_s)} (imaging priced at a rough 1 s/FOV)",
             f"run folder: {os.path.join(save_to, run_name)}_<start time>",
         ]
