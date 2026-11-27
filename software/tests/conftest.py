@@ -8,9 +8,14 @@ notifier) and JobRunner child processes alive; those have caused CI segfaults
 both mid-suite (a leftover thread touching a destroyed Qt object) and at
 interpreter shutdown (daemon threads frozen inside C code during
 finalization).
+
+It also destroys, in each test's own teardown, the Qt widgets the test left
+to pytest-qt (destroy_closed_qt_widgets), so none of them is destroyed later
+inside an unrelated test.
 """
 
 import collections
+import gc
 import logging
 import os
 import shutil
@@ -116,8 +121,32 @@ def _loading_state_in_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(control._def, "Z_LIFT_LOADING_STATE_PATH", str(tmp_path / "z_lift_loading_state.json"))
 
 
+@pytest.fixture
+def destroy_closed_qt_widgets(request):
+    """Destroy the Qt widgets a qtbot test leaves behind, in that test's own teardown.
+
+    pytest-qt closes each widget registered with qtbot.addWidget and calls deleteLater() on it, but
+    processEvents() outside a running event loop never runs a DeferredDelete. The widget then lived on, with
+    its scenes, menus and timers, until a later test ran an event loop, and was destroyed inside that test:
+    test_image_display_window.py left about 40 windows (some 500 top-level widgets) to the next file in CI's
+    shard 2/3, test_intensity_calibration_dialog.py, the file that shard segfaulted in (in pytest-qt's
+    processEvents).
+
+    The collection after the delete frees, at the same point, the Python wrappers held in reference cycles that
+    own their C++ objects, such as pyqtgraph's view menus. Those otherwise went whenever the collector next ran,
+    again inside a later test.
+    """
+    yield
+    if "qtbot" not in request.fixturenames:
+        return
+    from qtpy.QtCore import QCoreApplication, QEvent
+
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    gc.collect()
+
+
 @pytest.fixture(autouse=True)
-def cleanup_leaked_hardware(monkeypatch):
+def cleanup_leaked_hardware(monkeypatch, destroy_closed_qt_widgets):
     """
     Automatically close hardware-simulation objects created during each test.
 
@@ -130,6 +159,9 @@ def cleanup_leaked_hardware(monkeypatch):
        microcontroller and addons.
     3. Any Microcontrollers created standalone (skipped if a Microscope
        already closed them).
+    4. Then destroy_closed_qt_widgets (requested here so that it is torn down
+       after this fixture): the widgets are destroyed once no hardware thread
+       is left to call into them.
     """
     microscopes = []
     controllers = []
