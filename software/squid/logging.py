@@ -212,10 +212,13 @@ def add_file_logging(log_filename, replace_existing=False):
     return True
 
 
-def add_file_handler(log_filename, replace_existing=False, level=py_logging.DEBUG) -> Optional[py_logging.Handler]:
+def add_file_handler(
+    log_filename, replace_existing=False, level=py_logging.DEBUG, record_filter: Optional[py_logging.Filter] = None
+) -> Optional[py_logging.Handler]:
     """
     Attach a plain FileHandler to the squid root logger and return it, so callers can later remove/close it.
-    This uses the same baseline formatting + thread_id injection as squid's other logs.
+    This uses the same baseline formatting + thread_id injection as squid's other logs. A record_filter is
+    attached before the handler goes on the logger, so it applies to the file's first record too.
     """
     root_logger = get_logger()
     abs_path = os.path.abspath(log_filename)
@@ -242,6 +245,8 @@ def add_file_handler(log_filename, replace_existing=False, level=py_logging.DEBU
     new_handler.setLevel(level)
     new_handler.setFormatter(py_logging.Formatter(fmt=_baseline_log_format, datefmt=_baseline_log_dateformat))
     new_handler.addFilter(_thread_id_filter)
+    if record_filter is not None:
+        new_handler.addFilter(record_filter)
 
     log.info(f"Adding new file handler writing to file '{abs_path}'")
     root_logger.addHandler(new_handler)

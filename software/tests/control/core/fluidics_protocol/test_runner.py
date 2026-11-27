@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from types import SimpleNamespace
 
@@ -112,23 +113,35 @@ def test_happy_path_runs_every_step_and_leaves_the_documented_run_folder(tmp_pat
     assert kinds[0] == "StateChanged" and kinds[-1] == "RunFinished" and kinds.count("StepStarted") == 4
 
 
-def test_run_log_takes_info_and_above_and_leaves_debug_to_the_main_log(tmp_path):
-    # run.log is the run's readable record; the DEBUG flood (Timer, MCU) from the rest of Squid stays in
-    # main_hcs.log. Log from another squid logger while the run is going, the way the rest of Squid does.
+def test_run_log_keeps_fluidics_debug_and_the_rest_of_squid_at_info_and_above(tmp_path):
+    # run.log is the run's record for debugging fluidics: every fluidics record, DEBUG included (valve routing,
+    # sequence contents), and the rest of Squid at INFO and above. The rest of Squid's DEBUG (Timer, MCU) stays
+    # out of it. Log while the run is going, the way Squid and the library do.
     other = squid.logging.get_logger("control.microcontroller")
+    squid_fluidics = squid.logging.get_logger("control.core.fluidics_protocol.marker")
 
     def listener(event):
         if isinstance(event, StepStarted):
-            other.debug("DEBUG-MARKER from another logger")
-            other.info("INFO-MARKER from another logger")
+            other.debug("OTHER-DEBUG-MARKER")
+            other.info("OTHER-INFO-MARKER")
+            squid_fluidics.debug("SQUID-FLUIDICS-DEBUG-MARKER")
+            # What control.fluidics_system's logging bridge does with a library record: hand it, under the
+            # library's logger name, to the squid root logger's handlers.
+            squid.logging.get_logger().handle(
+                logging.LogRecord(
+                    "fluidics.control.selector_valve", logging.DEBUG, __file__, 0, "LIBRARY-DEBUG-MARKER", None, None
+                )
+            )
 
     runner, _fluidics, _imaging, run_dir = _runner(tmp_path, listener=listener)
     runner.start()
     assert runner.wait(10) and runner.outcome == "finished"
 
     text = (run_dir / "run.log").read_text(encoding="utf-8")
-    assert "INFO-MARKER from another logger" in text
-    assert "DEBUG-MARKER from another logger" not in text
+    assert "OTHER-INFO-MARKER" in text
+    assert "SQUID-FLUIDICS-DEBUG-MARKER" in text
+    assert "LIBRARY-DEBUG-MARKER" in text
+    assert "OTHER-DEBUG-MARKER" not in text
 
 
 def test_progress_fraction_prices_elapsed_over_the_estimate(tmp_path):
