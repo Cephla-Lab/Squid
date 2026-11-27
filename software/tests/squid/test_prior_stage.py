@@ -432,7 +432,7 @@ def test_wait_for_stop_raises_when_controller_stops_answering(fake, monkeypatch)
     stage, ser = make_stage(fake)
     _status_replies(ser, [None] * 1000)
     t0 = time.perf_counter()
-    with pytest.raises(squid.exceptions.SquidTimeout, match=r"\$,S"):
+    with pytest.raises(squid.exceptions.SquidReplyTimeout, match=r"\$,S"):
         stage.wait_for_stop()
     # Each unanswered poll costs the 0.1 s read timeout, so it gives up a poll or two after the 0.3 s budget.
     assert time.perf_counter() - t0 < 1.0

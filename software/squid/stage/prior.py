@@ -8,7 +8,7 @@ from control.startup_homing import require_objective_lowered
 import squid.ftdi
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
-from squid.exceptions import SquidError, SquidTimeout
+from squid.exceptions import SquidError, SquidReplyTimeout, SquidTimeout
 
 
 class PriorStage(AbstractStage):
@@ -511,7 +511,7 @@ class PriorStage(AbstractStage):
                     f"(last reply {status!r})"
                 )
                 self._log.error(message)
-                raise SquidTimeout(message)
+                raise SquidReplyTimeout(message)
             time.sleep(PriorStage.MOVE_POLLING_PERIOD)
 
     def set_limits(

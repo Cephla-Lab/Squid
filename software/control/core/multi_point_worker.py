@@ -32,6 +32,7 @@ from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.acquisition_state
 import squid.stage.utils
+from squid.exceptions import SquidReplyTimeout
 from control.rcm_scan_trigger import ConfocalScanFailedError
 import squid.logging
 import control.core.job_processing
@@ -852,7 +853,73 @@ class MultiPointWorker:
 
         self.coordinates_pd = pd.concat([self.coordinates_pd, new_row], ignore_index=True)
 
-    def move_to_coordinate(self, coordinate_mm, region_id, fov):
+    # The stage's reply was lost or unreadable (in the Prior driver: the '$,S' status polled during a move, or the
+    # position 'P' read once it stopped): SquidReplyTimeout when no readable reply came within the driver's timeout,
+    # ValueError from a reply that could not be parsed. The moves are to absolute targets, so making them again goes
+    # to the same place. Not retried: a plain SquidTimeout (wait_for_idle: the stage is still busy, stuck or moving),
+    # a plain TimeoutError (the microcontroller's move may still be running), CommandAborted, StageMotionRefused, an
+    # error the controller reported (a limit), and anything else.
+    _RETRIABLE_FOV_MOVE_ERRORS = (SquidReplyTimeout, ValueError)
+    # How often a retry asks the stage whether it stopped (MULTIPOINT_FOV_MOVE_RETRY_STOP_WAIT_S)
+    _FOV_MOVE_RETRY_STOP_POLL_S = 0.05
+
+    def move_to_coordinate(self, coordinate_mm, region_id, fov) -> bool:
+        """Move to a FOV, making the move again after a lost stage reply (MULTIPOINT_FOV_MOVE_RETRIES times).
+
+        A lost reply can come while the move is still running, so a retry first needs the stage to report afresh
+        that it stopped; a stage still moving, or one whose state cannot be read, is not commanded again.
+
+        Returns True once at the FOV, False if an abort came while a failed move waited to be made again: the move
+        error is then not raised, so the run ends as the abort it is. With retries off, a failed move always raises."""
+        retries = max(0, int(control._def.MULTIPOINT_FOV_MOVE_RETRIES))
+        attempt = 0
+        while True:
+            try:
+                self._move_to_coordinate_once(coordinate_mm, region_id, fov)
+                return True
+            except self._RETRIABLE_FOV_MOVE_ERRORS as e:
+                if retries and self.abort_requested_fn():
+                    return self._fov_move_given_up_on_abort(region_id, fov, e)
+                if attempt >= retries:
+                    raise
+                attempt += 1
+                self._sleep(control._def.MULTIPOINT_FOV_MOVE_RETRY_DELAY_S)
+                if self.abort_requested_fn():
+                    return self._fov_move_given_up_on_abort(region_id, fov, e)
+                stop_wait_s = control._def.MULTIPOINT_FOV_MOVE_RETRY_STOP_WAIT_S
+                stopped = self._stage_reports_stopped_within(stop_wait_s)
+                # An abort that came during the wait ends the run, also when the stage reports it stopped.
+                if self.abort_requested_fn():
+                    return self._fov_move_given_up_on_abort(region_id, fov, e)
+                if not stopped:
+                    self._log.error(
+                        f"Move to region {region_id} fov {fov} failed ({type(e).__name__}: {e}) and the stage did "
+                        f"not report it stopped within {stop_wait_s} s: not moving it again"
+                    )
+                    raise
+                self._log.warning(
+                    f"Move to region {region_id} fov {fov} failed ({type(e).__name__}: {e}); the stage reports "
+                    f"stopped, moving again (retry {attempt} of {retries})"
+                )
+
+    def _fov_move_given_up_on_abort(self, region_id, fov, error: Exception) -> bool:
+        self._log.warning(
+            f"Move to region {region_id} fov {fov} failed ({type(error).__name__}: {error}); not moving again: the "
+            "acquisition was aborted"
+        )
+        return False
+
+    def _stage_reports_stopped_within(self, timeout_s: float) -> bool:
+        """True once the stage reports afresh that it stopped (AbstractStage.reports_stopped); False if it has not
+        within timeout_s. An abort ends the wait early (False); the caller decides what the abort means."""
+        deadline = time.monotonic() + timeout_s
+        while not self.stage.reports_stopped():
+            if time.monotonic() >= deadline or self.abort_requested_fn():
+                return False
+            self._sleep(self._FOV_MOVE_RETRY_STOP_POLL_S)
+        return True
+
+    def _move_to_coordinate_once(self, coordinate_mm, region_id, fov):
         x_mm = coordinate_mm[0]
         y_mm = coordinate_mm[1]
 
@@ -1119,7 +1186,10 @@ class MultiPointWorker:
                         return
 
                 with self._timing.get_timer("move_to_coordinate"):
-                    self.move_to_coordinate(coordinate_mm, region_id, fov)
+                    at_fov = self.move_to_coordinate(coordinate_mm, region_id, fov)
+                if not at_fov:  # aborted while a failed move waited to be made again
+                    self.handle_acquisition_abort(current_path)
+                    return
                 with self._timing.get_timer("acquire_at_position"):
                     self.acquire_at_position(region_id, current_path, fov)
 
