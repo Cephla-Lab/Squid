@@ -182,7 +182,8 @@ class FakeMC:
 class FakeFluidics:
     """FluidicsSystem and its manual verbs in one. A job runs synchronously inside run_manual; a verb listed in
     `stuck` leaves the job busy until abort(), a verb listed in `fail` reports on_error, and `on_verb` runs a hook
-    after a verb (e.g. a Ctrl-C arriving while it runs). Verbs are keyed "pull" or the valve port number."""
+    after a verb (e.g. a Ctrl-C arriving while it runs). Verbs are keyed "pull" or the valve port number. As in the
+    library's session, on_finished runs last, once the rig is free of the job."""
 
     def __init__(self, stuck=(), fail=(), on_verb=None):
         self.log = []
@@ -204,6 +205,7 @@ class FakeFluidics:
             self._callbacks.get("on_error", lambda m: None)(str(e))
         if not self._stay:
             self.busy = False
+            self._callbacks.get("on_finished", lambda: None)()
 
     def abort(self):
         self.aborts += 1
@@ -211,6 +213,7 @@ class FakeFluidics:
         if self.busy:
             self.busy = False
             self._callbacks.get("on_stopped", lambda: None)()
+            self._callbacks.get("on_finished", lambda: None)()
 
     def wait(self, timeout):
         return True
@@ -1538,3 +1541,55 @@ def test_experiment_never_aborts_a_fluidics_job_it_did_not_launch(experiment):
     ns = _exec_remote(experiment.REMOTE_CODE.replace("__PARAMS__", repr(_experiment_params())), gui)
     assert system.log == ["valve 3", "valve 9"] and system.aborts == 0 and system.busy
     assert ns["result"]["end_reason"] == "error: another job holds the session"
+
+
+def test_experiment_never_aborts_a_job_started_before_it_saw_its_preparation_end(experiment):
+    # The preparation has ended and a job is started from the GUI before the recording's loop looks again. The
+    # preparation's end is the recording's own (not "the rig is idle"), so that job is not taken for it and not stopped;
+    # the pull is refused and ends the run.
+    gui, system = _fake_gui(stuck=(9,))
+
+    def centroid():
+        if system.log == ["valve 3"]:  # the reading right after the preparation was dispatched (and ended)
+            system.run_manual(lambda: system.open_port(9))
+        return (1.0, 0.0)
+
+    gui.laserAutofocusController._centroid = centroid
+    ns = _exec_remote(experiment.REMOTE_CODE.replace("__PARAMS__", repr(_experiment_params(hard_cap=2))), gui)
+    assert system.log == ["valve 3", "valve 9"] and system.aborts == 0 and system.busy
+    assert ns["result"]["end_reason"] == "error: another job holds the session"
+    assert "prep_end" in [e[1] for e in ns["result"]["events"]]
+
+
+def test_a_ctrl_c_in_a_dry_run_never_aborts_a_fluidics_job(experiment):
+    # A dry run starts no fluidics job: a job started from the GUI after its preflight is not its own to stop.
+    gui, system = _fake_gui(stuck=(9,))
+
+    def centroid():
+        if not system.log:
+            system.run_manual(lambda: system.open_port(9))
+            _exec_remote(experiment.ABORT_CODE, gui)  # the client's Ctrl-C
+        return (1.0, 0.0)
+
+    gui.laserAutofocusController._centroid = centroid
+    ns = _exec_remote(experiment.REMOTE_CODE.replace("__PARAMS__", repr(_experiment_params(dry_run=5))), gui)
+    assert system.log == ["valve 9"] and system.aborts == 0 and system.busy
+    assert ns["result"]["end_reason"] == "aborted"
+
+
+def test_a_ctrl_c_during_the_pull_stops_the_pump_from_the_abort_request(experiment):
+    # The recording's own pull is running: the Ctrl-C request stops it at once, as before.
+    gui, system = _fake_gui(stuck=("pull",))
+    seen = {}
+
+    def centroid():
+        if system.busy and "pull 50" in system.log and "aborts" not in seen:
+            _exec_remote(experiment.ABORT_CODE, gui)  # the client's Ctrl-C while the pump runs
+            seen["aborts"] = system.aborts
+        return (1.0, 0.0)
+
+    gui.laserAutofocusController._centroid = centroid
+    ns = _exec_remote(experiment.REMOTE_CODE.replace("__PARAMS__", repr(_experiment_params())), gui)
+    assert seen["aborts"] == 1  # by the request itself, not only by the recording's cleanup after it
+    assert system.log == ["valve 3", "pull 50", "ABORT"] and not system.busy
+    assert ns["result"]["end_reason"] == "aborted"

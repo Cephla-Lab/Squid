@@ -103,6 +103,15 @@ if problems:
 
 ABORT_FLAG = "_flow_displacement_abort"
 setattr(gui, ABORT_FLAG, False)
+# This recording's own fluidics jobs ("prep", "pull"): dispatched once run_manual accepted one (a job of someone else's
+# that made run_manual refuse it is not this recording's), finished once its on_finished has run, which the session
+# calls when the rig is free of that job. Only a job dispatched and not finished is ever stopped: by the cleanup below,
+# and by Ctrl-C in the client (ABORT_CODE calls own_job_running through gui). A dry run has none.
+dispatched = []
+finished = []
+def own_job_running(_d=dispatched, _f=finished):
+    return any(j not in _f for j in _d)
+setattr(gui, "_flow_displacement_own_job_running", own_job_running)
 manual = system.manual
 extract_port = svc.config.syringe_pump.extract_port
 errors = []
@@ -158,9 +167,7 @@ mc = laf.microcontroller
 x_ref = laf.laser_af_properties.x_reference
 um_per_px = laf.laser_af_properties.pixel_to_um
 end_reason = "completed"
-launched = False
 pump_done_at = None
-prep_launched = False
 prep_done_at = None
 
 # Laser AF frames go straight to a disk-backed .npy (memmap) sized for the longest
@@ -188,21 +195,25 @@ try:
             if now - t0 >= P["dry_run"]:
                 break
         else:
-            if not prep_launched and now - t0 >= P["pre"]:
+            # each job's end is its own on_finished, not "the rig is idle": a job someone else starts in between is
+            # never taken for this recording's
+            if "prep" not in dispatched and now - t0 >= P["pre"]:
                 events.append([now, "prep_start", ("empty + valve" if need_empty else "valve")
                                + (" + prefill %.0f uL" % P["prefill"] if P["prefill"] > 0 else "")])
-                system.run_manual(prep, callbacks={"on_error": _job_error})
-                prep_launched = True
-            elif prep_launched and prep_done_at is None and not system.busy:
+                system.run_manual(prep, callbacks={"on_error": _job_error,
+                                                   "on_finished": lambda _f=finished: _f.append("prep")})
+                dispatched.append("prep")
+            elif "prep" in finished and prep_done_at is None:
                 prep_done_at = now
                 events.append([now, "prep_end", None])
                 if errors:
                     end_reason = "preparing the pump failed: " + "; ".join(errors)
                     break
-            if not launched and prep_done_at is not None and now - prep_done_at >= P["baseline"]:
-                system.run_manual(pump, callbacks={"on_error": _job_error})
-                launched = True
-            elif launched and pump_done_at is None and not system.busy:
+            if "pull" not in dispatched and prep_done_at is not None and now - prep_done_at >= P["baseline"]:
+                system.run_manual(pump, callbacks={"on_error": _job_error,
+                                                   "on_finished": lambda _f=finished: _f.append("pull")})
+                dispatched.append("pull")
+            elif "pull" in finished and pump_done_at is None:
                 pump_done_at = now
                 events.append([now, "pump_idle", None])
                 if errors:
@@ -237,13 +248,11 @@ try:
 except Exception as e:  # keep what was recorded; the cleanup below stops the pump
     end_reason = "error: " + str(e)
 finally:
-    # However the recording ended, a job it started that is still running is stopped first (a completed
-    # recording leaves none running), then the AF laser goes off, then the frames are flushed. A job of this
-    # recording runs from its dispatch until the loop sees it finish: a job someone else started after that
-    # (one that made run_manual refuse the pull) is never stopped from here.
+    # However the recording ended, a job of its own that is still running is stopped first (a completed
+    # recording leaves none running), then the AF laser goes off, then the frames are flushed. A job someone
+    # else started (e.g. one that made run_manual refuse the pull) is never stopped from here.
     try:
-        ours_running = (prep_launched and prep_done_at is None) or (launched and pump_done_at is None)
-        if ours_running and system.busy:
+        if own_job_running() and system.busy:
             system.abort()
             system.wait(30)
     finally:
@@ -290,9 +299,10 @@ result = {
 
 ABORT_CODE = """
 setattr(gui, "_flow_displacement_abort", True)
-s = getattr(getattr(gui, "fluidics", None), "system", None)
-if s is not None and s.busy:
-    s.abort()
+# the fluidics is stopped from here only while the recording's own job runs (own_job_running in REMOTE_CODE): never in
+# a dry run, never a job someone else started; no recording has set it yet when none has run in this GUI
+if getattr(gui, "_flow_displacement_own_job_running", lambda: False)():
+    gui.fluidics.system.abort()
 result = "abort requested"
 """
 

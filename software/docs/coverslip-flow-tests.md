@@ -39,7 +39,9 @@ time the pump exactly, but it means:
   arbitrary code in the GUI with the microscope's objects; turn it off again when you are done.
 - They use GUI internals (`gui.fluidics`, `gui.laserAutofocusController` and its `_get_laser_spot_centroid()`), so a
   Squid change to those can break them. They set `gui._flow_displacement_abort` / `gui._af_map_abort` to stop a
-  recording; a displacement recording sets `gui._flow_displacement_running` while it runs.
+  recording; a displacement recording sets `gui._flow_displacement_running` while it runs, and
+  `gui._flow_displacement_own_job_running`, which its Ctrl-C asks before it stops the fluidics (only the
+  recording's own pump or valve job is stopped, never one started from the GUI).
 - The `python_exec` sandbox has no `open`/`eval`/`exec` and allows imports of numpy, math, time, datetime, json and
   os.path only; functions defined in the sent code can't see its local names. The scripts already work within this.
 
