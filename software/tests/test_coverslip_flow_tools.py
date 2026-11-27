@@ -1229,15 +1229,19 @@ def test_a_ctrl_c_during_the_release_with_a_broken_output_still_finishes_it(hold
 
 
 class JumpClock:
-    """`time` for remote code, on a clock the test can move forward: a hold's deadline then passes at once."""
+    """`time` for remote code, on a clock the test can move forward: a hold's deadline then passes at once.
+    on_sleep(seconds), if set, runs at each sleep the code makes."""
 
-    def __init__(self):
+    def __init__(self, on_sleep=None):
         self.offset = 0.0
+        self.on_sleep = on_sleep
 
     def time(self):
         return time.time() + self.offset
 
     def sleep(self, seconds):
+        if self.on_sleep:
+            self.on_sleep(seconds)
         time.sleep(seconds)
 
 
@@ -1417,3 +1421,61 @@ def test_a_post_pull_recording_shorter_than_the_held_window_is_refused(
     else:
         hold.main()
         assert len(ran) == 1
+
+
+def _sensor_run_on(hold, gui, clock):
+    """The sensor-only run on `clock` (its on_sleep sees each sleep: 0.05 s in a wait, 0.2 s just after a dispatch)."""
+    code = hold.SENSOR_REMOTE.replace("__PARAMS__", repr(_sensor_params()))
+    return _exec_remote(code, gui, {"time": clock})["result"]
+
+
+def test_sensor_run_abort_in_the_last_baseline_wait_launches_no_pull(hold):
+    gui, system = _fake_gui()
+    clock = JumpClock()
+
+    def on_sleep(seconds):  # Ctrl-C in the last 50 ms of the baseline (the preparation is done), which then runs out
+        if seconds == 0.05 and system.log == ["empty", "valve 3"] and not gui._flow_displacement_abort:
+            gui._flow_displacement_abort = True
+            clock.offset += 60.0
+
+    clock.on_sleep = on_sleep
+    res = _sensor_run_on(hold, gui, clock)
+    assert system.log == ["empty", "valve 3", "valve 5"]  # no pull; the valve still goes to the release port
+    assert res["end_reason"] == "aborted" and res["released"] is True
+
+
+@pytest.mark.parametrize(
+    "busy_after, ours, owed", [([], [], False), (["empty", "valve 3"], ["empty", "valve 3"], True)]
+)
+def test_sensor_run_never_aborts_a_fluidics_job_it_did_not_launch(hold, busy_after, ours, owed):
+    # a job started from the GUI after the run's idle check: the run's next job (the preparation, or the pull) is refused
+    gui, system = _fake_gui(stuck=(9,))
+
+    def on_sleep(seconds):
+        if seconds == 0.05 and system.log == busy_after and not system.busy:
+            system.run_manual(lambda: system.open_port(9))
+
+    res = _sensor_run_on(hold, gui, JumpClock(on_sleep))
+    assert system.log == ours + ["valve 9"] and system.aborts == 0 and system.busy
+    assert res["end_reason"] == "error: another job holds the session"
+    assert res["valve_moved"] is owed  # nothing is owed when the valve never moved
+    if owed:  # the valve is off the release port and its release is refused too: reported, never forced
+        assert res["released"] is False and "another job holds the session" in res["release_error"]
+
+
+def test_experiment_never_aborts_a_fluidics_job_it_did_not_launch(experiment):
+    # a job started from the GUI once the preparation has finished: the pull is refused, and that job is not stopped
+    gui, system = _fake_gui(stuck=(9,))
+    seen = {"n": 0}
+
+    def centroid():
+        if system.log == ["valve 3"]:
+            seen["n"] += 1
+            if seen["n"] == 2:  # the reading after the one that saw the preparation finish
+                system.run_manual(lambda: system.open_port(9))
+        return (1.0, 0.0)
+
+    gui.laserAutofocusController._centroid = centroid
+    ns = _exec_remote(experiment.REMOTE_CODE.replace("__PARAMS__", repr(_experiment_params())), gui)
+    assert system.log == ["valve 3", "valve 9"] and system.aborts == 0 and system.busy
+    assert ns["result"]["end_reason"] == "error: another job holds the session"

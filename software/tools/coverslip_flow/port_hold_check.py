@@ -338,21 +338,31 @@ events = []; flow = []
 def h(f, ts, _b=flow): _b.append([ts, f])
 sensor = sensors[0]
 sensor.subscribe(h)
-def wait(seconds, _t=time.time, _sl=time.sleep, _g=gui):
+def check_abort(_g=gui):
+    if getattr(_g, "_flow_displacement_abort", False): raise RuntimeError("aborted")
+def wait(seconds, _t=time.time, _sl=time.sleep, _check=check_abort):
     t_end = _t() + seconds
     while _t() < t_end:
-        if getattr(_g, "_flow_displacement_abort", False): raise RuntimeError("aborted")
+        _check()
         _sl(0.05)
-def job(fn, label, abortable=True, timeout=None, _s=system, _ev=events, _t=time.time, _sl=time.sleep, _g=gui):
+    _check()  # never returns with a Ctrl-C pending: the job after a wait is not dispatched
+# accepted: run_manual took a job of this run (from the preparation on, the valve may be off the release port: the
+# release is owed). running: that job may still be running (only then does the cleanup stop the fluidics, never a job
+# of someone else's that made run_manual refuse this run's).
+own = {"accepted": False, "running": False}
+def job(fn, label, abortable=True, timeout=None, _s=system, _ev=events, _t=time.time, _sl=time.sleep, _check=check_abort,
+        _own=own):
     errs = []; stopped = []
     _ev.append([_t(), label + "_start", None])
     _s.run_manual(fn, callbacks={"on_error": errs.append, "on_stopped": lambda _x=stopped: _x.append(1)})
+    _own["accepted"] = _own["running"] = True
     _sl(0.2)
     t_end = None if timeout is None else _t() + timeout
     while _s.busy:
-        if abortable and getattr(_g, "_flow_displacement_abort", False): raise RuntimeError("aborted")
+        if abortable: _check()
         if t_end is not None and _t() > t_end: raise RuntimeError("%s did not finish in %g s" % (label, timeout))
         _sl(0.05)
+    _own["running"] = False
     _ev.append([_t(), label + "_end", None])
     if errs: raise RuntimeError("; ".join(errs))
     if stopped: raise RuntimeError(label + " was stopped")
@@ -366,10 +376,9 @@ def release(_m=manual, _P=P, _ev=events, _t=time.time):
     _ev.append([_t(), "release_valve_start", _P["release_port"]])
     _m.open_port(_P["release_port"])
 t0 = time.time(); end_reason = "completed"
-valve_moved = False; released = False; release_error = ""
+released = False; release_error = ""
 try:
     wait(P["pre"])
-    valve_moved = True  # from the preparation on the valve may be off the release port: the release is owed
     job(prep, "prep")
     wait(P["baseline"])
     job(pump, "pump")
@@ -383,8 +392,9 @@ except Exception as e:
 finally:
     # However the run ended: a job of this run still running is stopped, then the valve goes to the release port
     # (not stoppable by the abort flag). Each step runs even if the one before fails.
+    valve_moved = own["accepted"]
     try:
-        if valve_moved and system.busy:
+        if own["running"] and system.busy:
             system.abort(); system.wait(30)
     except Exception as e:
         end_reason += "; stopping the running job failed: " + str(e)

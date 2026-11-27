@@ -238,9 +238,12 @@ except Exception as e:  # keep what was recorded; the cleanup below stops the pu
     end_reason = "error: " + str(e)
 finally:
     # However the recording ended, a job it started that is still running is stopped first (a completed
-    # recording leaves none running), then the AF laser goes off, then the frames are flushed.
+    # recording leaves none running), then the AF laser goes off, then the frames are flushed. A job of this
+    # recording runs from its dispatch until the loop sees it finish: a job someone else started after that
+    # (one that made run_manual refuse the pull) is never stopped from here.
     try:
-        if (launched or prep_launched) and system.busy:
+        ours_running = (prep_launched and prep_done_at is None) or (launched and pump_done_at is None)
+        if ours_running and system.busy:
             system.abort()
             system.wait(30)
     finally:
