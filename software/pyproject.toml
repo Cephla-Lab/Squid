@@ -19,3 +19,6 @@ extend-exclude = '''
 # The two submodules carry their own test suites (and the fluidics one patches time.sleep in its
 # conftest); never collect them from software/. The rest is pytest's default list.
 norecursedirs = ["fluidics_v2", "ndviewer_light", "*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}"]
+markers = [
+    "qt_widgets_kept_until_exit: the file runs in a process of its own (CI's gui job), so a test's Qt widgets are not destroyed at its teardown (tests/conftest.py, destroy_closed_qt_widgets)",
+]

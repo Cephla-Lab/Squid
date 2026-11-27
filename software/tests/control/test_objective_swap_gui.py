@@ -15,6 +15,9 @@ import control.gui_hcs
 import control.microscope
 import squid.abc
 
+# Its own CI process, as above: its windows are not destroyed at each test's teardown (tests/conftest.py).
+pytestmark = pytest.mark.qt_widgets_kept_until_exit
+
 
 class _GatedFocusServo:
     """A V-308 stand-in whose retract and restore block until the test opens their gates."""
