@@ -356,6 +356,11 @@ class FluidicsProtocolWidget(QFrame):
         runner = self.runner
         loaded = False
         try:
+            # Text typed into a protocol field editor is committed on editingFinished, which a focus loss fires:
+            # take the focus as the Start run… button's click does, so the edit is in the protocol (and unsaved).
+            focused = QApplication.focusWidget()
+            if focused is not None and self.protocol_tab.isAncestorOf(focused):
+                focused.clearFocus()
             if QApplication.activeModalWidget() is not None:
                 ui.cannot_start("a dialog is open in the GUI; close it first")
             elif self.is_run_active():

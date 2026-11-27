@@ -353,3 +353,52 @@ def test_the_held_panel_cannot_overwrite_a_decision_the_server_made(qtbot, widge
     assert runner.wait(15) and runner.outcome == "finished"
     assert manifest_io.read_manifest(runner.run_dir).steps[0].skipped  # the server's skip, not a restart
     assert len(w.fluidics_port.starts) == 2  # the failed attempt, then the last step: step 1 never re-ran
+
+
+@pytest.fixture
+def typing_in_the_folder_editor(qtbot, widget):
+    """The operator has typed a new folder_name into the imaging row's editor and not left it: the text is in the
+    focused editor, not yet in the protocol (the editors commit on editingFinished)."""
+    from qtpy.QtWidgets import QApplication, QLineEdit
+
+    tab = widget[0].protocol_tab
+    tab.show()
+    qtbot.waitExposed(tab)
+    tab.activateWindow()
+    QApplication.setActiveWindow(tab)
+    tab._select_row(1)  # the imaging row
+    edit = tab.field_form.itemAt(2, tab.field_form.FieldRole).widget()
+    assert isinstance(edit, QLineEdit) and edit.text() == "image"
+    edit.setFocus()
+    qtbot.waitUntil(edit.hasFocus, timeout=2000)
+    edit.selectAll()
+    qtbot.keyClicks(edit, "stain")
+    assert edit.text() == "stain" and tab.protocol.sequences[1]["folder"] == "image"  # typed, not committed
+    assert not tab.has_unsaved_changes
+    return edit
+
+
+def test_a_server_start_uses_the_value_typed_into_the_focused_editor(
+    qtbot, widget, no_dialogs, typing_in_the_folder_editor
+):
+    w, _fluidics, imaging, _save_to = widget
+    reply = _from_another_thread(qtbot, _server(w), "start_fluidics_protocol", confirm=True)
+    assert reply["success"], reply
+    assert w.runner.wait(15) and w.runner.outcome == "finished"
+    assert w.protocol_tab.protocol.sequences[1]["folder"] == "stain"
+    assert [r.folder for r in imaging.requests] == ["R01_stain"]  # the run imaged into the typed folder
+
+
+def test_a_server_start_with_a_protocol_file_is_refused_while_an_editor_holds_a_typed_value(
+    qtbot, widget, no_dialogs, typing_in_the_folder_editor, tmp_path
+):
+    w, fluidics, _imaging, _save_to = widget
+    other = _protocol()
+    other.name = "other"
+    path = tmp_path / "other.yaml"
+    save_protocol(other, str(path))
+    reply = _from_another_thread(qtbot, _server(w), "start_fluidics_protocol", confirm=True, protocol_path=str(path))
+    assert not reply["success"] and "unsaved changes" in reply["error"]
+    tab = w.protocol_tab
+    assert tab.protocol.name == "demo" and tab.protocol.sequences[1]["folder"] == "stain"  # the typed text is kept
+    assert tab.has_unsaved_changes and w.runner is None and fluidics.starts == []
