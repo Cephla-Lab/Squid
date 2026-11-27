@@ -65,7 +65,9 @@ PY = sys.executable or "python3"
 CHILD_STOP_S = 180  # how long a stopped pull recording gets to clean up and save before it is killed
 RELEASE_TIMEOUT_S = 90
 HOLD_FLAG_UM = 5.0
-HELD_WINDOW_S = 10.0  # held: the coverslip over the last 10 s of the post-pull recording (--post can't be shorter)
+HELD_WINDOW_S = (
+    10.0  # held: the coverslip over the last 10 s of the post-pull recording, all of it after the pump stopped
+)
 SENSOR_HOLD_UL = 1.0  # inflow in the 15 s after the release move
 SENSOR_BORDERLINE_UL = 0.6
 GLITCH_UL_MIN = 1000  # any reading above this in the window: air or a bad reading
@@ -75,13 +77,16 @@ SETTLE_UL_MIN = 20  # still above rest by this at 12-15 s after the move: not a 
 SENSOR_MAX_GAP_S = 1.0  # the sensor reads ~16 Hz
 COVERSLIP_MAX_GAP_S = 3.0  # bright-spot readings, ~30 Hz, in 3-10 s windows
 MIN_READINGS = 5
+# --post: the recording ends --post s after the pump stops, its last reading up to a gap before that; the held window
+# must still fit after the pump stopped
+MIN_POST_S = HELD_WINDOW_S + COVERSLIP_MAX_GAP_S
 INCONCLUSIVE = "INCONCLUSIVE - repeat"
 
 
 def coverslip_verdict(held_um):
     """HOLDS PRESSURE when the coverslip is still more than HOLD_FLAG_UM from where it was before the pull;
-    INCONCLUSIVE when there is no held reading (no spot at the end, too few readings after the pump stopped, or no
-    baseline before the pull)."""
+    INCONCLUSIVE when there is no held reading (no spot at the end, less than HELD_WINDOW_S of recording after the pump
+    stopped, or no baseline before the pull)."""
     if not np.isfinite(held_um):
         return INCONCLUSIVE
     return "HOLDS PRESSURE" if abs(held_um) > HOLD_FLAG_UM else "ok"
@@ -184,8 +189,10 @@ def analyze_pair(pull_base, release_base):
     start = _med(t, z, 0, 4.5)
     before_pull = _med(t, z, ps - 10, ps)
     dip = float(np.nanmin(z[(t >= ps) & (t <= pe + 5)])) - before_pull
-    # the last HELD_WINDOW_S of the recording, never reaching back before the pump stopped
-    held = _med(t, z, max(pe, t[-1] - HELD_WINDOW_S), t[-1] + 1) - before_pull
+    # the last HELD_WINDOW_S of the recording; it must lie entirely after the pump stopped, else there is no held reading
+    # (a recording re-analysed with --analyze-only was never checked against MIN_POST_S)
+    held_from = t[-1] - HELD_WINDOW_S
+    held = _med(t, z, held_from, t[-1] + 1) - before_pull if held_from >= pe else np.nan
     out = {
         "valve_move_um": before_pull - start,
         "valve_move_inflow_ul": _volume(ft, fv, vs - 0.5, vs + 15, rest_flow),
@@ -807,7 +814,8 @@ def main():
         "--post",
         type=float,
         default=45,
-        help="s recorded after the pump finishes (at least %g: held is the last %g s)" % (HELD_WINDOW_S, HELD_WINDOW_S),
+        help="s recorded after the pump finishes (at least %g: held is the last %g s, all after the pump stopped)"
+        % (MIN_POST_S, HELD_WINDOW_S),
     )
     p.add_argument("--hold", type=float, default=30, help="s held at the release port")
     p.add_argument("--order", choices=("given", "shuffle"), default="given")
@@ -824,10 +832,10 @@ def main():
         return
     if not a.ports or a.release_port is None:
         p.error("--ports and --release-port are required unless --analyze-only")
-    if not a.sensor_only and a.post < HELD_WINDOW_S:
+    if not a.sensor_only and a.post < MIN_POST_S:
         p.error(
-            "--post must be at least %g s: the held value is the coverslip over the last %g s after the pump stops"
-            % (HELD_WINDOW_S, HELD_WINDOW_S)
+            "--post must be at least %g s: the held value is the coverslip over the last %g s of the recording, all of "
+            "it after the pump stops" % (MIN_POST_S, HELD_WINDOW_S)
         )
     try:
         run_suite(a)

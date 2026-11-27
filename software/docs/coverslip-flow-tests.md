@@ -163,7 +163,7 @@ python3 tools/coverslip_flow/port_hold_check.py --ports 1 2 3 4 --release-port 5
 ```
 
 Per port: empty the syringe, turn the valve to the port, 30 s baseline, pull 50 µL at 500 µL/min, record 45 s
-(`--post`, at least 10 s: `held_um` is the last 10 s); then
+(`--post`, at least 13 s: `held_um` is the last 10 s of the recording, all of it after the pump stopped); then
 turn the valve to the release port and hold 30 s. The release port can't be in `--ports`: check it in a separate run
 with another release port. Re-analyse a folder with `--analyze-only --out-dir …`. Each step's output is kept in
 `NN_…_log.txt`.
@@ -184,7 +184,7 @@ The summary (`port_hold_summary.csv` and the printed table):
 | `sensor_volume_ul` | Sensor volume during and 30 s after the pull. Clearly below the other ports = the line did not deliver |
 | `valve_move_um`, `valve_move_inflow_ul` | Shift when the valve turned onto this port, with no pumping (bottle height or route differences) |
 | `sensor_verdict` | The sensor-only verdict (4b) of the same run |
-| `verdict` | HOLDS PRESSURE / ok, or **INCONCLUSIVE - repeat**: the run did not complete (its `end_reason` is printed), or the bright spot was not found through the 10 s before the pull or the last 10 s of the recording. An inconclusive port has not been checked; run it again |
+| `verdict` | HOLDS PRESSURE / ok, or **INCONCLUSIVE - repeat**: the run did not complete (its `end_reason` is printed), or the bright spot was not found through the 10 s before the pull or the last 10 s of the recording, or the recording has less than 10 s after the pump stopped. An inconclusive port has not been checked; run it again |
 
 A holding line typically also dips deeper during the pull and passes a few µL less: more resistance while flowing and
 a cut-off near rest, i.e. a partial blockage (a pinned bubble, debris, an inline filter). Holding can come and go on

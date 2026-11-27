@@ -1416,13 +1416,16 @@ def test_the_release_sensor_verdict_needs_a_rest_reading_of_its_own(
     assert row["verdict"] == "ok"  # the coverslip verdict does not depend on it
 
 
-def test_held_is_taken_after_the_pump_stopped_only(hold, tmp_path):
-    # A 4 s post-pull recording (pump_idle at 42 s) with the coverslip still 8 um in: the last 10 s would reach back
-    # before the pump stopped and read the baseline (held 0, "ok").
-    _write_pull_run(tmp_path, 1, 3, lambda t: -8.0 if t >= 42 else 0.0, end=46.0)
+@pytest.mark.parametrize("end, verdict", [(46.0, INCONCLUSIVE), (51.9, INCONCLUSIVE), (52.5, "HOLDS PRESSURE")])
+def test_held_needs_a_whole_window_after_the_pump_stopped(hold, tmp_path, end, verdict):
+    # The coverslip still 8 um in after the pump stopped (pump_idle at 42 s). Held is the last 10 s of the recording,
+    # all of it after the pump stopped: a recording with less than that after pump_idle (4 s, 9.9 s; e.g. an old one
+    # re-analysed with --analyze-only, which skips the --post check) has no held reading.
+    _write_pull_run(tmp_path, 1, 3, lambda t: -8.0 if t >= 42 else 0.0, end=end)
     [row] = hold.analyze_dir(str(tmp_path))
-    assert row["held_um"] == pytest.approx(-8.0)
-    assert row["verdict"] == "HOLDS PRESSURE"
+    assert row["verdict"] == verdict
+    if verdict != INCONCLUSIVE:
+        assert row["held_um"] == pytest.approx(-8.0)
 
 
 def test_held_from_too_few_readings_after_the_pump_stopped_is_inconclusive(hold, tmp_path):
@@ -1432,7 +1435,14 @@ def test_held_from_too_few_readings_after_the_pump_stopped_is_inconclusive(hold,
 
 @pytest.mark.parametrize(
     "extra, refused",
-    [(["--post", "4"], True), (["--post", "10"], False), (["--sensor-only", "--post", "4"], False)],
+    [
+        (["--post", "4"], True),
+        # the recording ends --post s after the pump stops and its last reading comes a little before that: the held
+        # window needs room on top of its 10 s
+        (["--post", "10"], True),
+        (["--post", "13"], False),
+        (["--sensor-only", "--post", "4"], False),
+    ],
 )
 def test_a_post_pull_recording_shorter_than_the_held_window_is_refused(
     hold, tmp_path, monkeypatch, capsys, extra, refused
