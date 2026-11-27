@@ -1820,20 +1820,42 @@ class Microcontroller:
             cmd_type = command[1]
             cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
             self.log.debug(f"[MCU] >>> sending command {self._cmd_id}, type={cmd_name}")
-            # Taken before the write: a reply can be parsed before write() returns (SimSerial answers inside it).
-            with self._received_packet_cv:
-                self._packet_seq_at_last_send = self._packet_seq
-            self._serial.write(command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
-            self.mcu_cmd_execution_in_progress = True
-            self.last_command = command
-            self.last_command_send_timestamp = time.time()
-            self.retry = 0
-
             if self.last_command_aborted_error is not None:
                 self.log.warning(
                     "Last command aborted and not cleared before new command sent! %s", self.last_command_aborted_error
                 )
+            # Everything the reader thread matches a reply against is in place before the write: a reply can be
+            # parsed before write() returns (SimSerial answers inside it, and a fast link can too). The in-progress
+            # flag is set last, so a reader that sees it turn on finds the rest already this command's.
+            previous = (
+                self.mcu_cmd_execution_in_progress,
+                self.last_command,
+                self.last_command_send_timestamp,
+                self.retry,
+                self.last_command_aborted_error,
+            )
+            self.last_command = command
+            self.last_command_send_timestamp = time.time()
+            self.retry = 0
             self.last_command_aborted_error = None
+            with self._received_packet_cv:
+                self._packet_seq_at_last_send = self._packet_seq
+            self.mcu_cmd_execution_in_progress = True
+            try:
+                self._serial.write(command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
+            except BaseException:
+                # Not sent, so not pending: put back the state the write found. The in-progress flag first, so the
+                # reader never sees it still set with the previous command's send time (and resends that command).
+                (
+                    self.mcu_cmd_execution_in_progress,
+                    self.last_command,
+                    self.last_command_send_timestamp,
+                    self.retry,
+                    self.last_command_aborted_error,
+                ) = previous
+                raise
+            # The ack timeout counts from when the bytes went out: a write that had to reconnect can take seconds.
+            self.last_command_send_timestamp = time.time()
 
             self._warn_if_reads_stale()
 
