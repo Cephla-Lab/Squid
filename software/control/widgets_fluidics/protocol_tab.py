@@ -870,6 +870,11 @@ class ProtocolTab(QWidget):
             value = row.get(fname, getattr(finfo, "default", None))
             if fname in _STRING_FIELDS:
                 widget = self._line_edit(index, fname, value)
+            elif finfo.annotation is bool:
+                # a yes/no field (set_temperature's wait): a number box would read "1" and take any number
+                widget = QCheckBox()
+                widget.setChecked(bool(value))
+                widget.toggled.connect(lambda _checked, w=widget, f=fname: self._field_edited(index, f, w))
             else:
                 is_float = fname in ("temperature", "incubation_time")
                 widget = QDoubleSpinBox() if is_float else QSpinBox()
@@ -922,6 +927,8 @@ class ProtocolTab(QWidget):
         if isinstance(widget, QLineEdit):
             text = widget.text().strip()
             value = text or None
+        elif isinstance(widget, QCheckBox):
+            value = widget.isChecked()
         elif isinstance(widget, QDoubleSpinBox):
             value = float(widget.value())
         else:
