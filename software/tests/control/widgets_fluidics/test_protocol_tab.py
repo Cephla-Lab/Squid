@@ -394,6 +394,51 @@ def test_imaging_field_editor_labels_the_folder_field(tab):
     assert labels == ["name", "round", "folder_name"]  # the folder field reads "folder_name"
 
 
+def _edit_single_row(tab, row):
+    tab.set_protocol(ProtocolFile(name="one", sequences=[row]))
+    tab._select_row(0)
+    tab._rebuild_field_editor()
+
+
+def _field_widget(tab, label):
+    form = tab.field_form
+    for i in range(form.rowCount()):
+        item = form.itemAt(i, form.LabelRole)
+        if item is not None and item.widget() is not None and item.widget().text() == label:
+            return form.itemAt(i, form.FieldRole).widget()
+    raise AssertionError(f"no '{label}' row in the field editor")
+
+
+def test_a_yes_no_field_is_a_checkbox_and_unticking_stores_false(tab, qtbot):
+    # set_temperature's `wait` is a bool in the library's model: a number box would read "1" and
+    # take any number, and anything but 0 or 1 makes the row invalid.
+    pytest.importorskip("fluidics")
+    from qtpy.QtWidgets import QCheckBox
+
+    _edit_single_row(tab, {"type": "set_temperature", "round": "R01", "temperature": 30.0, "wait": True})
+    wait = _field_widget(tab, "wait")
+    assert isinstance(wait, QCheckBox)
+    assert wait.isChecked()
+
+    wait.setChecked(False)
+    assert tab.protocol.sequences[0]["wait"] is False
+    qtbot.wait(20)  # let the queued re-render and validation run
+    assert 0 not in tab._problems
+    assert _field_widget(tab, "wait").isChecked() is False
+
+
+def test_a_row_without_wait_shows_it_ticked_and_stores_nothing_until_changed(tab, qtbot):
+    pytest.importorskip("fluidics")
+    _edit_single_row(tab, {"type": "set_temperature", "round": "R01", "temperature": 30.0})
+    wait = _field_widget(tab, "wait")
+    assert wait.isChecked()  # the library's default: the step waits
+    assert "wait" not in tab.protocol.sequences[0]
+
+    wait.setChecked(False)
+    assert tab.protocol.sequences[0]["wait"] is False
+    qtbot.wait(20)
+
+
 def test_round_editor_tags_a_group_from_its_header(qtbot, quiet_dialogs):
     from control.models.fluidics_protocol import ProtocolFile
 
