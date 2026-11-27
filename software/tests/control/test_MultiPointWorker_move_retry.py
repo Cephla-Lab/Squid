@@ -184,8 +184,23 @@ def _abort_during_the_stop_wait(mpc, monkeypatch):
     return _raise(ValueError("not enough values to unpack (expected 3, got 1)"))
 
 
+def _abort_as_the_stage_reports_stopped(mpc, monkeypatch):
+    def reports_stopped():
+        mpc.request_abort_aquisition()
+        return True  # the stage stopped, but the user aborted while it was asked
+
+    monkeypatch.setattr(mpc.stage, "reports_stopped", reports_stopped)
+    return _raise(ValueError("not enough values to unpack (expected 3, got 1)"))
+
+
 @pytest.mark.parametrize(
-    "abort_and_fail", [_abort_at_the_failure, _abort_during_the_retry_delay, _abort_during_the_stop_wait]
+    "abort_and_fail",
+    [
+        _abort_at_the_failure,
+        _abort_during_the_retry_delay,
+        _abort_during_the_stop_wait,
+        _abort_as_the_stage_reports_stopped,
+    ],
 )
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_a_user_abort_during_a_retry_ends_the_acquisition_as_a_user_abort(monkeypatch, abort_and_fail):

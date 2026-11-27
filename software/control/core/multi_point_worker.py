@@ -887,9 +887,11 @@ class MultiPointWorker:
                 if self.abort_requested_fn():
                     return self._fov_move_given_up_on_abort(region_id, fov, e)
                 stop_wait_s = control._def.MULTIPOINT_FOV_MOVE_RETRY_STOP_WAIT_S
-                if not self._stage_reports_stopped_within(stop_wait_s):
-                    if self.abort_requested_fn():
-                        return self._fov_move_given_up_on_abort(region_id, fov, e)
+                stopped = self._stage_reports_stopped_within(stop_wait_s)
+                # An abort that came during the wait ends the run, also when the stage reports it stopped.
+                if self.abort_requested_fn():
+                    return self._fov_move_given_up_on_abort(region_id, fov, e)
+                if not stopped:
                     self._log.error(
                         f"Move to region {region_id} fov {fov} failed ({type(e).__name__}: {e}) and the stage did "
                         f"not report it stopped within {stop_wait_s} s: not moving it again"
@@ -909,7 +911,7 @@ class MultiPointWorker:
 
     def _stage_reports_stopped_within(self, timeout_s: float) -> bool:
         """True once the stage reports afresh that it stopped (AbstractStage.reports_stopped); False if it has not
-        within timeout_s, or on an abort."""
+        within timeout_s. An abort ends the wait early (False); the caller decides what the abort means."""
         deadline = time.monotonic() + timeout_s
         while not self.stage.reports_stopped():
             if time.monotonic() >= deadline or self.abort_requested_fn():
