@@ -201,9 +201,9 @@ def analyze_pair(pull_base, release_base):
         rft, rfv = rft_raw[ok], rfv_raw[ok]
         release_meta = json.load(open(release_base + "_meta.json"))
         rv = [tt for tt, e, _v in release_meta["events_s"] if e == "valve_start"][0]
+        # the sensor's rest reading just before the move; without one the sensor verdict is INCONCLUSIVE (the reading
+        # from before the pull is not used: the sensor's offset drifts)
         rrest = _rest(rfv[rft < rv - 0.5])
-        if not np.isfinite(rrest):
-            rrest = rest_flow
         r0 = _med(rt, rz, rv - 3, rv)
         r1 = _med(rt, rz, rt[-1] - 8, rt[-1] + 1)
         _inf, peak, sv = sensor_verdict(rft_raw, rfv_raw, rv, rrest)

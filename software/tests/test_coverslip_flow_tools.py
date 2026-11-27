@@ -1349,3 +1349,36 @@ def test_valve_sequence_never_aborts_a_fluidics_job_it_did_not_launch(valves, bu
     res = _exec_remote(valves.REMOTE.replace("__PARAMS__", repr(params)), gui)["result"]
     assert system.log == ours_before + ["valve 9"] and system.aborts == 0 and system.busy
     assert res["end_reason"] == "error: another job holds the session"
+
+
+def _write_release_run(path, run, port, flow_of_t, end=35.0, valve_at=5.0):
+    """The recorded release after a coverslip-mode pull: the spot steady at 0, flow_of_t(t) (None = no reading)."""
+    base = path / f"{run:02d}_release_port{port}_to5"
+    with open(f"{base}_samples.csv", "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["t_s", "phase", "gui_spot_um", "bright_spot_um", "af_frame"])
+        w.writerows(["%.4f" % tt, "port5", "", "0.000", ""] for tt in np.arange(0.0, end, 1 / 30))
+    with open(f"{base}_flow.csv", "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["t_s", "flow_ul_min"])
+        for tt in np.arange(0.0, end, 1 / RATE_HZ):
+            v = flow_of_t(tt)
+            w.writerow(["%.4f" % tt, "" if v is None else v])
+    events = [[valve_at, "valve_start", 5], [valve_at + 1, "valve_end", 5], [end, "end", "completed"]]
+    json.dump({"events_s": events, "end_reason": "completed"}, open(f"{base}_meta.json", "w"))
+
+
+@pytest.mark.parametrize("read_before_the_move, sensor_verdict", [(True, "ok"), (False, INCONCLUSIVE)])
+def test_the_release_sensor_verdict_needs_a_rest_reading_of_its_own(
+    hold, tmp_path, read_before_the_move, sensor_verdict
+):
+    # The sensor's offset has drifted 8 uL/min since before the pull, and nothing flows in on release (a flat trace).
+    # Against its own rest reading that is ok; without one the verdict is not taken from the pull's (that read HOLDS).
+    _write_pull_run(tmp_path, 1, 3, lambda t: 0.0)
+    drifted = REST + 8.0
+    _write_release_run(tmp_path, 1, 3, lambda t: drifted if read_before_the_move or t >= 4.6 else None)
+
+    [row] = hold.analyze_dir(str(tmp_path))
+
+    assert row["sensor_verdict"] == sensor_verdict
+    assert row["verdict"] == "ok"  # the coverslip verdict does not depend on it
