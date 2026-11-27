@@ -273,6 +273,8 @@ class MultiPointWorker:
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
         self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
+        # The threads _finish_jobs shuts the runners down on; see wait_for_job_runner_shutdown.
+        self._job_runner_shutdown_threads: List[threading.Thread] = []
         self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
 
         # Get the current log file path to share with subprocess workers
@@ -735,6 +737,7 @@ class MultiPointWorker:
         for job_class, job_runner in active_runners:
             t = threading.Thread(target=shutdown_runner, args=(job_runner, remaining_time), daemon=True)
             t.start()
+            self._job_runner_shutdown_threads.append(t)
 
         # Final drain of all output queues (should be empty, but check anyway)
         self._summarize_runner_outputs(drain_all=True)
@@ -744,6 +747,15 @@ class MultiPointWorker:
             self._backpressure.close()
         except Exception as e:
             self._log.error(f"Error closing backpressure controller: {e}")
+
+    def wait_for_job_runner_shutdown(self, timeout_s: float) -> bool:
+        """Wait for the job runner shutdown _finish_jobs started on background threads. True once all of it ended.
+        Whoever tears down after the run (MultiPointController.close) waits here rather than join the same
+        processes from a second thread."""
+        deadline = time.monotonic() + timeout_s
+        for t in self._job_runner_shutdown_threads:
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
+        return not any(t.is_alive() for t in self._job_runner_shutdown_threads)
 
     def wait_till_operation_is_completed(self):
         self.microcontroller.wait_till_operation_is_completed()
@@ -1669,10 +1681,26 @@ class MultiPointWorker:
 
         # trigger acquisition (including turning on the illumination) and read frame
         camera_illumination_time = self.camera.get_exposure_time()
-        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+        software_trigger = self.liveController.trigger_mode == TriggerMode.SOFTWARE
+        if software_trigger:
             self.liveController.turn_on_illumination()
             self.wait_till_operation_is_completed()
             camera_illumination_time = None
+        try:
+            self._trigger_and_wait_for_frame(
+                config, file_ID, current_path, k, region_id, fov, config_idx, camera_illumination_time
+            )
+        finally:
+            # turn off the illumination if using software trigger, on every way out: an image the run aborts on
+            # returns early, and must not leave the light on
+            if software_trigger:
+                self.liveController.turn_off_illumination()
+
+    def _trigger_and_wait_for_frame(
+        self, config, file_ID, current_path, k, region_id, fov, config_idx, camera_illumination_time
+    ):
+        """acquire_camera_image's trigger and frame wait, the light already on in software trigger mode. Returns early
+        when the run aborts on this image."""
         # In HARDWARE mode with an NL5/AION (NL5_USE_DOUT), camera.send_trigger() below starts the confocal
         # scan through the camera's hardware trigger function. Do not also start one here: that second scan
         # gave every image an extra, untracked camera frame (black frames, channels mixed, aborts).
@@ -1694,8 +1722,16 @@ class MultiPointWorker:
                     )
 
         with self._timing.get_timer("get_ready_for_trigger re-check"):
-            # This should be a noop - we have the frame already.  Still, check!
+            # This should be a noop - we have the frame already.  Still, check! An abort ends the wait (the caller
+            # stops after this image), and a camera that never gets ready ends the run like a frame that never arrives.
+            ready_deadline = time.monotonic() + self._frame_wait_timeout_s()
             while not self.camera.get_ready_for_trigger():
+                if self.abort_requested_fn():
+                    return
+                if time.monotonic() > ready_deadline:
+                    self._log.error("The camera never got ready for the next trigger! Aborting acquisition.")
+                    self._abort_due_to_error()
+                    return
                 self._sleep(0.001)
 
             self._ready_for_next_trigger.clear()
@@ -1758,10 +1794,6 @@ class MultiPointWorker:
                     self._abort_due_to_error()
                     # Let this fall through so we still turn off illumination.  Let the caller actually break out
                     # of the acquisition.
-
-        # turn off the illumination if using software trigger
-        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-            self.liveController.turn_off_illumination()
 
     def _sleep(self, sec):
         time_to_sleep = max(sec, 1e-6)
