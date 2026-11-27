@@ -32,3 +32,19 @@ def test_they_are_destroyed_by_the_end_of_its_teardown():
     with pytest.raises(RuntimeError, match="has been deleted"):
         _left_by_the_first_test["held"].objectName()
     assert _left_by_the_first_test["in_a_cycle"]() is None
+
+
+_left_by_a_marked_test = {}
+
+
+@pytest.mark.qt_widgets_kept_until_exit
+def test_a_test_in_a_file_with_a_process_of_its_own_leaves_a_widget(qtbot):
+    held = QWidget()
+    qtbot.addWidget(held)
+    _left_by_a_marked_test["held"] = held
+
+
+def test_its_widget_is_left_alone():
+    if not _left_by_a_marked_test:
+        pytest.skip("checks what the test above left, so it runs after it in the same process")
+    assert _left_by_a_marked_test["held"].objectName() == ""  # still alive: no RuntimeError

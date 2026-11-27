@@ -135,9 +135,13 @@ def destroy_closed_qt_widgets(request):
     The collection after the delete frees, at the same point, the Python wrappers held in reference cycles that
     own their C++ objects, such as pyqtgraph's view menus. Those otherwise went whenever the collector next ran,
     again inside a later test.
+
+    A file marked qt_widgets_kept_until_exit runs in a process of its own (the full-GUI files, CI's gui job), so
+    nothing it leaves can reach another file. Its tests keep the old teardown: windows live until a later test in
+    the file runs an event loop, as those tests were written against.
     """
     yield
-    if "qtbot" not in request.fixturenames:
+    if "qtbot" not in request.fixturenames or request.node.get_closest_marker("qt_widgets_kept_until_exit"):
         return
     from qtpy.QtCore import QCoreApplication, QEvent
 

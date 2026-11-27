@@ -23,6 +23,10 @@ from control._def import STARTUP_STATE_MIN_FIRMWARE
 from control.firmware_sim_serial import FirmwareSimSerial
 from control.startup_homing import StartupHoming
 
+# CI runs this file in a process of its own: its windows can reach no other file, so they stay until a later test's
+# event loop destroys them, as these tests were written against (tests/conftest.py, destroy_closed_qt_widgets).
+pytestmark = pytest.mark.qt_widgets_kept_until_exit
+
 
 @pytest.fixture
 def confirm_exit_yes(monkeypatch):
