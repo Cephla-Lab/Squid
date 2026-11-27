@@ -247,6 +247,39 @@ def _wait_until_not_pending(runner, timeout_s=10.0):
         time.sleep(0.01)
 
 
+def _record_shutdown(runner):
+    """Return an Event that is set once runner.shutdown() has returned. Call it after runner.start() (spawn pickles
+    the runner, and this puts a local function on it).
+
+    _finish_jobs() shuts its runners down in background threads, and shutdown() waits for the runner's process to end.
+    A test waits for that shutdown to return, not on the process itself: when two threads wait on one
+    multiprocessing.Process, one thread's os.waitpid() reaps it and the other's fails with ECHILD, which Popen.poll()
+    takes for "still running" until the first thread stores the exit code. Until then join() and kill() return at once,
+    and is_alive() says True although the process has ended.
+    """
+    shut_down = threading.Event()
+    shutdown = runner.shutdown
+
+    def shutdown_then_record(timeout_s=1.0):
+        try:
+            shutdown(timeout_s)
+        finally:
+            shut_down.set()
+
+    runner.shutdown = shutdown_then_record
+    return shut_down
+
+
+def _ended_by_its_shutdown(runner, shut_down, timeout_s=20.0):
+    """Whether _finish_jobs()' shutdown of `runner` returned within timeout_s with the runner's process ended. If not,
+    kill the process, so that none is left behind."""
+    ended = shut_down.wait(timeout_s) and not runner.is_alive()
+    if not ended:
+        runner.kill()
+        runner.join(timeout=5)
+    return ended
+
+
 def test_the_runner_counts_its_failed_jobs():
     runner = JobRunner()
     runner.start()
@@ -279,6 +312,7 @@ def test_finish_jobs_counts_a_real_runners_last_failure_that_never_arrives(job_c
     """A real spawned runner whose last job raises."""
     runner = JobRunner()
     runner.start()
+    shut_down = _record_shutdown(runner)
     try:
         assert runner.wait_ready(timeout_s=30)
         w = _worker([(job_class, runner)])
@@ -289,12 +323,9 @@ def test_finish_jobs_counts_a_real_runners_last_failure_that_never_arrives(job_c
         assert w._acquisition_error_count == 1
         assert w._compute_end_reason() == "completed_with_errors"
     finally:
-        # _finish_jobs() shuts the runner down in the background; wait for its subprocess to end.
-        runner.join(timeout=15)
-        if runner.is_alive():
-            runner.kill()
-            runner.join(timeout=5)
-    assert not runner.is_alive()
+        # _finish_jobs() shuts the runner down in the background: wait for that shutdown, not on the process.
+        ended = _ended_by_its_shutdown(runner, shut_down)
+    assert ended, "_finish_jobs() did not shut the runner's process down"
 
 
 def test_finish_jobs_returns_when_a_real_runners_failure_count_lock_is_never_released(caplog):
@@ -302,6 +333,7 @@ def test_finish_jobs_returns_when_a_real_runners_failure_count_lock_is_never_rel
     as a kill while it counts a failure leaves it. _finish_jobs() still returns, counts the failure, and logs both."""
     runner = JobRunner()
     runner.start()
+    shut_down = _record_shutdown(runner)
     try:
         assert runner.wait_ready(timeout_s=30)
         w = _worker([(FailsUnpicklablyJob, runner)])
@@ -316,8 +348,5 @@ def test_finish_jobs_returns_when_a_real_runners_failure_count_lock_is_never_rel
         assert "without its lock" in caplog.text
         assert "never arrived" in caplog.text
     finally:
-        runner.join(timeout=15)
-        if runner.is_alive():
-            runner.kill()
-            runner.join(timeout=5)
-    assert not runner.is_alive()
+        ended = _ended_by_its_shutdown(runner, shut_down)
+    assert ended, "_finish_jobs() did not shut the runner's process down"
