@@ -50,6 +50,8 @@ def test_signals_are_connected_and_the_imaging_port_feeds_napari():
     assert "signal_acquisition_started.connect(self.toggleAcquisitionStart)" in src
     assert "signal_acquisition_started.connect(self._set_fluidics_protocol_active)" in src
     assert "signal_run_notification.connect(self._handle_fluidics_notification)" in src
+    # a run started from the server or by recovery selects the protocol record tab first
+    assert "wire_record_tab(self.recordTabWidget, self.fluidicsProtocolWidget)" in src
     assert "setCurrentWidget(self.fluidicsDisplayTab)" in _source("_set_fluidics_protocol_active")
     # widget-to-widget wiring lives in the fluidics package, not in gui_hcs
     assert "wire_fluidics(self.fluidicsDisplayTab, self.fluidicsProtocolWidget)" in _source("_setup_fluidics_widgets")

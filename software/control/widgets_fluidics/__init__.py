@@ -16,3 +16,9 @@ def wire_fluidics(display_tab, protocol_widget) -> None:
     # offer waits for Initialize.
     display_tab.system_ready.connect(lambda: QTimer.singleShot(0, lambda: protocol_widget.offer_recovery(startup=True)))
     display_tab.run_line_provider = protocol_widget.run_line
+
+
+def wire_record_tab(record_tabs, protocol_widget) -> None:
+    """Let the protocol widget make itself the current record tab before a run starts (the GUI keeps only the
+    current record tab enabled during a run)."""
+    protocol_widget.signal_select_record_tab.connect(lambda: record_tabs.setCurrentWidget(protocol_widget))

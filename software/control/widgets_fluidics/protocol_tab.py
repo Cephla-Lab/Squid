@@ -136,6 +136,10 @@ class ProtocolTab(QWidget):
     def protocol(self) -> ProtocolFile:
         return self._protocol
 
+    @property
+    def has_unsaved_changes(self) -> bool:
+        return self._dirty
+
     def set_protocol(self, protocol: ProtocolFile, path: Optional[str] = None) -> None:
         self._protocol = protocol
         self.protocol_path = path
@@ -365,6 +369,13 @@ class ProtocolTab(QWidget):
         self._dirty = True
         self._render()  # renders and re-validates
         self.signal_protocol_changed.emit()
+
+    def _mark_changed_from_editor(self) -> None:
+        """An edit made inside an editor's own signal: the protocol is unsaved at once (a control-server start queued
+        behind the edit reads has_unsaved_changes before the next event-loop turn), while the re-render waits for that
+        turn, because destroying the editor inside its own signal is a crash."""
+        self._dirty = True
+        QTimer.singleShot(0, self._mark_changed)
 
     def _selected_row_index(self) -> Optional[int]:
         items = self.tree.selectedItems()
@@ -850,8 +861,7 @@ class ProtocolTab(QWidget):
         for index in row_indices:
             if 0 <= index < len(self._protocol.sequences):
                 self._protocol.sequences[index]["round"] = new_label
-        # Defer the re-render: destroying this line edit inside its own editingFinished is a crash.
-        QTimer.singleShot(0, self._mark_changed)
+        self._mark_changed_from_editor()
 
     def _line_edit(self, index: int, field: str, value) -> QLineEdit:
         edit = QLineEdit("" if value is None else str(value))
@@ -940,5 +950,4 @@ class ProtocolTab(QWidget):
             for other in self._protocol.sequences:
                 if other is not row and (other.get("name"), other.get("type")) == key:
                     other[field] = value
-        # Re-render on the next event-loop turn: destroying the editor inside its own signal is unsafe.
-        QTimer.singleShot(0, self._mark_changed)
+        self._mark_changed_from_editor()

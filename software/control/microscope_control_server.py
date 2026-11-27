@@ -12,6 +12,7 @@ import contextlib
 import functools
 import inspect
 import json
+import os
 import socket
 import threading
 import time
@@ -27,7 +28,7 @@ import control.utils
 
 # Qt imports for thread-safe GUI operations
 try:
-    from qtpy.QtCore import Q_ARG, QMetaObject, Qt, QTimer
+    from qtpy.QtCore import Q_ARG, QMetaObject, Qt, QThread, QTimer
 
     QT_AVAILABLE = True
 except ImportError:
@@ -264,6 +265,9 @@ class MicroscopeControlServer:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._python_exec_enabled = False  # Disabled by default for security
+        # Starting, pausing, resuming, aborting a fluidics protocol run and acting on its holds: off by default too.
+        self._fluidics_protocol_control_enabled = False
+        self._fluidics_protocol_start_lock = threading.Lock()
         self._connection_semaphore = threading.Semaphore(MAX_CONNECTIONS)
 
         # Auto-discover commands by finding all _cmd_* methods
@@ -904,6 +908,239 @@ class MicroscopeControlServer:
             # Legacy misspelled method name
             self.multipoint_controller.request_abort_aquisition()
         return {"aborted": True}
+
+    # ---- fluidics protocol runs (the GUI's Fluidics Protocol tab) ----
+    # The runner's public methods are safe from any thread: they only set events that the runner thread waits on,
+    # and its listener puts every state change on the GUI thread, so the tab follows what these commands do.
+    # Everything but the status needs "Enable MCP Fluidics Protocol Control" (off by default, like python_exec):
+    # the socket has no authentication, and these commands move liquid and can restart a step.
+
+    def _fluidics_protocol_widget(self):
+        widget = getattr(self.gui, "fluidicsProtocolWidget", None) if self.gui is not None else None
+        if widget is None:
+            raise RuntimeError("Fluidics protocol runs are not available: this GUI has no Fluidics Protocol tab")
+        return widget
+
+    def _fluidics_protocol_runner(self):
+        """The runner of the current or last protocol run, or None when no run was started since the GUI opened."""
+        return self._fluidics_protocol_widget().runner
+
+    def _require_fluidics_protocol_control(self) -> None:
+        if not self._fluidics_protocol_control_enabled:
+            raise RuntimeError(
+                "Fluidics protocol control is disabled. Enable it in the GUI first "
+                "(Settings → Enable MCP Fluidics Protocol Control)."
+            )
+
+    def set_fluidics_protocol_control_enabled(self, enabled: bool) -> None:
+        """Allow the fluidics protocol commands that act on a run (start, pause, resume, abort, hold actions).
+        Called from the GUI's Settings menu; off by default, and off again after a GUI restart."""
+        self._fluidics_protocol_control_enabled = enabled
+        if enabled:
+            self._log.warning("Fluidics protocol control has been ENABLED via GUI")
+        else:
+            self._log.info("Fluidics protocol control has been disabled via GUI")
+
+    def _require_fluidics_protocol_runner(self):
+        runner = self._fluidics_protocol_runner()
+        if runner is None:
+            raise RuntimeError("No fluidics protocol run since the GUI started")
+        return runner
+
+    @staticmethod
+    def _allowed_hold_actions(hold) -> List[str]:
+        """The actions the held panel offers for this hold (the runner would turn a resume it can't do into a
+        restart, and an accept into a skip that isn't marked skipped)."""
+        from control.core.fluidics_protocol.events import HoldAction
+
+        actions = []
+        if hold.can_resume and hold.resume_position is not None:
+            actions.append(HoldAction.RESUME.value)
+        actions += [HoldAction.RESTART.value, HoldAction.SKIP.value]
+        if hold.can_accept:
+            actions.append(HoldAction.ACCEPT.value)
+        actions.append(HoldAction.END.value)
+        return actions
+
+    @schema_method
+    def _cmd_get_fluidics_protocol_status(self) -> Dict[str, Any]:
+        """Get the state of the fluidics protocol run: step, attempt, hold and its allowed actions, last heartbeat."""
+        from control.core.fluidics_protocol.events import RunnerState
+
+        runner = self._fluidics_protocol_runner()
+        if runner is None:
+            return {"has_run": False, "state": None, "control_enabled": self._fluidics_protocol_control_enabled}
+        snap = runner.snapshot()  # state, step, attempt and hold read together under the runner's lock
+        manifest = runner.manifest
+        now = time.time()
+        step = manifest.steps[snap.step_index] if snap.step_index is not None else None
+        result = {
+            "has_run": True,
+            "control_enabled": self._fluidics_protocol_control_enabled,
+            "state": snap.state.value,
+            "outcome": snap.outcome,
+            "run_name": manifest.run_name,
+            "protocol_name": manifest.protocol_name,
+            "run_dir": str(runner.run_dir),
+            "step_index": snap.step_index,
+            "total_steps": snap.total_steps,
+            "round": step.round if step is not None else None,
+            "step_kind": step.kind if step is not None else None,
+            "step_name": step.label if step is not None else None,
+            "attempt": snap.attempt,
+            "sequence_index": manifest.cursor.sequence,
+            "elapsed_s": snap.elapsed_s,
+            "progress_fraction": snap.progress_fraction,
+            "last_heartbeat": manifest.heartbeat_at,
+            "heartbeat_age_s": now - manifest.heartbeat_at,
+            "hold": None,
+        }
+        hold = snap.hold
+        if snap.state is RunnerState.HELD and hold is not None:
+            result["hold"] = {
+                "step_index": hold.step_index,
+                "attempt": hold.attempt,
+                "kind": hold.kind,
+                "reason": hold.reason,
+                "message": hold.message,
+                "can_resume": hold.can_resume,
+                "can_accept": hold.can_accept,
+                "resume_position": hold.resume_position,
+                "tec_output_was_on": bool(hold.tec_before is not None and any(hold.tec_before.output_enabled)),
+                "allowed_actions": self._allowed_hold_actions(hold),
+                "held_at": snap.held_at,  # the run manifest's: the HELD panel and the watchdog show the same
+                "held_for_s": now - snap.held_at if snap.held_at is not None else None,
+            }
+        return result
+
+    @schema_method
+    def _cmd_fluidics_protocol_hold_action(
+        self,
+        action: str = Field(..., description="What to do with the held step: resume, restart, skip, accept or end"),
+        restore_tec: bool = Field(
+            False, description="Turn the TEC output back on to its targets from before the step, before continuing"
+        ),
+    ) -> Dict[str, Any]:
+        """Act on a held fluidics protocol run, like the buttons of its HELD panel."""
+        from control.core.fluidics_protocol.events import HoldAction, RunnerState
+
+        self._require_fluidics_protocol_control()
+        names = [a.value for a in HoldAction]
+        try:
+            hold_action = HoldAction(str(action).strip().lower())
+        except ValueError:
+            raise ValueError(f"Unknown hold action '{action}': use one of {', '.join(names)}") from None
+        runner = self._require_fluidics_protocol_runner()
+        snap = runner.snapshot()
+        if snap.state is not RunnerState.HELD:
+            raise RuntimeError(f"The fluidics protocol run is not held (state {snap.state.value})")
+        hold = snap.hold
+        if hold is None:
+            raise RuntimeError("The hold is already being acted on")
+        allowed = self._allowed_hold_actions(hold)
+        if hold_action.value not in allowed:
+            raise RuntimeError(
+                f"'{hold_action.value}' is not offered for this hold (step {hold.step_index + 1}, {hold.kind}, "
+                f"{hold.reason}): use one of {', '.join(allowed)}"
+            )
+        if not isinstance(restore_tec, bool):
+            raise ValueError(f"restore_tec must be true or false, not {restore_tec!r}")
+        # bound to the hold checked above: refused if the run has moved on or another client decided it first
+        runner.hold_action(hold_action, restore_tec=restore_tec, hold=hold)
+        self._log.info(
+            f"Fluidics protocol hold at step {hold.step_index + 1} (attempt {hold.attempt}): '{hold_action.value}' "
+            f"from the control server (restore_tec={restore_tec})"
+        )
+        return {"action": hold_action.value, "step_index": hold.step_index, "attempt": hold.attempt}
+
+    @schema_method
+    def _cmd_pause_fluidics_protocol(self) -> Dict[str, Any]:
+        """Pause the running fluidics protocol (an imaging step finishes first, the run parks after it)."""
+        from control.core.fluidics_protocol.events import RunnerState
+
+        self._require_fluidics_protocol_control()
+        runner = self._require_fluidics_protocol_runner()
+        state = runner.state
+        if state is not RunnerState.RUNNING:
+            raise RuntimeError(f"The fluidics protocol run is not running (state {state.value})")
+        runner.pause()
+        return {"pause_requested": True}
+
+    @schema_method
+    def _cmd_resume_fluidics_protocol(self) -> Dict[str, Any]:
+        """Resume a paused fluidics protocol run (a held run takes fluidics_protocol_hold_action instead)."""
+        from control.core.fluidics_protocol.events import RunnerState
+
+        self._require_fluidics_protocol_control()
+        runner = self._require_fluidics_protocol_runner()
+        state = runner.state
+        if state is RunnerState.HELD:
+            raise RuntimeError("The fluidics protocol run is held: use fluidics_protocol_hold_action")
+        if state not in (RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED):
+            raise RuntimeError(f"The fluidics protocol run is not paused (state {state.value})")
+        runner.resume()
+        return {"resumed": True}
+
+    @schema_method
+    def _cmd_abort_fluidics_protocol(self) -> Dict[str, Any]:
+        """Abort the whole fluidics protocol run: it stops the step in progress and ends with outcome 'stopped'."""
+        from control.core.fluidics_protocol.events import RunnerState
+
+        self._require_fluidics_protocol_control()
+        runner = self._require_fluidics_protocol_runner()
+        state = runner.state
+        if state in (RunnerState.IDLE, RunnerState.ENDED):
+            raise RuntimeError(f"No fluidics protocol run in progress (state {state.value})")
+        runner.abort_run()
+        self._log.info("Fluidics protocol run aborted from the control server")
+        return {"abort_requested": True}
+
+    @schema_method
+    def _cmd_start_fluidics_protocol(
+        self,
+        confirm: bool = Field(
+            False,
+            description="Start without the Start run… confirmation dialog. Without it nothing starts: the reply "
+            "says what the dialog would have asked to confirm",
+        ),
+        protocol_path: Optional[str] = Field(
+            None, description="Protocol YAML to open in the Fluidics Protocol tab first (default: the open one)"
+        ),
+        save_to: Optional[str] = Field(None, description="Directory to put the run folder in (default: the tab's)"),
+        run_name: Optional[str] = Field(None, description="Run name (default: the tab's)"),
+    ) -> Dict[str, Any]:
+        """Start a fluidics protocol run like the Start run… button of the Fluidics Protocol tab."""
+        self._require_fluidics_protocol_control()
+        if not isinstance(confirm, bool):
+            raise ValueError(f"confirm must be true or false, not {confirm!r}")
+        if protocol_path is not None:
+            # open() takes an integer as a file descriptor (and closes it), and a device file can block the GUI
+            # thread: only a path to an existing regular file goes on to the tab.
+            if not isinstance(protocol_path, str):
+                raise ValueError(f"protocol_path must be a file path (a string), not {protocol_path!r}")
+            if not os.path.isfile(protocol_path):
+                raise ValueError(f"protocol_path is not a protocol file: {protocol_path!r}")
+        widget = self._fluidics_protocol_widget()
+        request = json.dumps(
+            {"confirm": confirm, "protocol_path": protocol_path, "save_to": save_to, "run_name": run_name}
+        )
+        with self._fluidics_protocol_start_lock:  # one start at a time: the outcome comes back on the widget
+            widget.last_server_start = None
+            if QT_AVAILABLE and QThread.currentThread() is not widget.thread():
+                # the tab's own start path, on the GUI thread; blocks until it returns (no dialog can open). The
+                # outcome is read from the widget: PyQt5's invokeMethod returns None whether or not the call ran.
+                QMetaObject.invokeMethod(
+                    widget, "start_run_from_server", Qt.BlockingQueuedConnection, Q_ARG(str, request)
+                )
+            else:
+                widget.start_run_from_server(request)
+            outcome = widget.last_server_start
+        if outcome is None:
+            raise RuntimeError("The Fluidics Protocol tab did not report the start")
+        if not outcome["started"]:
+            raise RuntimeError(f"Fluidics protocol run not started: {outcome['error']}")
+        self._log.info(f"Fluidics protocol run '{outcome['run_name']}' started from the control server")
+        return {k: outcome[k] for k in ("started", "run_dir", "run_name", "protocol_name", "summary")}
 
     def _get_widget_for_type(self, widget_type: str):
         """Get the acquisition widget for a given widget type.

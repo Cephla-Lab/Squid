@@ -54,6 +54,7 @@ class RunManifest(BaseModel):
     status: str = "running"
     hold_reason: Optional[str] = None
     hold_message: Optional[str] = None
+    held_at: Optional[float] = None  # when the current hold began (epoch s); None when not held
     cursor: RunCursor = Field(default_factory=RunCursor)
     steps: List[StepRecord] = Field(default_factory=list)
     tec: Optional[TecState] = None

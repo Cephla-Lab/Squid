@@ -1,11 +1,12 @@
 """The Fluidics Protocol record tab: Start/pre-flight, the status card, Pause/Abort, the HELD
 attention panel and crash recovery — a thin Qt face over the Qt-free ProtocolRunner."""
 
+import json
 import os
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
-from qtpy.QtCore import QEventLoop, QTimer, QUrl, Signal
+from qtpy.QtCore import QEventLoop, QTimer, QUrl, Signal, Slot
 from qtpy.QtGui import QDesktopServices
 from qtpy.QtWidgets import (
     QApplication,
@@ -47,6 +48,50 @@ from control.widgets_fluidics.runner_bridge import RunnerEventBridge
 _ACTIVE_STATES = (RunnerState.RUNNING, RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED, RunnerState.HELD)
 
 
+class _DialogStart:
+    """How the Start run… button reports: message boxes, and the pre-flight dialog to confirm."""
+
+    def __init__(self, parent):
+        self._parent = parent
+
+    def cannot_start(self, message: str) -> None:
+        QMessageBox.warning(self._parent, "Cannot start", message)
+
+    def show_problems(self, problems: List[str]) -> None:
+        PreflightDialog(problems, [], self._parent).exec_()
+
+    def confirm(self, summary: List[str]) -> bool:
+        return PreflightDialog([], summary, self._parent).exec_() == QDialog.Accepted
+
+
+class ServerStart:
+    """How the control server's start command reports: never a dialog. It starts without the pre-flight
+    confirmation only when the command asked to (confirmed); otherwise it keeps the summary and refuses."""
+
+    def __init__(self, confirmed: bool):
+        self.confirmed = confirmed
+        self.error: Optional[str] = None
+        self.problems: List[str] = []
+        self.summary: List[str] = []
+
+    def cannot_start(self, message: str) -> None:
+        self.error = message
+
+    def show_problems(self, problems: List[str]) -> None:
+        self.problems = list(problems)
+        self.error = "the protocol has problems: " + "; ".join(self.problems)
+
+    def confirm(self, summary: List[str]) -> bool:
+        self.summary = list(summary)
+        if not self.confirmed:
+            self.error = (
+                "the Start run… button asks to confirm this summary first: "
+                + "; ".join(self.summary)
+                + ". Pass confirm=true to start without the dialog"
+            )
+        return self.confirmed
+
+
 def _hms(seconds: Optional[float]) -> str:
     if seconds is None:
         return "—"
@@ -57,6 +102,7 @@ def _hms(seconds: Optional[float]) -> str:
 class FluidicsProtocolWidget(QFrame):
     signal_acquisition_started = Signal(bool)  # True at run start, False at run end (the gui contract)
     signal_show_fluidics_tab = Signal()
+    signal_select_record_tab = Signal()  # make this record tab the current one: emitted before a run starts
     signal_run_notification = Signal(str)  # Slack-worthy: held / finished
     signal_reagent_rows = Signal(list)  # rows for the Reagents table
     signal_run_started = Signal(str, str)  # run dir, run name: a runner was created and is starting
@@ -81,6 +127,7 @@ class FluidicsProtocolWidget(QFrame):
         self._recovery_checked_dir: Optional[str] = None
         self.fluidics_port = None
         self.runner: Optional[ProtocolRunner] = None
+        self._run_open = False  # a launched run this tab has not yet finished: see is_run_active
         self._resolved = None
         self._bridge = RunnerEventBridge(self)
         self._bridge.event_received.connect(self._on_runner_event)
@@ -128,7 +175,7 @@ class FluidicsProtocolWidget(QFrame):
         run_row.addWidget(self.run_name_edit, 1)
 
         self.start_button = QPushButton("Start run…")
-        self.start_button.clicked.connect(self.start_run)
+        self.start_button.clicked.connect(lambda: self.start_run())
         self.resume_button = QPushButton("Resume unfinished run…")
         self.resume_button.clicked.connect(lambda: self.offer_recovery(startup=False))
         self.hint_label = QLabel("")
@@ -208,7 +255,10 @@ class FluidicsProtocolWidget(QFrame):
         self._refresh_idle()
 
     def is_run_active(self) -> bool:
-        return self.runner is not None and self.runner.state in _ACTIVE_STATES
+        """True from the moment a run is launched until this tab has handled its RunFinished. Not the runner's own
+        state: it is IDLE while its thread opens the run folder, and ENDED before its queued StateChanged and
+        RunFinished reach this thread, so a start handled in that gap would be closed by the old run's end."""
+        return self._run_open
 
     def _refresh_idle(self) -> None:
         protocol = self.protocol_tab.protocol
@@ -243,10 +293,12 @@ class FluidicsProtocolWidget(QFrame):
             return "give the run a name"
         return None
 
-    def start_run(self) -> None:
+    def start_run(self, *, ui=None) -> None:
+        """The Start run… button. `ui` replaces its dialogs: ServerStart for the control server's start command."""
+        ui = ui or _DialogStart(self)
         problem = self._guard_start()
         if problem:
-            QMessageBox.warning(self, "Cannot start", problem)
+            ui.cannot_start(problem)
             return
         protocol = self.protocol_tab.protocol
         save_to = self.save_to_edit.text().strip()
@@ -259,10 +311,10 @@ class FluidicsProtocolWidget(QFrame):
         try:
             resolved = resolve_protocol(protocol, base_dir, fluidics=self.fluidics_port)
         except ProtocolProblems as problems:
-            PreflightDialog(problems.problems, [], self).exec_()
+            ui.show_problems(problems.problems)
             return
         except Exception as e:
-            QMessageBox.warning(self, "Cannot start", str(e))
+            ui.cannot_start(str(e))
             return
 
         imaging_steps = sum(1 for s in resolved.steps if s.kind == "imaging")
@@ -271,12 +323,12 @@ class FluidicsProtocolWidget(QFrame):
             f"est. {_hms(resolved.total_estimate_s)} (imaging priced at a rough 1 s/FOV)",
             f"run folder: {os.path.join(save_to, run_name)}_<start time>",
         ]
-        if PreflightDialog([], summary, self).exec_() != QDialog.Accepted:
+        if not ui.confirm(summary):
             return
         try:
             run_dir = manifest_io.create_run_dir(save_to, run_name)
         except (ValueError, FileExistsError, OSError) as e:
-            QMessageBox.warning(self, "Cannot start", str(e))
+            ui.cannot_start(str(e))
             return
         state.save_ui_state(save_to=save_to, run_name=run_name)
         self._launch(
@@ -290,6 +342,66 @@ class FluidicsProtocolWidget(QFrame):
             ),
             resolved,
         )
+
+    @Slot(str)
+    def start_run_from_server(self, request_json: str) -> None:
+        """The control server's start command, run on the GUI thread (a blocking queued call): start like the
+        Start run… button, with no dialog. `request_json`: confirm, and optional protocol_path, save_to and
+        run_name. Qt drops a slot's return value and exceptions here, so the outcome is left in
+        last_server_start. A refused start leaves the tab as it was."""
+        request = json.loads(request_json)
+        ui = ServerStart(confirmed=request.get("confirm") is True)
+        before = (self.protocol_tab.protocol, self.protocol_tab.protocol_path)
+        fields = (self.save_to_edit.text(), self.run_name_edit.text())
+        runner = self.runner
+        loaded = False
+        try:
+            # Text typed into a protocol field editor is committed on editingFinished, which a focus loss fires:
+            # take the focus as the Start run… button's click does, so the edit is in the protocol (and unsaved).
+            focused = QApplication.focusWidget()
+            if focused is not None and self.protocol_tab.isAncestorOf(focused):
+                focused.clearFocus()
+            if QApplication.activeModalWidget() is not None:
+                ui.cannot_start("a dialog is open in the GUI; close it first")
+            elif self.is_run_active():
+                ui.cannot_start("a protocol run is already in progress")
+            elif request.get("protocol_path") and self.protocol_tab.has_unsaved_changes:
+                ui.cannot_start("the open protocol has unsaved changes: save or discard them in the GUI first")
+            else:
+                path = request.get("protocol_path")
+                if path:
+                    try:
+                        protocol = load_protocol(path)
+                    except Exception as e:
+                        raise RuntimeError(f"could not open the protocol {path}: {e}") from e
+                    loaded = True  # before set_protocol: a failure part-way through it is put back as well
+                    self.protocol_tab.set_protocol(protocol, path)
+                if request.get("save_to"):
+                    self.save_to_edit.setText(request["save_to"])
+                if request.get("run_name"):
+                    self.run_name_edit.setText(request["run_name"])
+                self.start_run(ui=ui)
+        except Exception as e:
+            self._log.exception("Start from the control server failed")
+            ui.cannot_start(f"{type(e).__name__}: {e}")
+        started = ui.error is None and self.runner is not None and self.runner is not runner
+        if started:
+            if loaded:
+                state.save_ui_state(protocol_path=request["protocol_path"])
+        else:
+            if loaded:
+                self.protocol_tab.set_protocol(*before)
+            self.save_to_edit.setText(fields[0])
+            self.run_name_edit.setText(fields[1])
+        self.last_server_start = {
+            "started": started,
+            "error": None if started else (ui.error or "the run did not start"),
+            "problems": ui.problems,
+            "summary": ui.summary,
+            "run_dir": str(self.runner.run_dir) if started else None,
+            "run_name": self.runner.manifest.run_name if started else None,
+            "protocol_name": self.protocol_tab.protocol.name if started else None,
+        }
 
     def _save_to_changed(self) -> None:
         save_to = self.save_to_edit.text().strip()
@@ -344,7 +456,23 @@ class FluidicsProtocolWidget(QFrame):
         self._launch(runner, resolved)
 
     def _launch(self, runner: ProtocolRunner, resolved) -> None:
+        """Every start comes here: the Start run… button, the control server's start command and crash recovery."""
+        # The GUI keeps only the current record tab enabled while a run rides (toggleAcquisitionStart). A server
+        # start or the startup recovery offer can come while a multipoint tab is current, which would leave that
+        # tab's Start live and this tab (Pause, Abort, the HELD panel) disabled; recovery had this flaw before the
+        # server start existed. So this tab is made current before the run is announced.
+        self.signal_select_record_tab.emit()
+        # The run is reserved from here (is_run_active), while its thread is still opening the run folder (IDLE),
+        # so a second start is refused until _finish. A thread that cannot start gives it back.
+        previous = self.runner
         self.runner = runner
+        self._run_open = True
+        try:
+            runner.start()
+        except Exception:
+            self.runner = previous
+            self._run_open = False
+            raise
         self._resolved = resolved
         self._current_step_kind = None
         self._current_round = "—"
@@ -353,7 +481,6 @@ class FluidicsProtocolWidget(QFrame):
         self._set_run_visible(True)
         self.signal_acquisition_started.emit(True)
         self.signal_run_started.emit(str(runner.run_dir), runner.manifest.run_name)
-        runner.start()
 
     def _set_run_visible(self, active: bool) -> None:
         """The status card replaces the idle panel while a run rides; the HELD box is
@@ -454,9 +581,12 @@ class FluidicsProtocolWidget(QFrame):
         def act(action: HoldAction):
             restore = tec_checkbox.isChecked() if tec_checkbox is not None else False
             try:
-                self.runner.hold_action(action, restore_tec=restore)
+                # bound to the hold this panel shows: refused once the run has moved on or another client (the
+                # control server) has decided it, rather than overwriting a decision already acknowledged
+                self.runner.hold_action(action, restore_tec=restore, hold=hold)
             except RuntimeError as e:
-                self._log.warning(f"Hold action refused: {e}")
+                self._log.warning(f"Hold action '{action.value}' refused: {e}")
+                QMessageBox.warning(self, "Hold action refused", f"'{action.value}' was not applied: {e}")
 
         buttons = QHBoxLayout()
         if hold.can_resume and hold.resume_position is not None:
@@ -519,19 +649,24 @@ class FluidicsProtocolWidget(QFrame):
             return None
 
     def _finish(self, outcome: str) -> None:
-        if self.runner is not None:
-            totals, _last = reagent_totals(self.runner.manifest)
-            for port, ul in totals.items():
-                self._since_init_ul[port] = self._since_init_ul.get(port, 0.0) + ul
-        self.protocol_tab.set_run_locked(False)
-        self.protocol_tab.highlight_row(None)
-        self.state_label.setText(f"Run {outcome}")
-        self.signal_acquisition_started.emit(False)
-        if self.runner is not None:
-            self.signal_run_finished.emit(str(self.runner.run_dir), outcome)
-        self.signal_run_notification.emit(f"Fluidics protocol run {outcome} ({self.folder_label.text()})")
-        self._set_run_visible(False)
-        self._refresh_idle()
+        """The run's RunFinished, its last event: only now can another run start (is_run_active), so every event
+        this tab handles belongs to self.runner."""
+        try:
+            if self.runner is not None:
+                totals, _last = reagent_totals(self.runner.manifest)
+                for port, ul in totals.items():
+                    self._since_init_ul[port] = self._since_init_ul.get(port, 0.0) + ul
+            self.protocol_tab.set_run_locked(False)
+            self.protocol_tab.highlight_row(None)
+            self.state_label.setText(f"Run {outcome}")
+            self.signal_acquisition_started.emit(False)
+            if self.runner is not None:
+                self.signal_run_finished.emit(str(self.runner.run_dir), outcome)
+            self.signal_run_notification.emit(f"Fluidics protocol run {outcome} ({self.folder_label.text()})")
+            self._set_run_visible(False)
+        finally:
+            self._run_open = False  # a failure above must not leave the tab refusing every later start
+            self._refresh_idle()
 
     # ---------- buttons / timer ----------
 

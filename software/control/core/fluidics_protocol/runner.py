@@ -58,6 +58,7 @@ class RunnerSnapshot:
     outcome: Optional[str]
     elapsed_s: float
     progress_fraction: Optional[float]  # 0..1 how-far-through, or None when there's no estimate to go on
+    held_at: Optional[float] = None  # when the current hold began (epoch s, the manifest's held_at); None if not held
 
 
 @dataclass
@@ -159,6 +160,7 @@ class ProtocolRunner:
                 outcome=self._outcome,
                 elapsed_s=elapsed,
                 progress_fraction=self._progress_fraction(elapsed),
+                held_at=self._manifest.held_at if self._hold is not None else None,
             )
 
     def _progress_fraction(self, elapsed_s: float) -> Optional[float]:
@@ -195,11 +197,19 @@ class ProtocolRunner:
         self._hold_decision = (HoldAction.END, False)
         self._hold_event.set()
 
-    def hold_action(self, action: HoldAction, restore_tec: bool = False) -> None:
-        if self._state != RunnerState.HELD:
-            raise RuntimeError(f"No hold to act on (state {self._state.value})")
-        self._hold_decision = (action, restore_tec)
-        self._hold_event.set()
+    def hold_action(self, action: HoldAction, restore_tec: bool = False, hold: Optional[Hold] = None) -> None:
+        """Decide the current hold. A caller that checked the action against a hold it read (the control server)
+        passes that hold: the decision is then refused unless the run is still at that hold and nothing has
+        decided it yet, so it cannot land on a later hold that does not offer it."""
+        with self._lock:
+            if self._state != RunnerState.HELD:
+                raise RuntimeError(f"No hold to act on (state {self._state.value})")
+            if hold is not None and self._hold is not hold:
+                raise RuntimeError("The run is no longer at that hold")
+            if hold is not None and self._hold_decision is not None:
+                raise RuntimeError("The hold is already being acted on")
+            self._hold_decision = (action, restore_tec)
+            self._hold_event.set()
 
     def wait(self, timeout: Optional[float] = None) -> bool:
         if not self._done.wait(timeout):
@@ -486,6 +496,10 @@ class ProtocolRunner:
             self._hold = hold
             self._manifest.hold_reason = hold.reason
             self._manifest.hold_message = hold.message
+            # Recorded once, here, and kept in run_manifest.json: the HELD panel, the control server and the
+            # watchdog read this one value. A run reopened after the GUI stopped while it was held keeps it.
+            if self._manifest.held_at is None:
+                self._manifest.held_at = time.time()
         self._set_state(RunnerState.HELD, status="held")
         self._log.warning(
             f"Protocol held at step {hold.step_index + 1} ({hold.kind}, attempt {hold.attempt}): "
@@ -495,14 +509,15 @@ class ProtocolRunner:
             self._heartbeat()
             if self._abort_run_requested.is_set():
                 break
-        if self._abort_run_requested.is_set():
-            decision = (HoldAction.END, False)
-        else:
-            decision = self._hold_decision or (HoldAction.END, False)
-        with self._lock:
+        with self._lock:  # the decision is taken and the hold closed together: a later bound hold_action is refused
+            if self._abort_run_requested.is_set():
+                decision = (HoldAction.END, False)
+            else:
+                decision = self._hold_decision or (HoldAction.END, False)
             self._hold = None
             self._manifest.hold_reason = None
             self._manifest.hold_message = None
+            self._manifest.held_at = None
         self._pause_requested.clear()
         self._abort_step_requested.clear()
         if decision[0] is not HoldAction.END:

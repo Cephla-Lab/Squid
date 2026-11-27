@@ -149,7 +149,7 @@ def test_guard_refuses_without_a_port_or_names(qtbot, widget, quiet_dialogs):
 def test_recovery_reopens_a_crashed_run_held(qtbot, widget):
     w, fluidics, imaging, save_to = widget
     w.start_run()
-    assert wait_until(lambda: w.runner.outcome is not None, timeout=15)
+    qtbot.waitUntil(lambda: not w.is_run_active(), timeout=15000)  # its RunFinished handled: the tab is free again
     run_dir = next(save_to.glob("liver_*"))
     crashed = manifest_io.read_manifest(run_dir)
     crashed.status = "running"
@@ -380,3 +380,36 @@ def test_run_lifecycle_signals(qtbot, widget):
     assert wait_until(lambda: w.runner.outcome == "stopped", timeout=15)
     qtbot.waitUntil(lambda: finished == [(run_dir, "stopped")], timeout=5000)
     assert started == [(run_dir, "liver")]
+
+
+def test_a_start_ahead_of_the_last_runs_queued_end_does_not_inherit_it(qtbot, widget, quiet_dialogs):
+    """The runner reaches ENDED on its thread; its StateChanged and RunFinished reach the GUI later, queued. A start
+    handled in between (the Start button, or a control-server start queued ahead of those events) must not launch a
+    run that the old run's RunFinished then closes: unlock its editor, report it finished, hide its status card."""
+    w, fluidics, _imaging, save_to = widget
+    started, finished = [], []
+    w.signal_acquisition_started.connect(started.append)
+    w.signal_run_finished.connect(lambda run_dir, outcome: finished.append((run_dir, outcome)))
+
+    w.start_run()
+    first = w.runner
+    assert first.wait(15) and first.state is RunnerState.ENDED  # wait() turns no event loop: the end is queued
+    w.run_name_edit.setText("second")
+    w.start_run()
+    assert w.runner is first and w.is_run_active()
+    assert quiet_dialogs[-1] == ("Cannot start", "a protocol run is already in progress")
+
+    qtbot.waitUntil(lambda: bool(finished), timeout=5000)  # the old run's end is handled ...
+    assert finished == [(str(first.run_dir), "finished")] and not w.is_run_active()
+
+    fluidics.script = [("hold",)]
+    w.start_run()  # ... and now a start goes through, untouched by it
+    second = w.runner
+    assert second is not first and w.is_run_active()
+    qtbot.wait(50)
+    assert finished == [(str(first.run_dir), "finished")] and started == [True, False, True]
+    assert not w.running_box.isHidden() and not w.protocol_tab.add_step_button.isEnabled()
+    second.abort_run()
+    assert second.wait(15)
+    qtbot.waitUntil(lambda: len(finished) == 2, timeout=5000)
+    assert finished[1] == (str(second.run_dir), "stopped")

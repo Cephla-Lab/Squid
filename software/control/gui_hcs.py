@@ -1678,12 +1678,15 @@ class HighContentScreeningGui(QMainWindow):
             self.signal_performance_mode_changed.connect(self.wellplateMultiPointWidget.set_performance_mode)
 
         if self.fluidicsProtocolWidget is not None:
+            from control.widgets_fluidics import wire_record_tab
+
             # widget-to-widget wiring lives in wire_fluidics; only GUI-owned objects here
             self.fluidicsProtocolWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.fluidicsProtocolWidget.signal_acquisition_started.connect(self._set_fluidics_protocol_active)
             self.fluidicsProtocolWidget.signal_show_fluidics_tab.connect(
                 lambda: self.imageDisplayTabs.setCurrentWidget(self.fluidicsDisplayTab)
             )
+            wire_record_tab(self.recordTabWidget, self.fluidicsProtocolWidget)
             self.fluidicsProtocolWidget.signal_run_notification.connect(self._handle_fluidics_notification)
 
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
