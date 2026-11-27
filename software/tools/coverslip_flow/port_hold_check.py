@@ -65,9 +65,7 @@ PY = sys.executable or "python3"
 CHILD_STOP_S = 180  # how long a stopped pull recording gets to clean up and save before it is killed
 RELEASE_TIMEOUT_S = 90
 HOLD_FLAG_UM = 5.0
-HELD_WINDOW_S = (
-    10.0  # held: the coverslip over the last 10 s of the post-pull recording, all of it after the pump stopped
-)
+HELD_WINDOW_S = 10.0  # held: the coverslip over the last 10 s of the recording, all after the pump stopped
 SENSOR_HOLD_UL = 1.0  # inflow in the 15 s after the release move
 SENSOR_BORDERLINE_UL = 0.6
 GLITCH_UL_MIN = 1000  # any reading above this in the window: air or a bad reading
