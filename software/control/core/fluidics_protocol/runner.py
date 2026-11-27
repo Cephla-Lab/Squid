@@ -47,6 +47,13 @@ from control.models.fluidics_run import AttemptRecord, RunCursor, RunManifest, S
 
 _OK_IMAGING = ("completed",)
 
+# While a run goes on, the heartbeat rewrites the manifest every 5 s, which repairs a write that failed because
+# a reader held the file open on Windows. Nothing rewrites it after the end-of-run write: lost, it leaves a
+# finished run looking unfinished, and the run is then offered for recovery. So that write retries a refused
+# replace for longer: 10 s, twice the heartbeat gap that repaired every refusal seen so far. It runs outside
+# the runner lock, so the GUI's status refresh never waits on it; the GUI's close waits up to 15 s for a run.
+END_WRITE_RETRY_S = 10.0
+
 
 @dataclass(frozen=True)
 class RunnerSnapshot:
@@ -250,7 +257,15 @@ class ProtocolRunner:
             self._manifest.status = outcome
             self._manifest.ended_at = time.time()
             self._manifest.cursor = RunCursor(step=self._current_step, attempt=self._current_attempt, sequence=None)
-            self._save()
+            self._manifest.heartbeat_at = time.time()
+            final = self._manifest.model_copy(deep=True)
+        try:  # outside the lock: its retries can take seconds (END_WRITE_RETRY_S)
+            manifest_io.write_manifest(self.run_dir, final, retry_s=END_WRITE_RETRY_S)
+        except OSError as e:
+            self._log.error(
+                f"Could not write the end of the run ({outcome}) to the run manifest: {e}. "
+                "The run will look unfinished and be offered for recovery."
+            )
         self._state = RunnerState.ENDED
         self._emit(StateChanged(RunnerState.ENDED, None))
         self._emit(RunFinished(outcome))

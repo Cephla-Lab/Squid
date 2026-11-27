@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -7,9 +8,9 @@ import pytest
 from control.core.fluidics_protocol import manifest as manifest_io
 from control.core.fluidics_protocol.events import HoldAction, RunnerState
 from control.core.fluidics_protocol.resolve import resolve_protocol
-from control.core.fluidics_protocol.runner import ProtocolRunner
+from control.core.fluidics_protocol.runner import END_WRITE_RETRY_S, ProtocolRunner
 from control.models.fluidics_protocol import ProtocolFile, expand_rounds
-from control.models.fluidics_run import TecState
+from control.models.fluidics_run import TERMINAL_STATUSES, TecState
 from tests.control.core.fluidics_protocol.fakes import FakeFluidicsPort, FakeImagingPort, wait_until
 
 SETTINGS = {"channels": ["A"], "z_stack": {"nz": 1}}
@@ -407,3 +408,65 @@ def test_recovery_refuses_a_missing_or_different_protocol_copy(tmp_path):
     (run_dir / "protocol.yaml").unlink()
     with pytest.raises(ValueError, match="missing"):
         ProtocolRunner(same, run_dir, FakeImagingPort(), FakeFluidicsPort(), run_name="liver", manifest=crashed)
+
+
+def _lock_the_end_write(monkeypatch, failures, on_refusal=lambda: None):
+    """os.replace as Windows runs it while another process (a copier, a file watcher) holds run_manifest.json
+    open: PermissionError (WinError 5), here only for the run's end-of-run write, `failures` times. The
+    manifest module's retry waits are recorded instead of slept."""
+    real_replace = os.replace
+    refused = []
+
+    def replace(src, dst):
+        if os.path.basename(dst) == manifest_io.MANIFEST_NAME and len(refused) < failures:
+            with open(src, encoding="utf-8") as f:
+                ending = json.load(f)["status"] in TERMINAL_STATUSES
+            if ending:
+                refused.append(dst)
+                on_refusal()
+                raise PermissionError(13, "Access is denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(manifest_io.os, "replace", replace)
+    slept = []
+    monkeypatch.setattr(manifest_io, "time", SimpleNamespace(sleep=slept.append))
+    return refused, slept
+
+
+def test_the_end_write_outlasts_a_lock_that_ordinary_writes_give_up_on(tmp_path, monkeypatch):
+    # Lose the end-of-run write and a finished run looks unfinished on disk: it is then offered for recovery.
+    # Nothing writes the manifest after it, so it must outlast a lock the ordinary writes would give up on,
+    # and without holding the lock the GUI's status refresh (runner.snapshot) takes.
+    runner, fluidics, imaging, run_dir = _runner(tmp_path)
+    gui_refresh_returned = []
+
+    def gui_refresh_while_locked():
+        if gui_refresh_returned:
+            return
+        refresh = threading.Thread(target=runner.snapshot, daemon=True)
+        refresh.start()
+        refresh.join(1.0)
+        gui_refresh_returned.append(not refresh.is_alive())
+
+    refused, slept = _lock_the_end_write(monkeypatch, failures=20, on_refusal=gui_refresh_while_locked)
+
+    runner.start()
+    assert runner.wait(10)
+
+    assert runner.outcome == "finished" and len(refused) == 20
+    assert sum(slept) > manifest_io.REPLACE_RETRY_S  # longer than an ordinary write would have waited
+    man = manifest_io.read_manifest(run_dir)
+    assert man.is_terminal and man.status == "finished" and man.ended_at is not None
+    assert gui_refresh_returned == [True]
+
+
+def test_the_end_write_gives_up_on_a_lasting_lock_and_the_run_still_ends(tmp_path, monkeypatch):
+    runner, fluidics, imaging, run_dir = _runner(tmp_path)
+    refused, slept = _lock_the_end_write(monkeypatch, failures=10**6)
+
+    runner.start()
+    assert runner.wait(10)
+
+    assert runner.state == RunnerState.ENDED and runner.outcome == "finished"
+    assert len(refused) == len(slept) + 1 and manifest_io.REPLACE_RETRY_S < sum(slept) <= END_WRITE_RETRY_S
+    assert manifest_io.read_manifest(run_dir).status == "running"  # the last write that got through
