@@ -119,6 +119,38 @@ def test_a_failed_done_write_after_an_error_is_logged_and_the_error_goes_on(tmp_
     assert w._log.exception.call_count == 1
 
 
+def test_a_saved_csv_is_not_written_again_when_the_done_file_fails(tmp_path, monkeypatch):
+    """The normal end saved coordinates.csv, then creating .done failed. The error path must not write the CSV
+    again (to_csv truncates first, so a failed rewrite would destroy the good file); it still tries .done again."""
+    w = _worker(tmp_path, fovs_done=2)
+    real_to_csv = pd.DataFrame.to_csv
+    csv_writes = []
+
+    def to_csv(self, *args, **kwargs):
+        csv_writes.append(args)
+        if len(csv_writes) > 1:
+            raise OSError("the disk went away")
+        return real_to_csv(self, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", to_csv)
+    error = OSError("cannot create .done")
+    done_attempts = []
+
+    def create_done_file(path):
+        done_attempts.append(path)
+        raise error
+
+    monkeypatch.setattr(multi_point_worker.utils, "create_done_file", create_done_file)
+
+    with pytest.raises(OSError) as raised:
+        w.run_single_time_point()
+
+    assert raised.value is error
+    assert len(csv_writes) == 1
+    assert _fovs_in_csv(tmp_path) == [0, 1]
+    assert len(done_attempts) == 2
+
+
 def test_the_normal_path_writes_both_files_around_its_notifications(tmp_path):
     w = _worker(tmp_path, fovs_done=4)
     w._slack_notifier = MagicMock()

@@ -771,6 +771,7 @@ class MultiPointWorker:
             # create a dataframe to save coordinates
             self.initialize_coordinates_dataframe()
 
+            coordinates_saved = False
             try:
                 # init z parameters, z range
                 self.initialize_z_stack()
@@ -780,6 +781,7 @@ class MultiPointWorker:
 
                 # finished region scan
                 self._save_coordinates(current_path)
+                coordinates_saved = True
 
                 # Send Slack timepoint notification via callback (allows main thread to capture screenshot)
                 if self._slack_notifier is not None:
@@ -813,7 +815,7 @@ class MultiPointWorker:
 
                 utils.create_done_file(current_path)
             except BaseException:
-                self._close_time_point_folder_after_error(current_path)
+                self._close_time_point_folder_after_error(current_path, coordinates_saved)
                 raise
             self._log.debug(f"Single time point took: {time.time() - start} [s]")
         finally:
@@ -822,17 +824,22 @@ class MultiPointWorker:
     def _save_coordinates(self, current_path):
         self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
 
-    def _close_time_point_folder_after_error(self, current_path):
+    def _close_time_point_folder_after_error(self, current_path, coordinates_saved):
         """An exception is ending the time point, maybe part way (a stage reply error at one FOV): still save the
         coordinates of the FOVs imaged so far and mark the folder done, as the normal end does. The success
         notifications stay with the normal end.
 
+        coordinates_saved: the normal end already wrote coordinates.csv (the exception came after it, e.g. from
+        creating .done). It is not written again: to_csv truncates the file first, so a failed rewrite would destroy
+        the good one.
+
         Runs while that exception propagates, so a failed write is logged, never raised: it must not replace it.
         """
-        try:
-            self._save_coordinates(current_path)
-        except Exception:
-            self._log.exception(f"Could not save coordinates.csv in {current_path} after the time point failed")
+        if not coordinates_saved:
+            try:
+                self._save_coordinates(current_path)
+            except Exception:
+                self._log.exception(f"Could not save coordinates.csv in {current_path} after the time point failed")
         try:
             utils.create_done_file(current_path)
         except Exception:
