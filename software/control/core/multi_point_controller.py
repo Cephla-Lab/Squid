@@ -890,9 +890,8 @@ class MultiPointController:
                     coordinates_df = pd.concat([coordinates_df, pd.DataFrame([row])], ignore_index=True)
             coordinates_df.to_csv(os.path.join(self.base_path, self.experiment_ID, "coordinates.csv"), index=False)
 
-            self._log.info(
-                f"num fovs: {sum(len(coords) for coords in scan_position_information.scan_region_fov_coords_mm)}"
-            )
+            num_fovs = sum(len(coords) for coords in scan_position_information.scan_region_fov_coords_mm.values())
+            self._log.info(f"num fovs: {num_fovs}")
             self._log.info(f"num regions: {len(scan_position_information.scan_region_coords_mm)}")
             self._log.info(f"region ids: {scan_position_information.scan_region_names}")
             self._log.info(f"region centers: {scan_position_information.scan_region_coords_mm}")

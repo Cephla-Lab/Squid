@@ -1,5 +1,6 @@
 import copy
 import dataclasses
+import logging
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -728,6 +729,28 @@ def test_run_acquisition_aborts_cleanly_when_microcontroller_stays_busy():
     assert tt.finished_event.wait(5)
     assert not tt.started_event.is_set()
     assert mpc.last_end_reason == "failed_to_start"
+
+
+def test_start_log_counts_the_fovs_of_every_region(caplog):
+    """The "num fovs" line counts FOVs, not the letters of the region names: a region named "manual" holding
+    hundreds of FOVs was logged as "num fovs: 6"."""
+    scope, tt, mpc = _controller_with_tracker()
+    try:
+        x_mm = scope.stage.get_config().X_AXIS.MAX_POSITION / 2.0
+        y_mm = scope.stage.get_config().Y_AXIS.MAX_POSITION / 2.0
+        mpc.scanCoordinates.clear_regions()
+        mpc.scanCoordinates.add_region_from_fovs("manual", [(x_mm + 0.1 * i, y_mm) for i in range(7)])
+        mpc.scanCoordinates.add_region_from_fovs("B2", [(x_mm, y_mm + 0.1 * i) for i in range(3)])
+
+        # The MCU never goes idle, so the start stops right after its start-of-run log lines.
+        with patch.object(
+            mpc.microcontroller, "wait_till_operation_is_completed", side_effect=TimeoutError("busy")
+        ), caplog.at_level(logging.INFO):
+            assert mpc.run_acquisition() is False
+
+        assert "num fovs: 10" in caplog.messages
+    finally:
+        scope.close()
 
 
 def test_run_acquisition_continues_when_stop_live_times_out_but_mcu_recovers():
