@@ -440,13 +440,21 @@ result = {"released": not errors, "error": "; ".join(errors)}
 """
 
 
+def _say(text, stream=None):
+    """Status output between a pull and its release, best-effort: an output that is gone (e.g. `| tee` stopped by the
+    same Ctrl-C) must never keep the valve from moving to the release port."""
+    try:
+        print(text, file=sys.stdout if stream is None else stream, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
 def _report_release_failed(port, release_port, why):
-    print(
+    _say(
         "\n!!! RELEASE FAILED after port %d: %s\n!!! The valve may still be on port %d, with the flow cell under "
         "suction if the pull ran. Turn it to port %d in the Fluidics tab now.\n"
         % (port, why or "unknown", port, release_port),
-        file=sys.stderr,
-        flush=True,
+        sys.stderr,
     )
 
 
@@ -624,7 +632,7 @@ def _ctrl_c_deferred(note):
 
     def handler(signum, frame):
         presses.append(signum)
-        print("\nCtrl-C: " + note, file=sys.stderr, flush=True)
+        _say("\nCtrl-C: " + note, sys.stderr)
 
     previous = signal.signal(signal.SIGINT, handler)
     try:
@@ -644,7 +652,7 @@ def _run_child(cmd, log_path, shield=False):
         try:
             rc = proc.wait()
         except KeyboardInterrupt:
-            print("\nCtrl-C: waiting for the run to stop and save its data...", file=sys.stderr, flush=True)
+            _say("\nCtrl-C: waiting for the run to stop and save its data...", sys.stderr)
             with _ctrl_c_deferred("still waiting for the run to stop and save its data"):
                 try:
                     proc.wait(timeout=CHILD_STOP_S)
@@ -658,7 +666,7 @@ def _run_child(cmd, log_path, shield=False):
 
 def _print_status(output):
     tail = [l for l in output.splitlines() if re.search(r"End:|refused|rror|Cannot", l)]
-    print("  " + ("\n  ".join(tail) if tail else "(no status line)"), flush=True)
+    _say("  " + ("\n  ".join(tail) if tail else "(no status line)"))
 
 
 def _bare_release(a):
@@ -686,7 +694,7 @@ def release_after_pull(a, port, rel_base, record):
         released = False
         if record:
             try:
-                print("===== port %d: release to port %d =====" % (port, a.release_port), flush=True)
+                _say("===== port %d: release to port %d =====" % (port, a.release_port))
                 cmd = [
                     PY,
                     os.path.join(HERE, "valve_sequence.py"),
@@ -700,9 +708,9 @@ def release_after_pull(a, port, rel_base, record):
                 _print_status(output)
                 released = rc == 0
             except Exception as e:  # the move is still owed: it is made below, unrecorded
-                print("  the recorded release failed: %s: %s" % (type(e).__name__, e), file=sys.stderr, flush=True)
+                _say("  the recorded release failed: %s: %s" % (type(e).__name__, e), sys.stderr)
         if not released:
-            print("  moving the valve to the release port %d (not recorded)..." % a.release_port, flush=True)
+            _say("  moving the valve to the release port %d (not recorded)..." % a.release_port)
             released, why = _bare_release(a)
             if not released:
                 _report_release_failed(port, a.release_port, why)
@@ -754,14 +762,14 @@ def run_suite(a):
             "--out",
             pull,
         ]
+        rc = None
         try:
             rc, output = _run_child(cmd, pull + "_log.txt")
-        except BaseException:
-            # Ctrl-C (or anything else) during the pull: the valve still goes to the release port first
-            release_after_pull(a, p, rel, record=False)
-            raise
-        _print_status(output)
-        released, ctrl_c = release_after_pull(a, p, rel, record=rc == 0)
+            _print_status(output)
+        finally:
+            # Whatever happened once the pull started (it failed, Ctrl-C stopped it or came just after it, anything
+            # else raised), the valve goes to the release port before anything else; recorded after a completed pull.
+            released, ctrl_c = release_after_pull(a, p, rel, record=rc == 0)
         if not released:
             sys.exit("RELEASE FAILED after port %d; stopping." % p)
         if rc != 0:

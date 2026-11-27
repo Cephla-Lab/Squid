@@ -1151,3 +1151,75 @@ def test_the_bare_release_runs_when_the_release_recorder_cannot_start(hold, tmp_
     hold.run_suite(_suite_args(tmp_path))
     assert calls == ["flow_displacement_experiment.py", "valve_sequence.py", "bare release"]
     assert "No space left on device" in capsys.readouterr().err
+
+
+class BrokenOutput:
+    """stdout or stderr once the `| tee` it wrote to has gone (the same Ctrl-C stops tee)."""
+
+    def write(self, s):
+        raise BrokenPipeError(32, "Broken pipe")
+
+    def flush(self):
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+@pytest.mark.parametrize(
+    "pull_rc, release_rc, after_pull",
+    [(0, 0, ["valve_sequence.py"]), (0, 1, ["valve_sequence.py", "bare release"]), (1, 0, ["bare release"])],
+)
+def test_a_broken_output_does_not_stop_the_release(hold, tmp_path, monkeypatch, pull_rc, release_rc, after_pull):
+    def pull():  # the output goes away while the pull runs
+        monkeypatch.setattr(sys, "stdout", BrokenOutput())
+        monkeypatch.setattr(sys, "stderr", BrokenOutput())
+        return pull_rc, "End: completed" if pull_rc == 0 else "End: error"
+
+    calls = _fake_children(monkeypatch, hold, pull, release_rc=release_rc)
+    try:
+        hold.run_suite(_suite_args(tmp_path))
+    except SystemExit:  # a failed pull stops the check, after the release
+        assert pull_rc != 0
+    assert calls == ["flow_displacement_experiment.py"] + after_pull
+
+
+class CtrlCOnFirstWrite:
+    """stdout where a Ctrl-C arrives while the first line after the pull is written."""
+
+    def __init__(self):
+        self.hit = False
+
+    def write(self, s):
+        if not self.hit:
+            self.hit = True
+            raise KeyboardInterrupt
+        return len(s)
+
+    def flush(self):
+        pass
+
+
+def test_a_ctrl_c_while_the_pull_status_prints_still_releases(hold, tmp_path, monkeypatch):
+    def pull():
+        monkeypatch.setattr(sys, "stdout", CtrlCOnFirstWrite())
+        return 0, "End: completed"
+
+    calls = _fake_children(monkeypatch, hold, pull)
+    with pytest.raises(KeyboardInterrupt):
+        hold.run_suite(_suite_args(tmp_path, ports=[3, 4]))
+    assert calls == ["flow_displacement_experiment.py", "valve_sequence.py"]  # released; port 4 never starts
+
+
+def test_a_ctrl_c_during_the_release_with_a_broken_output_still_finishes_it(hold, tmp_path, monkeypatch):
+    calls = _fake_children(monkeypatch, hold, lambda: (0, "End: completed"))
+    inner = hold._run_child
+
+    def release_with_ctrl_c(cmd, log_path, shield=False):
+        if "valve_sequence.py" in cmd[1]:
+            monkeypatch.setattr(sys, "stderr", BrokenOutput())  # the Ctrl-C note cannot be printed
+            os.kill(os.getpid(), signal.SIGINT)
+            time.sleep(0.05)
+        return inner(cmd, log_path, shield)
+
+    monkeypatch.setattr(hold, "_run_child", release_with_ctrl_c)
+    with pytest.raises(KeyboardInterrupt):
+        hold.run_suite(_suite_args(tmp_path, ports=[3, 4]))
+    assert calls == ["flow_displacement_experiment.py", "valve_sequence.py"]  # the recorded release, not a fallback
