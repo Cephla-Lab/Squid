@@ -1664,3 +1664,12 @@ def test_sensor_run_never_waits_on_or_aborts_a_job_started_just_after_its_prepar
     # the release it owes is refused while that job runs: reported, never forced
     assert res["valve_moved"] is True and res["released"] is False
     assert "another job holds the session" in res["release_error"]
+
+
+def test_release_remote_never_waits_on_a_job_started_just_after_its_move(hold):
+    # The valve reached the release port: the release is done, whatever the operator started after it.
+    gui, system = _fake_gui(stuck=(9,))
+    _operator_job_after(system, ["valve 5"])
+    ns = _exec_remote(hold.RELEASE_REMOTE.replace("__PARAMS__", repr({"port": 5, "timeout": 0.3})), gui)
+    assert ns["result"] == {"released": True, "error": ""}
+    assert system.log == ["valve 5", "valve 9"] and system.aborts == 0 and system.busy

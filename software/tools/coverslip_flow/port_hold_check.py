@@ -446,14 +446,15 @@ while (getattr(gui, "_flow_displacement_running", False) or system.busy) and tim
     time.sleep(0.05)
 if getattr(gui, "_flow_displacement_running", False) or system.busy:
     raise RuntimeError("the fluidics is still busy after %g s; the valve was not moved" % P["timeout"])
-errors = []; stopped = []
+errors = []; stopped = []; finished = []
 system.run_manual(lambda _m=manual, _p=P["port"]: _m.open_port(_p),
-                  callbacks={"on_error": errors.append, "on_stopped": lambda _s=stopped: _s.append(1)})
-time.sleep(0.2)
+                  callbacks={"on_error": errors.append, "on_stopped": lambda _s=stopped: _s.append(1),
+                             "on_finished": lambda _f=finished: _f.append(1)})
+# the move's end is its own on_finished, not "the rig is idle": a job someone else starts just after it is not waited on
 t_end = time.time() + P["timeout"]
-while system.busy and time.time() < t_end:
+while not finished and time.time() < t_end:
     time.sleep(0.05)
-if system.busy:
+if not finished:
     errors.append("the valve move did not finish in %g s" % P["timeout"])
 if stopped:
     errors.append("the valve move was stopped")
