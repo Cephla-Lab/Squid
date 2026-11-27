@@ -774,6 +774,11 @@ class ThrowImmediatelyJob(Job):
         raise ThrowImmediatelyJobException("ThrowImmediatelyJob threw")
 
 
+# How long JobRunner.failed_job_count() waits for its counter's lock. The subprocess holds that lock only for one
+# increment, so a wait this long means the holder died with the lock held.
+_COUNTER_LOCK_TIMEOUT_S = 1.0
+
+
 class JobRunner(multiprocessing.Process):
     def __init__(
         self,
@@ -805,6 +810,8 @@ class JobRunner(multiprocessing.Process):
         self._ready_event: multiprocessing.Event = multiprocessing.Event()  # Signals subprocess is ready
         # Track jobs in flight (dispatched but not yet completed)
         self._pending_count = multiprocessing.Value("i", 0)
+        # Jobs that raised, counted in the subprocess before their result is queued (see failed_job_count()).
+        self._failed_job_count = multiprocessing.Value("i", 0)
 
         # Backpressure tracking (shared with BackpressureController)
         self._bp_pending_jobs = bp_pending_jobs
@@ -882,6 +889,35 @@ class JobRunner(multiprocessing.Process):
         with self._pending_count.get_lock():
             return self._pending_count.value > 0
 
+    def failed_job_count(self) -> int:
+        """How many jobs have raised in the subprocess.
+
+        A failure is counted before its exception result is queued, and so before the job stops being pending. The
+        result itself can arrive later: put_nowait() hands it to the queue's feeder thread, so a runner's last result
+        can still be in transit when has_pending() turns False. Comparing this count with the exception results read
+        from output_queue() finds the failures whose results have not arrived.
+
+        Never blocks for long. The count's lock is a semaphore that nobody releases if its holder dies, and
+        _finish_jobs() reads this count right after it may have killed this runner (its jobs timed out), perhaps while
+        the runner was counting a failure. The runner holds the lock only for one increment, so after
+        _COUNTER_LOCK_TIMEOUT_S this reads the count without it.
+        """
+        counter = self._failed_job_count
+        lock = counter.get_lock()
+        if not lock.acquire(timeout=_COUNTER_LOCK_TIMEOUT_S):
+            self._log.warning(
+                f"The failed-job count's lock was not released within {_COUNTER_LOCK_TIMEOUT_S} s (the runner was "
+                f"probably killed while counting a failure); reading the count without its lock."
+            )
+            # get_obj().value reads the int straight from shared memory (counter.value would wait for the lock
+            # again). An aligned int is read whole, so this is the count from just before or just after the
+            # interrupted increment.
+            return counter.get_obj().value
+        try:
+            return counter.get_obj().value
+        finally:
+            lock.release()
+
     def wait_ready(self, timeout_s: float = 5.0) -> bool:
         """Wait for the subprocess to signal it's ready to process jobs.
 
@@ -951,6 +987,7 @@ class JobRunner(multiprocessing.Process):
         self._output_queue = None
         self._shutdown_event = None
         self._pending_count = None
+        self._failed_job_count = None
 
     def run(self):
         import logging
@@ -1023,6 +1060,10 @@ class JobRunner(multiprocessing.Process):
             except Exception as e:
                 if job:
                     self._log.exception(f"Job {job.job_id} failed! Returning exception result.")
+                    # Count it before the result is queued and before the finally below stops counting the job
+                    # pending: once has_pending() is False, failed_job_count() includes every failure.
+                    with self._failed_job_count.get_lock():
+                        self._failed_job_count.value += 1
                     self._output_queue.put_nowait(JobResult(job_id=job.job_id, result=None, exception=e))
             finally:
                 # Clear operation context after job completes
