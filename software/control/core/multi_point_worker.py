@@ -1,3 +1,4 @@
+import collections
 import math
 import os
 import queue
@@ -273,6 +274,8 @@ class MultiPointWorker:
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
         self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
+        # Exception results read from each runner's output queue, checked against its failed_job_count() at the end.
+        self._job_failures_received: "collections.Counter[JobRunner]" = collections.Counter()
         self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
 
         # Get the current log file path to share with subprocess workers
@@ -715,6 +718,10 @@ class MultiPointWorker:
 
         # Drain results before shutdown
         self._summarize_runner_outputs(drain_all=True)
+        # Each runner's own count of its failed jobs, read now: shutdown drops it.
+        failures_reported = [
+            (job_class, job_runner, job_runner.failed_job_count()) for job_class, job_runner in active_runners
+        ]
 
         # Shut down all job runners in parallel (in background to avoid blocking on subprocess termination).
         # Using daemon threads is safe here because:
@@ -738,6 +745,7 @@ class MultiPointWorker:
 
         # Final drain of all output queues (should be empty, but check anyway)
         self._summarize_runner_outputs(drain_all=True)
+        self._count_failures_never_received(failures_reported)
 
         # Release backpressure resources now that all jobs are complete
         try:
@@ -910,6 +918,8 @@ class MultiPointWorker:
             while True:
                 try:
                     job_result: JobResult = out_queue.get_nowait()
+                    if job_result.exception is not None:
+                        self._job_failures_received[job_runner] += 1
                     none_failed = none_failed and self._summarize_job_result(job_result)
                     had_results = True
                     if not drain_all:
@@ -921,6 +931,22 @@ class MultiPointWorker:
                     break
 
         return SummarizeResult(none_failed=none_failed, had_results=had_results)
+
+    def _count_failures_never_received(self, failures_reported: List[Tuple[Type[Job], JobRunner, int]]) -> None:
+        """Count as errors the failed jobs whose results never came off their runner's output queue.
+
+        A runner's last result can still be in its queue's feeder thread when the runner reports no job pending, and
+        shutdown closes the queue, so that result is never read. Without this, a run whose last save failed ended
+        "completed" instead of "completed_with_errors".
+        """
+        for job_class, job_runner, reported in failures_reported:
+            missed = reported - self._job_failures_received[job_runner]
+            if missed > 0:
+                self._log.warning(
+                    f"The {job_class.__name__} job runner reported {missed} failed job(s) whose results never "
+                    f"arrived; counting them as errors."
+                )
+                self._acquisition_error_count += missed
 
     def _summarize_job_result(self, job_result: JobResult) -> bool:
         """
