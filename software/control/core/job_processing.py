@@ -774,6 +774,11 @@ class ThrowImmediatelyJob(Job):
         raise ThrowImmediatelyJobException("ThrowImmediatelyJob threw")
 
 
+# How long JobRunner.failed_job_count() waits for its counter's lock. The subprocess holds that lock only for one
+# increment, so a wait this long means the holder died with the lock held.
+_COUNTER_LOCK_TIMEOUT_S = 1.0
+
+
 class JobRunner(multiprocessing.Process):
     def __init__(
         self,
@@ -891,9 +896,27 @@ class JobRunner(multiprocessing.Process):
         result itself can arrive later: put_nowait() hands it to the queue's feeder thread, so a runner's last result
         can still be in transit when has_pending() turns False. Comparing this count with the exception results read
         from output_queue() finds the failures whose results have not arrived.
+
+        Never blocks for long. The count's lock is a semaphore that nobody releases if its holder dies, and
+        _finish_jobs() reads this count right after it may have killed this runner (its jobs timed out), perhaps while
+        the runner was counting a failure. The runner holds the lock only for one increment, so after
+        _COUNTER_LOCK_TIMEOUT_S this reads the count without it.
         """
-        with self._failed_job_count.get_lock():
-            return self._failed_job_count.value
+        counter = self._failed_job_count
+        lock = counter.get_lock()
+        if not lock.acquire(timeout=_COUNTER_LOCK_TIMEOUT_S):
+            self._log.warning(
+                f"The failed-job count's lock was not released within {_COUNTER_LOCK_TIMEOUT_S} s (the runner was "
+                f"probably killed while counting a failure); reading the count without its lock."
+            )
+            # get_obj().value reads the int straight from shared memory (counter.value would wait for the lock
+            # again). An aligned int is read whole, so this is the count from just before or just after the
+            # interrupted increment.
+            return counter.get_obj().value
+        try:
+            return counter.get_obj().value
+        finally:
+            lock.release()
 
     def wait_ready(self, timeout_s: float = 5.0) -> bool:
         """Wait for the subprocess to signal it's ready to process jobs.

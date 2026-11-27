@@ -9,8 +9,10 @@ _finish_jobs() counts every failure whose result never arrived.
 """
 
 import collections
+import contextlib
 import logging
 import queue
+import threading
 import time
 from dataclasses import dataclass
 from unittest.mock import MagicMock
@@ -181,6 +183,60 @@ def test_every_result_in_one_drain_is_summarized(caplog):
     w.callbacks.signal_zarr_frame_written.assert_called_once_with(3, 0, 1, "BF", 2)
 
 
+# --- a failure count whose lock is never released ---------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _lock_held_elsewhere(counter):
+    """Hold `counter`'s lock in another thread for as long as the block runs, as a runner that _finish_jobs() killed
+    while it was counting a failure leaves it held. (The thread stays alive so that no other thread can reuse its
+    ident and pass the lock's owner check; it releases the lock when the block ends, so nothing stays blocked.)"""
+    taken, done = threading.Event(), threading.Event()
+
+    def hold():
+        with counter.get_lock():
+            taken.set()
+            done.wait()
+
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    assert taken.wait(5)
+    try:
+        yield
+    finally:
+        done.set()
+        holder.join(5)
+
+
+def _call_within(fn, timeout_s):
+    """Return fn(), failing instead of hanging if it is still blocked after timeout_s."""
+    outcome = {}
+
+    def call():
+        try:
+            outcome["value"] = fn()
+        except BaseException as e:
+            outcome["error"] = e
+
+    caller = threading.Thread(target=call, daemon=True)
+    caller.start()
+    caller.join(timeout_s)
+    assert not caller.is_alive(), f"still blocked after {timeout_s} s"
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
+
+
+def test_failed_job_count_returns_when_its_lock_is_never_released(caplog):
+    runner = JobRunner()
+    runner._failed_job_count.value = 2
+
+    with _lock_held_elsewhere(runner._failed_job_count), caplog.at_level(logging.WARNING):
+        assert _call_within(runner.failed_job_count, timeout_s=5) == 2
+
+    assert "without its lock" in caplog.text
+
+
 # --- a real JobRunner subprocess --------------------------------------------------------------------------------------
 
 
@@ -234,6 +290,32 @@ def test_finish_jobs_counts_a_real_runners_last_failure_that_never_arrives(job_c
         assert w._compute_end_reason() == "completed_with_errors"
     finally:
         # _finish_jobs() shuts the runner down in the background; wait for its subprocess to end.
+        runner.join(timeout=15)
+        if runner.is_alive():
+            runner.kill()
+            runner.join(timeout=5)
+    assert not runner.is_alive()
+
+
+def test_finish_jobs_returns_when_a_real_runners_failure_count_lock_is_never_released(caplog):
+    """A real runner's last job failed and its result never arrives; then the lock of its failure count is left held,
+    as a kill while it counts a failure leaves it. _finish_jobs() still returns, counts the failure, and logs both."""
+    runner = JobRunner()
+    runner.start()
+    try:
+        assert runner.wait_ready(timeout_s=30)
+        w = _worker([(FailsUnpicklablyJob, runner)])
+        runner.dispatch(FailsUnpicklablyJob(capture_info=make_test_capture_info(), capture_image=make_test_job_image()))
+        _wait_until_not_pending(runner)
+
+        with _lock_held_elsewhere(runner._failed_job_count), caplog.at_level(logging.WARNING):
+            _call_within(lambda: w._finish_jobs(timeout_s=10), timeout_s=20)
+
+        assert w._acquisition_error_count == 1
+        assert w._compute_end_reason() == "completed_with_errors"
+        assert "without its lock" in caplog.text
+        assert "never arrived" in caplog.text
+    finally:
         runner.join(timeout=15)
         if runner.is_alive():
             runner.kill()
