@@ -5,6 +5,7 @@ one CR-terminated command per line, replies ending in ':A' (ok) or ':N' (rejecte
 """
 
 import inspect
+import logging
 import threading
 import time
 from types import SimpleNamespace
@@ -60,6 +61,7 @@ class FakeDragonflyPort:
         self.modality = "BF"
         # Wheel positions keyed by the position command's "<kind>,<port>" prefix
         self.positions = {"AT_PS_POS,1": 1, "AT_FW_POS,1": 1, "AT_FW_POS,2": 1, "AT_AP_POS,1": 1}
+        self.replies = {}  # command -> this unit's own reply to it, in place of the usual one (e.g. a wheel it lacks)
         self._unread = b""
 
     @property
@@ -141,6 +143,8 @@ class FakeDragonflyPort:
     def _execute(self, command):
         if command == "":  # an empty line
             return "30005:N"
+        if command in self.replies:
+            return self.replies[command]
         if command in STATIC_REPLIES:
             return STATIC_REPLIES[command]
         if command == "AT_MS_RUN":
@@ -316,6 +320,35 @@ def test_a_query_rejected_for_good_is_asked_once(dragonfly, port):
     with pytest.raises(serial_peripherals.SerialDeviceError, match="failed"):
         dragonfly.get_emission_filter(3)  # no wheel on port 3: ':N', not the garbled-command 30005
     assert port.commands.count("AT_FW_POS,3,?") == 1
+
+
+def test_a_missing_port_2_filter_wheel_is_reported_without_an_error(dragonfly, port, caplog):
+    port.replies["AT_FW_POS,2,?"] = "30023:N"  # what a unit with no wheel on camera port 2 answers
+
+    with caplog.at_level(logging.INFO), pytest.raises(serial_peripherals.DragonflyComponentNotFitted):
+        dragonfly.get_emission_filter(2)
+
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+    assert port.commands.count("AT_FW_POS,2,?") == 1
+
+
+@pytest.mark.parametrize(
+    "command, reply",
+    [
+        ("AT_FW_POS,2,?", ":N"),
+        ("AT_FW_POS,2,?", "30024:N"),
+        ("AT_FW_POS,1,?", "30023:N"),  # only port 2's 30023 has been seen to mean "no wheel"
+    ],
+)
+def test_other_rejections_of_a_filter_query_are_still_errors(dragonfly, port, caplog, command, reply):
+    port.replies[command] = reply
+    wheel_port = int(command.split(",")[1])
+
+    with caplog.at_level(logging.INFO), pytest.raises(serial_peripherals.SerialDeviceError) as raised:
+        dragonfly.get_emission_filter(wheel_port)
+
+    assert not isinstance(raised.value, serial_peripherals.DragonflyComponentNotFitted)
+    assert any(r.levelno == logging.ERROR and command in r.getMessage() for r in caplog.records)
 
 
 def test_an_unanswered_query_is_asked_again(dragonfly, port, monkeypatch):

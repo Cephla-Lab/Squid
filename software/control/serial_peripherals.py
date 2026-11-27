@@ -538,6 +538,10 @@ def dragonfly_camera_port_for_dichroic(dichroic_name: str) -> int:
     raise ValueError(f"Unknown camera port: {dichroic_name}")
 
 
+class DragonflyComponentNotFitted(SerialDeviceError):
+    """The Dragonfly answered that it does not have the component the command addressed (see NOT_FITTED_REPLIES)."""
+
+
 class Dragonfly:
     # The Dragonfly answers each AT command with one CR-terminated line, once the command is done: a filter wheel or
     # aperture move replies when the wheel is in place (~0.1-0.3 s), AT_MS_RUN when the disk is up to speed (~6 s),
@@ -560,6 +564,11 @@ class Dragonfly:
     # which the unit always answers with 30005:N, and drops everything before that answer. Until that answer comes no
     # command is sent, since its reply could not be told from the late one.
     RESYNC_QUIET_S = 0.05
+    # Replies that mean the unit does not have the component a query asks about, by query. They raise
+    # DragonflyComponentNotFitted, which is not logged as an error. A unit with no emission filter wheel on camera
+    # port 2 answers its position query with 30023:N. No Andor document here says what 30023 means; "not fitted" is
+    # inferred from that one reply, so only that query's 30023 is taken that way. Every other rejection is an error.
+    NOT_FITTED_REPLIES = {"AT_FW_POS,2,?": "30023:N"}
 
     def __init__(self, SN: str):
         self.log = squid.logging.get_logger(self.__class__.__name__)
@@ -606,7 +615,8 @@ class Dragonfly:
 
         Raises SerialDeviceError when the unit rejects the command (':N'), gives no complete reply within timeout_s
         (default QUERY_TIMEOUT_S for queries, REPLY_TIMEOUT_S otherwise), or does not answer the resync that has to
-        come first after an unanswered command (the command is then not sent).
+        come first after an unanswered command (the command is then not sent). A rejection in NOT_FITTED_REPLIES
+        raises DragonflyComponentNotFitted instead, and is left to the caller to report.
         """
         is_query = command.endswith("?")
         if timeout_s is None:
@@ -632,6 +642,8 @@ class Dragonfly:
                     time.sleep(remaining)
                 # Success - return the response without :A suffix
                 return response[:-2]
+        if response == Dragonfly.NOT_FITTED_REPLIES.get(command):
+            raise DragonflyComponentNotFitted(f"Dragonfly reports no such component: {command} -> {response}")
         if response.endswith(":N"):
             # Failure
             self.log.error(f"Command failed: {command} -> {response}")
@@ -756,6 +768,8 @@ class Dragonfly:
 
         Returns:
             Current position
+
+        Raises DragonflyComponentNotFitted when the unit answers that it has no wheel on that port.
         """
         response = self._send_command(f"AT_FW_POS,{port},?")
         if response.isdigit():

@@ -1,10 +1,15 @@
 """Tests for DragonflyConfocalWidget: what it shows must match the Dragonfly hardware."""
 
 import logging
+from types import SimpleNamespace
+
+import pytest
 
 import tests.control.gui_test_stubs  # noqa: F401 - ensures GUI modules import cleanly
 import control.widgets
+from control import serial_peripherals
 from control.serial_peripherals import SerialDeviceError, Dragonfly_Simulation
+from tests.control.test_dragonfly import SERIAL_NUMBER, FakeDragonflyPort
 
 
 class MuteDragonfly(Dragonfly_Simulation):
@@ -130,6 +135,117 @@ def test_one_unreadable_wheel_does_not_hide_the_rest_of_the_state(qtbot):
 
     assert widget.dropdown_field_aperture.currentIndex() == 6
     assert widget.btn_disk_motor.isChecked()
+
+
+# ------------------------------------------------------------------ a unit without a port 2 emission filter wheel
+# The real driver, talking to the fake Dragonfly port of test_dragonfly.py.
+
+
+@pytest.fixture
+def port(monkeypatch):
+    fake_port = FakeDragonflyPort()
+    monkeypatch.setattr(
+        serial_peripherals.list_ports,
+        "comports",
+        lambda: [SimpleNamespace(serial_number=SERIAL_NUMBER, device="/dev/fake-dragonfly", vid=None, pid=None)],
+    )
+    monkeypatch.setattr(serial_peripherals.serial, "Serial", lambda *args, **kwargs: fake_port)
+    monkeypatch.setattr(serial_peripherals.time, "sleep", lambda seconds: None)  # leaving standby etc.
+    # Positions away from the defaults, so the test sees the other wheels were really read
+    fake_port.positions.update({"AT_PS_POS,1": 4, "AT_FW_POS,1": 3, "AT_AP_POS,1": 7})
+    fake_port.modality = "CONFOCAL"
+    fake_port.disk_speed = 6000
+    return fake_port
+
+
+def warnings_and_errors(caplog):
+    return [f"{r.name}: {r.getMessage()}" for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def assert_other_wheels_shown(widget):
+    assert widget.dropdown_dichroic.currentIndex() == 3
+    assert widget.dropdown_port1_emission_filter.currentIndex() == 2
+    assert widget.dropdown_field_aperture.currentIndex() == 6
+    assert widget.get_confocal_mode() is True
+    assert widget.btn_disk_motor.isChecked()
+
+
+def assert_port2_filter_disabled(widget):
+    for shown in (widget.dropdown_port2_emission_filter, widget.label_port2_emission_filter):
+        assert not shown.isEnabled()
+        assert shown.toolTip() == "This Dragonfly has no port 2 emission filter wheel"
+    assert widget.dropdown_port2_emission_filter.currentIndex() == -1
+
+
+def test_a_missing_port_2_filter_wheel_is_logged_once_at_info_and_its_dropdown_disabled(qtbot, port, caplog):
+    port.replies["AT_FW_POS,2,?"] = "30023:N"
+
+    with caplog.at_level(logging.INFO):
+        widget = make_widget(qtbot, serial_peripherals.Dragonfly(SERIAL_NUMBER))
+        widget.btn_refresh.click()  # no second query, no second message
+        widget.dropdown_field_aperture.setCurrentIndex(4)  # re-enables the controls after the move
+
+    assert warnings_and_errors(caplog) == []
+    infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO and "port 2" in r.getMessage()]
+    assert len(infos) == 1, infos
+    assert port.commands.count("AT_FW_POS,2,?") == 1
+    assert_port2_filter_disabled(widget)
+    assert widget.dropdown_port1_emission_filter.isEnabled()
+    assert port.positions["AT_AP_POS,1"] == 5
+
+
+def test_the_other_wheels_still_show_without_a_port_2_filter_wheel(qtbot, port):
+    port.replies["AT_FW_POS,2,?"] = "30023:N"
+
+    widget = make_widget(qtbot, serial_peripherals.Dragonfly(SERIAL_NUMBER))
+
+    assert_other_wheels_shown(widget)
+
+
+def test_a_port_the_unit_reports_empty_is_never_queried(qtbot, port, caplog):
+    port.replies["AT_FW_COMPO,2,?"] = "2,0:A"  # the driver lists no filters for it
+
+    with caplog.at_level(logging.INFO):
+        widget = make_widget(qtbot, serial_peripherals.Dragonfly(SERIAL_NUMBER))
+        widget.btn_refresh.click()
+
+    assert warnings_and_errors(caplog) == []
+    assert len([r for r in caplog.records if r.levelno == logging.INFO and "port 2" in r.getMessage()]) == 1
+    assert "AT_FW_POS,2,?" not in port.commands
+    assert_port2_filter_disabled(widget)
+    assert_other_wheels_shown(widget)
+
+
+def test_a_unit_with_both_filter_wheels_keeps_both_dropdowns(qtbot, port, caplog):
+    port.positions["AT_FW_POS,2"] = 6
+
+    with caplog.at_level(logging.INFO):
+        widget = make_widget(qtbot, serial_peripherals.Dragonfly(SERIAL_NUMBER))
+        shown_index = widget.dropdown_port2_emission_filter.currentIndex()
+        widget.dropdown_port2_emission_filter.setCurrentIndex(1)
+
+    assert warnings_and_errors(caplog) == []
+    assert not [r for r in caplog.records if "port 2" in r.getMessage()]
+    assert shown_index == 5
+    assert widget.dropdown_port2_emission_filter.isEnabled()
+    assert widget.label_port2_emission_filter.isEnabled()
+    assert widget.dropdown_port2_emission_filter.toolTip() == ""
+    assert port.positions["AT_FW_POS,2"] == 2  # the dropdown still moves the wheel
+    assert_other_wheels_shown(widget)
+
+
+def test_a_different_rejection_of_the_port_2_filter_query_is_still_an_error(qtbot, port, caplog):
+    port.replies["AT_FW_POS,2,?"] = "30024:N"
+
+    with caplog.at_level(logging.INFO):
+        widget = make_widget(qtbot, serial_peripherals.Dragonfly(SERIAL_NUMBER))
+
+    assert any(
+        r.levelno == logging.ERROR and "port 2 emission filter" in r.getMessage() for r in caplog.records
+    ), warnings_and_errors(caplog)
+    assert widget.dropdown_port2_emission_filter.isEnabled()
+    assert widget.dropdown_port2_emission_filter.toolTip() == ""
+    assert_other_wheels_shown(widget)
 
 
 # ------------------------------------------------------------------ Refresh

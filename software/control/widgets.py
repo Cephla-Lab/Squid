@@ -26,6 +26,7 @@ from control.core.mosaic_utils import format_well_id
 from control.core.geometry_utils import calculate_well_coverage, default_scan_shape, get_effective_well_size
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
+from control.serial_peripherals import DragonflyComponentNotFitted
 from control.startup_homing import StageHomingRefused
 from control.channel_sequence import enable_channel_sequence
 import control.utils as utils
@@ -4440,6 +4441,7 @@ class DragonflyConfocalWidget(QWidget):
 
         self.dragonfly = dragonfly
         self.confocal_mode = False  # what we assume until the unit answers the modality query
+        self._wheels_not_fitted = set()  # dropdowns of wheels the unit does not have: disabled, never read
 
         self.init_ui()
 
@@ -4458,9 +4460,12 @@ class DragonflyConfocalWidget(QWidget):
         self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
 
     def _read(self, what, query, default):
-        """Query the unit; on failure log it and return default so the rest of the state still loads."""
+        """Query the unit; on failure log it and return default so the rest of the state still loads.
+        A component the unit does not have is not a failure: DragonflyComponentNotFitted goes to the caller."""
         try:
             return query()
+        except DragonflyComponentNotFitted:
+            raise
         except Exception as e:
             self._log.error(f"Could not read the Dragonfly {what}: {e}")
             return default
@@ -4469,30 +4474,55 @@ class DragonflyConfocalWidget(QWidget):
         """Read every setting from the unit into the controls without sending any command.
 
         Each query stands alone: a wheel the unit does not have (e.g. no port 2 emission
-        filter) must not hide the rest of the state.
+        filter) must not hide the rest of the state. A wheel the unit says it does not have
+        is disabled once, with an INFO line, and not read again.
         """
         modality = self._read("modality", self.dragonfly.get_modality, None)
         if modality is not None:  # an unanswered query is not a mode change
             self.confocal_mode = modality == "CONFOCAL"
         self.btn_toggle_confocal.setText("Switch to Widefield" if self.confocal_mode else "Switch to Confocal")
         self.btn_disk_motor.setChecked(bool(self._read("disk motor state", self.dragonfly.get_disk_motor_state, False)))
-        for dropdown, what, query in (
-            (self.dropdown_dichroic, "dichroic", self.dragonfly.get_port_selection_dichroic),
+        for label, dropdown, what, query in (
+            (self.label_dichroic, self.dropdown_dichroic, "dichroic", self.dragonfly.get_port_selection_dichroic),
             (
+                self.label_port1_emission_filter,
                 self.dropdown_port1_emission_filter,
                 "port 1 emission filter",
                 partial(self.dragonfly.get_emission_filter, 1),
             ),
             (
+                self.label_port2_emission_filter,
                 self.dropdown_port2_emission_filter,
                 "port 2 emission filter",
                 partial(self.dragonfly.get_emission_filter, 2),
             ),
-            (self.dropdown_field_aperture, "field aperture", self.dragonfly.get_field_aperture_wheel_position),
+            (
+                self.label_field_aperture,
+                self.dropdown_field_aperture,
+                "field aperture",
+                self.dragonfly.get_field_aperture_wheel_position,
+            ),
         ):
-            position = self._read(what, query, 0)
+            if dropdown in self._wheels_not_fitted:
+                continue
+            try:
+                position = self._read(what, query, 0)
+            except DragonflyComponentNotFitted as e:
+                self._show_wheel_not_fitted(label, dropdown, what, str(e))
+                continue
             with QSignalBlocker(dropdown):  # showing a position must not command a move
                 dropdown.setCurrentIndex(position - 1)  # unknown position: no entry selected
+
+    def _show_wheel_not_fitted(self, label, dropdown, what, reason):
+        """The unit does not have this wheel: disable its control, say why, and never read it again."""
+        self._wheels_not_fitted.add(dropdown)
+        tooltip = f"This Dragonfly has no {what} wheel"
+        for widget in (label, dropdown):
+            widget.setEnabled(False)
+            widget.setToolTip(tooltip)
+        with QSignalBlocker(dropdown):
+            dropdown.setCurrentIndex(-1)
+        self._log.info(f"{tooltip} ({reason}); its control is disabled")
 
     def refresh_state(self):
         """Re-read the unit, e.g. after the live controller moved a filter for a channel."""
@@ -4512,37 +4542,37 @@ class DragonflyConfocalWidget(QWidget):
         self.btn_refresh = QPushButton("Refresh")
         self.btn_refresh.setToolTip("Re-read every setting from the Dragonfly")
 
-        dichroic_label = QLabel("Port Selection")
-        dichroic_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        self.label_dichroic = QLabel("Port Selection")
+        self.label_dichroic.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         self.dropdown_dichroic = QComboBox(self)
         self.dropdown_dichroic.addItems(self.dragonfly.get_port_selection_dichroic_info())
 
         layout_confocal.addWidget(self.btn_toggle_confocal)
         layout_confocal.addWidget(self.btn_disk_motor)
-        layout_confocal.addWidget(dichroic_label)
+        layout_confocal.addWidget(self.label_dichroic)
         layout_confocal.addWidget(self.dropdown_dichroic)
 
         layout_wheels = QGridLayout()
         # Row 2: Camera Port 1 Emission Filter and Field Aperture
-        port1_emission_label = QLabel("Port 1 Emission Filter")
+        self.label_port1_emission_filter = QLabel("Port 1 Emission Filter")
         self.dropdown_port1_emission_filter = QComboBox(self)
         self.dropdown_port1_emission_filter.addItems(self.dragonfly.get_emission_filter_info(1))
 
-        port1_aperture_label = QLabel("Field Aperture")
+        self.label_field_aperture = QLabel("Field Aperture")
         self.dropdown_field_aperture = QComboBox(self)
         self.dropdown_field_aperture.addItems(self.dragonfly.get_field_aperture_info())
 
-        layout_wheels.addWidget(port1_emission_label, 0, 0)
+        layout_wheels.addWidget(self.label_port1_emission_filter, 0, 0)
         layout_wheels.addWidget(self.dropdown_port1_emission_filter, 0, 1)
-        layout_wheels.addWidget(port1_aperture_label, 0, 2)
+        layout_wheels.addWidget(self.label_field_aperture, 0, 2)
         layout_wheels.addWidget(self.dropdown_field_aperture, 0, 3)
 
         # Row 3: Camera Port 2 Emission Filter and Field Aperture
-        port2_emission_label = QLabel("Port 2 Emission Filter")
+        self.label_port2_emission_filter = QLabel("Port 2 Emission Filter")
         self.dropdown_port2_emission_filter = QComboBox(self)
         self.dropdown_port2_emission_filter.addItems(self.dragonfly.get_emission_filter_info(2))
 
-        layout_wheels.addWidget(port2_emission_label, 1, 0)
+        layout_wheels.addWidget(self.label_port2_emission_filter, 1, 0)
         layout_wheels.addWidget(self.dropdown_port2_emission_filter, 1, 1)
         layout_wheels.addWidget(self.btn_refresh, 1, 3)  # under the field aperture dropdown
 
@@ -4551,15 +4581,28 @@ class DragonflyConfocalWidget(QWidget):
 
         self.setLayout(main_layout)
 
+        # The driver lists no filters for a port the unit reports as having no wheel (AT_FW_COMPO)
+        for port, label, dropdown in (
+            (1, self.label_port1_emission_filter, self.dropdown_port1_emission_filter),
+            (2, self.label_port2_emission_filter, self.dropdown_port2_emission_filter),
+        ):
+            if dropdown.count() == 0:
+                self._show_wheel_not_fitted(
+                    label, dropdown, f"port {port} emission filter", "it lists no filters for that port"
+                )
+
     def enable_all_buttons(self, enable: bool):
         """Enable or disable all controls"""
         self.btn_toggle_confocal.setEnabled(enable)
         self.btn_disk_motor.setEnabled(enable)
         self.btn_refresh.setEnabled(enable)
-        self.dropdown_dichroic.setEnabled(enable)
-        self.dropdown_port1_emission_filter.setEnabled(enable)
-        self.dropdown_port2_emission_filter.setEnabled(enable)
-        self.dropdown_field_aperture.setEnabled(enable)
+        for dropdown in (
+            self.dropdown_dichroic,
+            self.dropdown_port1_emission_filter,
+            self.dropdown_port2_emission_filter,
+            self.dropdown_field_aperture,
+        ):
+            dropdown.setEnabled(enable and dropdown not in self._wheels_not_fitted)
 
     def toggle_confocal_mode(self):
         """Toggle between confocal and widefield modes"""
