@@ -8,6 +8,7 @@ import pytest
 
 import control._def
 import control.microscope
+import squid.exceptions
 from control.core.multi_point_controller import MultiPointController
 from control.core.multi_point_utils import MultiPointControllerFunctions, AcquisitionParameters
 
@@ -879,6 +880,68 @@ def test_finish_is_reported_when_the_stage_stops_answering_mid_run():
     assert tt.finished_count == 1
     assert mpc.last_end_reason == "error"
     assert not mpc.acquisition_in_progress()
+
+
+def _grid_run_into(tmp_path):
+    """A run of the 3 x 3 grid only (9 FOVs, one z level, one time point) into tmp_path/acquisition."""
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.scanCoordinates.remove_region("region_1")
+    mpc.scanCoordinates.remove_region("region_2")
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("acquisition", add_timestamp=False)
+    return scope, tt, mpc
+
+
+def test_a_completed_run_closes_its_time_point_folder(tmp_path):
+    import pandas as pd
+
+    scope, tt, mpc = _grid_run_into(tmp_path)
+
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    assert mpc.last_end_reason == "completed"
+    time_point = tmp_path / "acquisition" / "0"
+    assert list(pd.read_csv(time_point / "coordinates.csv")["fov"]) == list(range(9))
+    assert (time_point / ".done").exists()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ValueError("unreadable position reply"), squid.exceptions.SquidTimeout("stage stopped answering")],
+    ids=["stage_reply_error", "timeout"],
+)
+def test_a_stage_error_part_way_still_closes_the_time_point_folder(tmp_path, monkeypatch, error):
+    """The 5th FOV move fails (a stage reply error, or a timeout) and ends the run. The time point folder still gets
+    coordinates.csv with the 4 FOVs imaged and its .done; only the run's end reason says it ended early."""
+    import pandas as pd
+
+    scope, tt, mpc = _grid_run_into(tmp_path)
+    thread_errors = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: thread_errors.append(args.exc_value))
+    real_move_x_to = scope.stage.move_x_to
+    calls = []
+
+    def move_x_to(x_mm, *args, **kwargs):
+        calls.append(x_mm)
+        if len(calls) == 5:
+            raise error
+        return real_move_x_to(x_mm, *args, **kwargs)
+
+    with patch.object(scope.stage, "move_x_to", side_effect=move_x_to):
+        mpc.run_acquisition()
+        assert tt.finished_event.wait(30)
+        mpc.thread.join(10)
+
+    assert mpc.last_end_reason == "error"
+    # run() ends a timeout as an error itself; any other exception still leaves the acquisition thread.
+    assert (error in thread_errors) == (not isinstance(error, TimeoutError))
+    time_point = tmp_path / "acquisition" / "0"
+    coordinates = pd.read_csv(time_point / "coordinates.csv")
+    assert list(coordinates["fov"]) == [0, 1, 2, 3]
+    assert set(coordinates["region"]) == {"region_grid"}
+    assert (time_point / ".done").exists()
 
 
 def test_a_failed_hardware_restore_does_not_skip_the_software_state(tmp_path):
