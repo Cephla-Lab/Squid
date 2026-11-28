@@ -9,6 +9,7 @@ import shutil
 import statistics
 import time
 import threading
+import traceback
 import uuid
 from dataclasses import dataclass
 
@@ -225,6 +226,34 @@ def interpolate_plane(triple1, triple2, triple3, point):
     z = alpha * z1 + beta * z2 + gamma * z3
 
     return z
+
+
+def thread_stack(thread: threading.Thread) -> str:
+    """Where a running thread is now, as a traceback (for the log when it is stuck)."""
+    frame = sys._current_frames().get(thread.ident)
+    return "".join(traceback.format_stack(frame)) if frame is not None else "(no stack)\n"
+
+
+def call_with_deadline(fn, timeout_s: float, name: str):
+    """fn() on its own daemon thread, waited for at most timeout_s. Returns (finished, result, thread): finished is
+    False when fn is still running at the deadline (thread is then the stuck one), result is fn's return value, or
+    the exception it raised."""
+    done = threading.Event()
+    result = []
+
+    def run():
+        try:
+            result.append(fn())
+        except Exception as e:
+            result.append(e)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run, name=name, daemon=True)
+    thread.start()
+    if not done.wait(timeout_s):
+        return False, None, thread
+    return True, result[0], thread
 
 
 def create_done_file(path):

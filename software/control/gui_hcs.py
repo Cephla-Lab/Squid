@@ -3856,6 +3856,13 @@ class HighContentScreeningGui(QMainWindow):
         # Quit the application
         QApplication.instance().quit()
 
+    CAMERA_CLOSE_TIMEOUT_S = 10.0
+
+    def _stop_live_and_close_camera(self):
+        self.liveController.stop_live()
+        self.camera.stop_streaming()
+        self.camera.close()
+
     def _cleanup_common(self, for_restart: bool = False):
         """Common cleanup logic shared between closeEvent and restart.
 
@@ -4011,16 +4018,23 @@ class HighContentScreeningGui(QMainWindow):
                 else:
                     raise
 
-        # Stop live view and close camera
-        try:
-            self.liveController.stop_live()
-            self.camera.stop_streaming()
-            self.camera.close()
-        except Exception:
+        # Stop live view and close camera, within CAMERA_CLOSE_TIMEOUT_S: a camera that stopped answering blocks these
+        # calls (bench: a DCAM trigger that never returned held up cap_stop), and the light source, the stage and the
+        # microcontroller below must still be closed. A call that runs out of time is left on its own thread; the
+        # process ends with os._exit, which does not wait for it.
+        finished, result, thread = control.utils.call_with_deadline(
+            self._stop_live_and_close_camera, self.CAMERA_CLOSE_TIMEOUT_S, "close camera"
+        )
+        if not finished:
+            self.log.error(
+                f"The camera did not stop in {self.CAMERA_CLOSE_TIMEOUT_S:g} s during {context} (it stopped answering); "
+                f"closing the rest. Stuck in:\n{control.utils.thread_stack(thread)}"
+            )
+        elif isinstance(result, Exception):
             if for_restart:
-                self.log.exception(f"Error closing camera during {context}")
+                self.log.error(f"Error closing camera during {context}", exc_info=result)
             else:
-                raise
+                raise result
 
         # Turn off and release an external light source (VersaLase, CELESTA, LDI, Andor) once live view,
         # which may still switch it, has stopped. Only logged on failure, even on a full shutdown: a light

@@ -1495,3 +1495,25 @@ def test_performance_mode_keeps_mosaic_fed_and_shows_it_at_completion(qtbot, mon
     win.toggleAcquisitionStart(False)
     assert win.imageDisplayTabs.isTabEnabled(mosaic_idx)
     assert win.imageDisplayTabs.currentWidget() is mosaic
+
+
+def test_close_with_a_camera_that_stopped_answering_still_closes_the_rest(qtbot, confirm_exit_yes, caplog):
+    """Bench (2026-11-27): a DCAM trigger that never returned held up the camera's stop at close, and Squid had to
+    be killed, with the light source, the stage and the controller not closed. The camera now gets
+    CAMERA_CLOSE_TIMEOUT_S; the rest is closed after it either way."""
+    gui = _gui(qtbot)
+    camera_answers = threading.Event()
+    gui.CAMERA_CLOSE_TIMEOUT_S = 0.5
+    pid_off = []
+    gui.microcontroller.turn_off_all_pid = lambda: pid_off.append(True)
+    gui.camera.stop_streaming = lambda: camera_answers.wait(30)
+    try:
+        with caplog.at_level(logging.ERROR):
+            started = time.time()
+            gui.close()
+            assert time.time() - started < 10
+        assert "The camera did not stop in 0.5 s during shutdown" in caplog.text
+        assert pid_off == [True]  # closed after the camera
+    finally:
+        camera_answers.set()
+        gui.closeEvent = lambda event: event.accept()

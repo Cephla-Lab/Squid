@@ -101,6 +101,13 @@ class HamamatsuCamera(AbstractCamera):
         self._last_trigger_timestamp = 0
         self._trigger_sent = threading.Event()
 
+        # The settings as last applied, so that reopen() can apply them again without asking a camera that stopped
+        # answering. None: never set here, the camera's own default (what a fresh open gives back too).
+        self._pixel_format_setting: Optional[CameraPixelFormat] = None
+        self._roi_setting: Optional[Tuple[int, int, int, int]] = None
+        self._sensor_mode_setting: Optional[str] = None
+        self._acquisition_mode_setting: Optional[CameraAcquisitionMode] = None
+
         camera, capabilities = HamamatsuCamera._open(index=0)
 
         self._camera: Dcam = camera
@@ -188,8 +195,11 @@ class HamamatsuCamera(AbstractCamera):
 
     def _read_frames_when_available(self):
         self._log.info("Starting Hamamatsu read thread.")
-        self._read_thread_running.set()
-        while self._read_thread_keep_running.is_set():
+        # This thread's own flags: _ensure_read_thread_running makes new ones for the next thread, so this one, if it
+        # comes back from a DCAM call it was stuck in after reopen(), stops instead of reading beside its successor.
+        keep_running, running = self._read_thread_keep_running, self._read_thread_running
+        running.set()
+        while keep_running.is_set():
             # We really, really, do not want this thread to die prematurely, so catch all exceptions and try
             # to continue.
             try:
@@ -210,7 +220,7 @@ class HamamatsuCamera(AbstractCamera):
 
             except Exception as e:
                 self._log.exception("Exception in read loop, ignoring and trying to continue.")
-        self._read_thread_running.clear()
+        running.clear()
 
     @staticmethod
     def _last_dcam_error_string_direct(last_error) -> str:
@@ -308,6 +318,7 @@ class HamamatsuCamera(AbstractCamera):
             with self._pause_streaming():
                 if not self._set_prop(DCAM_IDPROP.READOUTSPEED, self._sensor_modes[mode]):
                     raise CameraError(f"Failed to set sensor mode to '{mode}'")
+                self._sensor_mode_setting = mode
 
             # Force exposure + strobe delay recalculation, since readout speed changes the line interval.
             self.set_exposure_time(self._exposure_time_ms)
@@ -339,6 +350,7 @@ class HamamatsuCamera(AbstractCamera):
         with self._pause_streaming():
             if not self._set_prop(DCAM_IDPROP.IMAGE_PIXELTYPE, self._PIXEL_FORMAT_TO_DCAM_FORMAT[pixel_format]):
                 raise CameraError(f"Failed to set pixel format to {pixel_format}")
+            self._pixel_format_setting = pixel_format
 
     def get_pixel_format(self) -> CameraPixelFormat:
         raw_dcam_pixel_format = self._camera.prop_getvalue(DCAM_IDPROP.IMAGE_PIXELTYPE)
@@ -395,6 +407,8 @@ class HamamatsuCamera(AbstractCamera):
             elif self._read_thread is not None:
                 self._log.warning("Read thread already exists, but not marked as running.  Still attempting start.")
 
+            self._read_thread_keep_running = threading.Event()
+            self._read_thread_running = threading.Event()
             self._read_thread = threading.Thread(target=self._read_frames_when_available, daemon=True)
             self._read_thread_keep_running.set()
             self._read_thread.start()
@@ -458,6 +472,45 @@ class HamamatsuCamera(AbstractCamera):
         self._trigger_sent.clear()
         return success
 
+    def can_reopen(self) -> bool:
+        return True
+
+    def reopen(self):
+        """Close the DCAM handle and open the camera again with the settings last applied, streaming again if it was.
+
+        For a camera that stopped delivering frames and that a stream restart did not bring back. A read thread stuck
+        in a DCAM call is left behind: it stops on its own flag if the call ever returns, and the lock it may hold is
+        replaced, so it blocks nothing here. Frame callbacks and frame ids carry on."""
+        with self._trigger_lock:
+            was_streaming = self.get_is_streaming()
+            self._log.warning(f"Reopening the camera ({was_streaming=}).")
+            self._is_streaming.clear()
+            self._cleanup_read_thread()
+            old = self._camera
+            for name in ("cap_stop", "buf_release"):
+                if not getattr(old, name)():
+                    self._log.warning(f"Reopening the camera: {name} on the old handle failed, going on.")
+            old.dev_close()
+            Dcamapi.uninit()  # Dcamapi.init() in _open refuses to run twice
+            self._capture_lock = threading.Lock()
+            self._camera, self._capabilities = HamamatsuCamera._open(index=0)
+
+            if self._sensor_mode_setting is not None:
+                self.set_sensor_mode(self._sensor_mode_setting)
+            elif self._config.default_sensor_mode:
+                self.set_sensor_mode(self._config.default_sensor_mode)
+            if self._pixel_format_setting is not None:
+                self.set_pixel_format(self._pixel_format_setting)
+            if self._roi_setting is not None:
+                self.set_region_of_interest(*self._roi_setting)
+            if self._acquisition_mode_setting is not None:
+                self._set_acquisition_mode_imp(self._acquisition_mode_setting)
+            self.set_exposure_time(self._exposure_time_ms)
+
+            if was_streaming and not self.start_streaming():
+                raise CameraError("Reopened the camera, but it did not start streaming.")
+            self._log.warning("Camera reopened.")
+
     def get_is_streaming(self):
         return self._is_streaming.is_set()
 
@@ -520,6 +573,7 @@ class HamamatsuCamera(AbstractCamera):
             if not self._set_prop(DCAM_IDPROP.TRIGGERSOURCE, dcam_trigger_source):
                 self._log.error(f"Failed to set acquisition mode to {acquisition_mode=}")
                 return False
+            self._acquisition_mode_setting = acquisition_mode
             self.set_exposure_time(self._exposure_time_ms)
         return True
 
@@ -603,6 +657,7 @@ class HamamatsuCamera(AbstractCamera):
                 height = control.utils.truncate_to_interval(height, 4)
                 if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVSIZE, int(height)):
                     fail("Could not set roi height.")
+                self._roi_setting = (int(offset_x), int(offset_y), int(width), int(height))
 
             # Force exposure + strobe delay recalculation if needed
             self.set_exposure_time(self.get_exposure_time())
