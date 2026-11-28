@@ -62,7 +62,7 @@ def test_a_restore_that_hangs_still_ends_the_run_and_blocks_the_next_until_it_re
             real_set_microscope_mode(configuration)
 
     mpc.RESTORE_HARDWARE_TIMEOUT_S = 0.5
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.WARNING):
         with (
             patch.object(mpc.liveController, "set_microscope_mode", side_effect=set_microscope_mode),
             patch.object(mpc, "_restore_software_state_after_acquisition", side_effect=restore_software),
@@ -75,6 +75,9 @@ def test_a_restore_that_hangs_still_ends_the_run_and_blocks_the_next_until_it_re
             # the log says what is stuck, and where
             assert "did not finish in 0.5 s" in caplog.text
             assert "set_microscope_mode" in caplog.text
+            # it was stuck before the move back: the stage did not move and is free, with no "a move failed"
+            assert scope.stage_motion.holder is None
+            assert "a move failed" not in caplog.text
 
             # the next start would hang on the same device: refused, with the reason
             finished.clear()
@@ -82,8 +85,12 @@ def test_a_restore_that_hangs_still_ends_the_run_and_blocks_the_next_until_it_re
             assert "restart Squid" in mpc.last_start_refusal
             assert finished.is_set()  # the refused start re-enabled the UI
 
-            device_answers.set()
-            mpc._hung_restore.join(10)
+            with patch.object(scope.stage, "move_x_to") as move_x:
+                device_answers.set()
+                mpc._hung_restore.join(10)
+            # back after its time limit: it does not move the stage, which was given back meanwhile
+            move_x.assert_not_called()
+            assert "came back after its time limit: not moving the stage back" in caplog.text
 
     # the device answered after all: acquisitions start again
     finished.clear()
