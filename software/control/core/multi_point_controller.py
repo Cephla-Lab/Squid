@@ -8,6 +8,7 @@ import time
 import yaml
 from datetime import datetime
 from enum import Enum
+import threading
 from threading import Thread
 from typing import Any, Callable, Optional, Tuple
 
@@ -318,6 +319,10 @@ class MultiPointController:
         # stopped answering in the middle of a call (seen with the Hamamatsu camera after a lost frame). While it is
         # stuck no acquisition starts, since its first call to that device would hang the same way.
         self._hung_restore: Optional[Thread] = None
+        # How far the restore after the run got with the stage: "pending", "moving" (it moves it back), or "given up"
+        # (its time limit ran out before it got there: it must not move the stage when it comes back).
+        self._restore_stage_lock = threading.Lock()
+        self._restore_stage = "pending"
 
     # The restore sets the channel, may start live and moves the stage back to the start position.
     RESTORE_HARDWARE_TIMEOUT_S = 60.0
@@ -1291,10 +1296,18 @@ class MultiPointController:
             self._restore_software_state_after_acquisition()
         except Exception:
             self._log.exception("Restoring after the acquisition failed in _restore_software_state_after_acquisition")
+        with self._restore_stage_lock:
+            self._restore_stage = "pending"
         hardware_restored = self._restore_hardware_within_deadline()
+        with self._restore_stage_lock:
+            stage_moving = self._restore_stage == "moving"
+            if not hardware_restored and not stage_moving:
+                self._restore_stage = "given up"
         # The stage is done with (the move back to the start position included): the next owner may take it. A move
-        # back that raised may have left it moving: then not before the stage reports it stopped.
-        self._release_stage_after_run(after_failed_move=not hardware_restored)
+        # back that raised or did not finish may have left it moving: then not before the stage reports it stopped.
+        # A restore that failed or ran out of time before the move back (a camera that stopped answering) did not
+        # move the stage: it is free now, and the restore skips the move back if it ever comes back.
+        self._release_stage_after_run(after_failed_move=not hardware_restored and stage_moving)
         # emit the acquisition finished signal to enable the UI
         self.callbacks.signal_acquisition_finished()
 
@@ -1410,6 +1423,8 @@ class MultiPointController:
         if self.liveController_was_live_before_multipoint and control._def.RESUME_LIVE_AFTER_ACQUISITION:
             self.liveController.start_live()
 
+        if not self._restore_may_move_stage():
+            return
         if self._start_position:
             x_mm = self._start_position.x_mm
             y_mm = self._start_position.y_mm
@@ -1422,6 +1437,17 @@ class MultiPointController:
 
         ending_pos = self.stage.get_pos()
         self.callbacks.signal_current_fov(ending_pos.x_mm, ending_pos.y_mm)
+
+    def _restore_may_move_stage(self) -> bool:
+        with self._restore_stage_lock:
+            if self._restore_stage == "given up":
+                self._log.warning(
+                    "The restore after the acquisition came back after its time limit: not moving the stage back (it "
+                    "was released, and may have another owner now)."
+                )
+                return False
+            self._restore_stage = "moving"
+            return True
 
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
